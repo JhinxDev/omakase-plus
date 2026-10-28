@@ -76,6 +76,8 @@ from omakase.plus.deps import get_db
 from omakase.plus.discovery import DiscoveryRequest, save_preferences, saved_preferences
 from omakase.plus.feedback import feedback_for_prompt, save_feedback
 from omakase.plus.google_auth import create_google_router, google_enabled
+from omakase.plus.health import affected_health_titles, health_guidance
+from omakase.plus.history_artwork_routes import create_history_artwork_router
 from omakase.plus.manifest import (
     MANIFEST_SCHEMA,
     MAX_RECEIPT_BYTES,
@@ -193,6 +195,11 @@ _STATIC_ASSETS = {
     "semantic-states.css": "text/css",
     "notifications.css": "text/css",
     "notifications.js": "application/javascript",
+    "credentials.css": "text/css",
+    "credentials.js": "application/javascript",
+    "history-artwork.css": "text/css",
+    "history-artwork.js": "application/javascript",
+    "health-actions.css": "text/css",
     "episode-states.css": "text/css",
     "hero-quality.js": "application/javascript",
     "shelves.js": "application/javascript",
@@ -890,6 +897,7 @@ router.include_router(create_movies_router(templates, _product_context))
 router.include_router(create_tv_router(templates, _product_context))
 router.include_router(create_search_router(templates, _product_context))
 router.include_router(create_notifications_router())
+router.include_router(create_history_artwork_router())
 router.include_router(create_onboarding_router(templates, _product_context))
 
 
@@ -1779,6 +1787,8 @@ async def health_page(
         {
             **_product_context(request, user, active_page="health"),
             **health_view(db, user_id=user.id),
+            "health_guidance": health_guidance,
+            "affected_titles": affected_health_titles(db, user_id=user.id),
             "revision": os.getenv("OMAKASE_REVISION", "unknown"),
             "apple_tv_integration": integration_status(db, user_id=user.id),
             "apple_tv_watch_enabled": apple_tv_watch_enabled,
@@ -2872,11 +2882,13 @@ async def settings_post(
         if key_name in moved_keys:
             continue
         value = form.get(key_name, "").strip()
-        if value and value != "••••••••":
+        if form.get(f"delete_{key_name}", ""):
+            # The explicit removal button wins even if a replacement is being typed.
+            delete_secret(db, user_id, key_name)
+            saved_keys.append(f"{key_name} removed")
+        elif value and value != "••••••••":
             store_secret(db, user_id, key_name, value)
             saved_keys.append(key_name)
-        elif form.get(f"delete_{key_name}", ""):
-            delete_secret(db, user_id, key_name)
 
     if form.get("acquisition_policy_present", ""):
         if form.get("reset_acquisition_policy", ""):

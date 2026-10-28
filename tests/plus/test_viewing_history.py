@@ -121,7 +121,9 @@ def test_anilist_checkpoint_is_recorded_once_without_fabricated_episode_dates(db
     assert item["recorded_at"] == "2026-10-27T18:00:00Z"
     assert item["time_label"] == "Recorded" and item["source_label"] == "AniList"
     assert item["episode_title"] is None
-    assert item["artwork_url"] == "/plus/media/21/poster"
+    assert item["artwork_url"].startswith("/plus/history/artwork/anime/")
+    assert "series_artwork_url" not in item
+    assert item["episode_artwork"] is True
 
 
 def test_plex_snapshot_dates_are_season_checkpoints_not_episode_watch_dates(db):

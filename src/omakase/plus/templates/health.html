@@ -4,10 +4,12 @@
 {% block page_title %}Health{% endblock %}
 {% block page_intro %}<p class="page-intro">A plain-language view of media access, Plex publishing, automatic checks, and anything that needs action.</p>{% endblock %}
 {% block page_actions %}<a class="button button-secondary" href="/plus/setup">Setup guide</a>{% endblock %}
-{% macro service_check(item) -%}
+{% macro service_check(item, section) -%}
 <article class="health-check">
   <div class="health-check-heading"><strong>{{ item.label }}</strong><span class="health-status health-status-{{ item.status }}">{{ item.status_label }}</span></div>
   <p class="health-check-message">{{ item.reason_label }}</p>
+  {% set advice = health_guidance(item, section) if health_guidance is defined else none %}
+  {% if advice %}<div class="health-guidance"><p class="health-cause">{{ advice.cause }}</p><p class="health-next-step"><strong>What you can do:</strong> {{ advice.next_step }}</p><a class="button button-secondary health-action" href="{{ advice.href }}">{{ advice.label }}</a></div>{% endif %}
   <details class="health-check-details"><summary>Check details</summary>
     {% if item.detail %}<p>{{ item.detail }}</p>{% endif %}
     <dl>
@@ -21,10 +23,11 @@
 </article>
 {%- endmacro %}
 {% block content %}
+<link rel="stylesheet" href="/plus/static/health-actions.css?v={{ asset_version }}">
 <div class="status-clarity-health">
 <section class="health-banner health-{{ overall }}">
   <span class="health-orb" aria-hidden="true"></span>
-  <div><span>Overall status</span><h2>{{ 'Needs attention' if overall == 'attention' else 'Setup needed' if overall == 'setup' else overall | title }}</h2><p>{% if monitor_failures %}{{ monitor_failures }} monitored {{ 'title needs' if monitor_failures == 1 else 'titles need' }} a retry.{% elif overall == 'healthy' %}Current service checks look healthy.{% elif overall == 'setup' %}Connect your media services to get started.{% else %}Review the service checks below.{% endif %}</p></div>
+  <div><span>Overall status</span><h2>{{ 'Needs attention' if overall == 'attention' else 'Setup needed' if overall == 'setup' else overall | title }}</h2><p>{% if monitor_failures %}{{ monitor_failures }} monitored {{ 'title needs' if monitor_failures == 1 else 'titles need' }} attention.{% elif overall == 'healthy' %}Current service checks look healthy.{% elif overall == 'setup' %}Connect your media services to get started.{% else %}Review the service checks below.{% endif %}</p></div>
 </section>
 <ul class="health-legend" aria-label="Status colors"><li class="health-status-healthy">Green: healthy</li><li class="health-status-degraded">Amber: attention</li><li class="health-status-error">Red: unavailable</li><li class="health-status-unknown">Blue: waiting for a check</li></ul>
 
@@ -45,26 +48,29 @@
   <section class="editorial-panel">
     <header class="panel-heading"><div><span class="section-index">01 / SEARCH</span><h2>Finding releases</h2></div><span class="count-stamp">{{ catalogs | length }}</span></header>
     <div class="health-check-list">{% for item in catalogs %}
-      {{ service_check(item) }}
+      {{ service_check(item, 'catalog') }}
     {% endfor %}</div>
   </section>
   <section class="editorial-panel">
     <header class="panel-heading"><div><span class="section-index">02 / STORAGE</span><h2>Downloads & imports</h2></div><span class="count-stamp">{{ providers | length }}</span></header>
     {% if providers %}<div class="health-check-list">{% for item in providers %}
-      {{ service_check(item) }}
-    {% endfor %}</div>{% else %}<div class="quiet-state"><span>Not configured</span><p>Add a media provider during setup.</p></div>{% endif %}
+      {{ service_check(item, 'provider') }}
+    {% endfor %}</div>{% else %}<div class="quiet-state"><span>Not configured</span><p>Choose how this server stores or downloads media.</p><a class="button button-secondary health-action" href="/plus/settings/storage">Review storage settings</a></div>{% endif %}
   </section>
   <section class="editorial-panel">
     <header class="panel-heading"><div><span class="section-index">03 / PLEX</span><h2>Ready to watch</h2></div><span class="count-stamp">{{ plex_targets | length }}</span></header>
     {% if plex_targets %}<div class="health-check-list">{% for item in plex_targets %}
-      {{ service_check(item) }}
-    {% endfor %}</div>{% else %}<div class="quiet-state"><span>Plex has not been checked</span><p>Connect Plex and complete one library scan.</p></div>{% endif %}
+      {{ service_check(item, 'plex') }}
+    {% endfor %}</div>{% else %}<div class="quiet-state"><span>Plex has not been checked</span><p>Review your Plex connection and test access explicitly.</p><a class="button button-secondary health-action" href="/plus/settings/connections#connection-plex">Open Plex connection</a></div>{% endif %}
   </section>
   <section class="editorial-panel scheduler-card">
     <header class="panel-heading"><div><span class="section-index">04 / AUTOMATION</span><h2>Automatic media checks</h2></div></header>
     <div class="health-check"><div class="health-check-heading"><strong>{% if scheduler.state == 'running' %}Checking media now{% else %}Ready for the next check{% endif %}</strong><span class="health-status health-status-{{ 'unknown' if scheduler.state == 'running' else 'healthy' }}">{{ scheduler.state | title }}</span></div><p class="health-check-message">{% if scheduler.state == 'running' %}A media check is in progress.{% else %}No media check is running right now.{% endif %}</p>{% if scheduler.state == 'running' %}<details class="health-check-details"><summary>Check details</summary><dl><dt>Started</dt><dd><time data-local-datetime="{{ scheduler.acquired_at }}" datetime="{{ scheduler.acquired_at }}">{{ scheduler.acquired_at }} UTC</time></dd><dt>Last response</dt><dd><time data-local-datetime="{{ scheduler.heartbeat_at }}" datetime="{{ scheduler.heartbeat_at }}">{{ scheduler.heartbeat_at }} UTC</time></dd></dl></details>{% endif %}</div>
   </section>
 </div>
+{% if affected_titles is defined and affected_titles.total %}
+<section class="editorial-panel health-affected" id="health-affected-titles" aria-labelledby="health-affected-heading"><h2 id="health-affected-heading">Titles with failed checks</h2><p>Review each title's saved status before deciding what to do next. These checks are not attributed to a particular source.</p><ul>{% for title in affected_titles['items'] %}<li><a href="{{ title.href }}">{{ title.title }}</a><span>{{ 'Review the latest check' if title.active else 'Not being checked automatically' }}</span></li>{% endfor %}</ul>{% if affected_titles.total > affected_titles['items'] | length %}<p>Showing {{ affected_titles['items'] | length }} of {{ affected_titles.total }}. <a href="/plus/library">Open your anime library</a></p>{% endif %}</section>
+{% endif %}
 <details class="operator-note"><summary>Advanced diagnostics</summary><p>App revision: <code>{{ revision }}</code></p><p>Your server administrator can run <code>omakase plus doctor</code> to check storage capacity, media tools, Plex connectivity and any configured download network.</p></details>
 </div>
 {% endblock %}

@@ -7,6 +7,7 @@
 {% block page_title %}{{ titles[section] }}{% endblock %}
 {% block page_intro %}<p class="page-intro">{{ {'preferences':'Make recommendations feel like you.','tracking':'Keep viewing progress, completion and connected trackers in sync.','downloads':'Choose quality preferences for future anime searches.','sources':'Choose where Omakase searches for anime releases.','ai':'Manage the key used for your recommendation requests.','storage':'Choose where media lives and how it reaches your library.'}[section] }}</p>{% endblock %}
 {% block content %}
+{% if section == 'ai' %}<link rel="stylesheet" href="/plus/static/credentials.css?v={{ asset_version }}"><script src="/plus/static/credentials.js?v={{ asset_version }}" defer></script>{% endif %}
 {% set backend_labels = {'openai':'OpenAI','anthropic':'Anthropic','gemini':'Google Gemini','deepseek':'DeepSeek','openrouter':'OpenRouter','groq':'Groq','together':'Together AI','ollama':'Ollama','codex':'Codex subscription'} %}
 <div class="settings-workspace">{{ settings_nav(section) }}<div class="settings-content">
 {% if saved %}<div class="product-notice" role="status">{{ saved }}</div>{% endif %}
@@ -16,7 +17,7 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="hidden" name="settings_section" value="{{ section }}">
   {% include '_settings_' ~ section ~ '.html' %}
-  <div class="settings-submit"><p>Changes apply to this section. Saved keys stay private.</p><button class="button button-primary" type="submit">Save {{ titles[section] | lower }}</button></div>
+  <div class="settings-submit"><p>Changes apply to this section. Saved keys stay private.</p><button class="button button-primary" type="submit" {% if section == 'ai' %}data-credential-submit data-credential-default="Save {{ titles[section] | lower }}"{% endif %}>Save {{ titles[section] | lower }}</button></div>
 </form>{% endif %}
 </div></div>
 {% endblock %}

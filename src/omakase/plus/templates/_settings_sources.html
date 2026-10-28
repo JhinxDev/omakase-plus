@@ -31,3 +31,10 @@
     {% endif %}
     {% endfor %}
   </section>
+
+<section class="editorial-panel settings-section" id="animetosho" aria-labelledby="animetosho-heading">
+  <header class="panel-heading"><div><h2 id="animetosho-heading">AnimeTosho metadata</h2></div></header>
+  <p>AnimeTosho is an optional server-managed source of anime release metadata. It does not use a saved personal API key. The Prowlarr filters above do not configure or disable AnimeTosho.</p>
+  <p>If its latest search failed, review the saved receipt in <a href="/plus/health/overview">Service health</a>. This may be a temporary upstream or network problem; the receipt does not establish a disconnected account.</p>
+  <details class="health-check-details"><summary>Administrator setup and disabling</summary><p>The server setting <code>OMAKASE_ANIMETOSHO_ENABLED=true</code> enables this optional source. Ask your server administrator to review upstream connectivity and the saved failure before changing the deployment.</p><p>To disable only this source, the administrator can set <code>OMAKASE_ANIMETOSHO_ENABLED=false</code> in the deployment configuration and apply it through the normal reviewed deployment process. Keep existing service restrictions and source cooldowns intact. This page does not apply that change.</p><p>Existing media, personal history and other configured sources are separate from this optional metadata source.</p></details>
+</section>

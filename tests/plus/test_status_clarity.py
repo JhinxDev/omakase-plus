@@ -77,7 +77,7 @@ def test_health_keeps_technical_receipts_in_disclosures():
     assert 'class="health-orb"' in html
     assert "<i>" not in html
     assert 'aria-label="Status colors"' in html
-    assert "1 monitored title needs a retry." in html
+    assert "1 monitored title needs attention." in html
     before_details, details = html.split('<details class="health-check-details">', 1)
     assert "Source search" in before_details and "Some searches failed" in before_details
     assert "PARTIAL_CATALOG_ERROR" not in before_details

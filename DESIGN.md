@@ -31,3 +31,20 @@ Primary links open the existing rating or guarded removal-review flow. Each item
 ### Notification artwork
 
 Show the media poster in each notification instead of a media-type abbreviation when artwork is available. Keep the tile size stable, crop covers consistently, and load images only after the panel opens. Resolve artwork through existing local routes; a missing or failed image falls back without shifting the text or actions.
+
+## 2026-10-28 settings, search and viewing-history refinement
+
+Autocomplete hints and results follow the input edges, including narrow screens.
+Mobile catalog controls stack to keep a full-width field; long suggestions use two
+lines while retaining their complete accessible text and keyboard selection.
+
+Saved credentials expose presence and connection health separately. Replacement
+is explicit and cancellable; Remove key takes precedence over a typed replacement.
+No old secret is returned to the browser.
+
+Health warnings name the saved failure evidence and link to the relevant settings.
+Host-managed metadata sources explain the actual operator configuration boundary.
+
+Viewing history uses authenticated exact-episode stills. Missing identity or image
+proof produces an episode placeholder. Series posters are not presented as episode
+stills; movies and original history timestamps keep their established behavior.

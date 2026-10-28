@@ -1,18 +1,13 @@
+{% from "_credential_fields.html" import credential_input %}
 <section id="ai-settings" class="editorial-panel settings-section">
     <header class="panel-heading"><div><h2>Encrypted provider keys</h2></div><span class="privacy-stamp">AES-256-GCM at rest</span></header>
     {% for key_name, description in keys.items() %}
     {% if key_name != 'realdebrid_api_key' %}
-    <div class="settings-field secret-field">
+    <div class="settings-field secret-field credential-setting">
       <div><label for="{{ key_name }}">{{ 'AI provider API key' if key_name == 'llm_api_key' else key_name | replace('_',' ') | title }}</label><p>{{ 'Used only for your recommendation requests. Your provider bills API usage separately.' if key_name == 'llm_api_key' else description }}</p></div>
       <div class="field-control">
-        {% if stored.get(key_name, '') %}
-        <div class="stored-secret"><span aria-hidden="true">•••• •••• ••••</span><b>Stored</b></div>
-        <details class="secret-replace"><summary>Replace</summary><input type="password" id="{{ key_name }}" name="{{ key_name }}" placeholder="Paste replacement" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore="true"></details>
-        <button type="submit" name="delete_{{ key_name }}" value="1" class="text-action text-danger">Forget</button>
-        {% else %}
-        <input type="password" id="{{ key_name }}" name="{{ key_name }}" placeholder="Not configured" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore="true">
-        <span class="setting-state">Not set</span>
-        {% endif %}
+        {{ credential_input(key_name, key_name, stored.get(key_name, '') != '') }}
+        {% if stored.get(key_name, '') %}<button type="submit" name="delete_{{ key_name }}" value="1" formnovalidate class="text-action text-danger">Remove key</button>{% endif %}
       </div>
     </div>
     {% endif %}
