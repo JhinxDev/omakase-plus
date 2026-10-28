@@ -305,9 +305,10 @@ def test_migration_upgrades_current_schema_and_is_idempotent(monkeypatch, tmp_pa
     current_dir = tmp_path / "current-migrations"
     current_dir.mkdir()
     migrations_dir = plus_db._MIGRATIONS_DIR
+    # Notification indexes need the media/watch schema excluded from this legacy fixture.
     for path in migrations_dir.glob("*.sql"):
         if not path.name.startswith(
-            ("005-", "006-", "007-", "008-", "011-", "014-", "016-", "020-", "021-")
+            ("005-", "006-", "007-", "008-", "011-", "014-", "016-", "020-", "021-", "032-")
         ):
             shutil.copy2(path, current_dir / path.name)
 
@@ -358,6 +359,13 @@ def test_migration_upgrades_current_schema_and_is_idempotent(monkeypatch, tmp_pa
         ).fetchone()[0]
         == 1
     )
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM _migrations WHERE name = '032-notification-state.sql'"
+        ).fetchone()[0]
+        == 1
+    )
+    assert conn.execute("SELECT COUNT(*) FROM notification_state").fetchone()[0] == 0
     assert "status" in _columns(conn, "watch_entries")
     assert _columns(conn, "media_asset_removals") == MEDIA_TABLE_COLUMNS["media_asset_removals"]
     conn.close()
@@ -427,7 +435,8 @@ def test_provider_migration_backfills_existing_realdebrid_evidence(monkeypatch, 
     legacy_dir.mkdir()
     migrations_dir = plus_db._MIGRATIONS_DIR
     for path in migrations_dir.glob("*.sql"):
-        if not path.name.startswith("008-"):
+        # Migration 032 indexes provider_asset_id, introduced by migration 008.
+        if not path.name.startswith(("008-", "032-")):
             shutil.copy2(path, legacy_dir / path.name)
 
     conn = sqlite3.connect(":memory:")
@@ -476,6 +485,7 @@ def test_provider_migration_backfills_existing_realdebrid_evidence(monkeypatch, 
 
     monkeypatch.setattr(plus_db, "_MIGRATIONS_DIR", migrations_dir)
     plus_db.run_migrations(conn)
+    plus_db.run_migrations(conn)
 
     provider = conn.execute("SELECT * FROM media_providers").fetchone()
     asset = conn.execute("SELECT * FROM media_assets WHERE id = ?", (asset_id,)).fetchone()
@@ -493,6 +503,13 @@ def test_provider_migration_backfills_existing_realdebrid_evidence(monkeypatch, 
     assert asset["storage_locator"] == "Legacy folder"
     assert attempt["provider_outcome"] == "downloaded"
     assert observation["provider_status"] == "downloaded"
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM _migrations WHERE name = '032-notification-state.sql'"
+        ).fetchone()[0]
+        == 1
+    )
+    assert conn.execute("SELECT COUNT(*) FROM notification_state").fetchone()[0] == 0
     conn.close()
 
 

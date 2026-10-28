@@ -129,6 +129,7 @@ def test_all_tables_exist(_fresh_db):
         "tv_plex_snapshots",
         "anime_synopses",
         "agent_audit",
+        "notification_state",
         "_migrations",  # internal tracking table
     }
     assert tables == expected, (
