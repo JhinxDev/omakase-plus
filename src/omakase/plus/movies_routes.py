@@ -76,6 +76,7 @@ def create_movies_router(templates, context_factory=None, *, service_factory=Non
                 "action_card": action_card,
                 "discover_movies": False,
                 "sync_result": sync_result,
+                "history_sync": history.sync_status(user.id),
             },
             headers={"Cache-Control": "private, no-store"},
         )

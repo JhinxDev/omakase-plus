@@ -15,6 +15,7 @@ sys.path.insert(0, str(CURATOR_ROOT))
 from plex_client import (  # noqa: E402
     PlexAnimeItem,
     PlexClient,
+    PlexInventoryChangedError,
     PlexLibraryNames,
     PlexLibraryScan,
     PlexSection,
@@ -231,6 +232,46 @@ def test_movie_inventory_uses_the_section_content_type_instead_of_forcing_tv():
     assert movies == (PlexAnimeItem("7", "Ninja Scroll", (), ()),)
     assert requests[0].url.path == "/library/sections/2/all"
     assert requests[0].url.params.multi_items() == []
+
+
+def test_disappeared_show_does_not_become_empty_episode_inventory():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.path == "/library/sections/1/all":
+            return httpx.Response(
+                200,
+                text='<MediaContainer size="1"><Directory ratingKey="14809" title="Removed fixture"/></MediaContainer>',
+            )
+        return httpx.Response(404)
+
+    client = PlexClient(
+        "http://plex.invalid:32400", token="fixture", transport=httpx.MockTransport(handler)
+    )
+    assert client.inventory_anime(1)[0].rating_key == "14809"
+    with pytest.raises(PlexInventoryChangedError, match="fresh library inventory"):
+        client.series_media_paths("14809")
+    assert len(requests) == 2 and all(request.method == "GET" for request in requests)
+
+
+@pytest.mark.parametrize(
+    "status,path",
+    [
+        (403, "/library/metadata/42/allLeaves"),
+        (500, "/library/metadata/42/allLeaves"),
+        (404, "/library/sections/1/all"),
+        (404, "/library/metadata/42"),
+    ],
+)
+def test_other_plex_failures_remain_http_errors(status, path):
+    client = PlexClient(
+        "http://plex.invalid:32400",
+        token="fixture",
+        transport=httpx.MockTransport(lambda request: httpx.Response(status)),
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        client._request("GET", path)
 
 
 def test_library_snapshot_collects_season_progress_and_movies_without_mutation():

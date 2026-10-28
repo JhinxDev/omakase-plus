@@ -46,7 +46,7 @@ cp .env.local.secrets.example .env.local.secrets
 chmod 0600 .env.local.secrets
 ```
 
-Use Docker Engine with the Compose plugin on a Linux host. Set your app-data
+Use Git, Python 3, and Docker Engine with the Compose plugin on a Linux host. Set your app-data
 directory and UID/GID in `.env.local`, and generate a master encryption key using
 the [getting-started guide](docs/getting-started.md). Keep secrets in
 `.env.local.secrets`, outside version control. Then:

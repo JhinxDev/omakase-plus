@@ -41,6 +41,7 @@ from curator_runtime import (  # noqa: E402
 )
 from plex_client import (  # noqa: E402
     PlexAnimeItem,
+    PlexInventoryChangedError,  # noqa: E402
     PlexLibraryScan,
     PlexSection,
     plan_library_topology,
@@ -54,6 +55,68 @@ from plex_curator import (  # noqa: E402
     build_overlay_plan,
 )
 from subtitle_support import SubtitleProbe, SubtitleTrack  # noqa: E402
+
+
+def test_stale_episode_read_propagates_past_removed_title_identity_fallback():
+    class Client:
+        def inventory_anime(self, section_key):
+            return (PlexAnimeItem("14809", "Removed fixture", (), ()),)
+
+        def series_media_paths(self, rating_key):
+            raise PlexInventoryChangedError("fresh inventory required")
+
+    with pytest.raises(PlexInventoryChangedError):
+        _build_collection_plan(Client(), {"titles": []}, 1, {}, organization={"titles": []})
+
+
+@pytest.mark.parametrize("stage", ["planning", "final_snapshot"])
+def test_stale_plex_inventory_defers_without_false_mutation_or_absence_claim(
+    stage, monkeypatch, tmp_path, capsys
+):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    config = load_runtime_config(CURATOR_ROOT / "config.example.json")
+    calls = []
+    monkeypatch.setattr("curator_runtime.load_runtime_config", lambda _: config)
+    monkeypatch.setattr("curator_runtime._machine_token", lambda: "fixture")
+    monkeypatch.setattr("curator_runtime.curator_lock", lambda _: nullcontext())
+
+    def prepare(*args):
+        calls.append("planning")
+        if stage == "planning":
+            raise PlexInventoryChangedError("fresh inventory required")
+        return SimpleNamespace(plan=SimpleNamespace(plan_hash="fixture"))
+
+    def live(*args, **kwargs):
+        calls.append("live")
+        return SimpleNamespace(plan_hash="fixture", changed=True)
+
+    def snapshot(*args):
+        calls.append("snapshot")
+        raise PlexInventoryChangedError("fresh inventory required")
+
+    monkeypatch.setattr("curator_runtime._prepare_dry_run", prepare)
+    monkeypatch.setattr("curator_runtime._live", live)
+    monkeypatch.setattr("curator_runtime._sync_library_snapshot", snapshot)
+    assert (
+        main(
+            [
+                "auto",
+                "--config",
+                str(tmp_path / "config.json"),
+                "--plan",
+                str(tmp_path / "plan.json"),
+                "--backup-receipt",
+                str(tmp_path / "backup.json"),
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["code"] == "PLEX_INVENTORY_CHANGED" and result["outcome"] == "deferred"
+    assert result["retryable"] is True and "changed" not in result
+    assert calls == (["planning"] if stage == "planning" else ["planning", "live", "snapshot"])
 
 
 def test_public_example_does_not_preselect_an_administrators_library_titles():

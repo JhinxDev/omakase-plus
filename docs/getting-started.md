@@ -1,8 +1,8 @@
 # Getting started with Omakase Plus
 
-Plus is an authenticated self-hosted application in an early source-release
-candidate. See the repository README for its intended public source destination
-and publication status; the recommendation-only package is a different edition.
+Plus is an authenticated self-hosted application available as an early source
+release. See the repository README for the source and release details; the
+recommendation-only package is a different edition.
 
 ## Choose how much to set up
 
@@ -26,8 +26,8 @@ account guidance; it never installs software or changes the running deployment.
 
 ### App-only first install
 
-Use a reviewed source checkout on a host with Docker Engine and Compose already
-installed. From the repository root, copy the configuration examples:
+Use a reviewed source checkout on a Linux host with Git, Python 3, Docker Engine
+and the Compose plugin already installed. From the repository root, copy the configuration examples:
 
 ```bash
 cp .env.local.example .env.local
@@ -38,7 +38,7 @@ chmod 0600 .env.local.secrets
 Choose `OMAKASE_DATA_PATH` in `.env.local` and create that directory, writable
 by the configured `OMAKASE_PUID`/`OMAKASE_PGID` (default 1000:1000). It holds
 the private database and account state. Generate an encryption key with
-`python -c 'import secrets; print(secrets.token_hex(32))'` and save it as
+`python3 -c 'import secrets; print(secrets.token_hex(32))'` and save it as
 `OMAKASE_PLUS_MASTER_KEY` in `.env.local.secrets`. Keep that key and the database
 backed up together; never commit the secret file. Media path values in the example
 are unused by the standalone file.

@@ -4,6 +4,7 @@ import asyncio
 import io
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -101,6 +102,34 @@ def test_browsing_and_detail_never_acquire_or_probe(browser):
     assert detail.status_code == 200 and "The Thing" in detail.text
     assert "unwatched" not in detail.text
     assert svc.calls == ["list", "list"]
+
+
+def test_collection_get_reads_saved_import_status_without_starting_sync(browser, monkeypatch):
+    from omakase.plus.movie_history import MovieHistoryService
+
+    client, svc, _ = browser
+    svc.connections = SimpleNamespace(
+        enabled=True, plex_url="https://plex.example.test", plex_token="fixture-token"
+    )
+    history = MovieHistoryService(svc)
+    svc.db.execute(
+        "INSERT INTO movie_sync_cursors VALUES(1,?,12,?)",
+        (history._scope(), "2026-10-27T07:59:09Z"),
+    )
+    svc.db.commit()
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("GET must not start a Plex history import")
+
+    monkeypatch.setattr(MovieHistoryService, "sync_plex", forbidden)
+    client.templates.env.loader.mapping["movies.html"] = (
+        "{{history_sync.mode}} {{history_sync.checked_at}} {{history_sync.has_more}}"
+    )
+    before = svc.db.total_changes
+    response = client.get("/plus/movies")
+    assert response.status_code == 200
+    assert response.text == "manual 2026-10-27T07:59:09Z True"
+    assert svc.calls == ["list"] and svc.db.total_changes == before
 
 
 def test_catalog_detail_does_not_require_collection_membership(browser):

@@ -49,6 +49,45 @@ class MovieHistoryService:
             (_base(config.plex_url) + "\0" + config.plex_token).encode()
         ).hexdigest()
 
+    def sync_status(self, user_id: int) -> dict[str, Any]:
+        """Read saved import evidence for this account and current connection only.
+
+        A cursor records the last checked batch, not live Plex connectivity or
+        freshness. Its offset proves continuation is pending, not how many
+        movies remain in a library that may have changed since the check.
+        """
+        self._guard(user_id)
+        config = getattr(self.movies, "connections", None)
+        result = {
+            "mode": "manual",
+            "configured": False,
+            "checked_at": None,
+            "has_more": False,
+            "completion_known": False,
+            "observed_movies": 0,
+        }
+        if not config or not config.enabled or not config.plex_url or not config.plex_token:
+            return result
+        scope = self._scope()
+        cursor = self.db.execute(
+            "SELECT next_offset, updated_at FROM movie_sync_cursors "
+            "WHERE user_id=? AND source_scope=?",
+            (user_id, scope),
+        ).fetchone()
+        observations = self.db.execute(
+            "SELECT COUNT(*) AS total, MAX(observed_at) AS checked_at FROM movie_plex_history "
+            "WHERE user_id=? AND source_scope=?",
+            (user_id, scope),
+        ).fetchone()
+        result.update(
+            configured=True,
+            checked_at=cursor["updated_at"] if cursor else observations["checked_at"],
+            has_more=bool(cursor and cursor["next_offset"] > 0),
+            completion_known=cursor is not None,
+            observed_movies=int(observations["total"]),
+        )
+        return result
+
     def get(self, user_id: int, imdb_id: str) -> dict[str, Any] | None:
         self._guard(user_id)
         imdb_id = _imdb(imdb_id)

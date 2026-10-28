@@ -194,6 +194,7 @@ def library_titles(
     provider: str = "all",
     content_type: str = "all",
     query: str = "",
+    include_removed: bool = False,
 ) -> list[dict[str, Any]]:
     """Return stable per-title readiness cards with explicit filters."""
     lifecycle_values = {
@@ -229,6 +230,11 @@ def library_titles(
     ).fetchall()
     watch_by_monitor = {
         int(row["monitor_id"]): row for row in watch_rows if row["monitor_id"] is not None
+    }
+    unlinked_watch = {
+        (int(row["anilist_id"]), int(row["season_number"])): row
+        for row in watch_rows
+        if row["monitor_id"] is None
     }
     monitors = db.execute(
         """SELECT * FROM media_monitors
@@ -314,7 +320,11 @@ def library_titles(
         removal_status = str(removal_row["status"]) if removal_row is not None else ""
         # Full media cleanup retains its existing Activity-only behavior. Plex-only
         # withdrawals remain in Completed so watched history and ratings are usable.
-        if removal_status == "complete" and removal_row["scope"] != "plex_only":
+        if (
+            removal_status == "complete"
+            and removal_row["scope"] != "plex_only"
+            and not include_removed
+        ):
             continue
         if removal_status:
             publication_pending = False
@@ -327,10 +337,19 @@ def library_titles(
             }[removal_status]
             if removal_status == "complete":
                 readiness = "archived"
-                plex_visible = 0
+                status_label = (
+                    "Removed from Plex" if removal_row["scope"] == "plex_only" else "Media removed"
+                )
+                plex_visible = usable = 0
+                qualities = []
+                fallback_episodes = []
         if state != "all" and state != readiness:
             continue
         watch = watch_by_monitor.get(int(monitor["id"]))
+        if watch is None:
+            watch = unlinked_watch.get(
+                (int(monitor["anilist_id"]), int(monitor["season_number"] or 0))
+            )
         watch_status = str(watch["status"]) if watch is not None else "unwatched"
         progress_episodes = int(watch["progress_episodes"]) if watch is not None else 0
         stored_total = (
@@ -378,13 +397,14 @@ def library_titles(
             lifecycle_label = "Not in Plex"
         else:
             lifecycle_label = "Needs setup"
-        if new_episode_ready and readiness != "ready":
-            status_label = f"Episode {next_episode} is ready"
-        elif required <= 0:
-            status_label = "No episodes have aired yet"
-        elif missing_media and not provider_kinds:
-            noun = "episode" if missing_media == 1 else "episodes"
-            status_label = f"No media source found · {missing_media} {noun} missing"
+        if not removal_status:
+            if new_episode_ready and readiness != "ready":
+                status_label = f"Episode {next_episode} is ready"
+            elif required <= 0:
+                status_label = "No episodes have aired yet"
+            elif missing_media and not provider_kinds:
+                noun = "episode" if missing_media == 1 else "episodes"
+                status_label = f"No media source found · {missing_media} {noun} missing"
         providers = sorted({str(asset["provider_label"]) for asset in assets})
         if providers:
             provider_summary = ", ".join(providers)
@@ -492,10 +512,15 @@ def title_detail(db, *, user_id: int, monitor_id: int) -> dict[str, Any] | None:
     if monitor is None:
         return None
     summary = next(
-        item
-        for item in library_titles(db, user_id=user_id, lifecycle="all")
-        if item["id"] == monitor_id
+        (
+            item
+            for item in library_titles(db, user_id=user_id, lifecycle="all", include_removed=True)
+            if item["id"] == monitor_id
+        ),
+        None,
     )
+    if summary is None:
+        return None
     asset_rows = db.execute(
         """SELECT asset.*, COALESCE(provider.kind, 'realdebrid') AS provider_kind,
                   COALESCE(provider.label, 'Real-Debrid') AS provider_label
@@ -616,6 +641,8 @@ def title_detail(db, *, user_id: int, monitor_id: int) -> dict[str, Any] | None:
             or asset["status"] in _ACTIVE_ASSET_STATES
         )
     ]
+    if summary["state"] == "archived":
+        current_assets = []
     current_ids = {asset["id"] for asset in current_assets}
     other_assets = [asset for asset in assets if asset["id"] not in current_ids]
     if summary["state"] == "ready":
@@ -677,9 +704,9 @@ def title_detail(db, *, user_id: int, monitor_id: int) -> dict[str, Any] | None:
             """SELECT event.*
                FROM watch_events AS event
                JOIN watch_entries AS entry ON entry.id = event.watch_entry_id
-               WHERE entry.user_id = ? AND entry.monitor_id = ?
+               WHERE entry.user_id = ? AND entry.id = ?
                ORDER BY event.observed_at DESC, event.id DESC LIMIT 50""",
-            (user_id, monitor_id),
+            (user_id, summary["watch_entry_id"]),
         ).fetchall()
     ]
     pending_confirmations = [
@@ -703,9 +730,9 @@ def title_detail(db, *, user_id: int, monitor_id: int) -> dict[str, Any] | None:
                JOIN watch_entries AS entry ON entry.id = confirmation.watch_entry_id
                JOIN watch_events AS event ON event.id = confirmation.watch_event_id
                WHERE confirmation.user_id = ? AND entry.user_id = ?
-                 AND entry.monitor_id = ? AND confirmation.status = 'pending'
+                 AND entry.id = ? AND confirmation.status = 'pending'
                ORDER BY confirmation.created_at DESC, confirmation.id DESC""",
-            (user_id, user_id, monitor_id),
+            (user_id, user_id, summary["watch_entry_id"]),
         ).fetchall()
     ]
     cleanup_block = db.execute(
@@ -715,9 +742,10 @@ def title_detail(db, *, user_id: int, monitor_id: int) -> dict[str, Any] | None:
     score = db.execute(
         """SELECT event.score_ten FROM watch_events AS event
            JOIN watch_entries AS entry ON entry.id = event.watch_entry_id
-           WHERE entry.monitor_id = ? AND entry.user_id = ? AND event.score_ten IS NOT NULL
+           WHERE entry.id = ? AND entry.user_id = ? AND event.user_id = entry.user_id
+             AND event.disposition = 'accepted' AND event.score_ten IS NOT NULL
            ORDER BY event.id DESC LIMIT 1""",
-        (monitor_id, user_id),
+        (summary["watch_entry_id"], user_id),
     ).fetchone()
     return {
         **summary,

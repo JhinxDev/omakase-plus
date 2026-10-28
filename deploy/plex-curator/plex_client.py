@@ -52,6 +52,14 @@ class TopologyPlanError(ValueError):
     """Observed Plex state does not satisfy a fail-closed mutation gate."""
 
 
+class PlexInventoryChangedError(RuntimeError):
+    """A listed Plex item disappeared; a fresh complete inventory is required.
+
+    This is deliberately not a ValueError: identity-fallback handlers must not
+    turn an unavailable episode read into empty paths or an absence proof.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class PlexLibraryNames:
     """User-facing Plex labels for Omakase's four logical library roles."""
@@ -574,6 +582,12 @@ class PlexClient:
 
     def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         response = self._client.request(method, path, **kwargs)
+        missing_episodes = re.fullmatch(r"/library/metadata/([0-9]+)/allLeaves", path)
+        if method.upper() == "GET" and response.status_code == 404 and missing_episodes:
+            raise PlexInventoryChangedError(
+                f"Plex episode inventory for item {missing_episodes[1]} changed during the read; "
+                "retry with a fresh library inventory."
+            )
         response.raise_for_status()
         return response
 

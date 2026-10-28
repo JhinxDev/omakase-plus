@@ -25,6 +25,7 @@ from plex_client import (
     GENRE_COLLECTIONS,
     SHELF_COLLECTIONS,
     PlexClient,
+    PlexInventoryChangedError,
     PlexLibraryNames,
     PlexSection,
     TopologyPlan,
@@ -1707,6 +1708,22 @@ def main(argv: list[str] | None = None) -> int:
                     "changed": False,
                     "retryable": True,
                     "detail": "Plex is scanning its library; retry after the scan completes.",
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    except PlexInventoryChangedError:
+        # This can occur before publication or during the final read afterward.
+        # Do not assert changed=False, publish an empty snapshot, or infer absence.
+        print(
+            json.dumps(
+                {
+                    "code": "PLEX_INVENTORY_CHANGED",
+                    "outcome": "deferred",
+                    "mode": args.command,
+                    "retryable": True,
+                    "detail": "Plex inventory changed during the read; retry after it settles.",
                 },
                 sort_keys=True,
             )

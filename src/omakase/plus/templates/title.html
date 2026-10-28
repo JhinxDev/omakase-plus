@@ -10,7 +10,7 @@
 <a class="button button-secondary" href="/plus/library">Back to watchlist</a>
 {% endblock %}
 {% block content %}
-{% if title.watch_status == 'completed' and completed %}
+{% if title.watch_status == 'completed' and completed and title.state != 'archived' %}
 <section class="product-notice" aria-labelledby="completion-heading">
   {% if title.removal and title.removal.scope == 'plex_only' %}
   <h2 id="completion-heading">Finished. Your watch history is saved.</h2>
@@ -89,12 +89,12 @@
     <p class="title-progress-source">No synopsis is available from AniList yet.</p>
     {% endif %}
     <h2 id="watch-progress-heading" class="sr-only">Availability and viewing progress</h2>
-    {% if title.removal and title.removal.scope == 'plex_only' %}<p>{{ 'Removed from Plex' if title.removal.status == 'complete' else 'Removing from Plex' }}</p>{% else %}<div class="detail-availability">{{ ready_badge(title) }}{% if title.publication_pending %}<span>Publishing to Plex</span>{% endif %}</div>{% endif %}
+    {% if title.state == 'archived' %}<p>{{ title.status_label }} · Your watch history and rating are saved.</p>{% elif title.removal and title.removal.scope == 'plex_only' %}<p>{{ 'Removed from Plex' if title.removal.status == 'complete' else 'Removing from Plex' }}</p>{% else %}<div class="detail-availability">{{ ready_badge(title) }}{% if title.publication_pending %}<span>Publishing to Plex</span>{% endif %}</div>{% endif %}
     {% if title.release_qualities %}<div class="release-quality" role="group" aria-label="Verified release quality">{% for quality in title.release_qualities %}<span class="{{ 'quality-fallback' if quality == '720p' else '' }}">{{ quality }}{{ ' fallback' if quality == '720p' else ' release' }}</span>{% endfor %}</div>{% endif %}
     {% if title.fallback_episodes %}<p class="title-availability-copy">720p fallback releases: episode{{ 's' if title.fallback_episodes | length != 1 else '' }} {{ title.fallback_episodes | join(', ') }}. Omakase prefers 1080p when available.</p>{% endif %}
     {{ progress_bar(title) }}
     <div class="title-primary-actions">
-      <a class="button button-primary" href="#episode-heading">View episodes</a>
+      <a class="button button-primary" href="#episode-heading">{{ "View episode history" if title.state == "archived" else "View episodes" }}</a>
       {% if title.usable < title.required and not title.removal %}
       <form method="post" action="/plus/library/{{ title.id }}/retry" data-busy-form>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -165,12 +165,12 @@
     {% for episode in range(1, episode_count + 1) %}
     <li class="viewer-episode{% if episode in title.upcoming_episodes %} is-upcoming{% endif %}{% if episode in title.usable_episodes %} is-verified{% endif %}{% if episode <= title.progress_episodes %} is-watched{% elif episode == title.next_episode %} is-next{% endif %}" data-episode="{{ episode }}">
       <span class="episode-number">{{ "%02d" | format(episode) }}</span>
-      <div class="episode-copy"><h3>Episode {{ episode }}</h3><span class="episode-readiness">{% if episode in title.upcoming_episodes %}Upcoming{% elif episode > title.required %}Release status unknown{% elif episode in title.usable_episodes %}<span class="episode-verification-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="none"><path d="m4 8 2.5 2.5L12 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="sr-only">Media verified</span>{% else %}Not yet verified{% endif %}</span>{% if episode in title.upcoming_episodes and episode == title.required + 1 and title.next_release_at %}<small class="episode-release-date">Expected <time datetime="{{ title.next_release_at }}" data-local-datetime="{{ title.next_release_at }}">{{ title.next_release_at[:10] }}</time></small>{% endif %}</div>
+      <div class="episode-copy"><h3>Episode {{ episode }}</h3><span class="episode-readiness">{% if title.state == "archived" %}Media removed{% elif episode in title.upcoming_episodes %}Upcoming{% elif episode > title.required %}Release status unknown{% elif episode in title.usable_episodes %}<span class="episode-verification-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="none"><path d="m4 8 2.5 2.5L12 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="sr-only">Media verified</span>{% else %}Not yet verified{% endif %}</span>{% if episode in title.upcoming_episodes and episode == title.required + 1 and title.next_release_at %}<small class="episode-release-date">Expected <time datetime="{{ title.next_release_at }}" data-local-datetime="{{ title.next_release_at }}">{{ title.next_release_at[:10] }}</time></small>{% endif %}</div>
       <span class="episode-watch-state">{% if episode <= title.progress_episodes %}Watched{% elif episode == title.next_episode %}Up next{% else %}Unwatched{% endif %}</span>
     </li>
     {% endfor %}
   </ol>
-  <p class="episode-help">Verified episodes were matched to the available file inventory. The Plex count confirms library visibility, not individual episode playback.</p>
+  {% if title.state == "archived" %}<p class="episode-help">This is your saved episode history. Removed media is not available for playback.</p>{% else %}<p class="episode-help">Verified episodes were matched to the available file inventory. The Plex count confirms library visibility, not individual episode playback.</p>{% endif %}
   {% if title.upcoming_episodes %}<p class="episode-help">{{ title.required }} aired · {{ title.upcoming_episodes | length }} upcoming. Release estimates follow AniList; upcoming episodes are checked by your existing library sync.</p>{% endif %}
   {% else %}<p class="episode-help">The episode list will appear when the title's episode count is known.</p>{% endif %}
 </section>

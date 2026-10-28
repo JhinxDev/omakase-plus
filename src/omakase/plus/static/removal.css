@@ -1,7 +1,31 @@
 /* Scoped title actions and deliberate, readable removal review. */
-.title-library-actions { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-top:18px; padding-top:14px; border-top:1px solid #ffffff20; }
-.title-library-actions > span { font-size:.82rem; color:var(--text-muted, #a3acbf); }
-.title-library-actions .button { min-height:44px; }
+.title-view-progress .title-library-actions {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:14px 18px;
+  margin-block:24px 28px;
+  padding-block:18px;
+  border-block:1px solid #ffffff20;
+}
+.title-view-progress .title-library-actions > span {
+  font-size:14px;
+  line-height:1.6;
+  color:var(--text-muted, #a3acbf);
+}
+.title-view-progress .title-library-actions .button {
+  min-height:44px;
+  max-width:100%;
+  white-space:normal;
+}
+.title-view-progress .title-library-actions ~ .title-progress-source {
+  margin-block:10px 0;
+  font-size:14px;
+  line-height:1.65;
+}
+.title-view-progress .title-library-actions + .title-progress-source {
+  margin-top:0;
+}
 .removal-review { max-width:760px; margin:0 auto; min-width:0; }
 .removal-review .removal-heading { display:flex; align-items:center; gap:24px; padding-bottom:24px; border-bottom:1px solid #ffffff20; }
 .removal-poster { width:80px; height:120px; flex:none; object-fit:cover; border-radius:8px; background:#141a29; }

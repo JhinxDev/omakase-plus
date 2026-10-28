@@ -644,3 +644,22 @@ def test_product_detail_redacts_credentials_magnets_and_sensitive_url_queries():
     assert "secret" not in detail
     assert "sk-private" not in detail
     assert "section=anime" in detail
+
+
+def test_removed_detail_clears_stale_verified_assets_and_plex_receipts(db):
+    user_id = _user(db, "archived@example.test")
+    monitor_id, _ = _seed_ready_title(db, user_id)
+    store_curator_receipt(db, _curator_receipt(anilist_id=180560, season=2, episodes=3))
+    assert title_detail(db, user_id=user_id, monitor_id=monitor_id)["usable"] == 3
+    db.execute(
+        """INSERT INTO media_title_removals
+        (user_id,monitor_id,anilist_id,season_number,title,requested_at,status,scope,curator_run_id,plex_removed_at,completed_at)
+        VALUES(?,?,180560,2,'Archived title','2026-10-27T18:00:00Z','complete','plex_and_provider','fixture','2026-10-27T18:00:00Z','2026-10-27T18:00:00Z')""",
+        (user_id, monitor_id),
+    )
+    archived = title_detail(db, user_id=user_id, monitor_id=monitor_id)
+    assert archived["state"] == "archived"
+    assert archived["usable"] == archived["plex_visible"] == 0
+    assert archived["usable_episodes"] == archived["current_assets"] == []
+    assert archived["release_qualities"] == []
+    assert len(archived["other_assets"]) == 1

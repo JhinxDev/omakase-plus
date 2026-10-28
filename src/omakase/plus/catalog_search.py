@@ -304,9 +304,21 @@ class AnimeCatalogSearch:
             "SELECT id,active FROM media_monitors WHERE user_id=? AND anilist_id=?",
             (self.user_id, card["id"]),
         ).fetchone()
+        removal = (
+            self.db.execute(
+                "SELECT status FROM media_title_removals WHERE monitor_id=? AND user_id=? ORDER BY id DESC LIMIT 1",
+                (monitor["id"], self.user_id),
+            ).fetchone()
+            if monitor
+            else None
+        )
+        library_status = ("tracking" if monitor["active"] else "paused") if monitor else None
+        if removal:
+            library_status = "removed" if removal["status"] == "complete" else "removing"
         card.update(
             library_id=monitor["id"] if monitor else None,
-            library_status=("tracking" if monitor["active"] else "paused") if monitor else None,
+            library_status=library_status,
+            library_present=bool(monitor and not removal),
         )
         local = self.db.execute(
             "SELECT * FROM watch_entries WHERE user_id=? AND anilist_id=? ORDER BY updated_at DESC,id DESC LIMIT 1",
