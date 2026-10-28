@@ -88,6 +88,7 @@ from omakase.plus.media_store import upsert_monitor
 from omakase.plus.media_sync import reconcile_curator_blocked_assets, run_media_sync
 from omakase.plus.middleware import require_user
 from omakase.plus.movies_routes import create_movies_router
+from omakase.plus.notifications_routes import create_notifications_router
 from omakase.plus.oauth_flows import consume_oauth_flow, create_oauth_flow
 from omakase.plus.onboarding_routes import create_onboarding_router
 from omakase.plus.organization import build_plex_organization
@@ -190,6 +191,8 @@ _STATIC_ASSETS = {
     "removal.css": "text/css",
     "feedback.css": "text/css",
     "semantic-states.css": "text/css",
+    "notifications.css": "text/css",
+    "notifications.js": "application/javascript",
     "episode-states.css": "text/css",
     "hero-quality.js": "application/javascript",
     "shelves.js": "application/javascript",
@@ -886,6 +889,7 @@ router.include_router(create_avatar_router(templates, _product_context))
 router.include_router(create_movies_router(templates, _product_context))
 router.include_router(create_tv_router(templates, _product_context))
 router.include_router(create_search_router(templates, _product_context))
+router.include_router(create_notifications_router())
 router.include_router(create_onboarding_router(templates, _product_context))
 
 

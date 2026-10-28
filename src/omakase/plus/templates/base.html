@@ -22,6 +22,8 @@
   <link rel="stylesheet" href="/plus/static/feedback.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/plus/static/episode-states.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/plus/static/semantic-states.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/notifications.css?v={{ asset_version }}">
+  <script src="/plus/static/notifications.js?v={{ asset_version }}" defer></script>
   <script src="/plus/static/hero-quality.js?v={{ asset_version }}" defer></script>
   <script src="/plus/static/shelves.js?v={{ asset_version }}" defer></script>
   <script src="/plus/static/search.js?v={{ asset_version }}" defer></script>
@@ -57,6 +59,19 @@
       </form>
       <a class="header-search-mobile" href="/plus/search" aria-label="Search anime, movies and TV shows"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg></a>
 
+      <div class="header-utilities">
+        <div class="notification-center" data-notifications>
+          <button class="notification-bell" type="button" aria-label="Notifications" aria-haspopup="dialog" aria-expanded="false" aria-controls="notification-panel" data-notification-toggle>
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z"/><path d="M10 21h4"/></svg>
+            <span class="notification-badge" data-notification-badge aria-hidden="true" hidden></span>
+          </button>
+          <section class="notification-panel" id="notification-panel" role="dialog" aria-modal="false" aria-labelledby="notification-heading" data-notification-panel hidden>
+            <div class="notification-heading"><div><h2 id="notification-heading">Notifications</h2><p data-notification-summary>Checking your reminders</p></div><button class="notification-close" type="button" aria-label="Close notifications" data-notification-close><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+            <p class="notification-feedback" role="alert" data-notification-feedback hidden></p>
+            <div class="notification-content" data-notification-content aria-live="polite"><p class="notification-state" role="status">Loading notifications...</p></div>
+            <p class="notification-footer">Your saved progress and media reminders. You choose what happens next.</p>
+          </section>
+        </div>
       <details class="account-menu" data-account-menu>
         <summary aria-label="Open account and utilities menu">
           <span class="account-avatar" aria-hidden="true">{% if avatar_available %}<img src="/plus/account/avatar?v={{ avatar_revision }}" alt="" width="32" height="32">{% else %}{{ email[:1] | upper }}{% endif %}</span>
@@ -72,6 +87,7 @@
           </form>
         </div>
       </details>
+      </div>
     </header>
 
     {% if synthetic_review %}

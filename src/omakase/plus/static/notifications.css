@@ -1,0 +1,47 @@
+/* Account-scoped reminders use the existing midnight/iris header system. */
+.header-utilities { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
+.notification-center { position: relative; flex: 0 0 auto; }
+.notification-bell, .notification-close { display: grid; place-items: center; position: relative; width: 44px; height: 44px; padding: 0; border: 1px solid transparent; border-radius: 10px; background: transparent; color: #a7abb2; cursor: pointer; font: inherit; }
+.notification-bell svg { width: 22px; height: 22px; }
+.notification-bell:hover, .notification-bell[aria-expanded=true], .notification-close:hover { border-color: #303640; background: #1d2430; color: #c4b5fd; }
+.notification-bell:focus-visible, .notification-panel :is(button,a):focus-visible { outline: 2px solid #c4b5fd; outline-offset: 3px; }
+.notification-badge { position: absolute; top: 1px; right: 0; min-width: 18px; padding: 1px 4px; border: 2px solid #090b12; border-radius: 12px; background: #c4b5fd; color: #090b12; font-size: 10px; font-weight: 700; line-height: 1.4; }
+.notification-badge[hidden], .notification-panel[hidden], .notification-feedback[hidden] { display: none; }
+.notification-panel { position: absolute; z-index: 220; top: calc(100% + 12px); right: 0; width: 420px; max-width: calc(100vw - 32px); max-height: min(680px, calc(100dvh - 110px)); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #303640; border-radius: 14px; background: #111620; color: #f7f5f0; box-shadow: 0 20px 65px #0008; text-align: left; }
+.notification-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 14px 12px 18px; border-bottom: 1px solid #222831; }
+.notification-heading h2 { margin: 2px 0 5px; color: #f7f5f0; font: 600 16px/1.4 Geist, sans-serif; letter-spacing: -.01em; }
+.notification-heading p { margin: 0; color: #a7abb2; font-size: 13px; line-height: 1.5; }
+.notification-close { flex-shrink: 0; font-size: 26px; line-height: 1; }
+.notification-content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.notification-list { margin: 0; padding: 0; list-style: none; }
+.notification-item { display: grid; grid-template-columns: 46px minmax(0,1fr); gap: 12px; padding: 18px; border-bottom: 1px solid #222831; }
+.notification-item:last-child { border-bottom: 0; }
+.notification-art { display: grid; place-items: center; align-self: start; width: 46px; height: 64px; border: 1px solid #303640; border-radius: 8px; background: #1d2430; color: #a7abb2; font-size: 12px; font-weight: 600; overflow: hidden; }
+.notification-art img { width: 100%; height: 100%; object-fit: cover; }
+.notification-item-copy { min-width: 0; }
+.notification-kind { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; color: #a7abb2; font-size: 12px; line-height: 1.4; }
+.notification-item:not([data-read=true]) .notification-kind::before { content: ''; width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: #c4b5fd; }
+.notification-item h3 { margin: 0; color: #f7f5f0; font-size: 15px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+.notification-message, .notification-rating { margin: 6px 0 0; font-size: 14px; line-height: 1.6; }
+.notification-message { color: #a7abb2; overflow-wrap: anywhere; }
+.notification-rating { color: #c4b5fd; }
+.notification-item-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 10px; }
+.notification-item-actions :is(a,button), .notification-retry { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 8px 10px; border: 1px solid #303640; border-radius: 10px; background: transparent; color: #c4b5fd; font: 500 13px/1.4 Geist, sans-serif; cursor: pointer; text-decoration: none; }
+.notification-item-actions .notification-primary { background: #c4b5fd; color: #090b12; border-color: #c4b5fd; }
+.notification-item-actions button { color: #a7abb2; }
+.notification-item-actions button:hover, .notification-retry:hover { background: #1d2430; color: #f7f5f0; }
+.notification-item-actions button:disabled { opacity: .65; cursor: wait; }
+.notification-state { padding: 24px 18px; margin: 0; color: #a7abb2; font-size: 14px; line-height: 1.7; }
+.notification-state strong { display: block; margin-bottom: 6px; color: #f7f5f0; font-weight: 600; }
+.notification-retry { margin-top: 12px; }
+.notification-feedback { margin: 12px 18px 0; padding: 10px 12px; border: 1px solid #9c5963; border-radius: 10px; background: #321e27; color: #f7c3c8; font-size: 14px; line-height: 1.6; }
+.notification-footer { margin: 0; padding: 12px 18px max(14px,env(safe-area-inset-bottom)); border-top: 1px solid #222831; color: #a7abb2; font-size: 12px; line-height: 1.6; }
+@media (max-width:900px) { .header-utilities { gap: 4px; } .notification-panel { position: fixed; top: calc(74px + env(safe-area-inset-top)); left: max(12px,env(safe-area-inset-left)); right: max(12px,env(safe-area-inset-right)); width: auto; max-width: none; max-height: calc(100dvh - 170px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); } }
+@media (max-width:359px) { .stream-header { gap: 4px; padding-inline: 12px; } .stream-brand { font-size: .94rem; gap: 6px; } .stream-brand img { width: 22px; height: 22px; } .notification-item { padding: 14px; gap: 10px; grid-template-columns: 38px minmax(0,1fr); } .notification-art { width: 38px; height: 54px; } }
+@media (prefers-reduced-motion:reduce) { .notification-panel, .notification-panel * { animation: none; transition: none; scroll-behavior: auto; } }
+/* The shared header utility group keeps both controls touch-sized. */
+.header-utilities .account-menu > summary { min-width: 44px; min-height: 44px; box-sizing: border-box; justify-content: center; }
+
+.notification-close svg { width: 20px; height: 20px; }
+
+.notification-item-actions .notification-dismiss { width: 44px; padding: 0; border-color: transparent; margin-left: auto; font-size: 24px; font-weight: 400; color: #a7abb2; }

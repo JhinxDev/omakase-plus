@@ -27,6 +27,8 @@ branding retain their owners' rights; see [third-party notices](THIRD-PARTY-NOTI
 - TV season browsing, exact-ID Plex inventory and manual episode progress.
 - Managed anime media checks and Plex publication, with protected shared/adopted
   assets and separately confirmed removal.
+- Account-specific [notifications](docs/notification-center.md) to rate finished titles
+  and review safely owned anime media, with read/dismiss controls.
 - Account-scoped JSON CLI and optional stdio MCP access, with named permissions
   and an audit log. See [agent tools](docs/agent-tools.md).
 

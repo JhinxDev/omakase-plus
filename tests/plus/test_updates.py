@@ -20,13 +20,17 @@ from omakase.plus.deps import get_db
 from omakase.plus.update_routes import create_updates_router
 from omakase.plus.web_security import csrf_token
 
+NEXT_VERSION = ".".join(
+    [*updates.PRODUCT_VERSION.split(".")[:-1], str(int(updates.PRODUCT_VERSION.split(".")[-1]) + 1)]
+)
+
 
 def metadata(**changes):
     return {
         "schema_version": 1,
         "product": "omakase-plus",
         "channel": "stable",
-        "version": "2026.10.28.1",
+        "version": NEXT_VERSION,
         "released_at": "2026-10-28T12:00:00Z",
         "notes_url": updates.NOTES_URL,
         "summary": "A polished new release.",
@@ -55,7 +59,7 @@ def fresh_checker(monkeypatch):
 @pytest.mark.parametrize(
     "version,newer",
     [
-        ("2026.10.28.1", True),
+        (NEXT_VERSION, True),
         (updates.PRODUCT_VERSION, False),
         ("2026.10.26.9", False),
         (
@@ -91,7 +95,7 @@ def test_valid_release_comparison(version, newer):
         {"notes_url": "https://jhinx.dev.evil.test/work/omakase-plus"},
         {"notes_url": "https://user@jhinx.dev/work/omakase-plus"},
         {"notes_url": "http://jhinx.dev/work/omakase-plus"},
-        {"notes_url": "https://app.example.com/plus"},
+        {"notes_url": "https://private.example.invalid/plus"},
         {"extra": "unknown"},
     ],
 )
