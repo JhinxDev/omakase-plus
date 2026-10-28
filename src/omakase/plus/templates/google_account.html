@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% from "_settings_nav.html" import settings_nav %}
+{% block title %}Sign-in · Omakase{% endblock %}
+{% block eyebrow %}Your account{% endblock %}
+{% block page_title %}Sign-in methods{% endblock %}
+{% block page_intro %}<p class="page-intro">Manage how you sign in to your private library.</p>{% endblock %}
+{% block content %}
+<div class="settings-workspace">{{ settings_nav('signin') }}<div class="settings-content">
+<section class="editorial-panel google-account-panel" aria-labelledby="google-status">
+  <header class="google-account-heading">
+    <span class="google-account-mark" aria-hidden="true">G</span>
+    <div><span class="section-index">SIGN-IN METHOD</span><h2 id="google-status">{% if google_linked %}Google is linked{% else %}Link your Google account{% endif %}</h2></div>
+    <span class="state-tag {{ 'state-ready' if google_linked else 'state-planned' }}">{{ 'Linked' if google_linked else 'Optional' }}</span>
+  </header>
+  <div class="google-account-content">
+  <p>{% if google_linked %}Your Google account and password open the same private library.{% else %}Link Google to your existing private account. Your password stays available.{% endif %}</p>
+  {% if google_linked %}
+  <p>Google is ready for your next sign-in.</p>
+  <form method="post" action="/plus/auth/google/unlink">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button button-secondary" type="submit">Remove Google sign-in</button>
+  </form>
+  {% elif google_enabled %}
+  <form method="post" action="/plus/auth/google/link">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button button-primary" type="submit">Link Google account</button>
+  </form>
+  {% else %}
+  <p>Google sign-in is not configured on this server yet. Keep using your email and password.</p>
+  {% endif %}
+  </div>
+  <footer class="google-account-footer"><a href="/plus/home">Go to Home</a><a href="/plus/settings">Account settings</a></footer>
+</section>
+</div></div>
+{% endblock %}

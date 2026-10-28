@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% from "_collection_search.html" import collection_search %}
+{% from "_movie_components.html" import movie_card %}
+{% from "_media_components.html" import empty_state %}
+{% block title %}{% if discover_movies %}Explore movies{% else %}Movies{% endif %} · Omakase{% endblock %}
+{% block eyebrow %}{% if discover_movies %}For your next movie night{% else %}Your cinema{% endif %}{% endblock %}
+{% block page_title %}{% if discover_movies %}Find your next great film.{% else %}Your movies{% endif %}{% endblock %}
+{% block page_intro %}<p class="page-intro">{% if discover_movies %}Explore by genre, with your saved ratings guiding the selection.{% else %}Your collection, ready to watch or on its way.{% endif %}</p>{% endblock %}
+{% block page_actions %}{% if not discover_movies %}<a class="button button-secondary" href="/plus/discover/movies">Explore movies <span aria-hidden="true">↗</span></a>{% endif %}{% endblock %}
+{% block content %}
+<nav class="movie-tabs" aria-label="{% if discover_movies %}Discover media{% else %}Movie views{% endif %}">
+{% if discover_movies %}<a href="/plus/discover">Anime</a><a href="/plus/discover/movies" aria-current="page">Movies</a>
+{% else %}<a href="/plus/movies" {% if view == 'all' %}aria-current="page"{% endif %}>Collection</a><a href="/plus/movies?view=ready" {% if view == 'ready' %}aria-current="page"{% endif %}>Ready in Plex</a><a href="/plus/movies?view=requests" {% if view == 'requests' %}aria-current="page"{% endif %}>Requests</a>{% endif %}
+</nav>
+{% if discover_movies %}
+<form class="movie-search product-form" method="get" action="/plus/discover/movies" aria-label="Explore movie filters">
+  <label><span>Genre</span><select name="genre_id"><option value="">All genres</option>{% for genre in genre_options.genres or [] %}<option value="{{ genre.id }}" {% if genre.id == genre_id %}selected{% endif %}>{{ genre.name }}</option>{% endfor %}</select></label>
+  <label><span>Sort by</span><select name="sort">{% for value,label in [('personalized','For you'),('popular','Popular'),('top_rated','Top rated'),('newest','Recent releases')] %}<option value="{{ value }}" {% if sort == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <label class="movie-completed-toggle"><input type="checkbox" name="include_completed" value="true" {% if include_completed %}checked{% endif %}>Include watched</label>
+  <button class="button button-primary" type="submit">Explore</button>
+</form>
+{% else %}
+{{ collection_search('/plus/movies', 'movies', 'Search the movie catalog', 'Find a movie', query, placeholder='Title, year or IMDb ID', count=cards | length) }}
+{% endif %}
+{% if notice == 'saved' %}<p class="product-notice" role="status">Your watched status and rating were saved.</p>{% elif notice in ['updated','synced'] %}<p class="product-notice" role="status">Check finished. Review the current result below.</p>{% endif %}
+{% if sync_result %}<section class="product-notice" role="status"><p>Imported {{ sync_result.imported }} viewing records. {{ sync_result.skipped }} skipped.{% if sync_result.remaining %} {{ sync_result.remaining }} movies remain to check.{% else %} This sync pass is complete.{% endif %}</p>{% if sync_result.remaining %}<form method="post" action="/plus/movies/sync" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit" data-busy-label="Reading Plex history…">Continue sync</button></form>{% endif %}</section>{% endif %}
+{% if movies_error %}<section class="utility-panel" role="status"><h2>Let's connect your movie services</h2><p>{{ movies_error }}</p><a class="button button-secondary" href="/plus/settings/connections">Review connections</a></section>{% endif %}
+{% if action_card %}<section class="utility-panel" role="status"><h2>{{ action_card.title }}</h2><p>{{ action_card.detail }}</p></section>{% endif %}
+{% if cards %}<header class="stream-section-heading"><div><h2>{% if query %}Search results{% elif discover_movies %}Picked for your mood{% elif view == 'requests' %}On the way{% elif view == 'ready' %}Ready for movie night{% else %}Your collection{% endif %}</h2></div><span class="movie-result-count">{{ cards | length }} {{ 'movie' if cards | length == 1 else 'movies' }}</span></header>
+<div class="movie-grid">{% for card in cards %}{{ movie_card(card) }}{% endfor %}</div>
+{% elif not movies_error %}{{ empty_state('No matches yet' if query else 'Your next movie starts here', 'Try a different title or explore by genre. Save your rating after watching.', 'Explore movies', '/plus/discover/movies') }}{% endif %}
+{% if not discover_movies %}<details class="movie-verification-details"><summary>Your history & collection tools</summary><p>Read watched history from Plex or keep a personal copy of your saved ratings.</p><div class="movie-tools"><form method="post" action="/plus/movies/sync" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit" data-busy-label="Reading Plex history…">Sync watched from Plex</button></form><a href="/plus/movies/history/export">Export history & ratings</a></div></details>{% endif %}
+{% endblock %}

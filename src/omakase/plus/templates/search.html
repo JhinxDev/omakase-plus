@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Search · Omakase{% endblock %}
+{% block eyebrow %}Go straight to the story{% endblock %}
+{% block page_title %}What are you looking for?{% endblock %}
+{% block page_intro %}<p class="page-intro">Look up an exact title. Your library, watched status and ratings stay in view.</p>{% endblock %}
+{% block content %}
+<section class="catalog-search-section" aria-label="Search the catalog">
+  <form method="get" action="/plus/search" class="catalog-search-form" data-catalog-search role="search">
+    <label class="catalog-search-kind"><span class="sr-only">Search category</span><select name="kind" data-search-kind><option value="all" {% if kind == 'all' %}selected{% endif %}>All catalogs</option><option value="anime" {% if kind == 'anime' %}selected{% endif %}>Anime</option><option value="movies" {% if kind == 'movies' %}selected{% endif %}>Movies</option><option value="tv" {% if kind == 'tv' %}selected{% endif %}>TV Shows</option></select></label>
+    <div class="catalog-search-input-wrap"><label class="sr-only" for="catalog-query">Title to search</label><input id="catalog-query" name="q" type="search" value="{{ query }}" maxlength="120" placeholder="Search a title…" autocomplete="off" autocapitalize="none" spellcheck="false" data-search-input><ul class="search-suggestions" data-search-suggestions role="listbox" aria-label="Matching titles" hidden></ul><p class="search-status" data-search-status role="status" hidden></p></div>
+    <button type="submit" class="button button-primary">Search</button>
+  </form>
+  <p class="catalog-search-hint">Title search. For personal recommendations, visit <a href="/plus/discover">For you</a>.</p>
+</section>
+{% if search_error %}<div class="product-notice notice-danger" role="alert">{{ search_error }} Try again in a moment.</div>{% endif %}
+{% if search_warnings %}<div class="product-notice notice-danger" role="status"><strong>Search is incomplete.</strong>{% for warning in search_warnings %}<p>{{ warning.label }}: {{ warning.detail }}{% if warning.retry_after %} Try again in {{ warning.retry_after }} seconds.{% endif %}</p>{% endfor %}</div>{% endif %}
+{% if cards %}
+<header class="stream-section-heading"><div><h2>Matching titles</h2></div><span class="catalog-result-count">{{ cards | length }} {{ 'match' if cards | length == 1 else 'matches' }}</span></header>
+<div class="catalog-result-grid">
+{% for card in cards %}
+  <article class="catalog-result-card">
+    {% if card.url %}<a href="{{ card.url }}" class="catalog-result-link" aria-label="View {{ card.title }}{% if card.year %}, {{ card.year }}{% endif %}">{% endif %}
+    <div class="catalog-result-art poster-frame">{% if card.poster_url %}<img src="{{ card.poster_url }}" alt="" loading="lazy" data-poster>{% else %}<span class="movie-poster-fallback" aria-hidden="true">{{ card.title }}</span>{% endif %}{% if card.library_id %}<span class="ready-count is-ready">In your library</span>{% elif card.watch_status == 'completed' %}<span class="ready-count">Watched</span>{% endif %}</div>
+    <h2 title="{{ card.title }}">{{ card.title }}</h2><div class="movie-meta"><span>{{ {"anime":"Anime","movie":"Movie","tv":"TV"}.get(card.media_type, "Anime") }}</span>{% if card.year %}<span>{{ card.year }}</span>{% endif %}{% if card.format %}<span>{{ card.format | replace('_',' ') | title }}</span>{% endif %}{% if card.rating %}<span class="movie-card-rating">Your rating {{ card.rating }}/10</span>{% endif %}</div>
+    {% if card.url %}</a>{% endif %}
+    {% if card.progress %}<p class="watched-count">Watched {{ card.progress }}{% if card.episode_total %}/{{ card.episode_total }}{% endif %}</p>{% endif %}
+  </article>
+{% endfor %}
+</div>
+{% elif query and not search_error and not search_warnings %}<div class="stream-empty"><div><h2>No matching titles</h2><p>Try a shorter title, an alternative spelling or the other category.</p></div></div>
+{% elif not search_error and not search_warnings %}<div class="catalog-search-empty"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><circle cx="10" cy="10" r="6"/><path d="m14.5 14.5 5 5"/></svg><h2>Every good watch starts with a title.</h2><p>Type at least two characters to see suggestions as you search.</p></div>{% endif %}
+{% endblock %}

@@ -1,0 +1,52 @@
+name: omakase-local
+
+# App-only exploration. Use this file on its own, not as a Compose overlay.
+# Shares the app service/data identity with compose.local.yaml for later migration.
+services:
+  omakase-plus:
+    container_name: omakase-local-app
+    build:
+      context: .
+      args:
+        OMAKASE_REVISION: ${OMAKASE_REVISION:-local-dev}
+    image: omakase-plus:${OMAKASE_REVISION:-local-dev}
+    restart: unless-stopped
+    user: "${OMAKASE_PUID:-1000}:${OMAKASE_PGID:-1000}"
+    ports:
+      - "${OMAKASE_BIND_ADDRESS:-127.0.0.1}:${OMAKASE_PORT:-8766}:8765"
+    env_file:
+      - path: ./.env.local.secrets
+        required: false
+    environment:
+      OMAKASE_ENV: production
+      OMAKASE_PLUS_PRIVATE: "true"
+      OMAKASE_PLUS_URL: ${OMAKASE_PLUS_URL:-http://127.0.0.1:8766}
+      OMAKASE_ALLOWED_HOSTS: ${OMAKASE_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      OMAKASE_SESSION_COOKIE_SECURE: ${OMAKASE_SESSION_COOKIE_SECURE:-false}
+      OMAKASE_ALLOW_PRIVATE_LLM_URLS: ${OMAKASE_ALLOW_PRIVATE_LLM_URLS:-false}
+      OMAKASE_ALLOW_PRIVATE_CATALOG_URLS: ${OMAKASE_ALLOW_PRIVATE_CATALOG_URLS:-false}
+      OMAKASE_REVISION: ${OMAKASE_REVISION:-local-dev}
+      OMAKASE_DATA_DIR: /home/omakase/data
+      OMAKASE_ACQUISITION_MODE: import-only
+      OMAKASE_VPN_MODE: none
+      TZ: ${TZ:-Etc/UTC}
+    volumes:
+      - type: bind
+        source: ${OMAKASE_DATA_PATH:-./data}
+        target: /home/omakase/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8765/plus/health', timeout=4).read()
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3

@@ -1,0 +1,164 @@
+name: omakase-local
+
+# Safe default: Omakase Plus with an existing Plex server and an import-only
+# acquisition lane. Optional profiles add Plex or qBittorrent behind Gluetun.
+services:
+  omakase-plus:
+    container_name: omakase-local-app
+    build:
+      context: .
+      args:
+        OMAKASE_REVISION: ${OMAKASE_REVISION:-local-dev}
+    image: omakase-plus:${OMAKASE_REVISION:-local-dev}
+    restart: unless-stopped
+    user: "${OMAKASE_PUID:-1000}:${OMAKASE_PGID:-1000}"
+    ports:
+      - "${OMAKASE_BIND_ADDRESS:-127.0.0.1}:${OMAKASE_PORT:-8766}:8765"
+    env_file:
+      - path: ./.env.local.secrets
+        required: false
+    environment:
+      OMAKASE_ENV: production
+      OMAKASE_PLUS_PRIVATE: "true"
+      OMAKASE_PLUS_URL: ${OMAKASE_PLUS_URL:-http://127.0.0.1:8766}
+      OMAKASE_ALLOWED_HOSTS: ${OMAKASE_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      OMAKASE_SESSION_COOKIE_SECURE: ${OMAKASE_SESSION_COOKIE_SECURE:-false}
+      OMAKASE_ALLOW_PRIVATE_LLM_URLS: ${OMAKASE_ALLOW_PRIVATE_LLM_URLS:-false}
+      OMAKASE_ALLOW_PRIVATE_CATALOG_URLS: ${OMAKASE_ALLOW_PRIVATE_CATALOG_URLS:-false}
+      OMAKASE_REVISION: ${OMAKASE_REVISION:-local-dev}
+      OMAKASE_DATA_DIR: /home/omakase/data
+      OMAKASE_IMPORT_ROOT: /media/import
+      OMAKASE_LIBRARY_ROOT: /media/library
+      OMAKASE_ACQUISITION_MODE: ${OMAKASE_ACQUISITION_MODE:-import-only}
+      OMAKASE_VPN_MODE: ${OMAKASE_VPN_MODE:-none}
+      OMAKASE_PLEX_URL: ${OMAKASE_PLEX_URL:-}
+      OMAKASE_QBITTORRENT_URL: ${OMAKASE_QBITTORRENT_URL:-}
+      OMAKASE_QBITTORRENT_CATEGORY: ${OMAKASE_QBITTORRENT_CATEGORY:-omakase}
+      OMAKASE_QBITTORRENT_SAVE_ROOT: /downloads/omakase
+      TZ: ${TZ:-Etc/UTC}
+    volumes:
+      - type: bind
+        source: ${OMAKASE_DATA_PATH:-./data}
+        target: /home/omakase/data
+      - type: bind
+        source: ${OMAKASE_IMPORT_PATH:?set OMAKASE_IMPORT_PATH}
+        target: /media/import
+        read_only: true
+      - type: bind
+        source: ${OMAKASE_LIBRARY_PATH:?set OMAKASE_LIBRARY_PATH}
+        target: /media/library
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8765/plus/health', timeout=4).read()
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  prowlarr:
+    profiles: ["catalogs"]
+    container_name: omakase-local-prowlarr
+    image: ${PROWLARR_IMAGE:-lscr.io/linuxserver/prowlarr@sha256:2f3d31307beba3ba2dd226d191f5f5c14ee3b4d8b49277c64683f5ed97083179}
+    restart: unless-stopped
+    ports:
+      - "${PROWLARR_BIND_ADDRESS:-127.0.0.1}:${PROWLARR_PORT:-9696}:9696"
+    environment:
+      PUID: ${PROWLARR_PUID:-1000}
+      PGID: ${PROWLARR_PGID:-1000}
+      TZ: ${TZ:-Etc/UTC}
+    volumes:
+      - type: bind
+        source: ${PROWLARR_CONFIG_PATH:-./data/prowlarr}
+        target: /config
+    security_opt:
+      - no-new-privileges:true
+
+  plex:
+    profiles: ["plex"]
+    container_name: omakase-local-plex
+    image: plexinc/pms-docker:${PLEX_IMAGE_TAG:-1.43.2.10687-563d026ea}
+    restart: unless-stopped
+    hostname: ${PLEX_HOSTNAME:-omakase-plex}
+    ports:
+      - "${PLEX_BIND_ADDRESS:-127.0.0.1}:32400:32400/tcp"
+    env_file:
+      - path: ./.env.local.secrets
+        required: false
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+      PLEX_UID: ${PLEX_PUID:-1000}
+      PLEX_GID: ${PLEX_PGID:-1000}
+      ADVERTISE_IP: ${PLEX_ADVERTISE_IP:-http://127.0.0.1:32400/}
+      CHANGE_CONFIG_DIR_OWNERSHIP: "true"
+    volumes:
+      - type: bind
+        source: ${PLEX_CONFIG_PATH:-./data/plex}
+        target: /config
+      - type: bind
+        source: ${PLEX_TRANSCODE_PATH:-./data/transcode}
+        target: /transcode
+      - type: bind
+        source: ${OMAKASE_LIBRARY_PATH:?set OMAKASE_LIBRARY_PATH}
+        target: /data
+        read_only: true
+
+  gluetun:
+    profiles: ["qbittorrent", "qbittorrent-vpn"]
+    container_name: omakase-local-gluetun
+    image: qmcgaw/gluetun:v3.41.1
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "${QBITTORRENT_BIND_ADDRESS:-127.0.0.1}:${QBT_WEBUI_PORT:-8080}:${QBT_WEBUI_PORT:-8080}/tcp"
+    env_file:
+      - path: ./.env.local.secrets
+        required: false
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+      VPN_SERVICE_PROVIDER: ${VPN_SERVICE_PROVIDER:-custom}
+      VPN_TYPE: ${VPN_TYPE:-wireguard}
+      FIREWALL_INPUT_PORTS: ${QBT_WEBUI_PORT:-8080}
+      HEALTH_RESTART_VPN: "on"
+    volumes:
+      - type: bind
+        source: ${GLUETUN_CONFIG_PATH:-./data/gluetun}
+        target: /gluetun
+
+  qbittorrent:
+    profiles: ["qbittorrent", "qbittorrent-vpn"]
+    container_name: omakase-local-qbittorrent
+    image: qbittorrentofficial/qbittorrent-nox:${QBITTORRENT_IMAGE_TAG:-5.2.3-1}
+    restart: unless-stopped
+    network_mode: "service:gluetun"
+    read_only: true
+    stop_grace_period: 30m
+    tmpfs:
+      - /tmp
+    environment:
+      QBT_LEGAL_NOTICE: ${QBT_LEGAL_NOTICE:-}
+      QBT_VERSION: ${QBITTORRENT_IMAGE_TAG:-5.2.3-1}
+      QBT_TORRENTING_PORT: ${QBT_TORRENTING_PORT:-6881}
+      QBT_WEBUI_PORT: ${QBT_WEBUI_PORT:-8080}
+      PUID: ${QBITTORRENT_PUID:-1000}
+      PGID: ${QBITTORRENT_PGID:-1000}
+      TZ: ${TZ:-Etc/UTC}
+      UMASK: "022"
+    volumes:
+      - type: bind
+        source: ${QBITTORRENT_CONFIG_PATH:-./data/qbittorrent}
+        target: /config
+      - type: bind
+        source: ${OMAKASE_IMPORT_PATH:?set OMAKASE_IMPORT_PATH}
+        target: /downloads

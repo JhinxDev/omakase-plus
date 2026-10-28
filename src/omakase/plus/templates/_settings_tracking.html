@@ -1,0 +1,41 @@
+<section id="tracking-connections" class="editorial-panel settings-section">
+    <header class="panel-heading"><div><h2>Tracking connection</h2></div><span class="privacy-stamp semantic-state--{{ 'connected' if anilist_connected else 'disconnected' }}">{{ 'Connected' if anilist_connected else 'Not connected' }}</span></header>
+    <input type="hidden" name="completion_cleanup_present" value="1">
+    <div class="settings-field">
+      <div><label for="remove_completed_from_plex">Remove completed anime from Plex</label><p>When a new completion is saved, remove that season or movie from Plex. Keep your watched history, rating and source media. Previously completed titles stay unchanged.</p></div>
+      <div class="field-control"><select id="remove_completed_from_plex" name="remove_completed_from_plex"><option value="1" {% if remove_completed_from_plex %}selected{% endif %}>Remove from Plex when finished</option><option value="0" {% if not remove_completed_from_plex %}selected{% endif %}>Keep in Plex when finished</option></select></div>
+    </div>
+    <div class="integration-card">
+      <img class="service-logo" src="/plus/static/services/anilist.png" alt="" width="40" height="40">
+      <div><strong>AniList</strong><p>Mark recommendations completed, save an optional score, and keep future menus new.</p></div>
+      {% if anilist_connected %}
+      <span class="state-tag state-ready semantic-state--connected">Connected</span>
+      {% else %}
+      <span class="state-tag semantic-state--disconnected">Disconnected</span>
+      {% endif %}
+      <div class="integration-action">
+        {% if anilist_connected %}
+        <button type="submit" class="button button-secondary" formaction="/plus/integrations/anilist/disconnect" formmethod="post">Disconnect</button>
+        {% elif anilist_oauth_ready %}
+        <a class="button button-primary" href="/plus/integrations/anilist/connect">Connect AniList</a>
+        {% else %}
+        <span class="integration-help">An administrator must configure the AniList OAuth client first.</span>
+        {% endif %}
+      </div>
+    </div>
+    <div class="integration-card">
+      <div class="integration-mark" aria-hidden="true">TV</div>
+      <div><strong>Apple TV via Home Assistant</strong><p>Observe Crunchyroll playback without storing Crunchyroll credentials. Exact episode metadata can update automatically; uncertain matches ask for confirmation.</p></div>
+      <span class="state-tag semantic-state--{{ 'connected' if apple_tv_integration and apple_tv_integration.enabled else 'disconnected' }}">{{ 'Connected' if apple_tv_integration and apple_tv_integration.enabled else 'Disconnected' }}</span>
+      <div class="integration-action">
+        {% if apple_tv_integration %}<small>Key ID <code>{{ apple_tv_integration.key_id }}</code></small>{% endif %}
+        {% if apple_tv_integration and apple_tv_integration.enabled %}
+        <button type="submit" class="button button-secondary" formaction="/plus/settings/watch-integrations/apple-tv/rotate" formmethod="post">Rotate secret</button>
+        <button type="submit" class="text-action text-danger" formaction="/plus/settings/watch-integrations/apple-tv/disable" formmethod="post">Disable</button>
+        {% else %}
+        <button type="submit" class="button button-primary" formaction="/plus/settings/watch-integrations/apple-tv/create" formmethod="post">Create bridge secret</button>
+        {% endif %}
+        <span class="integration-help">{{ 'Signed event ingestion is enabled on this server.' if apple_tv_watch_enabled else 'Server ingestion stays disabled until metadata calibration passes.' }}</span>
+      </div>
+    </div>
+  </section>

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% from "_settings_nav.html" import settings_nav %}
+{% block title %}Connections · Omakase{% endblock %}
+{% block eyebrow %}Settings{% endblock %}
+{% block page_title %}Your connections{% endblock %}
+{% block page_intro %}<p class="page-intro">Connect your own services, confirm access, and see what needs attention.</p>{% endblock %}
+{% block page_actions %}<a href="/plus/settings" class="button button-secondary">All settings</a>{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/plus/static/connections.css?v={{ asset_version }}">
+<div class="settings-workspace">{{ settings_nav('connections') }}<div class="settings-content">
+{% if connections_notice %}<div class="product-notice" role="status">{{ connections_notice }}</div>{% endif %}
+{% if connections_error %}<div class="product-notice connection-error" role="alert">{{ connections_error }}</div>{% endif %}
+<aside class="editorial-panel connection-guidance" aria-label="Connection privacy and movie setup">
+  <div><strong>Private to your account</strong><p>Keys are encrypted. Saved keys and addresses are never returned to this page. Blank fields keep your saved values. A different server requires a replacement key.</p></div>
+  <div><strong>{{ 'Movie services are ready' if movies_ready else 'Set up movies in three steps' }}</strong><p>Save and test Plex, Riven and Seerr to enable movie discovery and requests. Each test checks access without requesting or changing media.</p></div>
+</aside>
+{% for group in [('Playback', 'Open your anime and movies in your own Plex library.', ['plex']), ('Movie discovery & requests', 'Seerr finds titles; Riven manages movie acquisition.', ['riven','seerr']), ('Cloud downloads & cache', 'Cross-media file access, separate from release search.', ['realdebrid']), ('Release search', 'Find releases across your configured indexers.', ['prowlarr'])] %}
+<header class="connection-group-heading"><div><h2>{{ group[0] }}</h2><p>{{ group[1] }}</p></div></header>
+<div class="connection-grid">
+  {% for connection in connections %}
+  {% if connection.id in group[2] %}
+  {% set health = connection.health %}
+  <section id="connection-{{ connection.id }}" class="editorial-panel connection-panel" aria-labelledby="connection-heading-{{ connection.id }}">
+    <header class="connection-heading">
+      <div class="connection-identity"><img class="service-logo" src="/plus/static/services/{{ connection.id }}.png" alt="" width="40" height="40"><div><h2 id="connection-heading-{{ connection.id }}">{{ connection.name }}</h2><p>{{ connection.purpose }}</p></div></div>
+      <span class="connection-state connection-state-{{ health.state }}"><span aria-hidden="true"></span>{{ connection.label }}</span>
+    </header>
+    {% if health.state in ['degraded','error','rate_limited','incomplete'] %}<div class="connection-attention" role="status"><p>{{ health.detail }}</p>{% for indexer in health.indexers | default([]) %}{% if indexer.state == 'cooldown' %}<p><strong>{{ indexer.name }}</strong> is paused by Prowlarr until <time datetime="{{ indexer.disabled_till }}" data-local-datetime="{{ indexer.disabled_till }}">{{ indexer.disabled_till }} UTC</time>.</p>{% endif %}{% endfor %}{% if health.code == 'indexer_cooldowns' %}<small>Other available indexers can still be used. Prowlarr controls this pause after source failures.</small>{% endif %}</div>{% endif %}
+    <details class="connection-observation"><summary>Connection details</summary>
+      <p>{{ health.detail }}</p>
+      {% if health.checked_at %}<p class="connection-time">Last checked <time datetime="{{ health.checked_at }}">{{ health.checked_at | replace('T', ' ') | replace('Z', ' UTC') }}</time></p>{% endif %}
+      {% if health.retry_at %}<p class="connection-retry">Pause until <time datetime="{{ health.retry_at }}">{{ health.retry_at | replace('T', ' ') | replace('Z', ' UTC') }}</time>. The service's waiting period is preserved.</p>{% endif %}
+      {% if health.indexers %}
+      <ul class="connection-indexers" aria-label="Prowlarr indexer availability">
+        {% for indexer in health.indexers %}
+        <li><strong>{{ indexer.name }}</strong><span>{% if indexer.state == 'cooldown' %}Cooldown until <time datetime="{{ indexer.disabled_till }}">{{ indexer.disabled_till | replace('T', ' ') | replace('Z', ' UTC') }}</time>{% elif indexer.state == 'disabled' %}Disabled in Prowlarr{% else %}Available{% endif %}</span></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </details>
+    <details class="connection-editor" {% if not connection.key_saved %}open{% endif %}><summary>{{ 'Edit connection' if connection.key_saved else 'Set up ' ~ connection.name }}</summary>
+    <form method="post" action="/plus/settings/connections/{{ connection.id }}/save" class="connection-form" autocomplete="off" data-form-type="other">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      {% if connection.has_url %}
+      <div class="connection-field"><label for="connection-url-{{ connection.id }}">Server address <span>{{ 'Address saved' if connection.url_saved else 'Required' }}</span></label><input type="url" id="connection-url-{{ connection.id }}" name="url" maxlength="1000" placeholder="{{ 'Leave blank to keep saved address' if connection.url_saved else 'https://your-service.example' }}" autocomplete="off" autocapitalize="none" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore="true" {% if not connection.url_saved %}required{% endif %}></div>
+      {% endif %}
+      <div class="connection-field"><label for="connection-key-{{ connection.id }}">{{ 'Plex token' if connection.id == 'plex' else 'API key' }} <span>{{ 'Key saved' if connection.key_saved else 'Required' }}</span></label><input type="password" id="connection-key-{{ connection.id }}" name="api_key" maxlength="512" placeholder="{{ 'Leave blank to keep saved key' if connection.key_saved else 'Paste your key' }}" autocomplete="new-password" autocapitalize="none" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore="true" {% if not connection.key_saved %}required{% endif %}></div>
+      {% if connection.id == 'realdebrid' %}<p class="connection-help">Use your personal <a href="https://real-debrid.com/apitoken" target="_blank" rel="noopener noreferrer">Real-Debrid API token</a>. Checks use the official API.</p>{% endif %}
+      <button type="submit" class="button {{ 'button-secondary' if connection.key_saved else 'button-primary' }}">{{ 'Save changes' if connection.key_saved else 'Connect ' ~ connection.name }}</button>
+    </form>
+    </details>
+    {% if connection.key_saved %}
+    <div class="connection-actions">
+      <form method="post" action="/plus/settings/connections/{{ connection.id }}/test"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="button button-secondary">Test {{ connection.name }}</button></form>
+      <form method="post" action="/plus/settings/connections/{{ connection.id }}/disconnect"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="text-action text-danger">Disconnect {{ connection.name }}</button></form>
+    </div>
+    {% endif %}
+  </section>
+  {% endif %}
+  {% endfor %}
+</div>
+{% endfor %}
+<section class="connection-guidance connection-tracking"><div><h2>Your own storage</h2><p>Local disks and NAS shares are another option. Review the server setup separately from cloud services.</p></div><a href="/plus/settings/storage" class="button button-secondary">Storage &amp; downloads</a></section>
+<section class="connection-guidance connection-tracking"><div><h2>Anime tracking</h2><p>AniList and playback tracking use their existing account connections.</p></div><a href="/plus/settings/tracking" class="button button-secondary">Manage tracking</a></section>
+</div></div>
+{% endblock %}

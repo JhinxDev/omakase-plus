@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+{% from "_media_components.html" import artwork, ready_badge, progress_bar %}
+{% block title %}{{ title.title }} · Omakase{% endblock %}
+{% block masthead %}{% endblock %}
+{% block eyebrow %}From your watchlist{% endblock %}
+{% block page_title %}<span class="title-page-name">{{ title.title }}</span>{% endblock %}
+{% block page_intro %}{% set release_total = title.release_episode_total | default(title.episode_total) %}<p class="page-intro">{% if title.season_number %}Season {{ title.season_number }} · {% endif %}{{ title.release_status_label }}{% if release_total %} · {{ release_total }} episodes{% endif %}</p>{% endblock %}
+{% block page_actions %}
+<a class="button button-secondary" href="https://anilist.co/anime/{{ title.anilist_id }}/" target="_blank" rel="noopener">AniList ↗</a>
+<a class="button button-secondary" href="/plus/library">Back to watchlist</a>
+{% endblock %}
+{% block content %}
+{% if title.watch_status == 'completed' and completed %}
+<section class="product-notice" aria-labelledby="completion-heading">
+  {% if title.removal and title.removal.scope == 'plex_only' %}
+  <h2 id="completion-heading">Finished. Your watch history is saved.</h2>
+  <p>{% if title.removal.status == 'complete' %}This anime has been removed from Plex.{% else %}Removal from Plex is queued and will finish after the library sync.{% endif %} Your completion, rating and source media are kept.</p>
+  <div class="title-primary-actions"><a class="button button-primary" href="/plus/library?lifecycle=completed">View completed anime</a><a class="button button-secondary" href="#watch-tracking" data-open-details>Add or update score</a></div>
+  {% else %}
+  <h2 id="completion-heading">Finished! Keep this anime or free up space?</h2>
+  <p>Your watch history is saved. Media removal is optional and requires a separate confirmation. Only eligible Omakase-owned files can be deleted; shared and adopted files are protected.</p>
+  <div class="title-primary-actions">
+    <a class="button button-primary" href="/plus/library/{{ title.id }}">Keep in library</a>
+    <a class="button button-secondary" href="/plus/library/{{ title.id }}/remove">Review media removal</a>
+    <a class="button button-secondary" href="#watch-tracking" data-open-details>Add or update score</a>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+{% if tracker_state %}
+<p class="product-notice" role="status">{% if tracker_state == 'synced' %}Synced to AniList.{% elif tracker_state == 'failed' %}AniList sync needs attention. Your progress is saved and Omakase will retry. Check your AniList connection in Account.{% elif tracker_state == 'conflict' %}AniList has newer progress. Your local update is saved; review your AniList entry.{% else %}Queued for AniList. Your local progress is saved.{% endif %}</p>
+{% endif %}
+{% if title.removal %}
+<div class="product-notice {% if title.removal.status == 'provider_failed' %}notice-danger{% endif %}" role="status">
+  <strong>{% if title.removal.status == 'awaiting_plex' %}Queued · waiting for Plex{% elif title.removal.status == 'provider_failed' %}Removed from Plex · cleanup needs attention{% elif title.removal.status == 'plex_removed' %}In progress · removed from Plex{% else %}{{ title.removal.status_label }}{% endif %}</strong>
+  Your watch history and ratings are kept. AniList is unchanged.
+  <a href="/plus/library/{{ title.id }}/remove">View removal status</a>
+</div>
+{% endif %}
+{% if title.cleanup_block %}
+<div class="product-notice notice-danger" role="status"><strong>Plex removal needs attention.</strong> {{ title.cleanup_block }}
+  <form method="post" action="/plus/library/{{ title.id }}/completion-cleanup/retry"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit">Retry removal from Plex</button></form>
+</div>
+{% endif %}
+{% if title.pending_confirmations %}
+<section class="confirmation-stack" aria-labelledby="confirmation-heading">
+  <h2 id="confirmation-heading">Confirm recent watching</h2>
+  {% for confirmation in title.pending_confirmations %}
+  <article class="confirmation-card">
+    <div><strong>{{ confirmation.prompt }}</strong><p>Observed by {{ confirmation.source_label }}. Nothing changes until you confirm.</p></div>
+    <div class="confirmation-actions">
+      <form method="post" action="/plus/library/{{ title.id }}/watch/confirm/{{ confirmation.id }}/accept">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% if not confirmation.proposed_episode %}<label>Episode <input type="number" name="episode" min="1" max="{{ title.episode_total or 9999 }}" required></label>{% endif %}
+        <button class="button button-primary" type="submit">Confirm{% if confirmation.proposed_episode %} episode {{ confirmation.proposed_episode }}{% endif %}</button>
+      </form>
+      <form method="post" action="/plus/library/{{ title.id }}/watch/confirm/{{ confirmation.id }}/dismiss">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button button-secondary" type="submit">Not this time</button>
+      </form>
+    </div>
+  </article>
+  {% endfor %}
+</section>
+{% endif %}
+
+<a class="detail-back-link" href="/plus/library"><span aria-hidden="true">←</span>&nbsp; Your anime</a>
+<section class="title-view-hero streaming-title-hero" aria-labelledby="watch-progress-heading">
+  <picture class="detail-backdrop"><img src="/plus/media/{{ title.anilist_id }}/banner" alt="" loading="eager" data-poster></picture>
+  {{ artwork(title, true) }}
+  <div class="title-view-progress">
+  <div>
+    <h1>{{ title.title }}</h1>
+    <div class="detail-meta">{% if title.season_number %}<span>Season {{ title.season_number }}</span>{% endif %}<span>{{ title.release_status_label }}</span>{% if title.episode_total %}<span>{{ title.episode_total }} episodes</span>{% endif %}<a href="https://anilist.co/anime/{{ title.anilist_id }}/" target="_blank" rel="noopener noreferrer">AniList ↗</a></div>
+    <span class="state-tag state-{{ title.lifecycle }}">{{ title.lifecycle_label }}</span>
+    {% if title.genres %}
+    <ul class="title-genres" aria-label="Genres">{% for genre in title.genres %}<li>{{ genre }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if title.description %}
+    <p class="title-synopsis">{{ title.description_preview | default(title.description, true) }}</p>
+    {% if title.description_more %}
+    <details class="title-synopsis-more">
+      <summary>Read more about {{ title.title }}</summary>
+      {% for paragraph in title.description_more.split("\n") if paragraph %}<p class="title-synopsis">{{ paragraph }}</p>{% endfor %}
+    </details>
+    {% endif %}
+    <p class="title-progress-source">Synopsis from <a href="https://anilist.co/anime/{{ title.anilist_id }}/" target="_blank" rel="noopener noreferrer">AniList</a>.</p>
+    {% else %}
+    <p class="title-progress-source">No synopsis is available from AniList yet.</p>
+    {% endif %}
+    <h2 id="watch-progress-heading" class="sr-only">Availability and viewing progress</h2>
+    {% if title.removal and title.removal.scope == 'plex_only' %}<p>{{ 'Removed from Plex' if title.removal.status == 'complete' else 'Removing from Plex' }}</p>{% else %}<div class="detail-availability">{{ ready_badge(title) }}{% if title.publication_pending %}<span>Publishing to Plex</span>{% endif %}</div>{% endif %}
+    {% if title.release_qualities %}<div class="release-quality" role="group" aria-label="Verified release quality">{% for quality in title.release_qualities %}<span class="{{ 'quality-fallback' if quality == '720p' else '' }}">{{ quality }}{{ ' fallback' if quality == '720p' else ' release' }}</span>{% endfor %}</div>{% endif %}
+    {% if title.fallback_episodes %}<p class="title-availability-copy">720p fallback releases: episode{{ 's' if title.fallback_episodes | length != 1 else '' }} {{ title.fallback_episodes | join(', ') }}. Omakase prefers 1080p when available.</p>{% endif %}
+    {{ progress_bar(title) }}
+    <div class="title-primary-actions">
+      <a class="button button-primary" href="#episode-heading">View episodes</a>
+      {% if title.usable < title.required and not title.removal %}
+      <form method="post" action="/plus/library/{{ title.id }}/retry" data-busy-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button button-secondary" type="submit" data-busy-label="Searching…">Find missing episodes</button>
+      </form>
+      {% endif %}
+      <a class="button button-secondary" href="#watch-tracking" data-open-details>Update watch progress</a>
+    </div>
+    <div class="title-library-actions" role="group" aria-label="Library actions"><span>Library actions</span><a class="button button-secondary" href="/plus/library/{{ title.id }}/remove">{{ 'View removal status' if title.removal else 'Remove…' }}</a></div>
+    {% if title.next_episode %}<p class="title-progress-source">Up next: episode {{ title.next_episode }}</p>{% endif %}
+    <p class="title-progress-source">Progress updated by {{ title.last_source_label }}.</p>
+    {% if title.score_ten %}<p class="title-progress-source">Your rating: <strong>{{ title.score_ten }} / 10</strong></p>{% endif %}
+  </div>
+  <details class="title-watch-controls" id="watch-tracking">
+  <summary>Watch progress & rating</summary>
+  <div class="watch-actions">
+    {% if title.watch_status != 'completed' %}
+    <form method="post" action="/plus/library/{{ title.id }}/watch/next">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button button-primary" type="submit">Mark episode {{ title.next_episode or 1 }} watched</button>
+    </form>
+    <form method="post" action="/plus/library/{{ title.id }}/watch/episode">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Watched through episode <input type="number" name="episode" min="1" max="{{ title.episode_total or 9999 }}" value="{{ title.next_episode or 1 }}" required></label>
+      <button class="button button-secondary" type="submit">Update</button>
+    </form>
+    {% else %}
+    <form method="post" action="/plus/library/{{ title.id }}/watch/reopen">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Reopen at episode <input type="number" name="episode" min="0" max="{{ title.episode_total or 9999 }}" value="{{ title.progress_episodes }}" required></label>
+      <button class="button button-secondary" type="submit">Reopen title</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/plus/library/{{ title.id }}/watch/complete" data-busy-form>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      {% if remove_completed_from_plex and title.watch_status != 'completed' %}
+      <input type="hidden" name="completion_policy_present" value="1">
+      <label class="completion-keep"><input type="checkbox" name="keep_completed_in_plex" value="1" {% if title.keep_completed_in_plex %}checked{% endif %}> Keep this anime in Plex for rewatching</label>
+      {% endif %}
+      <label>Your score (optional)
+        <select name="score_ten">
+          <option value="">Skip rating / keep existing score</option>
+          {% for score in range(10, 0, -1) %}<option value="{{ score }}">{{ score }} / 10</option>{% endfor %}
+        </select>
+      </label>
+      <button class="button button-primary" type="submit" data-busy-label="Saving…">{{ 'Update AniList score' if title.watch_status == 'completed' else 'Mark series complete' }}</button>
+      <p class="episode-help">Completion and your optional score sync to AniList automatically. {% if remove_completed_from_plex and title.watch_status != 'completed' %}This season or movie will be removed from Plex unless you choose to keep it. Your history, rating and source media stay saved.{% else %}This does not delete media.{% endif %}</p>
+    </form>
+  </div>
+  </details>
+  </div>
+</section>
+
+{% if title.publication_pending %}
+<div class="product-notice plex-publication-notice" role="status">
+  <div>
+    <strong>Publishing to Plex</strong>
+    <span>{{ title.publication_detail }}</span>
+  </div>
+</div>
+{% endif %}
+
+<section class="viewer-episodes" aria-labelledby="episode-heading">
+  <header class="stream-section-heading"><div><h2 id="episode-heading">Episodes{% if title.season_number %} · Season {{ title.season_number }}{% endif %}</h2><p>{{ title.usable }} verified · {{ title.plex_visible }} in Plex</p></div><span class="episode-legend">Verification is separate from watch progress</span></header>
+  {% set episode_count = title.display_episode_count | default(title.required) %}
+  {% if episode_count %}
+  <ol class="viewer-episode-grid">
+    {% for episode in range(1, episode_count + 1) %}
+    <li class="viewer-episode{% if episode in title.upcoming_episodes %} is-upcoming{% endif %}{% if episode in title.usable_episodes %} is-verified{% endif %}{% if episode <= title.progress_episodes %} is-watched{% elif episode == title.next_episode %} is-next{% endif %}" data-episode="{{ episode }}">
+      <span class="episode-number">{{ "%02d" | format(episode) }}</span>
+      <div class="episode-copy"><h3>Episode {{ episode }}</h3><span class="episode-readiness">{% if episode in title.upcoming_episodes %}Upcoming{% elif episode > title.required %}Release status unknown{% elif episode in title.usable_episodes %}<span class="episode-verification-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="none"><path d="m4 8 2.5 2.5L12 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="sr-only">Media verified</span>{% else %}Not yet verified{% endif %}</span>{% if episode in title.upcoming_episodes and episode == title.required + 1 and title.next_release_at %}<small class="episode-release-date">Expected <time datetime="{{ title.next_release_at }}" data-local-datetime="{{ title.next_release_at }}">{{ title.next_release_at[:10] }}</time></small>{% endif %}</div>
+      <span class="episode-watch-state">{% if episode <= title.progress_episodes %}Watched{% elif episode == title.next_episode %}Up next{% else %}Unwatched{% endif %}</span>
+    </li>
+    {% endfor %}
+  </ol>
+  <p class="episode-help">Verified episodes were matched to the available file inventory. The Plex count confirms library visibility, not individual episode playback.</p>
+  {% if title.upcoming_episodes %}<p class="episode-help">{{ title.required }} aired · {{ title.upcoming_episodes | length }} upcoming. Release estimates follow AniList; upcoming episodes are checked by your existing library sync.</p>{% endif %}
+  {% else %}<p class="episode-help">The episode list will appear when the title's episode count is known.</p>{% endif %}
+</section>
+
+{% if title.watch_timeline %}
+<details class="watch-history">
+  <summary>Watch history ({{ title.watch_timeline | length }})</summary>
+  <ol class="brief-list">
+    {% for event in title.watch_timeline %}
+    <li><time data-local-datetime="{{ event.observed_at }}" datetime="{{ event.observed_at }}">{{ event.observed_at }} UTC</time><span class="event-dot event-{{ 'success' if event.disposition == 'accepted' else 'attention' }}"></span><div><strong>{{ event.source_label }}{% if event.episode is not none %} · episode {{ event.episode }}{% endif %}</strong><small>{{ event.disposition | replace('_',' ') }}</small></div></li>
+    {% endfor %}
+  </ol>
+</details>
+{% endif %}
+
+<details class="title-technical-details">
+  <summary><span>Media availability &amp; playback</span><span class="title-media-summary"><span class="state-tag state-{{ title.state }}">{{ title.status_label }}</span><span>{{ title.usable }} / {{ title.required }} episodes verified</span></span></summary>
+<section class="title-status-board state-border-{{ title.state }}">
+  <div>
+    <h2>{{ title.usable }} of {{ title.required }} episodes verified</h2>
+    <p>Media checks and Plex availability are separate from your watch history.</p>
+  </div>
+  <dl>
+    <div><dt>Required</dt><dd>{{ title.required }}</dd></div>
+    <div><dt>Verified</dt><dd>{{ title.usable }}</dd></div>
+    <div><dt>In Plex</dt><dd>{{ title.plex_visible }}</dd></div>
+    <div><dt>Releases in use</dt><dd>{{ title.current_assets | length }}</dd></div>
+  </dl>
+</section>
+
+<div class="title-grid">
+  <section class="editorial-panel asset-panel" aria-labelledby="asset-heading">
+    <header class="panel-heading">
+      <div><span class="section-index">02 / MEDIA</span><h2 id="asset-heading">Downloads</h2></div>
+      <span class="count-stamp">{{ title.current_assets | length }}</span>
+    </header>
+    {% if title.current_assets %}
+    <div class="asset-stack">
+      {% for asset in title.current_assets %}
+      <article class="asset-card">
+        <header>
+          <div><span class="provider-mark">{{ asset.provider_label }}</span><h3>{{ asset.quality }} · {{ asset.status_label }}</h3></div>
+          <span class="mono-data">{{ asset.progress | round | int }}%</span>
+        </header>
+        <div class="asset-coverage"><span>Verified episodes in this release</span><strong>{{ asset.usable_coverage | length }}</strong></div>
+        <div class="subtitle-summary subtitle-{{ asset.subtitle_state }}">
+          <strong>{{ asset.subtitle_label }}</strong>
+          <small>{{ asset.subtitle_detail }}</small>
+        </div>
+        {% if asset.subtitles %}
+        <div class="subtitle-ledger" role="group" aria-label="Selectable subtitle tracks">
+          {% for track in asset.subtitles %}
+          <span class="{% if track.language in ['eng','en','en-us','en-gb'] and track.switchable and track.sync_policy in ['exact_release','verified_external'] %}subtitle-trusted{% endif %}">
+            <b>{{ track.language | upper }}</b>
+            <small>{{ track.source }} · {{ track.sync_policy | replace('_',' ') }}</small>
+          </span>
+          {% endfor %}
+        </div>
+        {% endif %}
+        {% if asset.last_error_label and asset.last_error_label != asset.subtitle_label %}<p class="evidence-warning">{{ asset.last_error_label }}</p>{% endif %}
+        <details class="evidence-drawer">
+          <summary>Technical details</summary>
+          <dl>
+            <div><dt>Original release name</dt><dd class="asset-source">{{ asset.source }}</dd></div>
+            <div><dt>Verified episode numbers</dt><dd>{{ asset.usable_coverage | join(', ') or 'None' }}</dd></div>
+            <div><dt>Storage</dt><dd>{{ asset.storage_backend }}</dd></div>
+            <div><dt>File check</dt><dd>{{ asset.probe.outcome if asset.probe else 'Not completed' }}</dd></div>
+            <div><dt>Verified</dt><dd>{{ asset.probe.verified_at if asset.probe else '—' }}</dd></div>
+            {% if asset.last_error %}<div><dt>Internal code</dt><dd>{{ asset.last_error }}</dd></div>{% endif %}
+          </dl>
+          <p class="asset-action-help">Troubleshooting only—normal subtitle and playback checks run automatically.</p>
+          <footer class="asset-actions">
+            <form method="post" action="/plus/library/{{ title.id }}/reprobe" data-busy-form>
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="asset_id" value="{{ asset.id }}">
+              <button class="text-action" type="submit" data-busy-label="Checking…">Run the check again</button>
+            </form>
+            <form method="post" action="/plus/library/{{ title.id }}/quarantine">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="asset_id" value="{{ asset.id }}">
+              <input type="hidden" name="reason" value="User stopped using this release">
+              <button class="text-action text-danger" type="submit">Stop using this file</button>
+            </form>
+          </footer>
+          <p class="asset-action-help">“Stop using” keeps the provider download and its evidence; it does not delete the file.</p>
+        </details>
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="quiet-state"><span>No release</span><p>A provider has not produced a candidate yet.</p></div>
+    {% endif %}
+    {% if title.other_assets %}
+    <details class="other-release-history">
+      <summary>Other versions kept for troubleshooting ({{ title.other_assets | length }})</summary>
+      <div class="other-release-list">
+        {% for asset in title.other_assets %}
+        <article>
+          <div><strong>{{ asset.quality }} · {{ asset.status_label }}</strong><small>{{ asset.provider_label }}</small></div>
+          <p>{{ asset.source }}</p>
+          {% if asset.last_error_label %}<small>{{ asset.last_error_label }}</small>{% endif %}
+        </article>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+    <details class="media-last-check"><summary>Latest library check</summary><p>{{ title.last_result }}</p></details>
+  </section>
+
+  <aside class="title-side">
+    {% if not title.removal %}
+    <section class="editorial-panel">
+      <header class="panel-heading"><div><span class="section-index">Help</span><h2>Playback and media help</h2></div></header>
+      <div class="repair-list">
+        {% if title.publication_pending %}<a class="button button-secondary" href="/plus/library/{{ title.id }}">Check Plex status</a>{% else %}
+        <form method="post" action="/plus/library/{{ title.id }}/retry" data-busy-form>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" data-busy-label="Retrying…"><strong>Retry now</strong><span>Check for missing media again</span></button>
+        </form>
+        {% endif %}
+        <form method="post" action="/plus/library/{{ title.id }}/rescan" data-busy-form>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" data-busy-label="Requesting scan…"><strong>Rescan in Plex</strong><span>One mapped section and path only</span></button>
+        </form>
+        <form method="post" action="/plus/library/{{ title.id }}/rematch-plan">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit"><strong>Check the title and season match</strong><span>Preview possible fixes without changing any files</span></button>
+        </form>
+      </div>
+    </section>
+    {% endif %}
+    <section class="editorial-panel">
+      <header class="panel-heading"><div><span class="section-index">{% if title.removal %}03{% else %}04{% endif %} / HISTORY</span><h2>Timeline</h2></div></header>
+      {% if title.timeline %}
+      <ol class="brief-list">
+        {% for event in title.timeline %}
+        <li><time data-local-datetime="{{ event.created_at }}" datetime="{{ event.created_at }}" title="{{ event.created_at }} UTC">{{ event.created_at }} UTC</time><span class="event-dot event-{{ 'success' if event.outcome in ['success','complete','no_change'] else 'attention' }}"></span><div><strong>{{ event.outcome }}</strong><small>{{ event.detail }}</small></div></li>
+        {% endfor %}
+      </ol>
+      {% else %}<div class="quiet-state"><span>New title</span><p>No sync runs yet.</p></div>{% endif %}
+    </section>
+  </aside>
+</div>
+</details>
+{% endblock %}

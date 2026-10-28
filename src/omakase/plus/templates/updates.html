@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "_settings_nav.html" import settings_nav %}
+{% block title %}About & updates · Omakase{% endblock %}
+{% block eyebrow %}Settings{% endblock %}
+{% block page_title %}About & updates{% endblock %}
+{% block page_intro %}<p class="page-intro">See which Omakase Plus release this host runs and check for a newer release.</p>{% endblock %}
+{% block content %}
+<div class="settings-workspace">{{ settings_nav('updates') }}<div class="settings-content updates-content">
+<section class="editorial-panel settings-section update-card" aria-labelledby="installed-heading">
+<h2 id="installed-heading">Omakase Plus</h2><div class="update-installed"><span>Installed release</span><strong class="status-chip status-neutral">{{ installed_version }}</strong><span>Stable channel</span></div>
+<p>Updates are installed separately by your host administrator. This page only checks public release information.</p>
+</section>
+<section class="editorial-panel settings-section update-card" aria-labelledby="update-heading">
+<h2 id="update-heading">Release information</h2>
+<div class="update-result">
+{% if not checks_enabled %}<p role="status">Update checks are disabled by this host administrator.</p>{% endif %}
+{% if updates.error %}<p role="alert">{{ updates.error }}</p>{% endif %}
+{% if retry_after %}<p role="status">Please wait {{ retry_after }} seconds before another check. The cached result is shown below.</p>{% endif %}
+{% if updates.release %}
+{% if updates.error %}<p>Last successful result:</p>{% endif %}
+<p><strong class="status-chip {{ 'status-info' if updates.release.newer else 'status-good' }}">{% if updates.release.newer %}Update available{% else %}No newer release found{% endif %}</strong> · {{ updates.release.version }}</p>
+<p>{{ updates.release.summary }}</p>
+<p>Released <time datetime="{{ updates.release.released_at }}">{{ updates.release.released_at }}</time></p>
+<p><a href="{{ updates.release.notes_url }}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Read release information on jhinx.dev</a></p>
+{% elif not updates.checked_at %}<p>No check has been made in this application session.</p>{% endif %}
+{% if updates.checked_at %}<p>Last attempted check <time datetime="{{ updates.checked_at }}">{{ updates.checked_at }}</time></p>{% endif %}
+</div>
+{% if checks_enabled %}<form class="update-check-action" action="/plus/settings/updates/check" method="post" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-primary" type="submit" data-busy-label="Checking releases…">Check for updates</button></form>{% endif %}
+<details class="update-check-details"><summary>What happens when you check?</summary><p>Only pressing Check for updates contacts jhinx.dev. No account, library, credentials or installed-version data is sent. The public server receives the host’s network address. Results are cached for at least 15 minutes; there are no background checks.</p></details>
+</section>
+</div></div>
+{% endblock %}

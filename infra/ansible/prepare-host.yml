@@ -1,0 +1,6 @@
+---
+- name: Prepare an existing Debian host for Omakase Stack
+  hosts: omakase
+  become: true
+  roles:
+    - omakase_host

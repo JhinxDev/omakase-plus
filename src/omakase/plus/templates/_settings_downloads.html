@@ -1,0 +1,61 @@
+<section class="settings-section">
+    <input type="hidden" name="acquisition_policy_present" value="1">
+    <header class="panel-heading">
+      <div><h2>Download criteria</h2></div>
+      <span class="privacy-stamp">Owner controlled</span>
+    </header>
+    <div class="settings-explainer">
+      <strong>These rules decide which torrent Omakase tries next.</strong>
+      <p>Changes apply to future searches. Existing downloads are not replaced. If troubleshooting gets confusing, restore the tested defaults below.</p>
+      {% if acquisition_policy_warning %}<p class="setting-warning" role="alert">{{ acquisition_policy_warning }}</p>{% endif %}
+      <dl class="settings-criteria">
+        <div><dt>Resolution order</dt><dd>{{ acquisition_policy_view.resolution_order }}</dd></div>
+        <div><dt>Availability</dt><dd>{{ acquisition_policy_view.availability }}</dd></div>
+        <div><dt>Subtitles</dt><dd>{{ acquisition_policy_view.subtitles }}</dd></div>
+        <div><dt>Safety</dt><dd>{{ acquisition_policy_view.source_safety }}</dd></div>
+        <div><dt>Maximum size</dt><dd>{{ acquisition_policy_view.maximum_size }}</dd></div>
+        <div><dt>Batch preference</dt><dd>{{ acquisition_policy_view.batch_behavior }}</dd></div>
+      </dl>
+      <p class="policy-revision">Policy revision <code>{{ acquisition_policy_view.revision[:12] }}</code></p>
+    </div>
+    {% for position in (1, 2, 3) %}
+    {% set selected_resolution = acquisition_policy.allowed_resolutions[position - 1] if acquisition_policy.allowed_resolutions | length >= position else '' %}
+    <div class="settings-field">
+      <div>
+        <label for="resolution_{{ position }}">Resolution choice {{ position }}</label>
+        <p>{{ 'Highest priority.' if position == 1 else 'Optional fallback. Leave empty to stop here.' }}</p>
+      </div>
+      <div class="field-control">
+        <select id="resolution_{{ position }}" name="resolution_{{ position }}">
+          {% if position > 1 %}<option value="">No further fallback</option>{% endif %}
+          {% for resolution in supported_resolutions %}
+          <option value="{{ resolution }}" {% if resolution == selected_resolution %}selected{% endif %}>{{ resolution }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    {% endfor %}
+    <div class="settings-field">
+      <div><label for="minimum_seeders">Minimum seeders</label><p>Used for new local or qBittorrent downloads. Cached Real-Debrid releases may still be checked at zero.</p></div>
+      <div class="field-control"><input type="number" id="minimum_seeders" name="minimum_seeders" min="1" max="1000" value="{{ acquisition_policy.minimum_seeders }}" required></div>
+    </div>
+    <div class="settings-field">
+      <div><label for="preferred_seeders">Preferred seeders</label><p>Releases at or above this number receive an availability preference.</p></div>
+      <div class="field-control"><input type="number" id="preferred_seeders" name="preferred_seeders" min="1" max="10000" value="{{ acquisition_policy.preferred_seeders }}" required></div>
+    </div>
+    <div class="settings-field">
+      <div><label for="max_release_size_gib">Maximum release size</label><p>One candidate above this GiB limit is rejected before provider use.</p></div>
+      <div class="field-control"><input type="number" id="max_release_size_gib" name="max_release_size_gib" min="1" max="300" value="{{ acquisition_policy.max_release_size_gib }}" required><span class="setting-state">GiB</span></div>
+    </div>
+    <div class="settings-field">
+      <div><strong>Preference switches</strong><p>Safety checks for CAM, RAW/no-subtitle, samples, trailers, and extras always stay enabled.</p></div>
+      <div class="field-control policy-switches">
+        <label class="checkbox-row"><input type="checkbox" name="allow_hardsub_fallback" value="1" {% if acquisition_policy.allow_hardsub_fallback %}checked{% endif %}>Allow clearly labelled burned-in subtitles only as a fallback</label>
+        <label class="checkbox-row"><input type="checkbox" name="prefer_trusted" value="1" {% if acquisition_policy.prefer_trusted %}checked{% endif %}>Prefer trusted and known release groups</label>
+        <label class="checkbox-row"><input type="checkbox" name="prefer_batches" value="1" {% if acquisition_policy.prefer_batches %}checked{% endif %}>Prefer complete season batches when coverage matches</label>
+      </div>
+    </div>
+    <div class="settings-inline-actions">
+      <button type="submit" name="reset_acquisition_policy" value="1" class="button button-secondary">Restore tested defaults</button>
+    </div>
+  </section>

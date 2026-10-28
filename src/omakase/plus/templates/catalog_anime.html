@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}{{ card.title if card else 'Title unavailable' }} · Omakase{% endblock %}
+{% block masthead %}{% endblock %}
+{% block content %}
+{% if card %}
+<section class="movie-detail-hero catalog-detail-hero" aria-labelledby="catalog-title">
+  <picture class="detail-backdrop"><img src="/plus/media/{{ card.anilist_id }}/banner" alt="" data-poster></picture>
+  <div class="movie-poster"><img src="{{ card.poster_url }}" alt="" width="300" height="450" fetchpriority="high" data-poster></div>
+  <div class="movie-detail-copy"><a class="detail-back-link" href="/plus/search?kind=anime"><span aria-hidden="true">←</span>&nbsp; Search anime</a><h1 id="catalog-title">{{ card.title }}</h1><div class="detail-meta">{% if card.year %}<span>{{ card.year }}</span>{% endif %}{% if card.format %}<span>{{ card.format | replace('_',' ') | title }}</span>{% endif %}{% if card.episode_total %}<span>{{ card.episode_total }} episodes</span>{% endif %}{% if card.status %}<span>{{ card.status | replace('_',' ') | title }}</span>{% endif %}</div>
+  {% if card.genres %}<ul class="genre-chips" aria-label="Genres">{% for genre in card.genres %}<li>{{ genre }}</li>{% endfor %}</ul>{% endif %}
+  {% if card.description %}<p class="movie-overview">{{ card.description }}</p>{% endif %}
+  <div class="catalog-personal-state" role="group" aria-label="Your library and viewing history">{% if card.library_id %}<span class="ready-count is-ready">In your library</span>{% else %}<span class="ready-count">Not in your library</span>{% endif %}{% if card.watch_status == 'completed' %}<span class="watched-count">Watched{% if card.progress %} {{ card.progress }}{% if card.episode_total %}/{{ card.episode_total }}{% endif %}{% endif %}</span>{% elif card.progress %}<span class="watched-count">Watched {{ card.progress }}{% if card.episode_total %}/{{ card.episode_total }}{% endif %}</span>{% elif card.watch_status == 'unknown' %}<span class="catalog-personal-unknown">No linked watch history</span>{% else %}<span class="watched-count">{{ card.watch_status | replace('_',' ') | title }}</span>{% endif %}{% if card.rating %}<span class="movie-card-rating">Your rating {{ card.rating }}/10</span>{% endif %}</div>
+  <div class="movie-detail-actions">{% if card.library_id %}<a class="button button-primary" href="/plus/library/{{ card.library_id }}">View your episodes</a>{% else %}<form method="post" action="/plus/add/preview" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="query" value="https://anilist.co/anime/{{ card.anilist_id }}/"><button type="submit" class="button button-primary" data-busy-label="Checking title…">Review & add to library</button></form>{% endif %}<a class="button button-secondary" href="https://anilist.co/anime/{{ card.anilist_id }}/" target="_blank" rel="noopener noreferrer">AniList ↗</a></div>
+  {% if card.studio %}<p class="catalog-studio">Studio · {{ card.studio }}</p>{% endif %}
+  </div>
+</section>
+{% else %}<section class="utility-panel" role="alert"><h1>Title unavailable</h1><p>{{ search_error or 'The catalog could not load this title. Try again in a moment.' }}</p><a class="button button-secondary" href="/plus/search?kind=anime">Back to search</a></section>{% endif %}
+{% endblock %}

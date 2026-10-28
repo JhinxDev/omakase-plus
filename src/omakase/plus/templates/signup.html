@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>Join · Omakase</title>
+  <link rel="preload" href="/plus/static/geist-variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="icon" type="image/svg+xml" href="/plus/static/omakase-icon.svg?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/dashboard.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/cinema.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/semantic-states.css?v={{ asset_version }}">
+</head>
+<body class="auth-body">
+  <main class="auth-shell">
+    <section class="auth-story" aria-labelledby="auth-brand">
+      <div>
+        <img class="brand-seal" src="/plus/static/omakase-seal.svg" alt="">
+        <h2 id="auth-brand">Your next <i>great story.</i></h2>
+        <p>A collection that feels like you. Discover, watch, and make it yours.</p>
+      </div>
+      <footer><span>Your account.</span><span>Your collection.</span></footer>
+    </section>
+    <section class="auth-form-panel" aria-labelledby="signup-heading">
+      <div class="auth-form-wrap">
+        <span class="page-kicker">Private server account</span>
+        <h1 id="signup-heading">Create your account.</h1>
+        <p>This account belongs to this Omakase server. Use a unique password.</p>
+        {% if error %}<div class="product-notice notice-danger semantic-notice--error" role="alert">{{ error }}</div>{% endif %}
+        <form method="post" action="/plus/signup" class="auth-form">
+          <label><span>Email</span><input type="email" id="email" name="email" placeholder="you@example.com" autocomplete="email" required autofocus></label>
+          <label><span>Password</span><input type="password" id="password" name="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" required></label>
+          <label><span>Confirm password</span><input type="password" id="confirm_password" name="confirm_password" placeholder="Repeat your password" autocomplete="new-password" minlength="8" required></label>
+          <button type="submit" class="button button-primary button-wide">Create account</button>
+        </form>
+        <div class="auth-switch"><span>Already have an account?</span><a href="/plus/login">Back to sign in →</a></div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

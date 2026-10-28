@@ -1,0 +1,22 @@
+# Recommendation-only BYOK web surface. This is separate from the authenticated Plus app.
+# Use compose.standalone.yaml for Plus; configure your own protected origin deliberately.
+
+services:
+  omakase:
+    container_name: omakase
+    build: .
+    image: omakase:latest
+    restart: unless-stopped
+    ports:
+      - "${OMAKASE_BIND_ADDRESS:-127.0.0.1}:8765:8765"
+    environment:
+      OMAKASE_ENV: production
+      OMAKASE_ALLOWED_HOSTS: ${OMAKASE_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      OMAKASE_ALLOW_PRIVATE_LLM_URLS: "false"
+    # No environment vars required for BYOK mode. Visitors supply LLM keys via
+    # the web form per-request; nothing is stored. Uncomment below only if you
+    # want a server-side fallback key for some specific backend.
+    # Optional fallback credentials can be added to the environment for a
+    # private self-host. Public BYOK requests remain request-scoped.
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"

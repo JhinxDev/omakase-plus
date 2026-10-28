@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Get started · Omakase Plus{% endblock %}
+{% block eyebrow %}Make yourself at home{% endblock %}
+{% block page_title %}Start small. Make it yours.{% endblock %}
+{% block page_intro %}<p class="page-intro">Explore now, or connect your own media services when you are ready. Every connection is optional.</p>{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/plus/static/onboarding.css?v={{ asset_version }}">
+<div class="onboarding">
+  <nav class="onboarding-steps" aria-label="Getting started steps">
+    {% for label in ['Choose', 'Connect', 'Review', 'Enjoy'] %}
+    <a href="/plus/onboarding?step={{ loop.index }}" {% if onboarding_step == loop.index %}aria-current="step"{% endif %}><span aria-hidden="true">{{ loop.index }}</span>{{ label }}</a>
+    {% endfor %}
+  </nav>
+  <section class="onboarding-panel" aria-labelledby="onboarding-heading">
+    <p class="onboarding-kicker">Step {{ onboarding_step }} of 4{% if onboarding_completed %} · Reviewing your setup{% endif %}</p>
+    {% if onboarding_step == 1 %}
+    <h2 id="onboarding-heading">How would you like to start?</h2>
+    <p>Choose the guidance that fits you. This saves a preference for your account; it does not change the server or start a download.</p>
+    <form method="post" action="/plus/onboarding/intent">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <fieldset class="onboarding-options"><legend>Choose your setup path</legend>
+        <label><input type="radio" name="setup_path" value="standalone" {% if onboarding_setup_path == 'standalone' %}checked{% endif %}><span><strong>Explore with Omakase only</strong><small>Search the public anime catalog, save a watchlist and rate titles. Movie and TV catalogs need a Seerr connection. No Plex, media folders or download service required. Anime AI recommendations need your own AI connection.</small></span></label>
+        <label><input type="radio" name="setup_path" value="existing" {% if onboarding_setup_path == 'existing' %}checked{% endif %}><span><strong>Connect an existing stack</strong><small>Already run Plex or other media services? Add only the connections you use, then test each one.</small></span></label>
+        <label><input type="radio" name="setup_path" value="fresh_plex" {% if onboarding_setup_path == 'fresh_plex' %}checked{% endif %}><span><strong>Set up optional Plex</strong><small>Follow the operator steps for a separate Plex server using the included Docker Compose profile. Installation and Plex account setup happen outside this guide.</small></span></label>
+      </fieldset>
+      <details class="onboarding-details"><summary>Optional: where will your media come from?</summary>
+        <p>This is separate from your setup path. You can leave this for later.</p>
+        <fieldset class="onboarding-options"><legend>Media preference</legend>
+          <label><input type="radio" name="intent" value="explore" {% if onboarding_intent == 'explore' %}checked{% endif %}><span><strong>Explore first</strong><small>Decide on media and storage later.</small></span></label>
+          <label><input type="radio" name="intent" value="local" {% if onboarding_intent == 'local' %}checked{% endif %}><span><strong>Local or NAS library</strong><small>Import files from storage already mounted on the Omakase server.</small></span></label>
+          <label><input type="radio" name="intent" value="cloud" {% if onboarding_intent == 'cloud' %}checked{% endif %}><span><strong>Cloud downloads</strong><small>Connect your own supported download service. Playback still uses Plex.</small></span></label>
+        </fieldset>
+      </details>
+      <div class="onboarding-actions"><button class="button button-primary" type="submit">Save & continue</button><a href="/plus/home">Skip for now</a></div>
+    </form>
+    {% elif onboarding_step == 2 %}
+    <h2 id="onboarding-heading">{{ onboarding_setup_path_label }}</h2>
+    {% if onboarding_setup_path == 'standalone' %}
+    <div class="onboarding-note"><h3>You can continue now</h3><p>Search the public anime catalog with the app alone. Movie and TV catalog search needs a configured Seerr connection; Plex stays optional. Omakase does not play media itself, and standalone setup does not acquire movies, anime or TV automatically.</p><p>For a new app-only server, the repository includes <code>compose.standalone.yaml</code>: one Omakase container and persistent app data, with no required media mounts. Follow the <a href="https://omakase-plus.jhinx.dev/docs/quickstart" target="_blank" rel="noopener noreferrer">Quickstart guide</a> for preparation and startup commands.</p></div>
+    {% elif onboarding_setup_path == 'existing' %}
+    <div class="onboarding-note"><h3>Use the services you already own</h3><p>Omakase is the discovery and orchestration app. Plex is a separate playback server; download services and movie automation are separate too. Save an address reachable from the Omakase server and your credentials in Settings, then test explicitly. Connecting does not install software or move media.</p></div>
+    {% else %}
+    <div class="onboarding-note"><h3>Optional Plex, with an operator in control</h3><p>Docker must already be installed on your server. Prepare app data and media directories, private configuration and the encryption key using <code>docs/local-storage-plex-setup.md</code> in the repository. Then review the configuration before starting the existing Plex profile:</p><pre><code>docker compose --env-file .env.local -f compose.local.yaml --profile plex config --quiet
+docker compose --env-file .env.local -f compose.local.yaml --profile plex up -d</code></pre><p>Open Plex on the Docker host at <code>http://127.0.0.1:32400/web</code>, sign in and claim your server yourself. Create your libraries, then connect and test Plex below. This guide installs nothing, claims no account and changes no host or NAS mounts.</p></div>
+    {% endif %}
+    <p>Media preference: <strong>{{ onboarding_intent_label }}</strong>. Connections are optional. Open a connection below, save it, and use its <strong>Test connection</strong> button. Return here when you are ready.</p>
+    {% if onboarding_intent == 'local' %}
+    <div class="onboarding-note"><h3>Local and NAS storage</h3><p>Your administrator must make the folder available and mounted on the server, then configure the import and library roots. The browser cannot mount network shares or write to arbitrary paths. Imports read the source; managed publication uses the configured library.</p><a href="/plus/settings/storage">Review storage settings →</a></div>
+    {% elif onboarding_intent == 'cloud' %}
+    <div class="onboarding-note"><h3>What Real-Debrid does</h3><p>It downloads and caches media from supported sources. It is not a title catalog or a guaranteed permanent NAS backup. Saving a key does not request media.</p><a href="/plus/settings/connections#connection-realdebrid">Connect Real-Debrid →</a></div>
+    {% endif %}
+    <div class="onboarding-links">
+      <a href="/plus/settings/connections#connection-plex"><strong>Plex</strong><span>Library playback and explicit movie history import</span></a>
+      <a href="/plus/settings/tracking"><strong>Anime tracking</strong><span>Connect AniList and choose how progress is synced</span></a>
+      <a href="/plus/settings/connections"><strong>All connections</strong><span>Cloud downloads, movie automation, metadata and search</span></a>
+    </div>
+    <details class="onboarding-details"><summary>Adding movies and recommendations</summary><p>Movie automation uses your tested Plex, Riven and Seerr connections. These are separate from working anime features. TMDB supplies movie metadata; Prowlarr expands configured release search. Anime recommendations use your selected AI connection; movie recommendations rank saved ratings and genres locally.</p></details>
+    {% elif onboarding_step == 3 %}
+    <h2 id="onboarding-heading">Review what is connected</h2>
+    <p>These are saved connection results, not a new live check. A connected service does not by itself prove that a title is ready to play.</p>
+    <ul class="onboarding-receipts">
+      {% for connection in onboarding_connections %}
+      <li><div><strong>{{ connection.name }}</strong><span>{{ connection.label }}</span>{% if connection.health.checked_at %}<small>Last checked: <time>{{ connection.health.checked_at }}</time></small>{% endif %}</div><a href="/plus/settings/connections#connection-{{ connection.id }}">Review<span class="sr-only"> {{ connection.name }}</span> →</a></li>
+      {% endfor %}
+    </ul>
+    {% if onboarding_intent == 'local' %}<p class="onboarding-note">Server configuration: import root {{ 'set' if onboarding_import_configured else 'not set' }}; library root {{ 'set' if onboarding_library_configured else 'not set' }}. This does not verify mounts, permissions or media. Ask your administrator to run the read-only Doctor check.</p>{% endif %}
+    <p>You can continue while optional services need setup. For detailed diagnostics, visit <a href="/plus/health/overview">System health</a>.</p>
+    {% else %}
+    <h2 id="onboarding-heading">You are ready to explore</h2>
+    <p>Start with Home, search for a title, or open For you to shape your next watch. Playback uses a separate Plex server after acquisition or import and verification. Omakase does not include a native media player or automatic TV acquisition.</p>
+    <div class="onboarding-note"><h3>Keep making it yours</h3><p>Settings holds your connections, tracking, download preferences and storage guidance. You can revisit this guide at any time without clearing your library or reconnecting services.</p></div>
+    <form method="post" action="/plus/onboarding/finish"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><div class="onboarding-actions"><button type="submit" class="button button-primary">Finish & go Home</button><a href="/plus/onboarding?step=3">Back</a></div></form>
+    {% endif %}
+    {% if onboarding_step in [2, 3] %}<div class="onboarding-actions"><a class="button button-primary" href="/plus/onboarding?step={{ onboarding_step + 1 }}">Continue</a><a href="/plus/onboarding?step={{ onboarding_step - 1 }}">Back</a></div>{% endif %}
+  </section>
+</div>
+{% endblock %}

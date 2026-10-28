@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% from "_media_components.html" import media_rail, empty_state, confirmation_card, ready_badge, history_card %}
+{% block title %}Omakase{% endblock %}
+{% block masthead %}{% endblock %}
+{% block eyebrow %}Your private anime library{% endblock %}
+{% block page_title %}Your evening, queued.{% endblock %}
+{% block page_intro %}<p class="page-intro">Continue a series, start something ready, or resolve what is waiting.</p>{% endblock %}
+{% block page_actions %}
+<a class="button button-primary" href="/plus/discover">Find something to watch</a>
+<a class="button button-secondary" href="/plus/library">Browse library</a>
+{% endblock %}
+{% block content %}
+{% set featured_choices = (continue_watching | default([]) | selectattr('state', 'equalto', 'ready') | list) + (ready_to_watch | default([])) %}
+{% set featured = featured_choices | first %}
+<section class="cinema-hero" aria-labelledby="featured-title">
+  {% if featured %}
+  <div class="cinema-hero-atmosphere" aria-hidden="true"><img src="/plus/media/{{ featured.anilist_id }}/poster" alt="" fetchpriority="low"></div>
+  <picture class="cinema-hero-art" data-hero-quality data-hero-poster="/plus/media/{{ featured.anilist_id }}/poster"><img src="/plus/media/{{ featured.anilist_id }}/banner?display=hero-v3" alt="" fetchpriority="high"></picture>
+  {% endif %}
+  <div class="cinema-hero-copy">
+    <div class="cinema-eyebrow"><span class="cinema-wordmark">O<span>+</span></span><span>{% if featured and featured.progress_episodes %}CONTINUE WATCHING{% elif featured %}FROM YOUR WATCHLIST{% else %}MADE FOR YOUR NEXT WATCH{% endif %}</span></div>
+    <h1 id="featured-title">{% if featured %}{{ featured.title }}{% else %}A good story starts here.{% endif %}</h1>
+    {% if featured %}
+      <div class="cinema-meta"><span>Anime</span>{{ ready_badge(featured) }}{% if featured.progress_episodes %}<span class="watched-count">Watched <b>{{ featured.progress_episodes }}{% if featured.episode_total %}/{{ featured.episode_total }}{% endif %}</b></span>{% else %}<span>Not started</span>{% endif %}</div>
+      <div class="cinema-actions"><a class="button button-primary" href="/plus/library/{{ featured.id }}"><span aria-hidden="true">▶</span> {% if featured.progress_episodes %}Continue series{% else %}View title{% endif %}</a><a class="button button-secondary" href="/plus/library/{{ featured.id }}"><span class="cinema-info-icon" aria-hidden="true">i</span> More info</a></div>
+    {% else %}
+      <p>Discover something that fits your taste, save it to your watchlist, and let your collection take shape.</p>
+      <div class="cinema-actions"><a class="button button-primary" href="/plus/discover">Find something to watch</a><a class="button button-secondary" href="/plus/library">Your anime</a></div>
+    {% endif %}
+  </div>
+</section>
+<section class="home-section continue-section" aria-labelledby="continue-heading">
+  <header class="stream-section-heading"><div><span>Pick up where you left off</span><h2 id="continue-heading">Continue watching</h2></div><a href="/plus/library?lifecycle=in_progress">See all</a></header>
+  {% if continue_watching %}
+    {{ media_rail(continue_watching, 'Continue watching') }}
+  {% else %}
+    {{ empty_state('Nothing in progress yet', 'Start a ready title and it will stay here until you finish it.', 'Browse ready titles', '/plus/library?lifecycle=ready_to_start') }}
+  {% endif %}
+</section>
+
+{% if confirmation_needed %}
+<section class="home-section" aria-labelledby="confirmation-heading">
+  <header class="stream-section-heading"><div><span>One tap to keep history accurate</span><h2 id="confirmation-heading">Confirmation needed</h2></div></header>
+  <div class="confirmation-rail">{% for item in confirmation_needed %}{{ confirmation_card(item) }}{% endfor %}</div>
+</section>
+{% endif %}
+
+<section class="home-section" aria-labelledby="ready-heading">
+  <header class="stream-section-heading"><div><span>Available in your media server</span><h2 id="ready-heading">Ready to watch</h2></div><a href="/plus/library?lifecycle=ready_to_start">See all</a></header>
+  {% if ready_to_watch %}
+    {{ media_rail(ready_to_watch, 'Ready to watch') }}
+  {% else %}
+    {{ empty_state('No fully verified titles yet.', 'Omakase only marks a title ready after media, subtitles, and Plex visibility agree.', 'Add an anime', '/plus/discover?mode=add') }}
+  {% endif %}
+</section>
+
+{% if new_episodes %}
+<section class="home-section" aria-labelledby="new-heading">
+  <header class="stream-section-heading"><div><span>Freshly available</span><h2 id="new-heading">New episodes</h2></div></header>
+  {{ media_rail(new_episodes, 'New episodes', 'New episode') }}
+</section>
+{% endif %}
+
+<section class="home-discovery" aria-labelledby="home-discovery-heading">
+  <div><span class="section-index">A menu made for you</span><h2 id="home-discovery-heading">What are you in the mood for?</h2><p>A familiar favorite, or something you would never have found on your own.</p></div>
+  <a class="button button-secondary" href="/plus/discover">Explore recommendations <span aria-hidden="true">↗</span></a>
+</section>
+{% if attention %}
+<section class="home-section attention-strip" aria-labelledby="attention-heading">
+  <header class="stream-section-heading"><div><h2 id="attention-heading">Waiting on a few things</h2></div><a href="/plus/health/overview">View details</a></header>
+  <div class="viewer-attention-list">
+    {% for item in attention %}<a href="/plus/library/{{ item.id }}"><span><strong>{{ item.title }}</strong><small>{{ item.status_label }}</small></span><span>Review</span></a>{% endfor %}
+  </div>
+</section>
+{% endif %}
+<nav class="queue-overview" aria-label="Titles in these shelves">
+  <a href="#continue-heading"><span>Continue watching</span><strong>{{ continue_watching | length }}</strong><small>In this shelf</small></a>
+  <a href="#ready-heading"><span>Ready to watch</span><strong>{{ ready_to_watch | length }}</strong><small>In this shelf</small></a>
+  <a href="{% if confirmation_needed %}#confirmation-heading{% else %}/plus/activity{% endif %}"><span>Confirm progress</span><strong>{{ confirmation_needed | length }}</strong><small>Awaiting your review</small></a>
+  <a href="{% if attention %}#attention-heading{% else %}/plus/health/overview{% endif %}"><span>Needs attention</span><strong>{{ attention | length }}</strong><small>In this shelf</small></a>
+</nav>
+
+{% if watch_history %}
+<section class="home-section" aria-labelledby="recent-watching-heading"><header class="stream-section-heading"><div><h2 id="recent-watching-heading">Recently watched</h2></div><a href="/plus/activity?view=watch">View history</a></header><div class="media-rail history-shelf" role="group" aria-label="Recent viewing history">{% for item in watch_history[:8] %}<div>{{ history_card(item) }}</div>{% endfor %}</div></section>
+{% endif %}
+<details class="home-system-updates"><summary>Library updates</summary>
+<section class="home-section recent-section" aria-labelledby="recent-heading">
+  <header class="stream-section-heading"><div><span>Your latest updates</span><h2 id="recent-heading">Recent activity</h2></div><a href="/plus/activity?view=system">Library &amp; services</a></header>
+  {% if recent_activity %}
+  <ol class="viewer-activity-list">
+    {% for event in recent_activity %}
+    <li><span class="event-dot event-{{ event.category }}" aria-hidden="true"></span><div><strong>{% if event.monitor_id %}<a href="/plus/library/{{ event.monitor_id }}">{{ event.title }}</a>{% else %}{{ event.title }}{% endif %}</strong><small>{{ event.detail or event.outcome }}</small></div><time data-local-datetime="{{ event.created_at }}" datetime="{{ event.created_at }}">{{ event.created_at }} UTC</time></li>
+    {% endfor %}
+  </ol>
+  {% else %}
+    {{ empty_state('No activity yet', 'Watch updates, new media, and cleanups will appear here.') }}
+  {% endif %}
+</section>
+</details>
+{% endblock %}

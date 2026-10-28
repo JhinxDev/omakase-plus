@@ -1,0 +1,35 @@
+{
+  "schema_version": "existing-movie-adoption-request-v1",
+  "requests": [
+    {
+      "anilist_id": 8888,
+      "torrent_hash": "38715477AD3AA3147A27535CEB2EC17B0AFFE51B",
+      "quality": "1080p"
+    },
+    {
+      "anilist_id": 15197,
+      "torrent_hash": "14FB83FF113DCA93A84A2C529EAEA0D77B0FA2FB",
+      "quality": "1080p"
+    },
+    {
+      "anilist_id": 99547,
+      "torrent_hash": "DD00D25859B85DBD285036FFF2DB96D312C12CEE",
+      "quality": "1080p"
+    },
+    {
+      "anilist_id": 99547,
+      "torrent_hash": "6C8B9F8907B9C8FB02CC2ABADE8A8910BF753935",
+      "quality": "2160p"
+    },
+    {
+      "anilist_id": 21893,
+      "torrent_hash": "12CF5483E34AC82BA13C105300B9628B24CF1564",
+      "quality": "2160p"
+    },
+    {
+      "anilist_id": 617,
+      "torrent_hash": "EABAFF719847BFB00908944B5FA3D0CDB5D68F8C",
+      "quality": "1080p"
+    }
+  ]
+}

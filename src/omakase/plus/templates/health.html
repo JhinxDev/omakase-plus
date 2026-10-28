@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Health · Omakase{% endblock %}
+{% block eyebrow %}System check{% endblock %}
+{% block page_title %}Health{% endblock %}
+{% block page_intro %}<p class="page-intro">A plain-language view of media access, Plex publishing, automatic checks, and anything that needs action.</p>{% endblock %}
+{% block page_actions %}<a class="button button-secondary" href="/plus/setup">Setup guide</a>{% endblock %}
+{% macro service_check(item) -%}
+<article class="health-check">
+  <div class="health-check-heading"><strong>{{ item.label }}</strong><span class="health-status health-status-{{ item.status }}">{{ item.status_label }}</span></div>
+  <p class="health-check-message">{{ item.reason_label }}</p>
+  <details class="health-check-details"><summary>Check details</summary>
+    {% if item.detail %}<p>{{ item.detail }}</p>{% endif %}
+    <dl>
+      {% if item.kind %}<dt>Service type</dt><dd>{{ item.kind | replace('_', ' ') }}</dd>{% endif %}
+      {% if item.policy %}<dt>Publication policy</dt><dd>{{ item.policy }}</dd>{% endif %}
+      <dt>Source</dt><dd>{{ item.source or 'Saved service check' }}</dd>
+      <dt>Reason</dt><dd>{{ item.reason_code or 'No diagnostic receipt' }}</dd>
+      <dt>Last checked</dt><dd>{% if item.checked_at %}<time data-local-datetime="{{ item.checked_at }}" datetime="{{ item.checked_at }}" title="{{ item.checked_at }} UTC">{{ item.checked_at }} UTC</time>{% else %}No checks yet{% endif %}</dd>
+    </dl>
+  </details>
+</article>
+{%- endmacro %}
+{% block content %}
+<div class="status-clarity-health">
+<section class="health-banner health-{{ overall }}">
+  <span class="health-orb" aria-hidden="true"></span>
+  <div><span>Overall status</span><h2>{{ 'Needs attention' if overall == 'attention' else 'Setup needed' if overall == 'setup' else overall | title }}</h2><p>{% if monitor_failures %}{{ monitor_failures }} monitored {{ 'title needs' if monitor_failures == 1 else 'titles need' }} a retry.{% elif overall == 'healthy' %}Current service checks look healthy.{% elif overall == 'setup' %}Connect your media services to get started.{% else %}Review the service checks below.{% endif %}</p></div>
+</section>
+<ul class="health-legend" aria-label="Status colors"><li class="health-status-healthy">Green: healthy</li><li class="health-status-degraded">Amber: attention</li><li class="health-status-error">Red: unavailable</li><li class="health-status-unknown">Blue: waiting for a check</li></ul>
+
+<section class="watch-bridge-health" aria-labelledby="watch-bridge-heading">
+  <div>
+    <span>Cross-service tracking</span>
+    <h2 id="watch-bridge-heading">Crunchyroll on Apple TV</h2>
+    <p>Home Assistant can send signed playback observations without sharing Crunchyroll credentials.</p>
+  </div>
+  <div>
+    <strong>{% if apple_tv_integration and apple_tv_integration.enabled %}Bridge connected{% else %}Bridge not connected{% endif %}</strong>
+    <span>{% if apple_tv_watch_enabled %}Exact metadata may update progress automatically.{% else %}Automatic updates remain off until metadata calibration passes.{% endif %}</span>
+    <a href="/plus/settings/tracking">Manage tracking</a>
+  </div>
+</section>
+
+<div class="health-grid">
+  <section class="editorial-panel">
+    <header class="panel-heading"><div><span class="section-index">01 / SEARCH</span><h2>Finding releases</h2></div><span class="count-stamp">{{ catalogs | length }}</span></header>
+    <div class="health-check-list">{% for item in catalogs %}
+      {{ service_check(item) }}
+    {% endfor %}</div>
+  </section>
+  <section class="editorial-panel">
+    <header class="panel-heading"><div><span class="section-index">02 / STORAGE</span><h2>Downloads & imports</h2></div><span class="count-stamp">{{ providers | length }}</span></header>
+    {% if providers %}<div class="health-check-list">{% for item in providers %}
+      {{ service_check(item) }}
+    {% endfor %}</div>{% else %}<div class="quiet-state"><span>Not configured</span><p>Add a media provider during setup.</p></div>{% endif %}
+  </section>
+  <section class="editorial-panel">
+    <header class="panel-heading"><div><span class="section-index">03 / PLEX</span><h2>Ready to watch</h2></div><span class="count-stamp">{{ plex_targets | length }}</span></header>
+    {% if plex_targets %}<div class="health-check-list">{% for item in plex_targets %}
+      {{ service_check(item) }}
+    {% endfor %}</div>{% else %}<div class="quiet-state"><span>Plex has not been checked</span><p>Connect Plex and complete one library scan.</p></div>{% endif %}
+  </section>
+  <section class="editorial-panel scheduler-card">
+    <header class="panel-heading"><div><span class="section-index">04 / AUTOMATION</span><h2>Automatic media checks</h2></div></header>
+    <div class="health-check"><div class="health-check-heading"><strong>{% if scheduler.state == 'running' %}Checking media now{% else %}Ready for the next check{% endif %}</strong><span class="health-status health-status-{{ 'unknown' if scheduler.state == 'running' else 'healthy' }}">{{ scheduler.state | title }}</span></div><p class="health-check-message">{% if scheduler.state == 'running' %}A media check is in progress.{% else %}No media check is running right now.{% endif %}</p>{% if scheduler.state == 'running' %}<details class="health-check-details"><summary>Check details</summary><dl><dt>Started</dt><dd><time data-local-datetime="{{ scheduler.acquired_at }}" datetime="{{ scheduler.acquired_at }}">{{ scheduler.acquired_at }} UTC</time></dd><dt>Last response</dt><dd><time data-local-datetime="{{ scheduler.heartbeat_at }}" datetime="{{ scheduler.heartbeat_at }}">{{ scheduler.heartbeat_at }} UTC</time></dd></dl></details>{% endif %}</div>
+  </section>
+</div>
+<details class="operator-note"><summary>Advanced diagnostics</summary><p>App revision: <code>{{ revision }}</code></p><p>Your server administrator can run <code>omakase plus doctor</code> to check storage capacity, media tools, Plex connectivity and any configured download network.</p></details>
+</div>
+{% endblock %}

@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% from "_collection_search.html" import collection_search %}
+{% from "_media_components.html" import ready_badge, progress_bar %}
+{% block title %}Anime · Omakase{% endblock %}
+{% block eyebrow %}Saved for your next watch{% endblock %}
+{% block page_title %}Your watchlist{% endblock %}
+{% block page_intro %}<p class="page-intro">Everything you have chosen, from the next episode to the final credits.</p>{% endblock %}
+{% block page_actions %}<a class="button button-primary" href="/plus/add">Add anime</a>{% endblock %}
+{% block content %}
+<div class="watchlist-browser">
+<nav class="library-lifecycle-tabs" aria-label="Library views">
+  {% for value, label in [('active','Active watchlist'),('in_progress','Watching'),('ready_to_start','Ready'),('waiting','Pending'),('completed','Completed'),('all','All titles')] %}
+  <a href="/plus/library?lifecycle={{ value }}&query={{ query | urlencode }}&state={{ state_filter }}&provider={{ provider_filter }}&content_type={{ content_type_filter }}" {% if lifecycle_filter == value %}aria-current="page"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</nav>
+{% call(slot) collection_search('/plus/library', 'anime', 'Filter your saved collection', 'Search your anime', query, 'query', 'Find a saved title', titles | length) %}
+{% if slot == 'fields' %}
+  <input type="hidden" name="lifecycle" value="{{ lifecycle_filter }}">
+  <datalist id="library-title-suggestions">
+    {% for title in title_suggestions %}<option value="{{ title }}">{% endfor %}
+  </datalist>
+  <label class="collection-search-type"><span>Type</span>
+    <select name="content_type">
+      {% for value, label in [('all','All anime'),('series','Series'),('movies','Movies')] %}
+      <option value="{{ value }}" {% if content_type_filter == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+{% else %}
+  <details class="watchlist-filter-details" {% if state_filter != 'all' or provider_filter != 'all' %}open{% endif %}>
+  <summary>More filters{% if state_filter != 'all' or provider_filter != 'all' %} · active{% endif %}</summary>
+  <div class="watchlist-extra-filters">
+  <label><span>Readiness</span>
+    <select name="state">
+      {% for value, label in [('all','All states'),('ready','Ready'),('acquiring','Finding episodes'),('attention','Needs action'),('planned','Planned')] %}
+      <option value="{{ value }}" {% if state_filter == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label><span>Provider</span>
+    <select name="provider">
+      {% for value, label in [('all','All providers'),('realdebrid','Real-Debrid'),('local_import','Local import'),('qbittorrent','qBittorrent')] %}
+      <option value="{{ value }}" {% if provider_filter == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button class="button button-secondary" type="submit">Apply filters</button>
+  <a class="filter-reset" href="/plus/library">Clear filters</a>
+  </div>
+  </details>
+{% endif %}
+{% endcall %}
+
+<div class="library-count">
+  <span><strong>{{ titles | length }}</strong> {{ 'title' if titles | length == 1 else 'titles' }} in this view</span><i></i>
+  {% if plex_library.connected %}
+  <span class="plex-library-status">
+    {{ plex_library.title_count }} titles in Plex · synced
+    <time data-local-datetime="{{ plex_library.generated_at }}" datetime="{{ plex_library.generated_at }}">{{ plex_library.generated_at }} UTC</time>
+  </span>
+  {% else %}
+  <span class="plex-library-status plex-library-disconnected">Plex inventory not synced yet</span>
+  {% endif %}
+</div>
+{% if titles %}
+{% if lifecycle_filter == 'completed' %}
+<form class="completed-cleanup-selection" method="post" action="/plus/library/completed/cleanup/preview">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="completed-cleanup-toolbar">
+    <div><strong>Finished watching?</strong><span>Select media you no longer want kept in Plex and Real-Debrid.</span></div>
+    <button class="button button-secondary" type="submit">Clean up selected media</button>
+  </div>
+{% endif %}
+<section class="library-grid watchlist-grid" aria-label="Anime library">
+  {% for item in titles %}
+  <article class="library-card watchlist-card state-border-{{ item.state }}">
+    {% if lifecycle_filter == 'completed' %}
+    <label class="completed-title-selector">
+      <input type="checkbox" name="monitor_id" value="{{ item.id }}">
+      <span>Select {{ item.title }}</span>
+    </label>
+    {% endif %}
+    <a class="library-card-main" href="/plus/library/{{ item.id }}" aria-label="Open {{ item.title }}">
+      <div class="library-poster poster-frame" data-fallback-title="{{ item.title }}">
+        <span class="media-art-fallback" aria-hidden="true">{{ item.title[:2] | upper }}</span>
+        <img src="/plus/media/{{ item.anilist_id }}/poster" alt="" loading="lazy" data-poster>
+      </div>
+      <div class="library-card-copy">
+        <h2 title="{{ item.title }}">{{ item.title }}</h2>
+        <div class="card-meta-line">{% if item.year %}<span>{{ item.year }}</span>{% endif %}{% if item.format %}<span>{{ 'Movie' if item.format == 'MOVIE' else 'Series' }}</span>{% endif %}</div>
+        {{ progress_bar(item, true) }}
+      </div>
+    </a>
+    <div class="collection-card-availability">{{ ready_badge(item) }}{% if item.publication_pending %}<span>Publishing to Plex</span>{% endif %}</div>
+    {% if item.release_qualities %}<div class="release-quality" role="group" aria-label="Verified release quality">{% for quality in item.release_qualities %}<span class="{{ 'quality-fallback' if quality == '720p' else '' }}">{{ quality }}{{ ' fallback' if quality == '720p' else ' release' }}</span>{% endfor %}</div>{% endif %}
+    <details class="watchlist-coverage">
+      <summary>Availability details</summary>
+    <div class="coverage-triptych" role="group" aria-label="Coverage for {{ item.title }}">
+      <div><span>Required</span><strong>{{ item.required }}</strong></div>
+      <div><span>Usable</span><strong>{{ item.usable }}</strong></div>
+      <div><span>Plex</span><strong>{{ item.plex_visible }}</strong></div>
+    </div>
+    <progress class="coverage-track" max="{{ item.required if item.required else 1 }}" value="{{ item.usable }}" aria-label="{{ item.usable }} of {{ item.required }} required episodes usable"></progress>
+    <p>Plex visibility confirms the library entry. Playback is checked separately.</p>
+    </details>
+    <footer>
+      <a href="/plus/library/{{ item.id }}">{{ 'Manage title' if item.lifecycle == 'completed' else 'Details & episodes' }} <span aria-hidden="true">↗</span></a>
+    </footer>
+  </article>
+  {% endfor %}
+</section>
+{% if lifecycle_filter == 'completed' %}</form>{% endif %}
+{% elif not saved_picks %}
+<div class="product-empty product-empty-large">
+  <span class="empty-mark" aria-hidden="true"></span>
+  <h2>No titles match these filters.</h2>
+  <p>{% if saved_picks %}Your saved titles are above. Check availability to bring one into your library.{% else %}Clear a filter, or add a title through the intake flow.{% endif %}</p>
+  <a class="button button-secondary" href="/plus/library">Clear filters</a>
+  <a class="button button-primary" href="/plus/add">Add anime</a>
+</div>
+{% endif %}
+{% if saved_picks %}
+<section class="saved-watchlist" aria-labelledby="saved-watchlist-heading">
+  <header class="stream-section-heading"><div><h2 id="saved-watchlist-heading">Saved for later</h2><p>Check availability when you are ready to add one.</p></div><span>{{ saved_picks | length }} saved</span></header>
+  <div class="library-grid watchlist-grid">
+    {% for item in saved_picks %}
+    <article class="library-card watchlist-card saved-watchlist-card">
+      <div class="library-poster poster-frame" data-fallback-title="{{ item.title }}" aria-hidden="true">
+        <span class="media-art-fallback" aria-hidden="true">{{ item.title[:2] | upper }}</span>
+        <img src="/plus/media/{{ item.anilist_id }}/poster" alt="" loading="lazy" data-poster>
+      </div>
+      <div class="library-card-copy"><h3>{{ item.title }}</h3><span class="saved-watchlist-badge">Saved</span><p>Availability not checked</p></div>
+      <div class="saved-watchlist-actions">
+        <form method="post" action="/plus/add/preview" data-busy-form>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="query" value="https://anilist.co/anime/{{ item.anilist_id }}/">
+          <button class="button button-secondary" type="submit" data-busy-label="Checking…">Check availability</button>
+        </form>
+        <form method="post" action="/plus/watchlist/{{ item.anilist_id }}/remove">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="text-action" type="submit">Remove from watchlist<span class="sr-only">: {{ item.title }}</span></button>
+        </form>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+</div>
+{% endblock %}

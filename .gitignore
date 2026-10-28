@@ -1,0 +1,59 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.python-version
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# User-generated content (personal profile, runtime state)
+taste-profile.md
+.omakase/
+config.yml
+
+# Plus SQLite databases (contain hashed creds + encrypted secrets)
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# Local secrets
+.env
+.env.*
+!.env.example
+!.env.local.example
+!.env.local.secrets.example
+
+# Tool-specific
+.claude/
+.playwright-cli/
+/output/
+.worktrees/

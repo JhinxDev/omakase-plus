@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% from "_settings_nav.html" import settings_nav %}
+{% set section = settings_section | default('preferences') %}
+{% set titles = {'preferences':'Preferences','tracking':'Anime tracking','downloads':'Download criteria','sources':'Source filters','ai':'AI provider','storage':'Storage & downloads'} %}
+{% block title %}{{ titles[section] }} · Omakase{% endblock %}
+{% block eyebrow %}Settings{% endblock %}
+{% block page_title %}{{ titles[section] }}{% endblock %}
+{% block page_intro %}<p class="page-intro">{{ {'preferences':'Make recommendations feel like you.','tracking':'Keep viewing progress, completion and connected trackers in sync.','downloads':'Choose quality preferences for future anime searches.','sources':'Choose where Omakase searches for anime releases.','ai':'Manage the key used for your recommendation requests.','storage':'Choose where media lives and how it reaches your library.'}[section] }}</p>{% endblock %}
+{% block content %}
+{% set backend_labels = {'openai':'OpenAI','anthropic':'Anthropic','gemini':'Google Gemini','deepseek':'DeepSeek','openrouter':'OpenRouter','groq':'Groq','together':'Together AI','ollama':'Ollama','codex':'Codex subscription'} %}
+<div class="settings-workspace">{{ settings_nav(section) }}<div class="settings-content">
+{% if saved %}<div class="product-notice" role="status">{{ saved }}</div>{% endif %}
+{% if settings_error %}<div class="product-notice notice-danger semantic-notice--error" role="alert">{{ settings_error }}</div>{% endif %}
+{% if section == 'storage' %}{% include '_settings_storage.html' %}{% else %}
+<form method="post" action="/plus/settings" class="settings-layout" autocomplete="off" data-form-type="other">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="settings_section" value="{{ section }}">
+  {% include '_settings_' ~ section ~ '.html' %}
+  <div class="settings-submit"><p>Changes apply to this section. Saved keys stay private.</p><button class="button button-primary" type="submit">Save {{ titles[section] | lower }}</button></div>
+</form>{% endif %}
+</div></div>
+{% endblock %}

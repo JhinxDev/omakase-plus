@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% from "_settings_nav.html" import settings_nav %}
+{% block title %}Agent tools{% endblock %}
+{% block eyebrow %}Your services{% endblock %}
+{% block page_title %}Agent tools{% endblock %}
+{% block page_intro %}<p class="page-intro">Connect an assistant to your server, with permissions you control.</p>{% endblock %}
+{% block content %}
+<div class="settings-workspace">{{ settings_nav('agents') }}<div class="settings-content agents-content"><div class="settings-layout">
+  <section class="editorial-panel settings-section" aria-labelledby="agent-read-heading">
+    <header class="panel-heading"><h2 id="agent-read-heading">Start read-only</h2><span class="status-chip status-good">No open port</span></header>
+    <div class="settings-explainer">
+      <p>Read cached anime, movie and TV libraries, viewing progress and recommendation defaults. No downloads or AI calls.</p>
+      <p>Your account ID: <strong>{{ agent_user_id }}</strong>. Run this on your server with its existing app data directory:</p>
+      <pre class="agent-command" tabindex="0" aria-label="Agent command, scroll horizontally to read"><code>OMAKASE_PLUS_PRIVATE=true omakase plus agent --data-dir /path/to/app-data --user-id {{ agent_user_id }} status</code></pre>
+      <details><summary>Docker or source install</summary><p>For the portable Compose setup, run in its existing container:</p><pre class="agent-command" tabindex="0" aria-label="Agent command, scroll horizontally to read"><code>docker exec -i omakase-local-app omakase plus agent --data-dir /home/omakase/data --user-id {{ agent_user_id }} status</code></pre><p>An existing private deployment may name its container <code>omakase-plus</code>; use your configured container name. The source command above uses a POSIX shell. Set <code>OMAKASE_PLUS_PRIVATE=true</code> in the environment for every source invocation.</p></details>
+      <details><summary>Connect an MCP client</summary><p>Install the optional <code>agents</code> package extra, then use the same command ending in <code>mcp</code>. Your client launches it locally, through Docker, or over authenticated SSH. The standard Docker image already includes the extra.</p></details>
+    </div>
+  </section>
+  <section class="editorial-panel settings-section" aria-labelledby="agent-write-heading">
+    <header class="panel-heading"><h2 id="agent-write-heading">Choose write permissions</h2><span class="status-chip status-info">Optional</span></header>
+    <div class="settings-explainer">
+      <p><code>--allow-write preferences</code><br>Change recommendation defaults.</p>
+      <p><code>--allow-write monitors</code><br>Pause or resume anime monitoring. Resuming can let the existing scheduler search for downloads.</p>
+      <p>Changes appear in an account-specific audit log.</p>
+    </div>
+  </section>
+  <section class="editorial-panel settings-section" aria-labelledby="agent-server-heading">
+    <header class="panel-heading"><h2 id="agent-server-heading">Server operations</h2></header>
+    <div class="settings-explainer">
+      <p>Existing operator commands cover diagnostics, movie controls, imports and reviewed Plex setup plans.</p>
+      <details><summary>Setup guide and access boundaries</summary><p>Read the <a href="https://omakase-plus.jhinx.dev/docs/agent-tools" target="_blank" rel="noopener noreferrer">agent setup guide</a> for complete client examples, including Windows SSH setup. Filesystem or SSH permissions authenticate the operator; this interface is for trusted server administrators.</p><p>The tools do not expose provider keys, arbitrary SQL or shell commands. They do not install services or treat cached metadata as playback proof.</p></details>
+    </div>
+  </section>
+</div></div></div>
+{% endblock %}

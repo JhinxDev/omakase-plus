@@ -1,0 +1,22 @@
+{% macro movie_quality(card) -%}
+{% set resolution = card.resolution | default('') | string | lower %}
+{% if resolution in ['2160','2160p','4k'] %}<span class="movie-quality is-4k">4K</span>{% elif resolution in ['1080','1080p','720','720p'] %}<span class="movie-quality is-hd-fallback">{{ resolution | replace('p','') }}p · HD fallback</span>{% endif %}
+{%- endmacro %}
+
+{% macro movie_poster(card, eager=false, status=true) -%}
+<div class="movie-poster">
+  {% if card.artwork_url %}<img src="{{ card.artwork_url }}" alt="" width="300" height="450" {% if not eager %}loading="lazy"{% endif %} data-poster>{% elif card.imdb_id and card.poster_url %}<img src="/plus/movies/{{ card.imdb_id }}/artwork" alt="" width="300" height="450" {% if not eager %}loading="lazy"{% endif %} data-poster>{% else %}<span class="movie-poster-fallback" aria-hidden="true">{{ card.title }}</span>{% endif %}
+  {% if status %}<span class="movie-state state-{{ card.state | default('unknown') }}">{% if not card.imdb_id %}Metadata preview{% elif card.state == 'ready' %}Ready in Plex{% elif card.state == 'verifying' %}Check in Plex{% elif card.state == 'deferred' %}Needs attention{% elif card.state in ['requested','searching','acquiring','unavailable'] %}{{ card.state | title }}{% elif card.requested %}Requested{% else %}Not requested{% endif %}</span>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro movie_card(card) -%}
+{% set history = card.history or {} %}
+{% set status_known = history.status_source and history.status_source != 'none' %}
+<article class="movie-card">
+  {% if card.imdb_id %}<a class="movie-card-link" href="/plus/movies/{{ card.imdb_id }}" aria-label="View {{ card.title }}{% if card.year %}, {{ card.year }}{% endif %}">{% endif %}
+  {{ movie_poster(card, status=false) }}
+  <div class="movie-card-body"><h2 title="{{ card.title }}">{{ card.title }}</h2><div class="movie-meta">{% if card.year %}<span>{{ card.year }}</span>{% endif %}<span>Movie</span></div><p class="collection-card-progress">{% if status_known %}{{ 'Watched' if history.status == 'completed' else history.status | replace('_',' ') | title }}{% else %}Not tracked{% endif %}{% if history.rating %} · Your rating {{ history.rating }}/10{% endif %}</p><p class="collection-card-availability">{% if card.state == 'ready' %}In Plex{% elif card.state == 'verifying' %}Check in Plex{% elif card.state in ['requested','searching','acquiring','unavailable','deferred'] %}{{ card.state | title }}{% else %}Availability unknown{% endif %}</p><div class="collection-card-quality">{{ movie_quality(card) }}</div></div>
+  {% if card.imdb_id %}</a>{% else %}<p class="movie-card-note">Preview only. Exact identity is still being checked.</p>{% endif %}
+</article>
+{%- endmacro %}

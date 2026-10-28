@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Title check · Omakase{% endblock %}
+{% block eyebrow %}Read-only repair{% endblock %}
+{% block page_title %}Title and season check{% endblock %}
+{% block page_intro %}<p class="page-intro">This is a preview of possible matching fixes. No download, file, or Plex library has changed.</p>{% endblock %}
+{% block page_actions %}<a class="button button-secondary" href="/plus/library/{{ plan.identity.monitor_id }}">Back to title</a>{% endblock %}
+{% block content %}
+<section class="rematch-receipt">
+  <header><span class="state-tag state-ready">Preview only</span><code>{{ plan.plan_hash }}</code></header>
+  <dl>
+    <div><dt>Current title</dt><dd>{{ plan.identity.title }}</dd></div>
+    <div><dt>AniList</dt><dd>{{ plan.identity.anilist_id }}</dd></div>
+    <div><dt>Format</dt><dd>{{ plan.identity.format }}</dd></div>
+    <div><dt>Season</dt><dd>{{ plan.identity.season_number or '—' }}</dd></div>
+    <div><dt>Aliases</dt><dd>{{ plan.identity.search_titles | join(', ') }}</dd></div>
+  </dl>
+  <ol>{% for action in plan.proposed_actions %}<li><span>{{ "%02d" | format(loop.index) }}</span>{{ action }}</li>{% endfor %}</ol>
+</section>
+{% endblock %}

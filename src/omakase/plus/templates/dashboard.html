@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="csrf-token" content="{{ csrf_token }}">
+<title>Omakase Plus &mdash; Dashboard</title>
+<link rel="stylesheet" href="/plus/static/dashboard.css?v={{ asset_version }}">
+<script src="/plus/static/dashboard.js?v={{ asset_version }}" defer></script>
+</head>
+<body>
+<main class="dashboard-shell">
+  <header class="dashboard-topbar">
+    <div class="brand-stack">
+      <span class="eyebrow">Private Plus / operations</span>
+      <h1>Recommendations and monitors</h1>
+    </div>
+    <nav class="dashboard-return-nav" aria-label="Return to your library">
+      <a href="/plus/discover">← Back to Discover</a>
+      <a href="/plus/home">Home</a>
+      <a href="/plus/library">Library</a>
+      <a href="/plus/activity">Activity</a>
+    </nav>
+    <div class="account-actions" role="group" aria-label="Account">
+      <span class="account-email">{{ email }}</span>
+      <a class="topbar-link" href="/plus/settings">Settings</a>
+      <form class="inline-form" method="post" action="/plus/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="topbar-button" type="submit">Log out</button>
+      </form>
+    </div>
+    <div class="quick-stats" role="group" aria-label="Dashboard status">
+      <span class="stat-chip"><strong>{{ dashboard_summary.queue_total }}</strong> queued</span>
+      <span class="stat-chip stat-chip-active"><strong>{{ dashboard_summary.queue_active }}</strong> active</span>
+      <span class="stat-chip {% if dashboard_summary.queue_attention %}stat-chip-alert{% endif %}"><strong>{{ dashboard_summary.queue_attention }}</strong> need action</span>
+    </div>
+  </header>
+
+  {% if error %}
+  <div class="message {% if 'Removed' in error or 'Planned' in error or 'Downloading' in error %}message-ok{% endif %}" role="status">{{ error }}</div>
+  {% endif %}
+
+  <section class="hero-panel" aria-labelledby="add-anime-title">
+    <div class="section-title">
+      <div>
+        <span class="section-kicker">Library intake</span>
+        <h2 id="add-anime-title">Add Anime in One Pass</h2>
+      </div>
+      <span class="summary-pill"><strong>{{ dashboard_summary.monitor_active }}</strong> active monitors</span>
+    </div>
+    <form class="dashboard-form bulk-form" method="post" action="/plus/dashboard/bulk-preview" data-busy-form>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="field bulk-field">
+        <label for="bulk-query">Titles or AniList IDs <span class="field-hint">one per line, up to 25</span></label>
+        <textarea id="bulk-query" name="bulk_query" maxlength="10000" placeholder="178789&#10;My Hero Academia Season 4&#10;https://anilist.co/anime/11843/" required>{{ bulk_query }}</textarea>
+      </div>
+      <div class="bulk-actions">
+        <p>Preview resolves identity first. Nothing is queued until you confirm exact AniList titles.</p>
+        <button type="submit" class="btn btn-primary" data-busy-label="Resolving titles…">Preview library intake</button>
+      </div>
+    </form>
+    <details class="single-add">
+      <summary>Add one title with a season or arc hint</summary>
+      <form class="dashboard-form add-form" method="post" action="/plus/dashboard/direct-download">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="field">
+          <label for="direct-query">Anime or AniList URL</label>
+          <input id="direct-query" type="text" name="query" placeholder="Golden Kamuy or AniList URL" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="direct-season">Season / arc</label>
+          <input id="direct-season" type="text" name="season" placeholder="3 or Final Season Part 2">
+        </div>
+        <button type="submit" class="btn btn-secondary">Add + Download</button>
+      </form>
+    </details>
+  </section>
+
+  {% if bulk_preview is not none %}
+  <section class="panel preview-panel" aria-labelledby="preview-title">
+    <div class="section-title">
+      <div>
+        <span class="section-kicker">Identity checkpoint</span>
+        <h2 id="preview-title">Review before queueing</h2>
+      </div>
+      <span class="summary-pill">{{ bulk_preview | length }} requests</span>
+    </div>
+    <form method="post" action="/plus/dashboard/bulk-confirm" class="dashboard-form" data-busy-form>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="preview-list">
+        {% for row in bulk_preview %}
+        <div class="preview-row preview-{{ row.state }}">
+          <div class="preview-query">{{ row.query }}</div>
+          {% if row.state == 'ready' %}
+          <input type="hidden" name="ready_id" value="{{ row.target.anilist_id }}">
+          <span class="status-label status-ready">Ready</span>
+          <strong>{{ row.target.title }}</strong>
+          <span class="preview-meta">AniList {{ row.target.anilist_id }}{% if row.target.season_number %} · Season {{ row.target.season_number }}{% endif %} · {{ release_status_label(row.target.status) }}</span>
+          {% elif row.state == 'ambiguous' %}
+          <span class="status-label status-choice">Choose the intended title</span>
+          <fieldset class="choice-list">
+            <legend class="sr-only">Choose the AniList identity for {{ row.query }}</legend>
+            {% for option in row.options %}
+            <label class="choice-option">
+              <input type="radio" name="choice_{{ row.index }}" value="{{ option.anilist_id }}" required>
+              <span><strong>{{ option.title }}</strong><small>AniList {{ option.anilist_id }}{% if option.season_number %} · Season {{ option.season_number }}{% endif %} · {{ release_status_label(option.status) }}</small></span>
+            </label>
+            {% endfor %}
+          </fieldset>
+          {% else %}
+          <span class="status-label status-error">Couldn’t match automatically</span>
+          <span class="preview-meta">{{ row.detail }}</span>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      <div class="confirm-bar">
+        <p id="bulk-selection-status" role="status" aria-live="polite">Ready rows will be monitored. Resolve every choice to continue.</p>
+        <button type="submit" class="btn btn-primary" data-busy-label="Starting monitors…">Confirm exact titles</button>
+      </div>
+    </form>
+  </section>
+  {% endif %}
+
+  <section class="panel jobs-panel" id="library-jobs" aria-labelledby="jobs-title">
+    <div class="section-title">
+      <div>
+        <span class="section-kicker">Coverage operations</span>
+        <h2 id="jobs-title">Airing monitors</h2>
+      </div>
+      <span class="summary-pill"><strong>{{ dashboard_summary.monitor_total }}</strong> titles</span>
+    </div>
+    {% if monitor_jobs %}
+    <div class="job-list">
+      {% for job in monitor_jobs %}
+      <article class="job-row">
+        <div class="job-heading">
+          <div>
+            <h3>{{ job.title }}</h3>
+            <span class="job-identity">AniList {{ job.anilist_id }}{% if job.season_number %} · Season {{ job.season_number }}{% endif %}</span>
+          </div>
+          <div class="job-badges" role="group" aria-label="Monitor state">
+            <span class="badge {% if job.active %}badge-purple{% else %}badge-gray{% endif %}">{{ 'Active' if job.active else 'Paused' }}</span>
+            <span class="badge badge-gray">{{ job.release_status_label }}</span>
+          </div>
+        </div>
+        <div class="coverage-line">
+          <div class="coverage-copy"><strong>{{ job.covered }} / {{ job.required }} usable</strong><span>{{ job.plex_state }}</span></div>
+          <progress max="{{ job.progress_max }}" value="{{ job.covered }}" aria-label="{{ job.covered }} of {{ job.required }} required episodes usable"></progress>
+        </div>
+        <dl class="job-facts">
+          <div><dt>Quality</dt><dd>{{ job.quality }}</dd></div>
+          <div><dt>RD state</dt><dd>{{ job.rd_state }}</dd></div>
+          <div><dt>Next check</dt><dd>{{ job.next_check_at }}</dd></div>
+          <div class="job-source"><dt>Source</dt><dd>{{ job.source }}</dd></div>
+        </dl>
+        <div class="job-footer">
+          <p>{{ job.last_result }}</p>
+          <div class="job-actions">
+            {% if job.active %}
+            <form method="post" action="/plus/dashboard/sync-monitor" data-busy-form>
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="monitor_id" value="{{ job.id }}">
+              <button type="submit" class="btn btn-secondary btn-small" data-busy-label="Syncing…">Sync now</button>
+            </form>
+            {% endif %}
+            <form method="post" action="/plus/dashboard/monitor" data-busy-form>
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="monitor_id" value="{{ job.id }}">
+              <input type="hidden" name="action" value="{{ 'pause' if job.active else 'resume' }}">
+              <button type="submit" class="btn btn-ghost btn-small" data-busy-label="Saving…">{{ 'Pause' if job.active else 'Resume' }}</button>
+            </form>
+          </div>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">No monitored titles yet. Preview a title list above to start.</div>
+    {% endif %}
+  </section>
+
+  <section class="panel run-panel" aria-labelledby="run-title">
+    <div class="section-title">
+      <div>
+        <span class="section-kicker">Recommendation lane</span>
+        <h2 id="run-title">Run Recommendation</h2>
+      </div>
+    </div>
+    <form id="run-form" class="dashboard-form run-form">
+      <fieldset class="lane-field">
+        <legend>Lane</legend>
+        <div class="lane-grid" role="group" aria-label="Recommendation lane">
+          <label class="lane-option">
+            <input type="radio" name="lane" value="best_match" {% if current_run_lane == 'best_match' %}checked{% endif %}>
+            <span>Best Match</span>
+          </label>
+          <label class="lane-option">
+            <input type="radio" name="lane" value="new_seasons" {% if current_run_lane == 'new_seasons' %}checked{% endif %}>
+            <span>New Seasons</span>
+          </label>
+          <label class="lane-option">
+            <input type="radio" name="lane" value="hidden_gems" {% if current_run_lane == 'hidden_gems' %}checked{% endif %}>
+            <span>Hidden Gems</span>
+          </label>
+          <label class="lane-option">
+            <input type="radio" name="lane" value="plan_list" {% if current_run_lane == 'plan_list' %}checked{% endif %}>
+            <span>Plan List</span>
+          </label>
+        </div>
+      </fieldset>
+      <div class="form-grid">
+        <div class="field">
+          <label for="run-source">Source</label>
+          <select name="source" id="run-source">
+            <option value="anilist">AniList</option>
+            <option value="myanimelist">MyAnimeList</option>
+          </select>
+        </div>
+        <div class="field field-wide">
+          <label for="run-username">Username</label>
+          <input type="text" name="username" id="run-username" placeholder="AniList username" value="{{ anilist_username }}">
+        </div>
+        <div class="field">
+          <label for="run-count">Count</label>
+          <input type="number" name="count" id="run-count" value="8" min="3" max="15">
+        </div>
+        <div class="field">
+          <label for="run-mode">Mode</label>
+          <select name="mode" id="run-mode">
+            <option value="fast">Fast</option>
+            <option value="pro">Pro</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="run-temp">Temperature</label>
+          <input class="range-input" type="range" name="temperature" id="run-temp" min="0.1" max="1.0" step="0.1" value="0.4">
+        </div>
+        <div class="field field-wide">
+          <label for="run-model">Model override</label>
+          <input type="text" name="model" id="run-model" placeholder="Auto">
+        </div>
+      </div>
+      <div class="toggle-row">
+        <label class="checkbox-row"><input type="checkbox" name="use_planning" id="run-planning" value="true">Use Plan to Watch</label>
+        <label class="checkbox-row"><input type="checkbox" name="skip_profile" id="run-skip" value="true">Skip profile</label>
+      </div>
+      <button type="submit" class="btn btn-primary" id="run-btn">Run Recommendation</button>
+    </form>
+    <div class="loading-state" id="loading" hidden>
+      <div class="spinner" aria-hidden="true"></div>
+      <div class="loading-copy">
+        <span class="loading-text" id="loading-text">Asking the LLM to pair your tasting menu...</span>
+        <span class="loading-meta"><span id="loading-elapsed">0s</span> &middot; Pro mode can take 1-2 minutes</span>
+      </div>
+    </div>
+    <div class="message" id="run-error" role="alert" hidden></div>
+  </section>
+
+  <section class="panel results-panel" aria-labelledby="results-title">
+    <div class="section-title">
+      <div>
+        <span class="section-kicker">Current picks</span>
+        <h2 id="results-title">Tonight's Tasting Menu</h2>
+      </div>
+      {% if current_run_picks %}
+      <span class="summary-pill">{{ current_run_picks | length }} picks</span>
+      {% endif %}
+    </div>
+    <div id="results-list"></div>
+    {% if current_run_picks %}
+    <div class="rec-list">
+      {% for pick in current_run_picks %}
+      <article class="rec-card">
+        <div class="rec-card-top">
+          {% if pick.url %}
+          <a class="rec-title title-link" href="{{ pick.url }}" target="_blank" rel="noopener noreferrer">{{ pick.title }}</a>
+          {% else %}
+          <h3 class="rec-title">{{ pick.title }}</h3>
+          {% endif %}
+          {% set score = pick.predicted_score | float %}
+          <span class="score {% if score >= 8 %}score-high{% elif score >= 6 %}score-mid{% else %}score-low{% endif %}">{{ score }}/10</span>
+        </div>
+        {% if pick.airing_status or pick.franchise_note or pick.sequence_warning %}
+        <div class="rec-chips">
+          {% if pick.airing_status == 'RELEASING' or pick.airing_status == 'FINISHED' %}
+          <span class="badge badge-purple">{{ release_status_label(pick.airing_status) }}</span>
+          {% endif %}
+          {% if pick.franchise_note %}
+          <span class="rec-chip">{{ pick.franchise_note }}</span>
+          {% endif %}
+          {% if pick.sequence_warning %}
+          <span class="rec-chip rec-chip-warning">{{ pick.sequence_warning }}</span>
+          {% endif %}
+        </div>
+        {% endif %}
+        <p class="reasoning">{{ pick.reasoning }}</p>
+        {% if pick.best_match_from_history %}
+        <p class="match">Pairs with: <strong>{{ pick.best_match_from_history }}</strong></p>
+        {% endif %}
+        <div class="rec-actions">
+          <div class="rec-primary-actions">
+            {% set aid = pick.anilist_id %}
+            {% if aid and aid in planned_ids %}
+            <span class="badge badge-green">Planned</span>
+            <form class="inline-form" method="post" action="/plus/dashboard/remove-plan">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="anilist_id" value="{{ aid }}">
+              <button type="submit" class="btn-remove">Remove</button>
+            </form>
+            {% elif aid %}
+            <form class="inline-form" method="post" action="/plus/dashboard/plan">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="anilist_id" value="{{ aid }}">
+              <input type="hidden" name="title" value="{{ pick.title }}">
+              <button type="submit" class="btn btn-primary btn-small">Plan</button>
+            </form>
+            <form class="inline-form" method="post" action="/plus/dashboard/download">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="anilist_id" value="{{ aid }}">
+              <input type="hidden" name="title" value="{{ pick.title }}">
+              <button type="submit" class="btn btn-secondary btn-small">Download</button>
+            </form>
+            {% endif %}
+          </div>
+          <div class="feedback-actions" data-title="{{ pick.title }}" data-source="{{ pick.source or current_run_source or 'anilist' }}" data-media-id="{{ pick.media_id or aid or '' }}" data-run-id="{{ current_run_id }}">
+            <button type="button" class="btn btn-ghost btn-feedback" data-feedback="not_for_me">Not for me</button>
+            <button type="button" class="btn btn-ghost btn-feedback" data-feedback="wrong_sequel">Wrong season</button>
+            <details class="watched-control">
+              <summary>Already watched</summary>
+              <label>Score (optional)
+                <select data-feedback-score>
+                  <option value="">No score</option>
+                  {% for score in range(10, 0, -1) %}<option value="{{ score }}">{{ score }}/10</option>{% endfor %}
+                </select>
+              </label>
+              <button type="button" class="btn btn-primary btn-small btn-feedback" data-feedback="already_watched">Save to my anime list</button>
+            </details>
+          </div>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">No tasting menu loaded yet.</div>
+    {% endif %}
+  </section>
+
+  <section class="panel queue-panel" aria-labelledby="queue-title">
+    <div class="section-title">
+      <div>
+        <span class="section-kicker">Plan and download</span>
+        <h2 id="queue-title">Planning Queue</h2>
+      </div>
+      <span class="summary-pill">{{ dashboard_summary.queue_total }} rows</span>
+    </div>
+    {% if plannings %}
+    <div class="planning-queue-card">
+      <table class="queue-table">
+        <thead><tr><th>Title</th><th>AniList</th><th>RD</th><th>Added</th><th>Actions</th></tr></thead>
+        <tbody>
+        {% for p in plannings %}
+        <tr>
+          <td data-label="Title"><a href="https://anilist.co/anime/{{ p.anilist_id }}/" target="_blank" rel="noopener">{{ p.title }}</a></td>
+          <td data-label="AniList">{% if p.planning_status == 'PLANNING' %}<span class="badge badge-green">Planned</span>{% else %}<span class="badge badge-gray">{{ p.planning_status }}</span>{% endif %}</td>
+          <td data-label="RD">
+            {% if p.download_status == 'requested' %}
+            <span class="badge badge-purple" title="{{ p.download_info }}">Downloading</span>
+            {% elif p.download_status == 'not_found' %}
+            <span class="badge badge-yellow">Not found</span>
+            {% if p.download_info %}<div class="queue-detail">{{ p.download_info }}</div>{% endif %}
+            {% elif p.download_status == 'no_rd_key' %}
+            <span class="badge badge-gray">No RD key</span>
+            {% if p.download_info %}<div class="queue-detail">{{ p.download_info }}</div>{% endif %}
+            {% elif p.download_status == 'rd_provider_block' %}
+            <span class="badge badge-yellow" title="{{ p.download_info }}">RD blocked</span>
+            {% if p.download_info %}<div class="queue-detail">{{ p.download_info }}</div>{% endif %}
+            {% elif p.download_status == 'error' %}
+            <span class="badge badge-red">Error</span>
+            {% if p.download_info %}<div class="queue-detail">{{ p.download_info }}</div>{% endif %}
+            {% else %}
+            <span class="queue-muted">-</span>
+            {% endif %}
+            {% if p.download_attempts %}
+            <details class="download-attempts">
+              <summary>RD attempts</summary>
+              <div class="attempt-list">
+                {% for a in p.download_attempts %}
+                <div class="attempt-item">
+                  <div class="attempt-head">
+                    <span class="badge {{ a.badge_class }}">{{ a.status_label }}</span>
+                    <span class="attempt-meta">#{{ a.candidate_rank }}/{{ a.total_candidates }}{% if a.response_label %} &middot; {{ a.response_label }}{% endif %}</span>
+                  </div>
+                  <div class="attempt-title">{{ a.torrent_title }}</div>
+                  <div class="attempt-meta">
+                    {{ a.seeders }}s &middot; {{ a.size_display }}{% if a.is_batch %} &middot; batch{% endif %}{% if a.torrent_hash %} &middot; {{ a.torrent_hash }}{% endif %}
+                  </div>
+                  {% if a.detail %}<div class="queue-detail">{{ a.detail }}</div>{% endif %}
+                </div>
+                {% endfor %}
+              </div>
+            </details>
+            {% endif %}
+          </td>
+          <td data-label="Added" class="queue-date">{{ p.added_at }}</td>
+          <td data-label="Actions">
+            <div class="queue-actions">
+              {% if p.download_status in ['', 'not_found', 'error', 'rd_provider_block', 'no_rd_key'] %}
+              <form class="inline-form" method="post" action="/plus/dashboard/download">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="anilist_id" value="{{ p.anilist_id }}">
+                <input type="hidden" name="title" value="{{ p.title }}">
+                <button type="submit" class="btn btn-secondary btn-small">{{ 'Download' if not p.download_status else 'Retry' }}</button>
+              </form>
+              {% endif %}
+              <form class="inline-form" method="post" action="/plus/dashboard/remove-plan">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="anilist_id" value="{{ p.anilist_id }}">
+                <button type="submit" class="btn btn-ghost btn-small">Remove</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state">No anime planned yet.</div>
+    {% endif %}
+  </section>
+
+  <section class="panel profile-panel" aria-labelledby="profile-title">
+    <div class="section-title">
+      <div>
+        <span class="section-kicker">Long-term signal</span>
+        <h2 id="profile-title">Taste Profile</h2>
+      </div>
+      {% if taste_profile_updated %}
+      <span class="summary-pill">Updated {{ taste_profile_updated }}</span>
+      {% endif %}
+    </div>
+    <form class="dashboard-form" method="post" action="/plus/dashboard/profile">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="field">
+        <label for="profile">Profile notes</label>
+        <textarea id="profile" name="profile" placeholder="## Things I love&#10;- Morally complex protagonists&#10;- Dense world-building&#10;&#10;## Things I bounce off&#10;- ...&#10;&#10;## Characters that resonate&#10;- [Character] - [why]&#10;&#10;## Recent loves&#10;- [Title you scored highly]">{{ taste_profile }}</textarea>
+      </div>
+      <button type="submit" class="btn btn-primary">Save Profile</button>
+    </form>
+  </section>
+
+  <section class="panel runs-panel" aria-labelledby="runs-title">
+    <div class="section-title">
+      <div>
+        <span class="section-kicker">History</span>
+        <h2 id="runs-title">Recent Runs</h2>
+      </div>
+      <span class="summary-pill">{{ dashboard_summary.runs_total }} saved</span>
+    </div>
+    {% if runs %}
+    <div class="run-list">
+      {% for r in runs %}
+      <a class="run-item" href="?run={{ r.id }}">
+        <time class="run-date" data-local-datetime="{{ r.created_at }}" datetime="{{ r.created_at }}" title="{{ r.created_at }} UTC">{{ r.created_at }} UTC</time>
+        <span class="run-meta">{{ r.source }} &middot; {{ r.model }}</span>
+        <span class="run-count">{{ r.picks | length }} picks</span>
+        <span class="btn btn-ghost btn-small">View</span>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state empty-state-compact">No saved runs yet.</div>
+    {% endif %}
+  </section>
+</main>
+</body>
+</html>

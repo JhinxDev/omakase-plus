@@ -1,0 +1,34 @@
+/* Home artwork composition. Blur is atmosphere, never sharp-source substitution. */
+.page-home .cinema-hero{min-height:clamp(540px,68vh,760px);margin:1rem 0 0;border-radius:24px;background:#11121d;align-items:center}
+.page-home .cinema-hero-atmosphere{position:absolute;inset:-8%;z-index:-3;overflow:hidden;pointer-events:none;background:#171626}
+.page-home .cinema-hero-atmosphere img{width:100%;height:100%;object-fit:cover;filter:blur(68px) saturate(.85);opacity:.65;transform:scale(1.12)}
+.page-home .cinema-hero-art[data-hero-quality]{display:flex;align-items:center;justify-content:flex-end;padding:1.5rem 5%;box-sizing:border-box;background:transparent}
+.page-home .cinema-hero-art[data-hero-quality] img{width:min(44%,var(--hero-native-width,460px));height:min(92%,var(--hero-native-height,690px));object-fit:contain;object-position:center;filter:none;transform:none;border-radius:16px;box-shadow:0 24px 70px #0005}
+.page-home .cinema-hero-art[data-hero-state="cover"]{padding:0;left:0;width:100%}
+.page-home .cinema-hero-art[data-hero-state="cover"] img{width:100%;height:100%;object-fit:cover;object-position:65% 35%;border-radius:0;box-shadow:none}
+.page-home .cinema-hero-art[data-hero-state="unavailable"] img{visibility:hidden}
+.page-home .cinema-hero::after{background:linear-gradient(90deg,#0c0d18f0 0%,#0c0d18bd 26%,#0c0d1859 48%,#0c0d1800 72%),linear-gradient(0deg,#090b12 0%,#090b1255 14%,transparent 42%)}
+.page-home .cinema-hero-copy{width:min(58%,740px);padding:3rem clamp(2rem,4vw,4rem);box-sizing:border-box}
+.page-home .cinema-hero h1{font-size:clamp(2.5rem,4.1vw,4rem);max-width:15ch;line-height:1.08;text-shadow:0 2px 24px #0005}
+@media(min-width:1800px){.page-home .cinema-hero{min-height:720px}.page-home .cinema-hero-art[data-hero-quality]:not([data-hero-state="cover"]){padding-right:8%}}
+@media(max-width:700px){
+.page-home .cinema-hero{min-height:580px;height:auto;align-items:flex-end;border-radius:20px}
+.page-home .cinema-hero-atmosphere img{filter:blur(40px) saturate(.8)}
+.page-home .cinema-hero-art[data-hero-quality]{align-items:flex-start;justify-content:center;padding:1rem 1.2rem 0;height:72%}
+.page-home .cinema-hero-art[data-hero-quality] img{width:min(100%,var(--hero-native-width,100%));height:100%;object-fit:contain;object-position:center top;border-radius:14px}
+.page-home .cinema-hero-art[data-hero-state="cover"]{inset:0;width:100%;height:78%;padding:0}
+.page-home .cinema-hero-art[data-hero-state="cover"] img{width:100%;height:100%;object-fit:cover;object-position:center 25%}
+.page-home .cinema-hero::after{background:linear-gradient(0deg,#090b12 0%,#090b12eb 22%,#090b1266 45%,#090b1200 72%)}
+.page-home .cinema-hero-copy{width:100%;padding:19rem 1.3rem 1.6rem}
+.page-home .cinema-hero h1{font-size:clamp(2rem,8vw,2.75rem);max-width:17ch;margin:.7rem 0 1rem}
+.page-home .cinema-actions{flex-wrap:wrap}
+}
+@media(prefers-reduced-motion:reduce){.page-home .cinema-hero *{animation:none;transition:none}}
+
+@media(max-width:360px){.page-home .cinema-hero-copy{padding-top:15rem}.page-home .cinema-hero h1{font-size:1.85rem}.page-home .cinema-actions{flex-wrap:nowrap}.page-home .cinema-actions>.button{flex:1 1 0;min-width:0;padding-inline:.6rem;font-size:.73rem;white-space:normal;justify-content:center}}
+
+/* Missing artwork has its own compact composition, not an empty cinema stage. */
+.page-home .cinema-hero:has([data-hero-state="unavailable"]){min-height:320px}
+.page-home .cinema-hero:has([data-hero-state="unavailable"]) .cinema-hero-copy{padding-block:2.5rem;width:min(100%,800px)}
+.page-home .cinema-hero:has([data-hero-state="unavailable"]) .cinema-hero-atmosphere{display:none}
+@media(max-width:700px){.page-home .cinema-hero:has([data-hero-state="unavailable"]){min-height:300px}.page-home .cinema-hero:has([data-hero-state="unavailable"]) .cinema-hero-copy{padding:2rem 1.3rem}}

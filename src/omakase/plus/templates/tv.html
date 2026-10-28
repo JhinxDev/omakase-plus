@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% from "_collection_search.html" import collection_search %}
+{% block title %}TV Shows · Omakase{% endblock %}
+{% block eyebrow %}One more episode{% endblock %}
+{% block page_title %}Your TV shows{% endblock %}
+{% block page_intro %}<p class="page-intro">A place for every season. Find a series, keep your progress, and see what is in Plex.</p>{% endblock %}
+{% block content %}
+<div class="tv-page">
+<nav class="movie-tabs tv-tabs" aria-label="TV show views">
+{% for key,label in [('all','Collection'),('watching','Watching'),('completed','Watched')] %}<a href="/plus/tv{% if key != 'all' %}?view={{ key }}{% endif %}" {% if view | default('all') == key %}aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
+</nav>
+{{ collection_search('/plus/tv', 'tv', 'Search the TV catalog', 'Find a TV show', query | default(''), placeholder='Title or TMDB ID', count=cards | length) }}
+{% if notice in ['saved','updated','synced'] %}<p class="product-notice" role="status">{% if notice == 'saved' %}Your watch history and rating were saved.{% elif notice == 'synced' %}Plex sync finished. Review your collection below.{% else %}Check finished. Review the current result below.{% endif %}</p>{% endif %}
+{% if sync_result %}<section class="product-notice tv-sync-result" role="status"><p>Imported {{ sync_result.imported | default(0) }} shows. {{ sync_result.skipped | default(0) }} skipped.{% if sync_result.remaining %} More shows remain to check.{% else %} This sync pass is complete.{% endif %}</p>{% if sync_result.remaining %}<form method="post" action="/plus/tv/sync" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="offset" value="{{ sync_result.next_offset | default(0) }}"><button class="button button-secondary" data-busy-label="Reading Plex…" type="submit">Continue Plex sync</button></form>{% endif %}</section>{% endif %}
+{% if tv_error %}<section class="utility-panel tv-connection" role="status"><h2>TV shows need a connection check</h2><p>{{ tv_error }}</p><a class="button button-secondary" href="/plus/settings/connections">Review connections</a></section>{% endif %}
+{% if cards %}
+<header class="stream-section-heading"><div><h2>{% if query %}Search results{% elif view == 'watching' %}Pick up where you left off{% elif view == 'completed' %}Shows you have watched{% else %}Your collection{% endif %}</h2></div><span class="movie-result-count">{{ cards | length }} {{ 'show' if cards | length == 1 else 'shows' }}</span></header>
+<div class="tv-grid">
+{% for card in cards %}
+<article class="tv-card">
+<a class="tv-card-link" href="/plus/tv/{{ card.tmdb_id }}" aria-label="View {{ card.title }}{% if card.year %}, {{ card.year }}{% endif %}">
+<div class="tv-poster">{% if card.poster_url %}<img src="/plus/tv/{{ card.tmdb_id }}/artwork?variant=poster" alt="" width="300" height="450" loading="lazy" data-poster>{% else %}<span class="tv-art-fallback" aria-hidden="true">TV</span>{% endif %}</div>
+<div class="tv-card-copy"><h3 title="{{ card.title }}">{{ card.title }}</h3><p class="tv-card-meta">{% if card.year %}<span>{{ card.year }}</span>{% endif %}<span>TV series</span></p></div>
+</a>
+<div class="tv-card-facts"><span>{{ card.watch_status_label | default(card.status | replace('_',' ') | title if card.status_source and card.status_source != 'none' else 'Not tracked') }}{% if card.watched_episodes %} · {{ card.watched_episodes }} {{ "episode" if card.watched_episodes == 1 else "episodes" }} watched{% endif %}</span>{% if card.rating %}<span>Your rating {{ card.rating }}/10</span>{% endif %}<span class="collection-card-availability">{{ card.plex_summary | default('In Plex' if card.in_plex_episodes else 'Availability unknown') }}</span></div>
+{% if card.in_plex_episodes or card.plex_observed_at %}<details class="tv-card-inventory"><summary>Availability details</summary>{% if card.in_plex_episodes %}<p>{{ card.plex_indexed_episodes | default(card.in_plex_episodes) }} episodes indexed.</p>{% endif %}{% if card.plex_observed_at %}<p>Last observed <time datetime="{{ card.plex_observed_at }}" data-local-datetime="{{ card.plex_observed_at }}">{{ card.plex_observed_at }} UTC</time>.</p>{% endif %}{% if card.season_coverage_known %}{% for season in card.plex_season_coverage %}<p>{{ 'Specials' if season.season_number == 0 else 'Season ' ~ season.season_number }}: {{ season.in_plex }}/{{ season.released_total }} released episodes in Plex.</p>{% endfor %}{% else %}<p>Season coverage unknown.</p>{% endif %}<p>Library presence does not verify media bytes or playback.</p></details>{% endif %}
+</article>
+{% endfor %}
+</div>
+{% if collection_page and (collection_page.has_more or collection_page.previous_offset is not none) %}<nav class="pagination" aria-label="TV collection pages">{% if collection_page.previous_offset is not none %}<a class="button button-secondary" href="/plus/tv?view={{ view }}&offset={{ collection_page.previous_offset }}" rel="prev">Previous shows</a>{% endif %}<span>{{ collection_page.offset + 1 }}–{{ collection_page.offset + cards | length }} of {{ collection_page.total }}</span>{% if collection_page.has_more %}<a class="button button-secondary" href="/plus/tv?view={{ view }}&offset={{ collection_page.next_offset }}" rel="next">More shows</a>{% endif %}</nav>{% endif %}
+{% elif not tv_error %}
+<section class="product-empty tv-empty"><span class="section-index">Your next series</span><h2>{% if query %}No shows found{% elif view == 'watching' %}Nothing in progress yet{% elif view == 'completed' %}Your finished shows will live here{% else %}Make room for a new favourite{% endif %}</h2><p>{% if query %}Try a different title or an exact TMDB ID.{% elif view == 'all' %}Search for a show to explore its seasons, or import your saved Plex collection below.{% else %}Open a show and save your watch status. Episode progress and Plex availability stay separate.{% endif %}</p>{% if query or view != 'all' %}<a class="button button-secondary" href="/plus/tv">Back to collection</a>{% endif %}</section>
+{% endif %}
+<details class="tv-tools"><summary>Bring your saved Plex collection here</summary><p>Import exact-ID TV shows from Plex. Open a show and choose Check in Plex to import its episode coverage and recorded watched history. Searching the catalog does not change your collection or mark episodes watched.</p><form method="post" action="/plus/tv/sync" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="offset" value="0"><button class="button button-secondary" type="submit" data-busy-label="Reading Plex…">Sync collection from Plex</button></form></details>
+</div>
+{% endblock %}

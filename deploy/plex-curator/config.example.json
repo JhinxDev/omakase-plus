@@ -1,0 +1,48 @@
+{
+  "schema_version": "curator-config-v6",
+  "source_root": "/srv/media/source",
+  "overlay_root": "/srv/media/omakase-overlay",
+  "riven_roots": [
+    "/srv/media/existing-tv",
+    "/srv/media/existing-movies"
+  ],
+  "mount_aliases": {
+    "/media/source": "/srv/media/source"
+  },
+  "excluded_source_folders": [],
+  "trusted_allowlist": {
+    "schema_version": "trusted-anime-allowlist-v1",
+    "entries": []
+  },
+  "plex": {
+    "base_url": "http://127.0.0.1:32400",
+    "container_name": "plex",
+    "overlay_path": "/library/symlinks/omakase",
+    "preferences_xml": "/srv/plex/config/Library/Application Support/Plex Media Server/Preferences.xml",
+    "riven_movies_path": "/library/symlinks/movies",
+    "library_names": {
+      "anime": "Anime",
+      "anime_movies": "Anime Movies",
+      "tv": "TV Shows",
+      "movies": "Movies"
+    }
+  },
+  "runtime": {
+    "manifest_url": "https://omakase.example.com/plus/api/library-manifest",
+    "receipt_url": "https://omakase.example.com/plus/api/curator-receipts",
+    "state_root": "/var/lib/omakase-plex-curator",
+    "lock_path": "/run/lock/omakase-plex-curator.lock"
+  },
+  "subtitles": {
+    "ffprobe_path": "/usr/bin/ffprobe",
+    "require_english_subtitle": true
+  },
+  "metadata_match_hints": {
+    "schema_version": "plex-match-hints-v1",
+    "entries": []
+  },
+  "collection_overrides": {
+    "schema_version": "anime-collection-overrides-v1",
+    "entries": {}
+  }
+}

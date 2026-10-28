@@ -1,0 +1,66 @@
+{
+  "retrieved": "2026-10-27",
+  "usage": "Unmodified upstream service identity assets; trademarks remain with their owners. No endorsement, no runtime third-party image requests.",
+  "assets": [
+    {
+      "asset": "realdebrid.png",
+      "source": "https://fcdn.real-debrid.com/0840/favicons/android-chrome-192x192.png",
+      "bytes": 8441,
+      "sha256": "f5dfe480bd6c4a8c6ae3fa31394d2546fa19915611a999d1dcd5720c7b2119d0",
+      "size": [
+        192,
+        192
+      ]
+    },
+    {
+      "asset": "riven.png",
+      "source": "https://raw.githubusercontent.com/rivenmedia/riven-frontend/3c9298115672738b259cdc75baced3b90bbf8d34/static/favicon-32x32.png",
+      "bytes": 952,
+      "sha256": "2139cee371944f1b95b774e1ccdeb1279c8edd00c31d0e524b691b13049a8019",
+      "size": [
+        32,
+        32
+      ]
+    },
+    {
+      "asset": "seerr.png",
+      "source": "https://raw.githubusercontent.com/seerr-team/seerr/84eae6727cbd57f280232ec3761b4878b513af98/public/os_logo_filled.png",
+      "bytes": 7834,
+      "sha256": "7fa6fbb8c21df9d51b25347b43df456603bf33c9cbcc668e26ab01137601aed8",
+      "size": [
+        96,
+        96
+      ]
+    },
+    {
+      "asset": "prowlarr.png",
+      "source": "https://raw.githubusercontent.com/Prowlarr/Prowlarr/23b38d77843c5430214a2808532995d4b30bd31a/Logo/128.png",
+      "bytes": 12038,
+      "sha256": "a6b3b8c2587710df344b55eeab4314e4213a9bc728dd423b35d6ed024c04c169",
+      "size": [
+        128,
+        128
+      ]
+    },
+    {
+      "asset": "anilist.png",
+      "source": "https://anilist.co/img/icons/android-chrome-192x192.png",
+      "bytes": 1578,
+      "sha256": "ea00d67ef1bde31416b7bd02a7bac13f60546bb5bf8990173337be6b9ad58fa9",
+      "size": [
+        192,
+        192
+      ]
+    },
+    {
+      "asset": "plex.png",
+      "source": "https://raw.githubusercontent.com/plexinc/plex-media-player/d9685b274934855a707a37613cae09108ee9db6c/resources/images/icon.png",
+      "bytes": 40769,
+      "sha256": "ecb6c7cd297136b6fb8efddb1b01c72128b86c6cef3f27da65936c4ef8f2ac3c",
+      "size": [
+        256,
+        256
+      ]
+    }
+  ]
+}

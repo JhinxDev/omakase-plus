@@ -1,0 +1,52 @@
+# Advanced authenticated Plus configuration. Prefer compose.standalone.yaml for a first app-only install.
+# Set an explicit source build context and site configuration for your host.
+
+services:
+  omakase-plus:
+    container_name: omakase-plus
+    build:
+      context: .
+      args:
+        OMAKASE_REVISION: ${OMAKASE_REVISION:?set exact source commit}
+    image: omakase-plus:${OMAKASE_REVISION:?set exact source commit}
+    restart: unless-stopped
+    ports:
+      - "${OMAKASE_BIND_ADDRESS:-127.0.0.1}:8766:8765"
+    environment:
+      OMAKASE_ENV: production
+      OMAKASE_PLUS_PRIVATE: "true"
+      OMAKASE_PLUS_URL: ${OMAKASE_PLUS_URL:-http://localhost:8766}
+      OMAKASE_ALLOWED_HOSTS: ${OMAKASE_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      # Empty means derive Secure from OMAKASE_PLUS_URL (HTTPS => Secure).
+      OMAKASE_SESSION_COOKIE_SECURE: ${OMAKASE_SESSION_COOKIE_SECURE:-}
+      OMAKASE_ALLOW_PRIVATE_LLM_URLS: ${OMAKASE_ALLOW_PRIVATE_LLM_URLS:-false}
+      OMAKASE_ALLOW_PRIVATE_CATALOG_URLS: ${OMAKASE_ALLOW_PRIVATE_CATALOG_URLS:-false}
+      OMAKASE_ANIMETOSHO_ENABLED: ${OMAKASE_ANIMETOSHO_ENABLED:-false}
+      OMAKASE_REVISION: ${OMAKASE_REVISION:?set exact source commit}
+      OMAKASE_DATA_DIR: /home/omakase/data
+      OMAKASE_PLUS_MASTER_KEY: ${OMAKASE_PLUS_MASTER_KEY}
+      OMAKASE_LIBRARY_MANIFEST_TOKEN: ${OMAKASE_LIBRARY_MANIFEST_TOKEN}
+      OMAKASE_SEED_EMAIL: ${OMAKASE_SEED_EMAIL:-}
+      OMAKASE_SEED_PASSWORD: ${OMAKASE_SEED_PASSWORD:-}
+      ANILIST_CLIENT_ID: ${ANILIST_CLIENT_ID:-}
+      ANILIST_CLIENT_SECRET: ${ANILIST_CLIENT_SECRET:-}
+      OMAKASE_PLUS_APPLE_TV_WATCH_ENABLED: ${OMAKASE_PLUS_APPLE_TV_WATCH_ENABLED:-false}
+    volumes:
+      - ./data:/home/omakase/data
+    # No watchtower label — this is a private instance, manually updated.
+
+  prowlarr:
+    profiles: ["catalogs"]
+    container_name: omakase-plus-prowlarr
+    image: ${PROWLARR_IMAGE:-lscr.io/linuxserver/prowlarr:2.6.5.5623-ls165@sha256:b3b00047ed20f6ce2b16780145cb6a0acb51c9e28ea6aa6f5dcd33c7034f1797}
+    restart: unless-stopped
+    ports:
+      - "${PROWLARR_BIND_ADDRESS:-127.0.0.1}:${PROWLARR_PORT:-9696}:9696"
+    environment:
+      PUID: ${PROWLARR_PUID:-1000}
+      PGID: ${PROWLARR_PGID:-1000}
+      TZ: ${TZ:-Etc/UTC}
+    volumes:
+      - ./data/prowlarr:/config
+    security_opt:
+      - no-new-privileges:true

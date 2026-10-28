@@ -1,0 +1,22 @@
+[Unit]
+Description=Omakase media coverage reconciliation
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RuntimeDirectory=omakase-media-sync
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/flock -n /run/omakase-media-sync/sync.lock /usr/bin/docker exec omakase-plus omakase plus sync-media
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run/omakase-media-sync
+RestrictSUIDSGID=true
+LockPersonality=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

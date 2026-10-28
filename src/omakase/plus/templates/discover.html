@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}For you · Omakase{% endblock %}
+{% block eyebrow %}A little more you. A little less scrolling.{% endblock %}
+{% block page_title %}{% if discover_mode == 'add' %}Add to your library{% else %}Find your next favorite.{% endif %}{% endblock %}
+{% block page_intro %}<p class="page-intro">{% if discover_mode == 'add' %}Confirm the exact title and season, then check your options.{% else %}Your ratings, your taste, and a reason behind every pick.{% endif %}</p>{% endblock %}
+{% block page_actions %}{% if latest and latest.picks %}<a class="button button-primary" href="#recommendation-controls" data-open-details>Make a new menu</a>{% endif %}<a class="button button-secondary" href="/plus/search">Search titles</a>{% endblock %}
+{% block content %}
+{% if movies_enabled %}<nav class="movie-tabs" aria-label="Discover media"><a href="/plus/discover" aria-current="page">Anime</a><a href="/plus/discover/movies">Movies</a></nav>{% endif %}
+{% if discover_mode == 'add' %}<nav class="discover-mode-switch" aria-label="Discover mode">
+  <a href="/plus/discover" {% if discover_mode == 'recommend' %}aria-current="page"{% endif %}>For you</a>
+  <a href="/plus/discover?mode=add" {% if discover_mode == 'add' %}aria-current="page"{% endif %}>Find a specific anime</a>
+</nav>{% endif %}
+{% if discover_mode == 'add' %}
+<section class="utility-panel add-search" aria-labelledby="add-direct-heading">
+  <header class="panel-heading"><div><h2 id="add-direct-heading">What are you looking for?</h2><p>Search a title, or paste its AniList link.</p></div></header>
+  <form class="product-form add-intake-form" method="post" action="/plus/add/preview" data-busy-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label><span>Anime title or AniList link</span><input type="search" name="query" maxlength="500" placeholder="Frieren: Beyond Journey's End" required autofocus></label>
+    <label><span>Season or arc <small>optional</small></span><input type="text" name="season" maxlength="100" placeholder="Season 2"></label>
+    <button class="button button-primary" type="submit" data-busy-label="Finding exact matches…">Find anime</button>
+  </form>
+</section>
+{% else %}
+{% set prefs = discovery_preferences or {} %}
+{% set worker = codex_worker or {} %}
+<div class="discover-layout discovery-layout streaming-discovery{% if latest and latest.picks %} has-picks{% endif %}">
+  <div class="discovery-sidebar">
+    <details id="recommendation-controls" class="recommendation-builder" {% if not latest %}open{% endif %}>
+      <summary><div><strong>A menu made for you</strong><small>Choose a mood. Let your taste lead the way.</small></div><span>Customize <span aria-hidden="true">+</span></span></summary>
+    <section class="editorial-panel discover-control" aria-labelledby="discover-control-heading">
+      <header class="panel-heading"><div><span class="section-index">Your next watch</span><h2 id="discover-control-heading">Make it personal</h2></div></header>
+      <form id="run-form" class="product-form" data-success-url="/plus/discover" data-active-job="{{ active_job_id or '' }}">
+        <fieldset class="lane-selector">
+          <legend>Where should we look?</legend>
+          {% for value, title, copy in [
+            ('best_match','Best match','Start with what you love'),
+            ('hidden_gems','Hidden gems','Go beyond the usual favorites'),
+            ('new_seasons','New seasons','More from a favorite world'),
+            ('plan_list','Your watchlist','Find the one to start next')
+          ] %}
+          <label><input type="radio" name="lane" value="{{ value }}" {% if (prefs.lane or 'best_match') == value %}checked{% endif %}><span><strong>{{ title }}</strong><small>{{ copy }}</small></span></label>
+          {% endfor %}
+        </fieldset>
+        <label class="mood-field"><span>What sounds good tonight? <small>optional</small></span><textarea id="run-mood" name="mood" rows="3" maxlength="500" placeholder="A clever mystery, strong characters, no slow opening…">{{ prefs.mood or '' }}</textarea></label>
+        <div class="form-pair">
+          <label><span>Length</span><select id="run-max-episodes" name="max_episodes">{% for value, label in [(0,'Any length'),(12,'Up to 12 episodes'),(13,'Up to 13 episodes'),(26,'Up to 26 episodes'),(50,'Up to 50 episodes')] %}<option value="{{ value }}" {% if (prefs.max_episodes or 0) == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+          <label><span>Suggestions</span><input id="run-count" type="number" name="count" value="{{ prefs.count or 8 }}" min="3" max="15" required></label>
+        </div>
+        <label class="check-preference"><input id="run-completed" type="checkbox" name="completed_only" {% if prefs.completed_only %}checked{% endif %}><span>Only finished seasons<small>A complete story I can watch at my own pace</small></span></label>
+        <div class="discovery-engine">
+          <label><span>Choose your AI</span><select id="run-provider" name="provider"><option value="configured" {% if not worker.online or prefs.provider != 'codex' %}selected{% endif %}>Configured AI{% if configured_backend %} · {{ configured_backend | title }}{% endif %}</option><option value="codex" {% if not worker.online %}disabled{% elif prefs.provider == 'codex' %}selected{% endif %}>Codex subscription{% if not worker.online %} · PC offline{% endif %}</option></select></label>
+          <div id="codex-options" {% if prefs.provider != 'codex' or not worker.online %}hidden{% endif %}>
+            <label><span>Model</span><select id="run-model" name="model"><option value="gpt-6-astra" {% if prefs.model != 'gpt-6.1-sol' %}selected{% endif %}>Astra · deepest reasoning</option><option value="gpt-6.1-sol" {% if prefs.model == 'gpt-6.1-sol' %}selected{% endif %}>Sol · balanced</option></select></label>
+            <p class="field-help">Uses your signed-in Codex allowance and available credits.</p>
+          </div>
+          <div id="configured-options" {% if prefs.provider == 'codex' and worker.online %}hidden{% endif %}><label><span>Reasoning</span><select id="run-mode" name="mode"><option value="pro" {% if prefs.mode != 'fast' %}selected{% endif %}>Thoughtful</option><option value="fast" {% if prefs.mode == 'fast' %}selected{% endif %}>Quick</option></select></label><p class="field-help">Uses the provider in Settings. API billing is separate from your Codex subscription.</p></div>
+          <span class="worker-connection {% if worker.online %}is-online{% endif %}"><i aria-hidden="true"></i>{% if worker.online %}Codex worker connected{% else %}Codex worker offline{% endif %}</span>
+        </div>
+        <details class="discovery-advanced"><summary>List and account</summary><div class="form-pair"><label><span>Anime list</span><select id="run-source" name="source"><option value="anilist" {% if prefs.source != 'myanimelist' %}selected{% endif %}>AniList</option><option value="myanimelist" {% if prefs.source == 'myanimelist' %}selected{% endif %}>MyAnimeList</option></select></label><label><span>Username</span><input id="run-username" name="username" maxlength="100" value="{{ anilist_username }}" placeholder="Your list username"></label></div></details>
+        <input id="run-temp" type="hidden" value="0.4"><input id="run-planning" type="checkbox" hidden><input id="run-skip" type="checkbox" hidden>
+        <button id="run-btn" class="button button-primary button-wide" type="submit">Find my next anime <span aria-hidden="true">↗</span></button>
+        <p class="discovery-run-note">Recommendations only. You choose what to add.</p>
+      </form>
+      <div class="loading-state product-loading" id="loading" hidden aria-live="polite"><span class="loading-orbit" aria-hidden="true"></span><div><strong id="loading-text">Finding picks for your taste…</strong><small id="loading-elapsed">0s</small></div></div>
+      <div class="product-notice notice-danger" id="run-error" role="alert" hidden></div>
+    </section>
+    </details>
+    <details class="taste-editor editorial-panel"><summary><span><strong>Your taste notes</strong><small>{{ 'Included in your recommendations' if taste_profile else 'Tell Omakase what matters to you' }}</small></span><span aria-hidden="true">+</span></summary><form class="product-form" method="post" action="/plus/dashboard/profile" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="/plus/discover"><label><span>What you enjoy, what you avoid</span><textarea name="profile" maxlength="12000" rows="7" placeholder="Characters I care about, inventive worlds, satisfying endings. Avoid…">{{ taste_profile }}</textarea></label><button class="button button-secondary" type="submit" data-busy-label="Saving…">Save taste notes</button></form></details>
+  </div>
+  <section class="latest-tasting" aria-labelledby="latest-heading">
+    <header class="recommendation-heading"><div><span class="page-kicker">Picked with you in mind</span><h2 id="latest-heading">{% if latest %}Your tasting menu{% else %}A good evening starts here.{% endif %}</h2></div>{% if latest %}<time data-local-datetime="{{ latest.created_at }}" datetime="{{ latest.created_at }}">{{ latest.created_at }} UTC</time>{% endif %}</header>
+    <div id="results-list" aria-live="polite"></div>
+    {% if latest and latest.picks %}
+    <div class="tasting-list discovery-picks">
+      {% for pick in latest.picks %}
+      {% set recommendation_id = pick.media_id or pick.anilist_id %}
+      {% set source = pick.source or latest.source or 'anilist' %}
+      <article class="discovery-pick">
+        {% if recommendation_id %}<a class="pick-art poster-frame" href="/plus/discover/title/{{ recommendation_id }}?run={{ latest.id }}" aria-label="Details about {{ pick.title }}">{% if source == 'anilist' %}<img src="/plus/media/{{ recommendation_id }}/poster" alt="" loading="lazy" data-poster>{% endif %}<span class="pick-number">{{ "%02d" | format(loop.index) }}</span></a>{% else %}<div class="pick-art"><span class="pick-number">{{ "%02d" | format(loop.index) }}</span></div>{% endif %}
+        <div class="pick-content">
+          <div class="pick-title-row"><h3 title="{{ pick.title }}">{% if recommendation_id %}<a href="/plus/discover/title/{{ recommendation_id }}?run={{ latest.id }}">{{ pick.title }}</a>{% else %}{{ pick.title }}{% endif %}</h3><span class="pick-fit" role="group" aria-label="Predicted fit {{ pick.predicted_score }} out of 10"><strong>{{ pick.predicted_score }}</strong><small>fit /10</small></span></div>
+          <div class="pick-meta">{% if pick.airing_status %}<span>{{ pick.airing_status | replace('_',' ') | title }}</span>{% endif %}{% if pick.format == 'MOVIE' %}<span>Movie</span>{% elif pick.episodes %}<span>{{ pick.episodes }} episode{{ 's' if pick.episodes != 1 else '' }}</span>{% endif %}</div>
+          <p class="pick-reason">{{ pick.reasoning }}</p>
+          {% if pick.best_match_from_history %}<p class="pick-pairing"><span>Because you liked</span> {{ pick.best_match_from_history }}</p>{% endif %}
+          {% if pick.sequence_warning %}<p class="pick-caveat">{{ pick.sequence_warning }}</p>{% endif %}
+          <div class="pick-availability availability-{{ pick.availability_state or 'unknown' }}"><span class="availability-marker" aria-hidden="true"></span><span>{{ pick.availability or 'Availability not checked' }}{% if pick.library_id %} · {{ pick.verified_episodes }}/{{ pick.required_episodes }} verified{% endif %}</span></div>
+          <div class="pick-actions">
+            {% if pick.release_qualities %}<div class="release-quality" role="group" aria-label="Verified release quality">{% for quality in pick.release_qualities %}<span class="{{ 'quality-fallback' if quality == '720p' else '' }}">{{ quality }}{{ ' fallback' if quality == '720p' else ' release' }}</span>{% endfor %}</div>{% endif %}
+            {% if pick.library_id %}<a class="button button-primary" href="/plus/library/{{ pick.library_id }}">{{ 'View episodes' if pick.availability_state == 'ready' else 'Open library title' }}</a>{% elif recommendation_id and source == 'anilist' %}<form method="post" action="/plus/add/preview" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="query" value="https://anilist.co/anime/{{ recommendation_id }}/"><button type="submit" class="button button-secondary" data-busy-label="Checking title…">Check &amp; add to library</button></form>{% else %}<a class="button button-secondary" href="/plus/discover?mode=add">Find this anime</a>{% endif %}
+            <details class="pick-feedback-menu"><summary>Options <span aria-hidden="true">+</span></summary><div class="feedback-actions product-feedback" data-title="{{ pick.title }}" data-source="{{ source }}" data-media-id="{{ recommendation_id or '' }}" data-run-id="{{ latest.id }}">
+              {% if recommendation_id and source == 'anilist' %}<button type="button" class="text-action btn-plan" data-media-id="{{ recommendation_id }}" data-title="{{ pick.title }}">Save to watchlist</button>{% endif %}
+              <button type="button" class="text-action btn-feedback" data-feedback="not_for_me">Not for me</button>
+              <div class="pick-feedback-more"><button type="button" class="text-action btn-feedback" data-feedback="wrong_sequel">Wrong season</button><details class="watched-control"><summary>Already watched</summary><label><span>Score (optional)</span><select data-feedback-score><option value="">No score</option>{% for score in range(10, 0, -1) %}<option value="{{ score }}">{{ score }}/10</option>{% endfor %}</select></label><button type="button" class="button button-secondary btn-feedback" data-feedback="already_watched">Save watched</button></details></div>
+            </div></details>
+          </div>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+    <p class="recommendation-footnote">A predicted fit is a suggestion. Only verified library episodes count as ready.</p>
+    {% else %}
+    <div class="discovery-empty"><div class="discovery-empty-mark" aria-hidden="true">お</div><h3>{% if latest %}You’ve reviewed every pick.{% else %}Fewer guesses. Better evenings.{% endif %}</h3><p>{% if latest %}Your feedback will shape the next menu. Try another lane or a different mood.{% else %}Choose a lane, tell us what sounds good, and get a small menu of anime with reasons you can judge.{% endif %}</p><ol><li><strong>Your taste</strong><span>Ratings, dropped shows and your notes</span></li><li><strong>Real titles</strong><span>Grounded in your anime catalog</span></li><li><strong>Your choice</strong><span>Review, save, then check the library</span></li></ol></div>
+    {% endif %}
+    {% if runs | length > 1 %}<details class="run-archive editorial-panel"><summary>Earlier tasting menus <span>{{ runs | length - 1 }}</span></summary><div class="archive-grid">{% for run in runs %}{% if not latest or run.id != latest.id %}<a href="/plus/discover?run={{ run.id }}"><time data-local-datetime="{{ run.created_at }}" datetime="{{ run.created_at }}">{{ run.created_at }} UTC</time><span>{{ run.picks | length }} picks · {{ run.source | replace('anilist', 'AniList') | replace('myanimelist', 'MyAnimeList') }}</span></a>{% endif %}{% endfor %}</div></details>{% endif %}
+  </section>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,29 @@
+[Unit]
+Description=Omakase manifest-backed Plex anime curator (configure paths for this host)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/omakase/plex-curator.env
+WorkingDirectory=/opt/omakase-plex-curator/current
+ExecStartPre=/usr/bin/test -x /usr/bin/ffprobe
+ExecStartPre=/usr/bin/test -x /usr/bin/ffmpeg
+ExecStart=/opt/omakase-plex-curator/venv/bin/python /opt/omakase-plex-curator/current/deploy/plex-curator/curator_runtime.py auto --config /etc/omakase/plex-curator.json --plan /var/lib/omakase-plex-curator/approved-plan.json --backup-receipt /var/lib/omakase-plex-curator/backups/latest/receipt.json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectClock=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadOnlyPaths=-/srv/media/source -/srv/media/existing-tv -/srv/media/existing-movies -/srv/plex/config
+ReadWritePaths=/srv/media/omakase-overlay /var/lib/omakase-plex-curator /run/lock
+RestrictSUIDSGID=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

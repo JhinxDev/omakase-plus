@@ -1,0 +1,11 @@
+<section id="preferences" class="editorial-panel settings-section">
+    <header class="panel-heading"><div><h2>Recommendation defaults</h2></div></header>
+    <div class="settings-field">
+      <div><label for="llm_backend">AI provider</label><p>Used to make recommendations for your taste.</p></div>
+      <div class="field-control"><select id="llm_backend" name="llm_backend">{% for backend in backends %}<option value="{{ backend }}" {% if backend == stored_backend %}selected{% endif %}>{{ backend_labels.get(backend, backend | title) }}</option>{% endfor %}</select></div>
+    </div>
+    <div class="settings-field">
+      <div><label for="anilist_username">Default AniList username</label><p>Pre-fills Discover and bulk anime intake.</p></div>
+      <div class="field-control"><input type="search" id="anilist_username" name="anilist_username" value="{{ anilist_username }}" placeholder="Your AniList username" autocomplete="off" autocapitalize="none" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore="true"></div>
+    </div>
+  </section>

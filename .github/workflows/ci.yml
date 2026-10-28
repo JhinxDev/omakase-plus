@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install --require-hashes -r requirements-dev.txt
+      - name: Ruff check
+        run: ruff check .
+      - name: Ruff format check
+        run: ruff format --check .
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install media probe tools
+        timeout-minutes: 5
+        run: |
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=1 update
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=1 install --no-install-recommends -y ffmpeg
+      - name: Install package + dev deps
+        run: |
+          pip install --require-hashes -r requirements-dev.txt -r requirements-build.txt
+          pip install --no-build-isolation --no-deps -e .
+      - name: Run pytest
+        run: pytest -ra --cov=omakase --cov-report=term-missing
+
+  agent-protocol:
+    name: Optional MCP protocol
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked agent and test dependencies
+        run: |
+          pip install --require-hashes -r requirements-dev.txt -r requirements-build.txt -r requirements-agents.txt
+          pip install --no-build-isolation --no-deps -e .
+      - name: Test actual MCP subprocess and local boundaries
+        run: pytest -q tests/plus/test_agent_tools.py

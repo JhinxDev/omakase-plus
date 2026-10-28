@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% from "_settings_nav.html" import settings_nav %}
+{% block title %}Profile · Omakase{% endblock %}
+{% block eyebrow %}Settings{% endblock %}
+{% block page_title %}Your profile{% endblock %}
+{% block page_intro %}<p class="page-intro">A name and picture for your private account menu.</p>{% endblock %}
+{% block page_actions %}<a href="/plus/settings" class="button button-secondary">All settings</a>{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/plus/static/avatar.css?v={{ asset_version }}">
+<script src="/plus/static/profile.js?v={{ asset_version }}" defer></script>
+<div class="settings-workspace">{{ settings_nav('profile') }}<div class="settings-content">
+{% if profile_notice %}<div class="product-notice" role="status">{{ profile_notice }}</div>{% endif %}
+{% if profile_error %}<div class="product-notice profile-error" role="alert">{{ profile_error }}</div>{% endif %}
+<section class="editorial-panel profile-picture-panel" aria-labelledby="profile-name-heading">
+  <h2 id="profile-name-heading">Display name</h2>
+  <form method="post" action="/plus/account/profile" class="profile-picture-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="profile-picture-field"><label for="profile-display-name">Your name <span>(optional)</span></label><input id="profile-display-name" name="display_name" type="text" maxlength="80" autocomplete="nickname" value="{{ display_name }}" aria-describedby="profile-name-help"></div>
+    <p id="profile-name-help" class="profile-picture-help">Shown alongside your email in the account menu. Leave blank to remove it. This does not change your sign-in email or Google account.</p>
+    <div class="profile-picture-submit"><button class="button button-primary" type="submit">Save name</button></div>
+  </form>
+</section>
+<section class="editorial-panel profile-picture-panel" aria-labelledby="profile-picture-heading">
+  <div class="profile-picture-preview">
+    <div class="profile-picture-current" data-avatar-current>{% if avatar_available %}<img class="profile-picture-image" src="/plus/account/avatar?v={{ avatar_revision }}" alt="Your current profile picture" width="112" height="112">{% else %}<span class="profile-picture-initial" role="img" aria-label="Your account initial">{{ email[:1] | upper }}</span>{% endif %}</div>
+    <canvas class="profile-picture-image" data-avatar-preview width="192" height="192" aria-label="Preview of your selected profile picture" hidden></canvas>
+    <div><h2 id="profile-picture-heading">Profile picture</h2><p>{{ 'Your picture appears in the account menu.' if avatar_available else 'Your initial is shown until you add a picture.' }}</p></div>
+  </div>
+  <form method="post" action="/plus/settings/profile" enctype="multipart/form-data" class="profile-picture-form" data-avatar-form data-busy-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="profile-picture-field"><label for="profile-picture-upload">{{ 'Choose a replacement picture' if avatar_available else 'Choose your picture' }}</label><input id="profile-picture-upload" name="avatar" type="file" accept="image/jpeg,image/png,image/webp" aria-describedby="profile-picture-help" required></div>
+    <p id="profile-picture-help" class="profile-picture-help">JPEG, PNG or WebP, up to 8 MiB. Still pictures only. Your picture is centered and cropped to a square. Location and other file metadata are removed.</p>
+    <p class="profile-picture-help" data-avatar-status role="status" hidden></p>
+    <div class="profile-picture-submit"><button class="button button-primary" type="submit">{{ 'Replace picture' if avatar_available else 'Upload picture' }}</button><span>Visible only inside your private account.</span></div>
+  </form>
+  {% if avatar_available %}<form method="post" action="/plus/settings/profile/remove" class="profile-picture-remove"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="text-action text-danger">Remove picture</button><p>Your account returns to its initial.</p></form>{% endif %}
+</section>
+</div></div>
+{% endblock %}

@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Remove title · Omakase{% endblock %}
+{% block eyebrow %}Library actions{% endblock %}
+{% block page_title %}{{ 'Removal status' if removal.progress else 'Review removal' }}{% endblock %}
+{% block page_intro %}<p class="page-intro">{{ removal.title }}{% if removal.season_number %} · Season {{ removal.season_number }}{% endif %}</p>{% endblock %}
+{% block page_actions %}
+<a class="button button-secondary" href="/plus/library/{{ removal.monitor_id }}" autofocus>{{ 'Back to title' if removal.progress else 'Cancel' }}</a>
+{% endblock %}
+{% block content %}
+<section class="removal-review" aria-labelledby="removal-heading">
+  <header class="removal-heading">
+    <img class="removal-poster" src="/plus/media/{{ removal.anilist_id }}/poster" alt="" width="80" height="120" data-poster>
+    <div><span class="section-index">Anime · {{ 'Removal status' if removal.progress else 'Media removal' }}</span>
+    <h2 id="removal-heading">{{ removal.title }}</h2>
+    <p>{% if removal.season_number %}Season {{ removal.season_number }} · {% endif %}Watch history and ratings stay saved.</p></div>
+  </header>
+
+  {% if error %}
+  <div class="product-notice notice-danger removal-error" role="alert">{{ error }}</div>
+  {% endif %}
+
+  {% if removal.progress %}
+  {% set progress = removal.progress %}
+  <div class="removal-status" role="status" aria-live="polite">
+    {% if progress.status == 'awaiting_plex' %}
+    <h3>Queued · waiting for Plex</h3><p>Monitoring has stopped. Omakase is waiting for the next library sync to confirm removal from Plex. {% if progress.scope == 'plex_only' %}Source media will be kept.{% else %}Source downloads stay in place until then.{% endif %}</p>
+    {% elif progress.status == 'plex_removed' %}
+    <h3>In progress · removed from Plex</h3><p>{% if progress.scope == 'plex_only' %}The library update is finishing. Source media is kept.{% else %}Eligible Real-Debrid items are next. Shared and adopted items are kept.{% endif %}</p>
+    {% elif progress.status == 'provider_failed' %}
+    <h3>{{ 'Partially completed' if progress.deleted_count else 'Cleanup failed' }}</h3><p>Removed from Plex. {{ progress.deleted_count }} Real-Debrid item{{ 's' if progress.deleted_count != 1 else '' }} removed; {{ progress.failed_count + progress.pending_count }} still {{ 'need' if progress.failed_count + progress.pending_count != 1 else 'needs' }} cleanup. Omakase will retry unfinished items automatically.</p>
+    {% elif progress.status == 'complete' %}
+    <h3>Completed</h3><p>Removed from Plex.{% if progress.scope != 'plex_only' %} {{ progress.deleted_count }} eligible Real-Debrid item{{ 's' if progress.deleted_count != 1 else '' }} removed.{% endif %}</p>
+    {% else %}<h3>Removal needs attention</h3><p>Check the details below before taking another action.</p>{% endif %}
+    {% if progress.retained_count %}<p>{{ progress.retained_count }} source item{{ 's' if progress.retained_count != 1 else '' }} kept. Shared, adopted and unsupported source media are protected.</p>{% endif %}
+  </div>
+  <p class="removal-boundary"><strong>Watch history, progress and ratings are kept. AniList is unchanged.</strong></p>
+  <details class="removal-details"><summary>Technical details</summary><p>{{ progress.detail }}</p></details>
+  <div class="removal-actions"><a class="button button-primary" href="/plus/library/{{ removal.monitor_id }}">Back to title</a><a class="button button-secondary" href="/plus/library">Your anime</a></div>
+  {% else %}
+  <p class="removal-lead">Remove this anime’s managed media from Plex{% if removal.eligible_provider_count %} and delete eligible Real-Debrid downloads{% endif %}. Automatic monitoring will stop. This does not remove your tracking entry.</p>
+  {% if removal.shared_plex_title %}
+  <div class="product-notice notice-danger removal-error" role="alert">
+    <strong>Removal is blocked.</strong> Another Omakase library uses this Plex title. Their media must stay available.
+  </div>
+  {% elif removal.asset_count == 0 %}
+  <p class="product-notice" role="status">There is no managed media to remove for this title.</p>
+  {% endif %}
+
+  <ol class="removal-sequence" aria-label="Removal order">
+    <li>
+      <span>01</span>
+      <div><strong>Remove from Plex</strong><small>This title and season leave the managed library after a sync. Automatic monitoring stops.</small></div>
+    </li>
+    <li>
+      <span>02</span>
+      <div><strong>Wait for Plex to finish</strong><small>Source downloads stay in place until Plex confirms removal.</small></div>
+    </li>
+    <li>
+      <span>03</span>
+      <div>
+        <strong>{% if removal.eligible_provider_count %}Delete eligible Real-Debrid downloads{% else %}Keep source downloads{% endif %}</strong>
+        <small>{% if removal.eligible_provider_count %}{{ removal.eligible_provider_count }} Omakase-owned Real-Debrid item{% if removal.eligible_provider_count != 1 %}s{% endif %} eligible. {% endif %}{{ removal.retained_asset_count }} adopted, shared, or unsupported source item{% if removal.retained_asset_count != 1 %}s{% endif %} kept.</small>
+      </div>
+    </li>
+  </ol>
+
+  <div class="removal-boundary">
+    <strong>Watch history and ratings are kept. AniList will not change.</strong>
+    <p>Your completion, episode progress, and scores stay saved.</p>
+  </div>
+
+  <form class="removal-form" method="post" action="/plus/library/{{ removal.monitor_id }}/remove" data-busy-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="confirmation">
+      <span>Type {{ removal.title }} to confirm</span>
+      <input
+        id="confirmation"
+        name="confirmation"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        required
+        aria-describedby="confirmation-help"
+      >
+    </label>
+    <p id="confirmation-help">{% if removal.eligible_provider_count %}Deleting Real-Debrid downloads cannot be undone.{% else %}Source files will be kept. This removes the managed Plex publication.{% endif %}</p>
+    <div class="removal-actions"><a class="button button-secondary" href="/plus/library/{{ removal.monitor_id }}">Cancel</a>
+    <button
+      class="button button-danger button-wide"
+      type="submit"
+      data-busy-label="Starting removal…"
+      {% if removal.shared_plex_title or removal.asset_count == 0 %}disabled{% endif %}
+    >Remove from Plex{% if removal.eligible_provider_count %} and Real-Debrid{% endif %}</button></div>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

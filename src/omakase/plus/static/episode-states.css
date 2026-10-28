@@ -1,0 +1,91 @@
+/* Viewing progress owns the tile. Media verification owns only its green check. */
+.viewer-episodes .viewer-episode {
+  background:#131925;
+  border:1px solid #344052;
+  outline:none;
+  min-width:0;
+}
+.viewer-episodes .viewer-episode.is-verified { background:#131925; border-color:#344052; }
+.viewer-episodes .viewer-episode.is-watched { background:#25223a; border-color:#554771; }
+.viewer-episodes .viewer-episode.is-watched .episode-number,
+.viewer-episodes .viewer-episode.is-watched .episode-watch-state { color:#d1bdf4; }
+.viewer-episodes .viewer-episode.is-next { border-color:#bba5e9; outline:1px solid #bba5e9; outline-offset:1px; }
+.viewer-episodes .viewer-episode.is-next .episode-watch-state { color:#d1bdf4; }
+.viewer-episodes .viewer-episode.is-upcoming { background:#101620; border:1px dashed #485369; outline:none; }
+.viewer-episodes .viewer-episode.is-upcoming .episode-watch-state,
+.viewer-episodes .episode-readiness { color:#aebbd0; }
+.viewer-episodes .episode-copy { min-width:0; }
+.viewer-episodes .episode-readiness { display:inline-flex; align-items:center; min-height:20px; line-height:1.5; }
+.viewer-episodes .episode-verification-icon { display:inline-flex; align-items:center; justify-content:center; width:19px; height:19px; box-sizing:border-box; border:1px solid #4e9874; border-radius:50%; color:#a2e6bd; background:#183428; }
+.viewer-episodes .episode-watch-state { font-size:.7rem; line-height:1.5; }
+.viewer-episodes .episode-release-date time { white-space:nowrap; }
+/* Keep operational detail legible without nesting a wall of dark panels. */
+.title-technical-details { color:#e6eaf2; }
+.title-technical-details > summary { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px 24px; font-size:1rem; font-weight:600; }
+.title-technical-details .title-media-summary { display:flex; flex-wrap:wrap; align-items:center; gap:12px; font-size:.875rem; color:#bdc9db; font-weight:400; }
+.title-technical-details .title-status-board { display:flex; flex-wrap:wrap; gap:20px 32px; padding:24px 0; margin:0 24px; background:transparent; border:0; border-bottom:1px solid #364152; }
+.title-technical-details .title-status-board::before { display:none; }
+.title-technical-details .title-status-board > div { flex:1 1 300px; min-width:0; }
+.title-technical-details .title-status-board h2 { font-size:1.35rem; line-height:1.35; margin:12px 0 8px; color:#f1f3f8; }
+.title-technical-details .title-status-board p { color:#bdc9db; font-size:.9375rem; line-height:1.7; margin:0; max-width:55ch; }
+.title-technical-details .title-status-board dl { display:flex; flex-wrap:wrap; gap:20px 28px; margin:0; }
+.title-technical-details .title-status-board dl > div { border:0; padding:0; min-width:75px; }
+.title-technical-details .title-status-board dt { font-size:.8125rem; line-height:1.5; color:#bdc9db; text-transform:none; }
+.title-technical-details .title-status-board dd { font-size:1.3rem; margin:6px 0 0; color:#f1f3f8; }
+.title-technical-details .title-grid { padding:24px!important; gap:32px; align-items:start; }
+.title-technical-details .editorial-panel { background:transparent; border:0; border-radius:0; box-shadow:none; }
+.title-technical-details .panel-heading { padding:0 0 18px; margin-bottom:18px; border-bottom:1px solid #364152; }
+.title-technical-details .panel-heading h2 { font-size:1.125rem; color:#f1f3f8; }
+.title-technical-details .panel-heading .section-index { color:#b9b0d2; font-size:.75rem; }
+.title-technical-details .asset-stack { padding:0; gap:20px; background:transparent; }
+.title-technical-details .asset-card { background:#192230; border:1px solid #3b485b; border-radius:8px; padding:20px; color:#e6eaf2; }
+.title-technical-details .asset-card > header { gap:16px; padding:0 0 16px; background:none; }
+.title-technical-details .asset-card h3 { font-size:1rem; line-height:1.5; color:#f1f3f8; margin:6px 0 0; }
+.title-technical-details .provider-mark { color:#bdc9db; font-size:.8125rem; letter-spacing:.03em; }
+.title-technical-details .mono-data { color:#d5deeb; font-size:.875rem; }
+.title-technical-details .asset-coverage { display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; font-size:.875rem; line-height:1.6; padding:14px 0; border-block:1px solid #3b485b; }
+.title-technical-details .asset-coverage span { color:#bdc9db; }
+.title-technical-details .asset-coverage strong { color:#f1f3f8; }
+.title-technical-details .subtitle-summary { background:transparent; border:0; padding:16px 0; margin:0; }
+.title-technical-details .subtitle-summary strong { display:block; color:#e7e1f6; font-size:.875rem; line-height:1.6; }
+.title-technical-details .subtitle-summary small { display:block; color:#bdc9db; font-size:.875rem; line-height:1.7; margin-top:4px; }
+.title-technical-details .subtitle-ledger { margin:0 0 16px; }
+.title-technical-details .subtitle-ledger :is(b,small) { color:#d1dbea; font-size:.8125rem; }
+.title-technical-details :is(.evidence-drawer,.other-release-history,.media-last-check) { background:transparent; border:0; border-top:1px solid #3b485b; border-radius:0; padding:0; margin-top:16px; }
+.title-technical-details :is(.evidence-drawer,.other-release-history,.media-last-check) > summary { min-height:48px; font-size:.875rem; font-weight:600; color:#d9c6fb; padding:14px 0; }
+.title-technical-details .evidence-drawer dl { margin:8px 0 20px; display:grid; grid-template-columns:1fr; gap:16px; }
+.title-technical-details .evidence-drawer dl > div { display:block; padding:0; border:0; }
+.title-technical-details .evidence-drawer dt { font-size:.8125rem; color:#bdc9db; line-height:1.6; margin:0 0 4px; }
+.title-technical-details .evidence-drawer dd { margin:0; color:#e6eaf2; font-size:.875rem; line-height:1.7; overflow-wrap:anywhere; }
+.title-technical-details .asset-source { font-family:inherit; word-break:normal; overflow-wrap:anywhere; white-space:normal; overflow:visible; text-overflow:clip; }
+.title-technical-details :is(.asset-action-help,.evidence-warning,.quiet-state p,.media-last-check p,.other-release-list p,.other-release-list small) { color:#bdc9db; font-size:.875rem; line-height:1.7; }
+.title-technical-details .asset-actions { display:flex; flex-wrap:wrap; gap:12px 20px; padding:0; }
+.title-technical-details .asset-actions .text-action { color:#d9c6fb; font-size:.875rem; min-height:44px; text-align:left; padding:8px 0; }
+.title-technical-details .asset-actions .text-danger { color:#ffc5c0; }
+.title-technical-details .repair-list { border:0; padding:0; margin:0; background:none; }
+.title-technical-details .repair-list :is(form,a) { background:none; border:0; border-bottom:1px solid #364152; margin:0; padding:0; }
+.title-technical-details .repair-list button { display:block; width:100%; text-align:left; background:transparent; border:0; border-radius:0; padding:16px 0; min-height:48px; }
+.title-technical-details .repair-list button strong { display:block; color:#e6eaf2; font-size:.9375rem; line-height:1.6; }
+.title-technical-details .repair-list button span { display:block; color:#bdc9db; font-size:.875rem; line-height:1.7; margin-top:4px; }
+.title-technical-details .title-side { gap:32px; }
+.title-technical-details .brief-list { padding:0; }
+.title-technical-details .brief-list li { grid-template-columns:8px minmax(0,1fr); gap:6px 12px; padding:16px 0; }
+.title-technical-details .brief-list time { grid-column:1/-1; overflow-wrap:anywhere; }
+.title-technical-details .brief-list .event-dot { grid-column:1; grid-row:2; }
+.title-technical-details .brief-list li > div { grid-column:2; grid-row:2; min-width:0; }
+.title-technical-details .brief-list :is(time,small) { color:#bdc9db; font-size:.875rem; line-height:1.7; }
+.title-technical-details .brief-list small { white-space:normal; overflow:visible; max-width:none; }
+.title-technical-details .brief-list strong { color:#e6eaf2; font-size:.875rem; line-height:1.6; }
+.title-technical-details :is(summary,button,a):focus-visible { outline:2px solid #c3b1ff; outline-offset:4px; }
+@media(max-width:760px) {
+  .title-technical-details .title-status-board { margin-inline:16px; padding-block:20px; }
+  .title-technical-details .title-grid { display:block; padding:20px 16px!important; }
+  .title-technical-details .title-side { margin-top:32px; }
+  .title-technical-details .title-side > section + section { margin-top:32px; }
+  .title-technical-details .asset-card { padding:16px; }
+}
+@media (max-width:390px) {
+  .viewer-episodes .viewer-episode { gap:.75rem; padding:.85rem; }
+  .viewer-episodes .episode-number { font-size:1.15rem; }
+  .viewer-episodes .episode-copy h3 { font-size:.82rem; }
+}

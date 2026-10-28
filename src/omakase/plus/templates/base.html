@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+{% from "_icons.html" import icon %}
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#080d1a">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>{% block title %}Omakase{% endblock %}</title>
+  <link rel="preload" href="/plus/static/geist-variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="icon" type="image/svg+xml" href="/plus/static/omakase-icon.svg?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/dashboard.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/streaming.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/atmosphere.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/cinema.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/refinement.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/status-clarity.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/tv.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/hero-quality.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/removal.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/feedback.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/episode-states.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/semantic-states.css?v={{ asset_version }}">
+  <script src="/plus/static/hero-quality.js?v={{ asset_version }}" defer></script>
+  <script src="/plus/static/shelves.js?v={{ asset_version }}" defer></script>
+  <script src="/plus/static/search.js?v={{ asset_version }}" defer></script>
+  <script src="/plus/static/dashboard.js?v={{ asset_version }}" defer></script>
+</head>
+<body class="product-body page-{{ active_page }}">
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <div id="navigation-loading" class="navigation-loading" role="status" aria-live="polite" aria-atomic="true" hidden><span class="navigation-loading-track" aria-hidden="true"></span><span class="navigation-loading-label">Loading…</span></div>
+  <div class="stream-shell">
+    <header class="stream-header">
+      <a class="stream-brand" href="/plus/home" aria-label="Omakase Plus home">
+        <img src="/plus/static/omakase-seal.svg" alt="" width="30" height="30">
+        <span>Omakase <strong>Plus</strong></span>
+      </a>
+
+      {% set viewer_nav = [
+        ('home', '/plus/home', 'Home'),
+        ('library', '/plus/library', 'Anime')
+      ] %}
+      {% if movies_enabled %}{% set viewer_nav = viewer_nav + [('movies', '/plus/movies', 'Movies'), ('tv', '/plus/tv', 'TV Shows')] %}{% endif %}
+      {% set viewer_nav = viewer_nav + [('search', '/plus/search', 'Search'), ('discover', '/plus/discover', 'For you'), ('activity', '/plus/activity', 'History')] %}
+      <nav class="primary-nav" aria-label="Primary navigation">
+        {% for key, href, label in viewer_nav %}
+        {% if key != 'search' %}<a href="{{ href }}" {% if active_page == key %}aria-current="page"{% endif %}>{{ label }}</a>{% endif %}
+        {% endfor %}
+      </nav>
+
+      <form class="header-search" method="get" action="/plus/search" role="search" aria-label="Search anime, movies and TV shows" data-catalog-search>
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+        <input type="hidden" name="kind" value="all" data-search-kind>
+        <input type="search" name="q" aria-label="Search anime, movies and TV shows" placeholder="Search anime, movies, TV…" maxlength="120" autocomplete="off" value="{{ search_query | default('') }}" data-search-input>
+        <ul class="search-suggestions" data-search-suggestions role="listbox" aria-label="Matching titles" hidden></ul><p class="search-status" data-search-status role="status" hidden></p>
+      </form>
+      <a class="header-search-mobile" href="/plus/search" aria-label="Search anime, movies and TV shows"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg></a>
+
+      <details class="account-menu" data-account-menu>
+        <summary aria-label="Open account and utilities menu">
+          <span class="account-avatar" aria-hidden="true">{% if avatar_available %}<img src="/plus/account/avatar?v={{ avatar_revision }}" alt="" width="32" height="32">{% else %}{{ email[:1] | upper }}{% endif %}</span>
+          <span class="account-label">Account</span>
+        </summary>
+        <div class="account-popover">
+          {% if display_name %}<strong class="account-email">{{ display_name }}</strong>{% endif %}
+          <span class="account-email" title="{{ email }}">{{ email }}</span>
+          <a href="/plus/settings" {% if active_page == 'settings' %}aria-current="page"{% endif %}>Settings</a>
+          <form method="post" action="/plus/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit">Sign out</button>
+          </form>
+        </div>
+      </details>
+    </header>
+
+    {% if synthetic_review %}
+    <aside class="review-mode-banner" aria-label="Review environment">
+      <strong>Synthetic design review</strong>
+      <span>Sample titles and history. Production data is disconnected; external actions are blocked.</span>
+    </aside>
+    {% elif review_mode %}
+    <aside class="review-mode-banner" aria-label="Review environment">
+      <strong>Staging · Real production snapshot</strong>
+      <span>Your real library data is connected; external actions are disconnected.</span>
+    </aside>
+    {% endif %}
+
+    <div class="product-workspace">
+      {% block masthead %}
+      <div class="product-masthead" role="region" aria-label="Page overview">
+        <div>
+          <span class="page-kicker">{% block eyebrow %}Your private library{% endblock %}</span>
+          <h1>{% block page_title %}Omakase Plus{% endblock %}</h1>
+          {% block page_intro %}{% endblock %}
+        </div>
+        <div class="masthead-actions">{% block page_actions %}{% endblock %}</div>
+      </div>
+      {% endblock %}
+      <div class="notice-region" aria-live="polite">
+        {% if message %}<div class="product-notice" role="status">{{ message }}</div>{% endif %}
+      </div>
+      <main id="main-content" class="product-main" tabindex="-1">
+        {% block content %}{% endblock %}
+      </main>
+      <footer class="product-footer">
+        <span>Omakase Plus</span>
+        <span>Your collection. Your next story.</span>
+      </footer>
+    </div>
+  </div>
+
+  <nav class="mobile-primary-nav" aria-label="Mobile primary navigation">
+    <a href="/plus/home" {% if active_page == 'home' %}aria-current="page"{% endif %}><span class="nav-glyph" aria-hidden="true">{{ icon('home') }}</span><span>Home</span></a>
+    <details class="mobile-browse" data-mobile-browse><summary {% if active_page in ['library','movies','tv'] %}class="is-active"{% endif %}><span class="nav-glyph" aria-hidden="true">{{ icon('library') }}</span><span>Browse</span></summary><div class="mobile-browse-panel"><strong>Your library</strong><a href="/plus/library" {% if active_page == 'library' %}aria-current="page"{% endif %}>{{ icon('library') }}<span>Anime</span></a>{% if movies_enabled %}<a href="/plus/movies" {% if active_page == 'movies' %}aria-current="page"{% endif %}>{{ icon('movies') }}<span>Movies</span></a><a href="/plus/tv" {% if active_page == 'tv' %}aria-current="page"{% endif %}>{{ icon('tv') }}<span>TV Shows</span></a>{% endif %}</div></details>
+    {% for key,href,label in [('search','/plus/search','Search'),('discover','/plus/discover','For you'),('activity','/plus/activity','History')] %}<a href="{{ href }}" {% if active_page == key %}aria-current="page"{% endif %}><span class="nav-glyph" aria-hidden="true">{{ icon(key) }}</span><span>{{ label }}</span></a>{% endfor %}
+  </nav>
+</body>
+</html>

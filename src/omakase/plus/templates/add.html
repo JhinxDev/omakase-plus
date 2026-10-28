@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Add anime · Omakase{% endblock %}
+{% block eyebrow %}Add to your library{% endblock %}
+{% block page_title %}Add an anime{% endblock %}
+{% block page_intro %}<p class="page-intro">Search by title, AniList link, or AniList ID. Confirm the exact season before Omakase starts looking for media.</p>{% endblock %}
+{% block content %}
+<section class="editorial-panel add-search" aria-labelledby="add-search-heading">
+  <header class="panel-heading">
+    <div><span class="section-index">01 / FIND</span><h2 id="add-search-heading">Which anime do you want?</h2></div>
+  </header>
+  <form class="product-form add-intake-form" method="post" action="/plus/add/preview" data-busy-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>
+      <span>Title, AniList link, or ID</span>
+      <input type="search" name="query" value="{{ query }}" maxlength="500" placeholder="Hell's Paradise Season 2" required autofocus>
+    </label>
+    <label>
+      <span>Season or arc <small>optional</small></span>
+      <input type="text" name="season" value="{{ season }}" maxlength="100" placeholder="Season 2 or Final Season Part 2">
+    </label>
+    <button class="button button-primary" type="submit" data-busy-label="Finding exact matches…">Find anime</button>
+  </form>
+</section>
+
+{% if options %}
+<section class="editorial-panel add-results" aria-labelledby="add-results-heading">
+  <header class="panel-heading">
+    <div><span class="section-index">02 / CONFIRM</span><h2 id="add-results-heading">Confirm the exact title</h2></div>
+    <span class="count-stamp">{{ options | length }}</span>
+  </header>
+  <div class="add-result-list">
+    {% for target in options %}
+    <article class="add-result">
+      <div class="poster-frame">
+        <img src="/plus/media/{{ target.anilist_id }}/poster" alt="" loading="lazy" data-poster>
+      </div>
+      <div>
+        <span class="mono-data">AniList {{ target.anilist_id }}</span>
+        <h3>{{ target.title }}</h3>
+        <p>
+          {{ target.format or 'Unknown format' }}
+          {% if target.season_number and target.format != 'MOVIE' %} · Season {{ target.season_number }}{% endif %}
+          · {{ release_status_label(target.status) }}
+        </p>
+        <small>
+          {% if target.format == 'MOVIE' %}Full movie{% elif target.episodes %}{{ target.episodes }} expected episode{{ 's' if target.episodes != 1 else '' }}{% elif target.aired_episodes %}{{ target.aired_episodes }} aired episode{{ 's' if target.aired_episodes != 1 else '' }}{% else %}Episode count not announced{% endif %}
+        </small>
+      </div>
+      <div class="add-result-actions">
+        <form method="post" action="/plus/add/acquire" data-busy-form>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="anilist_id" value="{{ target.anilist_id }}">
+          <input type="hidden" name="season" value="{{ season }}">
+          <button class="button button-primary" type="submit" data-busy-label="Adding and checking media…">Add and find {{ 'movie' if target.format == 'MOVIE' else 'episodes' }}</button>
+        </form>
+        <form method="post" action="/plus/add/plan">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="anilist_id" value="{{ target.anilist_id }}">
+          <input type="hidden" name="title" value="{{ target.title }}">
+          <button class="button button-secondary" type="submit">Plan for later</button>
+        </form>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

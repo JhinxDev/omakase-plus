@@ -1,0 +1,25 @@
+/* Scoped title actions and deliberate, readable removal review. */
+.title-library-actions { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-top:18px; padding-top:14px; border-top:1px solid #ffffff20; }
+.title-library-actions > span { font-size:.82rem; color:var(--text-muted, #a3acbf); }
+.title-library-actions .button { min-height:44px; }
+.removal-review { max-width:760px; margin:0 auto; min-width:0; }
+.removal-review .removal-heading { display:flex; align-items:center; gap:24px; padding-bottom:24px; border-bottom:1px solid #ffffff20; }
+.removal-poster { width:80px; height:120px; flex:none; object-fit:cover; border-radius:8px; background:#141a29; }
+.removal-review h2 { font-size:clamp(1.5rem, 3vw, 2.3rem); line-height:1.15; margin:8px 0; overflow-wrap:anywhere; }
+.removal-review p { line-height:1.65; }
+.removal-lead { font-size:1.05rem; margin:24px 0; }
+.removal-review .removal-form { max-width:none; margin:24px 0; padding:0; border:0; background:none; }
+.removal-form label { display:block; line-height:1.6; overflow-wrap:anywhere; }
+.removal-form input[type=text] { display:block; width:100%; max-width:100%; box-sizing:border-box; min-height:48px; margin-top:12px; }
+.removal-actions { display:flex; flex-wrap:wrap; gap:12px; margin-top:24px; }
+.removal-review .removal-actions .button { width:auto; min-height:48px; white-space:normal; text-align:center; }
+.removal-status { margin:28px 0 20px; line-height:1.7; }
+.removal-status h3 { font-size:1.25rem; margin:0 0 8px; }
+.removal-details { margin-top:20px; color:var(--text-muted, #a3acbf); overflow-wrap:anywhere; }
+.removal-details summary { cursor:pointer; min-height:44px; }
+@media (max-width:480px) {
+  .removal-review .removal-heading { gap:16px; align-items:flex-start; }
+  .removal-poster { width:64px; height:96px; }
+  .removal-actions { flex-direction:column; }
+  .removal-review .removal-actions .button { width:100%; box-sizing:border-box; }
+}

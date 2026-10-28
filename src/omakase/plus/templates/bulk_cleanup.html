@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Cleanup · Omakase{% endblock %}
+{% block eyebrow %}Proof-ordered cleanup{% endblock %}
+{% block page_title %}Review completed media{% endblock %}
+{% block page_intro %}<p class="page-intro">Remove finished titles from Plex and eligible Real-Debrid storage without touching your watch history.</p>{% endblock %}
+{% block page_actions %}<a class="button button-secondary" href="/plus/library?lifecycle=completed">Back to completed</a>{% endblock %}
+{% block content %}
+<section class="removal-confirmation bulk-cleanup" aria-labelledby="cleanup-heading">
+  <header class="removal-heading">
+    <span class="section-index">BATCH REVIEW / 01</span>
+    <h2 id="cleanup-heading">Confirm exactly what leaves your media system</h2>
+    <p>Every title keeps the same safety order: unpublish from Plex, wait for fresh absence proof, then delete only unshared Omakase-owned Real-Debrid media.</p>
+  </header>
+
+  {% if error %}<div class="product-notice notice-danger removal-error" role="alert">{{ error }}</div>{% endif %}
+
+  {% if cleanup.eligible %}
+  <div class="bulk-cleanup-list" role="group" aria-label="Eligible completed titles">
+    {% for item in cleanup.eligible %}
+    <article>
+      <div><strong>{{ item.title }}</strong>{% if item.season_number %}<span>Season {{ item.season_number }}</span>{% endif %}</div>
+      <p>{{ item.eligible_provider_count }} Real-Debrid item{% if item.eligible_provider_count != 1 %}s{% endif %} eligible · {{ item.retained_asset_count }} adopted, shared, or local item{% if item.retained_asset_count != 1 %}s{% endif %} retained</p>
+      {% if item.existing_removal_id %}<small>Cleanup already open · {{ item.existing_removal_status | replace('_', ' ') }}</small>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="product-empty"><h2>No eligible media selected.</h2><p>Return to Completed and select at least one title with removable Real-Debrid media.</p></div>
+  {% endif %}
+
+  {% if cleanup.blocked %}
+  <details class="bulk-cleanup-blocked">
+    <summary>{{ cleanup.blocked | length }} selection{% if cleanup.blocked | length != 1 %}s{% endif %} blocked for safety</summary>
+    <ul>{% for item in cleanup.blocked %}<li>Title {{ item.monitor_id }} — {{ item.reason }}</li>{% endfor %}</ul>
+  </details>
+  {% endif %}
+
+  <div class="removal-boundary">
+    <strong>AniList progress stays intact.</strong>
+    <p>Completion, episode progress, ratings, and tracker history are never part of this cleanup.</p>
+  </div>
+
+  {% if cleanup.eligible %}
+  <form class="removal-form" method="post" action="/plus/library/completed/cleanup/request" data-busy-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% for monitor_id in cleanup.eligible_ids %}<input type="hidden" name="monitor_id" value="{{ monitor_id }}">{% endfor %}
+    <label for="confirmation">
+      <span>Type {{ cleanup.confirmation }} to confirm</span>
+      <input id="confirmation" name="confirmation" type="text" autocomplete="off" spellcheck="false" required aria-describedby="confirmation-help">
+    </label>
+    <p id="confirmation-help">Provider deletion remains locked until Plex first proves each title is absent.</p>
+    <button class="button button-danger button-wide" type="submit" data-busy-label="Starting cleanups…">Remove selected media safely</button>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

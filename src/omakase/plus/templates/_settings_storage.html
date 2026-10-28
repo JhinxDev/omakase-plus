@@ -1,0 +1,17 @@
+<section class="storage-intro" aria-labelledby="storage-flow-heading">
+  <h2 id="storage-flow-heading">From discovery to playback</h2>
+  <ol class="storage-flow"><li><b>1</b><span>Find releases<small>Search sources</small></span></li><li><b>2</b><span>Access media<small>Cloud cache or your storage</small></span></li><li><b>3</b><span>Watch<small>Your Plex library</small></span></li></ol>
+</section>
+<section class="editorial-panel settings-section storage-choice">
+  <header class="storage-heading"><img class="service-logo" src="/plus/static/services/realdebrid.png" alt="" width="40" height="40"><div><h2>Cloud downloads &amp; cache</h2><p>Real-Debrid</p></div><span class="status-chip {{ 'status-good' if storage_cloud_configured else 'status-neutral' }}">{{ 'Key saved' if storage_cloud_configured else 'Optional' }}</span></header>
+  <p>Download and access cached media for anime and movies. Search services find releases; Real-Debrid handles cloud downloading and file access, and Plex plays your library.</p>
+  <p class="settings-muted">Cloud cache is not a permanent backup of your media.</p>
+  <a class="button button-secondary" href="/plus/settings/connections#connection-realdebrid">Manage Real-Debrid</a>
+</section>
+<section class="editorial-panel settings-section storage-choice">
+  <header class="storage-heading"><svg class="storage-symbol" aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="4" width="22" height="24" rx="5"/><path d="M5 12h22M5 20h22M10 8h1M10 16h1M10 24h1"/></svg><div><h2>Local or NAS storage</h2><p>Your disks, your media</p></div><span class="status-chip status-neutral">{{ 'Server folder configured' if storage_local_configured else 'Available in local deployments' }}</span></header>
+  <p>Use media already on a local disk or a mounted NAS share. Real-Debrid is optional in this setup.</p>
+  <details class="storage-setup"><summary>How to set up local storage</summary><ol><li>Mount the disk or NAS share on the server running Omakase.</li><li>Make its media folders available to Omakase and Plex through your deployment configuration.</li><li>Start with import-only mode. Review a file import plan before adding it to the library.</li></ol><p>NAS passwords and network mounts stay on the server. This page does not create shares or change existing media paths.</p><p>Local imports currently use the anime import workflow. General movies already indexed by Plex remain available through Movies.</p></details>
+  <a class="button button-secondary" href="/plus/onboarding?step=1">Review storage setup</a>
+</section>
+<section class="storage-note"><h2>Optional download automation</h2><p>The local deployment also supports qBittorrent. It downloads to your own storage; the configured download network and Plex paths must pass the deployment checks first.</p><span class="status-chip status-neutral">{{ 'Download server configured' if storage_download_configured else 'Not required for import-only mode' }}</span></section>

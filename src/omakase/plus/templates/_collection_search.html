@@ -1,0 +1,12 @@
+{% macro collection_search(action, kind, scope, label, query='', field='q', placeholder='', count=none) -%}
+<form class="collection-search" method="get" action="{{ action }}" role="search" aria-label="{{ label }}">
+  <div class="collection-search-heading"><span>{{ scope }}</span><a href="/plus/search?kind={{ kind }}">Browse {{ 'anime' if kind == 'anime' else 'movie' if kind == 'movies' else 'TV' }} catalog <span aria-hidden="true">↗</span></a></div>
+  <div class="collection-search-controls">
+    <label class="collection-search-query"><span>{{ label }}</span><input type="search" name="{{ field }}" value="{{ query }}" maxlength="{{ 100 if kind == 'anime' else 200 }}" placeholder="{{ placeholder }}" autocomplete="off"{% if kind == 'anime' %} list="library-title-suggestions"{% endif %}></label>
+    {% if caller is defined %}{{ caller('fields') }}{% endif %}
+    <button class="button button-primary" type="submit">Search</button>
+  </div>
+  {% if caller is defined %}{{ caller('filters') }}{% endif %}
+  {% if count is not none %}<p class="collection-search-count" role="status">{{ count }} {{ 'result' if count == 1 else 'results' }} in this view</p>{% endif %}
+</form>
+{%- endmacro %}

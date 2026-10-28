@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>Sign in · Omakase</title>
+  <link rel="preload" href="/plus/static/geist-variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="icon" type="image/svg+xml" href="/plus/static/omakase-icon.svg?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/dashboard.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/atmosphere.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/cinema.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/plus/static/semantic-states.css?v={{ asset_version }}">
+  <script src="/plus/static/dashboard.js?v={{ asset_version }}" defer></script>
+</head>
+<body class="auth-body">
+  <div id="navigation-loading" class="navigation-loading" role="status" aria-live="polite" aria-atomic="true" hidden><span class="navigation-loading-track" aria-hidden="true"></span><span class="navigation-loading-label">Signing in…</span></div>
+  <main class="auth-shell">
+    <section class="auth-story" aria-labelledby="auth-brand">
+      <div>
+        <img class="brand-seal" src="/plus/static/omakase-seal.svg" alt="">
+        <h2 id="auth-brand">Omakase <i>Plus</i></h2>
+        <p>Your favorite stories. Your next great watch.</p>
+      </div>
+      <footer><span>Your account.</span><span>Your collection.</span></footer>
+    </section>
+    <section class="auth-form-panel" aria-labelledby="login-heading">
+      <div class="auth-form-wrap">
+        <span class="page-kicker">Welcome back</span>
+        <h1 id="login-heading">Sign in to your library.</h1>
+        <p>Your collection is waiting for you.</p>
+        {% if error %}<div class="product-notice notice-danger semantic-notice--error" role="alert">{{ error }}</div>{% endif %}
+        {% if google_enabled %}
+        <a href="/plus/auth/google/login" class="button button-secondary button-wide">Continue with Google</a>
+        <div class="auth-divider"><span>or use your email</span></div>
+        {% endif %}
+        <form method="post" action="/plus/login" class="auth-form">
+          <label><span>Email</span><input type="email" id="email" name="email" placeholder="you@example.com" autocomplete="email" required autofocus></label>
+          <label><span>Password</span><input type="password" id="password" name="password" placeholder="Your password" autocomplete="current-password" required></label>
+          <button type="submit" class="button button-primary button-wide">Sign in</button>
+        </form>
+        <div class="auth-switch"><span>New to this server?</span><a href="/plus/signup">Create an account →</a></div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
