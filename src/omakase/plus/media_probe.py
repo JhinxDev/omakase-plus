@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from omakase.plus.language_policy import LanguageEvidence, TrackObservation
 from omakase.plus.media_store import record_media_file_probe, replace_subtitle_tracks
 from omakase.plus.storage import (
     SUBTITLE_SUFFIXES,
@@ -35,12 +37,15 @@ class ExternalSubtitle:
     language: str
     release_fingerprint: str
     sync_state: str
+    role: str = "unknown"
 
     def __post_init__(self) -> None:
         if not self.language.strip():
             raise ValueError("external subtitle language is required")
         if not self.release_fingerprint.strip():
             raise ValueError("external subtitle release fingerprint is required")
+        if self.role not in {"full_dialogue", "forced", "signs", "sdh", "unknown"}:
+            raise ValueError("external subtitle role is invalid")
         if self.sync_state not in {"verified", "unverified"}:
             raise ValueError("external subtitle sync_state is invalid")
 
@@ -56,6 +61,7 @@ class MediaProbeResult:
     video_streams: tuple[dict[str, Any], ...]
     audio_streams: tuple[dict[str, Any], ...]
     subtitle_tracks: tuple[dict[str, Any], ...]
+    language_evidence: LanguageEvidence | None = None
 
     @property
     def usable(self) -> bool:
@@ -224,7 +230,71 @@ def probe_media_file(
         video_streams=tuple(videos),
         audio_streams=tuple(audios),
         subtitle_tracks=tuple(subtitles),
+        language_evidence=_language_evidence(streams, external_subtitles, inventory_fingerprint)
+        if path.stat().st_size == receipt.bytes and path.stat().st_mtime_ns == receipt.modified_ns
+        else None,
     )
+
+
+def _language_evidence(streams, external_subtitles, fingerprint):
+    """Additional immutable facts, leaving legacy probe outcome/payloads unchanged."""
+    tracks = []
+
+    def raw_language(value):
+        return (
+            value
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{0,35}", value)
+            else None
+        )
+
+    try:
+        for raw in streams:
+            if not isinstance(raw, dict):
+                return None
+            kind = raw.get("codec_type")
+            if kind not in {"audio", "subtitle"}:
+                continue
+            index = raw.get("index")
+            if type(index) is not int or index < 0:
+                return None
+            tags = raw.get("tags") if isinstance(raw.get("tags"), dict) else {}
+            disposition = raw.get("disposition") if isinstance(raw.get("disposition"), dict) else {}
+            title = str(tags.get("title", ""))[:200].casefold()
+            role = "full_dialogue"
+            if kind == "audio" and (disposition.get("comment") or "commentary" in title):
+                role = "commentary"
+            elif kind == "subtitle":
+                if disposition.get("forced"):
+                    role = "forced"
+                elif re.search(r"\b(signs?|songs?)\b", title):
+                    role = "signs"
+                elif disposition.get("hearing_impaired") or re.search(r"\b(sdh|hearing)\b", title):
+                    role = "sdh"
+            tracks.append(
+                TrackObservation(
+                    f"embedded:{index}",
+                    kind,
+                    fingerprint,
+                    raw_language(tags.get("language")),
+                    role=role,
+                )
+            )
+        for n, external in enumerate(external_subtitles, 1):
+            tracks.append(
+                TrackObservation(
+                    f"external:{n}",
+                    "subtitle",
+                    fingerprint,
+                    raw_language(external.language),
+                    role=external.role,
+                    source="external",
+                    release_bound=external.release_fingerprint == fingerprint,
+                    sync_verified=external.sync_state == "verified",
+                )
+            )
+        return LanguageEvidence(fingerprint, tuple(tracks), inventory_complete=True)
+    except ValueError:
+        return None
 
 
 def persist_probe_result(
@@ -234,8 +304,35 @@ def persist_probe_result(
     file_locator: str,
     verified_at: str,
     result: MediaProbeResult,
+    language_request_id: str | None = None,
+    language_actor_user_id: int | None = None,
+    observed_episodes: Sequence[int] = (),
+    source_generation: str | None = None,
 ) -> int:
-    """Persist one probe and replace its complete subtitle inventory."""
+    """Persist legacy probe facts plus an explicitly authorized language observation."""
+    if language_request_id is not None:
+        from omakase.plus.language_store import _transaction, persist_request_probe
+
+        with _transaction(db):
+            probe_id = persist_probe_result(
+                db,
+                asset_id=asset_id,
+                file_locator=file_locator,
+                verified_at=verified_at,
+                result=result,
+            )
+            persist_request_probe(
+                db,
+                actor_user_id=language_actor_user_id,
+                request_id=language_request_id,
+                asset_id=asset_id,
+                probe_id=probe_id,
+                evidence=result.language_evidence,
+                episodes=observed_episodes,
+                source_generation=source_generation,
+                observed_at=verified_at,
+            )
+            return probe_id
     probe_id = record_media_file_probe(
         db,
         asset_id=asset_id,

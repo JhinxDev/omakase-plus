@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 
 import httpx
+
+from omakase.plus.provider_limits import ProviderRateLimit, retry_delay
 
 RD_API = "https://api.real-debrid.com/rest/1.0"
 
@@ -57,9 +60,39 @@ class RDTorrent:
 class RealDebridClient:
     """Async client for the Real-Debrid REST API."""
 
-    def __init__(self, api_key: str, timeout: float = 15.0):
+    def __init__(
+        self, api_key: str, timeout: float = 15.0, *, request_guard=None, rate_limit_observer=None
+    ):
         self.api_key = api_key
         self.timeout = timeout
+        self._request_guard = request_guard
+        self._rate_limit_observer = rate_limit_observer
+        self._paused_until = None
+        self._manual_pause = False
+
+    def _before_request(self):
+        if self._manual_pause:
+            raise ProviderRateLimit(None)
+        if self._paused_until is not None and self._paused_until > datetime.now(UTC):
+            import math
+
+            raise ProviderRateLimit(
+                max(1, math.ceil((self._paused_until - datetime.now(UTC)).total_seconds()))
+            )
+        if self._request_guard is not None:
+            self._request_guard()
+
+    def _check_response(self, response):
+        if response.status_code != 429:
+            return
+        delay = retry_delay(response.headers.get("Retry-After"))
+        error = ProviderRateLimit(delay)
+        self._manual_pause = error.manual_review_required
+        if delay is not None:
+            self._paused_until = datetime.now(UTC) + timedelta(seconds=delay)
+        if self._rate_limit_observer is not None:
+            self._rate_limit_observer(error)
+        raise error
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"}
@@ -71,11 +104,13 @@ class RealDebridClient:
         Raises ``RealDebridProviderBlock`` for known provider-blocked hashes.
         """
         async with httpx.AsyncClient(timeout=self.timeout) as client:
+            self._before_request()
             resp = await client.post(
                 f"{RD_API}/torrents/addMagnet",
                 headers=self._headers(),
                 data={"magnet": magnet},
             )
+            self._check_response(resp)
             if resp.status_code in (201, 200):
                 data = resp.json()
                 return data.get("id")
@@ -87,11 +122,13 @@ class RealDebridClient:
     async def select_files(self, torrent_id: str, files: str = "all") -> bool:
         """Select files to download from a torrent. Default: all files."""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
+            self._before_request()
             resp = await client.post(
                 f"{RD_API}/torrents/selectFiles/{torrent_id}",
                 headers=self._headers(),
                 data={"files": files},
             )
+            self._check_response(resp)
             return resp.status_code in (200, 201, 202, 204)
 
     async def verify_download(self, torrent_id: str) -> bool:
@@ -118,9 +155,11 @@ class RealDebridClient:
             for link in links:
                 # Leave API-rate headroom for inventory calls and other consumers.
                 await asyncio.sleep(0.4)
+                self._before_request()
                 resp = await client.post(
                     f"{RD_API}/unrestrict/link", headers=self._headers(), data={"link": link}
                 )
+                self._check_response(resp)
                 block = _provider_block_from_response(resp)
                 if block is not None:
                     raise RealDebridProviderBlock(
@@ -145,10 +184,12 @@ class RealDebridClient:
     async def get_torrent(self, torrent_id: str) -> RDTorrent | None:
         """Get info for a specific torrent."""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
+            self._before_request()
             resp = await client.get(
                 f"{RD_API}/torrents/info/{torrent_id}",
                 headers=self._headers(),
             )
+            self._check_response(resp)
             if resp.status_code != 200:
                 return None
             return _torrent_from_payload(resp.json())
@@ -157,10 +198,12 @@ class RealDebridClient:
         """Check RD cache state without creating or selecting a torrent."""
         normalized_hash = (torrent_hash or "").strip().upper()
         async with httpx.AsyncClient(timeout=self.timeout) as client:
+            self._before_request()
             resp = await client.get(
                 f"{RD_API}/torrents/instantAvailability/{normalized_hash}",
                 headers=self._headers(),
             )
+            self._check_response(resp)
             if resp.status_code != 200:
                 return None
             data = resp.json()
@@ -175,11 +218,13 @@ class RealDebridClient:
     async def list_torrents(self) -> list[RDTorrent]:
         """List all active torrents."""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
+            self._before_request()
             resp = await client.get(
                 f"{RD_API}/torrents",
                 headers=self._headers(),
                 params={"limit": 5000},
             )
+            self._check_response(resp)
             if resp.status_code != 200:
                 return []
             data = resp.json()
@@ -191,10 +236,12 @@ class RealDebridClient:
     async def delete_torrent(self, torrent_id: str) -> bool:
         """Delete a torrent from Real-Debrid. Returns True on success."""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
+            self._before_request()
             resp = await client.delete(
                 f"{RD_API}/torrents/delete/{torrent_id}",
                 headers=self._headers(),
             )
+            self._check_response(resp)
             return resp.status_code in (200, 204)
 
 

@@ -9,7 +9,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from omakase.plus.nyaa import NyaaTorrent
+
+
+@pytest.fixture(autouse=True)
+def pure_selector_request_hooks(monkeypatch):
+    """Pure selector cases have no DB; real-DB cases retain durable guards."""
+    from omakase.plus import automation
+
+    original = automation.cooldown_hooks
+
+    def hooks(db, owner):
+        if db is None:
+            return {"request_guard": lambda: None, "rate_limit_observer": lambda error: None}
+        return original(db, owner)
+
+    monkeypatch.setattr(automation, "cooldown_hooks", hooks)
 
 
 def test_automation_module_imports():
@@ -74,7 +91,7 @@ def test_search_and_download_uses_title_level_batch_preference():
     )
 
     class FakeRealDebridClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **request_hooks):
             self.api_key = api_key
 
         async def add_magnet(self, magnet: str) -> str | None:
@@ -123,7 +140,7 @@ def test_search_and_download_tries_aliases_until_torrents_rank():
     calls = {"searches": []}
 
     class FakeRealDebridClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **request_hooks):
             self.api_key = api_key
 
         async def add_magnet(self, magnet: str) -> str | None:
@@ -193,7 +210,7 @@ def test_search_and_download_falls_back_when_top_candidate_is_rejected_by_rd():
     calls = {"magnets": []}
 
     class FakeRealDebridClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **request_hooks):
             self.api_key = api_key
 
         async def add_magnet(self, magnet: str) -> str | None:
@@ -258,7 +275,7 @@ def test_search_and_download_falls_back_after_provider_block():
     calls = {"magnets": []}
 
     class FakeRealDebridClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **request_hooks):
             self.api_key = api_key
 
         async def add_magnet(self, magnet: str) -> str | None:
@@ -322,7 +339,7 @@ def test_search_and_download_falls_back_without_unguarded_rd_cleanup():
     calls = {"deleted": [], "magnets": []}
 
     class FakeRealDebridClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **request_hooks):
             self.api_key = api_key
 
         async def add_magnet(self, magnet: str) -> str | None:
@@ -387,7 +404,7 @@ def test_search_and_download_returns_rd_error_when_all_ranked_candidates_are_rej
     calls = {"magnets": []}
 
     class FakeRealDebridClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **request_hooks):
             self.api_key = api_key
 
         async def add_magnet(self, magnet: str) -> str | None:
@@ -441,7 +458,7 @@ def test_search_and_download_returns_provider_block_when_all_batches_are_blocked
     calls = {"magnets": []}
 
     class FakeRealDebridClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **request_hooks):
             self.api_key = api_key
 
         async def add_magnet(self, magnet: str) -> str | None:
@@ -507,7 +524,7 @@ def test_search_and_download_returns_rd_error_for_mixed_provider_and_generic_fai
     calls = {"magnets": []}
 
     class FakeRealDebridClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **request_hooks):
             self.api_key = api_key
 
         async def add_magnet(self, magnet: str) -> str | None:
@@ -566,7 +583,7 @@ def test_search_and_download_does_not_fallback_from_batch_to_single_episode():
     calls = {"magnets": []}
 
     class FakeRealDebridClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **request_hooks):
             self.api_key = api_key
 
         async def add_magnet(self, magnet: str) -> str | None:
@@ -617,7 +634,7 @@ def test_search_and_download_rejects_wrong_title_result():
     )
 
     class FakeRealDebridClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **request_hooks):
             self.api_key = api_key
 
         async def add_magnet(self, magnet: str) -> str | None:
@@ -655,7 +672,7 @@ def test_search_and_download_rejects_longer_title_for_short_generic_query():
     )
 
     class FakeRealDebridClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **request_hooks):
             self.api_key = api_key
 
         async def add_magnet(self, magnet: str) -> str | None:
@@ -694,7 +711,7 @@ def test_search_and_download_reports_select_files_failure_without_unguarded_clea
     calls = {"deleted": False}
 
     class FakeRealDebridClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **request_hooks):
             self.api_key = api_key
 
         async def add_magnet(self, magnet: str) -> str | None:
@@ -748,7 +765,7 @@ def test_search_and_download_records_provider_block_attempt_without_magnet():
     )
 
     class FakeRealDebridClient:
-        def __init__(self, api_key: str):
+        def __init__(self, api_key: str, **request_hooks):
             self.api_key = api_key
 
         async def add_magnet(self, magnet: str) -> str | None:

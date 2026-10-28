@@ -34,11 +34,13 @@ _BLOCK_CODES = frozenset(
         "DESTINATION_CONFLICT",
         "ENGLISH_SUBTITLE_MISSING",
         "MEDIA_PROBE_FAILED",
+        "LANGUAGE_POLICY_UNCONFIRMED",
         "POLICY_EXCLUDED",
         "SOURCE_UNAVAILABLE",
     }
 )
 _BLOCK_DETAILS = {
+    "LANGUAGE_POLICY_UNCONFIRMED": "This exact file does not confirm its approved language publication policy.",
     "ASSET_COVERAGE_INVALID": (
         "The verified episode coverage does not match the readable media files."
     ),
@@ -56,7 +58,9 @@ _BLOCK_DETAILS = {
         "The provider-backed folder is unavailable or no longer matches this asset."
     ),
 }
-_NONRETRYABLE_BLOCK_CODES = frozenset({"DESTINATION_CONFLICT", "POLICY_EXCLUDED"})
+_NONRETRYABLE_BLOCK_CODES = frozenset(
+    {"DESTINATION_CONFLICT", "POLICY_EXCLUDED", "LANGUAGE_POLICY_UNCONFIRMED"}
+)
 
 
 class CuratorValidationError(ValueError):
@@ -377,6 +381,8 @@ class OverlayPlan:
     title_publications: tuple[PublishedTitle, ...]
     blocked_assets: tuple[BlockedAsset, ...]
     plan_hash: str
+    language_files: tuple[dict, ...] = ()
+    language_v3: bool = False
 
     @property
     def holds_current_generation(self) -> bool:
@@ -386,7 +392,7 @@ class OverlayPlan:
         )
 
     def _unsigned(self) -> dict:
-        return {
+        result = {
             "schema_version": _PLAN_SCHEMA,
             "manifest_digest": self.manifest_digest,
             "excluded_riven_folders": list(self.excluded_riven_folders),
@@ -399,24 +405,33 @@ class OverlayPlan:
             "blocked_assets": [asset.to_dict() for asset in self.blocked_assets],
         }
 
+        if self.language_v3:
+            result["schema_version"] = "overlay-plan-v7"
+            result["language_files"] = list(self.language_files)
+        return result
+
     def to_dict(self) -> dict:
         return {**self._unsigned(), "plan_hash": self.plan_hash}
 
     @classmethod
     def from_dict(cls, payload: dict) -> OverlayPlan:
-        if not isinstance(payload, dict) or set(payload) != {
-            "schema_version",
-            "manifest_digest",
-            "excluded_riven_folders",
-            "entries",
-            "embedded_subtitles",
-            "plex_match_hints",
-            "title_publications",
-            "blocked_assets",
-            "plan_hash",
-        }:
+        v3 = isinstance(payload, dict) and payload.get("schema_version") == "overlay-plan-v7"
+        if not isinstance(payload, dict) or set(payload) != (
+            {
+                "schema_version",
+                "manifest_digest",
+                "excluded_riven_folders",
+                "entries",
+                "embedded_subtitles",
+                "plex_match_hints",
+                "title_publications",
+                "blocked_assets",
+                "plan_hash",
+            }
+            | ({"language_files"} if v3 else set())
+        ):
             raise CuratorValidationError("overlay plan has an unknown shape")
-        if payload["schema_version"] != _PLAN_SCHEMA:
+        if payload["schema_version"] not in {_PLAN_SCHEMA, "overlay-plan-v7"}:
             raise CuratorValidationError("overlay plan schema is unsupported")
         digest = _sha256_value(payload["manifest_digest"], "manifest digest")
         plan_hash = _sha256_value(payload["plan_hash"], "plan hash")
@@ -510,6 +525,16 @@ class OverlayPlan:
         destinations = [entry.destination.casefold() for entry in entries]
         if len(set(destinations)) != len(destinations):
             raise CuratorValidationError("overlay contains duplicate destinations")
+        language_files = tuple(payload.get("language_files", ()))
+        if v3:
+            from omakase.plus.language_publication import validate_file
+
+            if not isinstance(payload["language_files"], list) or len(language_files) > 4000:
+                raise CuratorValidationError("Invalid language publication files")
+            for proof in language_files:
+                validate_file(proof)
+                if proof["source"] not in {entry.source for entry in entries}:
+                    raise CuratorValidationError("Language proof is not a staged media source")
         plan = cls(
             manifest_digest=digest,
             excluded_riven_folders=excluded,
@@ -519,6 +544,8 @@ class OverlayPlan:
             title_publications=publications,
             blocked_assets=blocked,
             plan_hash=plan_hash,
+            language_files=language_files,
+            language_v3=v3,
         )
         if not hashlib.sha256(_canonical_bytes(plan._unsigned())).hexdigest() == plan_hash:
             raise CuratorValidationError("overlay plan hash does not match its content")
@@ -745,6 +772,8 @@ def build_overlay_plan(
     *,
     subtitle_probe: Callable[[Path], SubtitleProbe] | None = None,
     require_english_subtitles: bool = False,
+    language_probe=None,
+    language_qualification: bool = False,
 ) -> OverlayPlan:
     """Produce one mutation-free, partial-safe plan for both Anime sections."""
     if require_english_subtitles and subtitle_probe is None:
@@ -754,6 +783,16 @@ def build_overlay_plan(
     except ValueError as exc:
         raise CuratorValidationError("manifest-v2 validation failed") from exc
 
+    v3 = manifest["schema_version"] == "manifest-v3"
+    if v3:
+        from omakase.plus.language_publication import LANGUAGE_PUBLICATION_QUALIFIED
+
+        if (
+            not (LANGUAGE_PUBLICATION_QUALIFIED or language_qualification is True)
+            or language_probe is None
+        ):
+            raise CuratorValidationError("Manifest3 language publication is not qualified.")
+    language_files = []
     source_root = config.source_root.resolve(strict=True)
     excluded_riven = derive_riven_exclusions(config)
     excluded = {value.casefold() for value in excluded_riven}
@@ -768,7 +807,43 @@ def build_overlay_plan(
     blocked_manifest_series: set[tuple[str, int]] = set()
     probe_cache: dict[Path, SubtitleProbe] = {}
 
-    def audit(source: Path, bindings: list[EmbeddedSubtitle]) -> None:
+    def audit(
+        source: Path,
+        bindings: list[EmbeddedSubtitle],
+        proof_files: list,
+        *,
+        media=None,
+        asset=None,
+        episodes=(),
+        sole_file=False,
+    ) -> None:
+        if asset is not None and "language_contract" in asset:
+            try:
+                proof_files.append(
+                    language_probe(
+                        source,
+                        contract=asset["language_contract"],
+                        anilist_id=media["anilist_id"],
+                        season_number=media["season_number"] or 1,
+                        torrent_hash=asset["torrent_hash"],
+                        file_locator=(
+                            source.relative_to(source_root).as_posix()
+                            if asset["storage_backend"] == "local"
+                            else source.relative_to(source_root / asset["source_folder"]).as_posix()
+                        ),
+                        source_relative=source.relative_to(source_root).as_posix(),
+                        episodes=tuple(sorted(episodes)),
+                        media_format=media["format"],
+                        sole_file=sole_file,
+                        expected_episodes=media["expected_episode_count"],
+                        numbering_override=asset.get("numbering_override"),
+                        approved_coverage=asset["episode_coverage"],
+                        storage_backend=asset["storage_backend"],
+                    )
+                )
+            except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                raise AssetPublicationBlocked("LANGUAGE_POLICY_UNCONFIRMED") from exc
+            return
         if not require_english_subtitles:
             return
         assert subtitle_probe is not None
@@ -854,10 +929,18 @@ def build_overlay_plan(
 
             asset_entries: list[OverlayEntry] = []
             asset_subtitles: list[EmbeddedSubtitle] = []
+            asset_language_files = []
             asset_destinations = set(destinations)
             try:
-                folder = resolve_manifest_folder(folder_name)
-                source_files = _source_files(folder, source_root)
+                if v3 and asset.get("language_contract") and asset["storage_backend"] == "local":
+                    exact = (source_root / asset["storage_locator"]).resolve(strict=True)
+                    exact.relative_to(source_root)
+                    if not exact.is_file() or exact.suffix.casefold() not in _MEDIA_SUFFIXES:
+                        raise AssetPublicationBlocked("SOURCE_UNAVAILABLE")
+                    source_files = (exact,)
+                else:
+                    folder = resolve_manifest_folder(folder_name)
+                    source_files = _source_files(folder, source_root)
                 asset_staged: set[int] = set()
                 if is_movie:
                     if asset_coverage != {1} or len(source_files) != 1:
@@ -871,7 +954,15 @@ def build_overlay_plan(
                         quality=asset["quality"],
                         torrent_hash=asset["torrent_hash"],
                     )
-                    audit(source_files[0], asset_subtitles)
+                    audit(
+                        source_files[0],
+                        asset_subtitles,
+                        asset_language_files,
+                        media=media,
+                        asset=asset,
+                        episodes=(1,),
+                        sole_file=len(source_files) == 1,
+                    )
                     asset_staged.add(1)
                 else:
                     for source in source_files:
@@ -886,6 +977,8 @@ def build_overlay_plan(
                         except EpisodeParseError:
                             continue
                         if episode.special:
+                            if asset.get("language_contract"):
+                                continue
                             _append_entry(
                                 asset_entries,
                                 asset_destinations,
@@ -897,7 +990,14 @@ def build_overlay_plan(
                                 start=episode.start,
                                 end=episode.end,
                             )
-                            audit(source, asset_subtitles)
+                            audit(
+                                source,
+                                asset_subtitles,
+                                asset_language_files,
+                                media=media,
+                                asset=asset,
+                                episodes=episode.episodes,
+                            )
                             continue
                         if not episode.episodes <= asset_coverage:
                             continue
@@ -912,7 +1012,15 @@ def build_overlay_plan(
                             start=episode.start,
                             end=episode.end,
                         )
-                        audit(source, asset_subtitles)
+                        audit(
+                            source,
+                            asset_subtitles,
+                            asset_language_files,
+                            media=media,
+                            asset=asset,
+                            episodes=episode.episodes,
+                            sole_file=len(source_files) == 1,
+                        )
                         asset_staged.update(episode.episodes)
                 if asset_staged != asset_coverage:
                     raise AssetPublicationBlocked("ASSET_COVERAGE_INVALID")
@@ -939,6 +1047,7 @@ def build_overlay_plan(
 
             entries.extend(asset_entries)
             embedded_subtitles.extend(asset_subtitles)
+            language_files.extend(asset_language_files)
             destinations.update(entry.destination.casefold() for entry in asset_entries)
             staged_coverage.update(asset_staged)
 
@@ -1050,6 +1159,9 @@ def build_overlay_plan(
         "title_publications": [publication.to_dict() for publication in title_publications],
         "blocked_assets": [asset.to_dict() for asset in blocked_assets],
     }
+    if v3:
+        unsigned["schema_version"] = "overlay-plan-v7"
+        unsigned["language_files"] = language_files
     plan_hash = hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
     return OverlayPlan.from_dict({**unsigned, "plan_hash": plan_hash})
 
@@ -1250,6 +1362,14 @@ def apply_overlay_plan(
     if not hmac.compare_digest(plan.plan_hash, expected_plan_hash):
         raise CuratorValidationError("live plan hash differs from approved dry-run")
 
+    if plan.language_v3:
+        from language_publication import validate_source
+
+        source_root = config.source_root.resolve(strict=True)
+        for proof in plan.language_files:
+            path = (source_root / proof["source"]).resolve(strict=True)
+            path.relative_to(source_root)
+            validate_source(path, proof)
     previous = _selected_generation(config)
     if plan.holds_current_generation:
         return OverlayApplyResult(previous, previous, plan.plan_hash, changed=False)

@@ -105,6 +105,13 @@
     {% endif %}
 
     <div class="product-workspace">
+      {% if households_enabled %}
+      <link rel="stylesheet" href="/plus/static/household.css?v={{ asset_version }}">
+      <section class="library-scope-bar" aria-label="Library scope">
+      {% if household_navigation and household_navigation.available %}<form method="post" action="/plus/settings/household/select"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ request.url.path }}"><label for="active-library-scope">Library</label><select id="active-library-scope" name="library_id">{% for library in household_navigation.libraries %}<option value="{{ library.id }}" {% if library.id == household_navigation.selected_id %}selected{% endif %}>{{ library.name }}</option>{% endfor %}</select><button type="submit" class="button button-secondary">Switch library</button></form>{% else %}<p>Library selection is temporarily unavailable.</p>{% endif %}<a href="/plus/settings/household">Household settings</a>
+      </section>
+      {% endif %}
+
       {% block masthead %}
       <div class="product-masthead" role="region" aria-label="Page overview">
         <div>

@@ -190,8 +190,10 @@ def test_plex_check_uses_token_header_and_validates_native_container(db):
     save(db, "plex")
 
     def native(request):
-        assert request.url.path == "/library/sections"
+        assert request.url.path in {"/library/sections", "/identity"}
         assert request.headers["X-Plex-Token"] == KEY
+        if request.url.path == "/identity":
+            return httpx.Response(200, text='<MediaContainer machineIdentifier="fixture-machine"/>')
         return httpx.Response(
             200, text='<MediaContainer size="1"><Directory key="1" type="movie"/></MediaContainer>'
         )
@@ -331,6 +333,10 @@ def test_imported_seerr_base_with_api_suffix_can_enable_after_passing_checks(db)
             lambda request: (
                 httpx.Response(200, text='<MediaContainer size="0"/>')
                 if request.url.path == "/library/sections"
+                else httpx.Response(
+                    200, text='<MediaContainer machineIdentifier="fixture-machine"/>'
+                )
+                if request.url.path == "/identity"
                 else httpx.Response(200, json={"items": [], "id": 1})
             ),
         )
@@ -389,6 +395,10 @@ def test_movie_connections_require_own_tested_pairs_and_invalidate_after_edit(db
             lambda request: (
                 httpx.Response(200, text='<MediaContainer size="0"/>')
                 if request.url.path == "/library/sections"
+                else httpx.Response(
+                    200, text='<MediaContainer machineIdentifier="fixture-machine"/>'
+                )
+                if request.url.path == "/identity"
                 else httpx.Response(200, json=response)
             ),
         )

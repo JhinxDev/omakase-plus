@@ -305,10 +305,25 @@ def test_migration_upgrades_current_schema_and_is_idempotent(monkeypatch, tmp_pa
     current_dir = tmp_path / "current-migrations"
     current_dir.mkdir()
     migrations_dir = plus_db._MIGRATIONS_DIR
-    # Notification indexes need the media/watch schema excluded from this legacy fixture.
+    # Later indexes, bindings and proof triggers require the omitted media/watch schema.
     for path in migrations_dir.glob("*.sql"):
         if not path.name.startswith(
-            ("005-", "006-", "007-", "008-", "011-", "014-", "016-", "020-", "021-", "032-")
+            (
+                "005-",
+                "006-",
+                "007-",
+                "008-",
+                "011-",
+                "014-",
+                "016-",
+                "020-",
+                "021-",
+                "032-",
+                "033-",
+                "034-",
+                "035-",
+                "036-",
+            )
         ):
             shutil.copy2(path, current_dir / path.name)
 
@@ -322,6 +337,7 @@ def test_migration_upgrades_current_schema_and_is_idempotent(monkeypatch, tmp_pa
         ("upgrade@example.com", "hash"),
     ).lastrowid
 
+    conn.commit()  # Migration runner must never commit an active caller transaction.
     monkeypatch.setattr(plus_db, "_MIGRATIONS_DIR", migrations_dir)
     plus_db.run_migrations(conn)
     plus_db.run_migrations(conn)
@@ -408,6 +424,7 @@ def test_strict_inventory_migration_preserves_legacy_assets_and_flags_on_repeat(
             ),
         )
     before = [dict(row) for row in conn.execute("SELECT * FROM media_assets ORDER BY id")]
+    conn.commit()  # Migration runner must never commit an active caller transaction.
     monkeypatch.setattr(plus_db, "_MIGRATIONS_DIR", migrations_dir)
     plus_db.run_migrations(conn)
     after = [dict(row) for row in conn.execute("SELECT * FROM media_assets ORDER BY id")]
@@ -416,6 +433,7 @@ def test_strict_inventory_migration_preserves_legacy_assets_and_flags_on_repeat(
     conn.execute(
         "UPDATE media_assets SET requires_strict_inventory = 1 WHERE torrent_hash = ?", ("B" * 40,)
     )
+    conn.commit()
     plus_db.run_migrations(conn)
     assert [
         row[0]
@@ -435,8 +453,8 @@ def test_provider_migration_backfills_existing_realdebrid_evidence(monkeypatch, 
     legacy_dir.mkdir()
     migrations_dir = plus_db._MIGRATIONS_DIR
     for path in migrations_dir.glob("*.sql"):
-        # Migration 032 indexes provider_asset_id, introduced by migration 008.
-        if not path.name.startswith(("008-", "032-")):
+        # Later indexes and language-proof triggers depend on migration008 tables.
+        if not path.name.startswith(("008-", "032-", "033-", "034-", "035-", "036-")):
             shutil.copy2(path, legacy_dir / path.name)
 
     conn = sqlite3.connect(":memory:")
@@ -483,6 +501,7 @@ def test_provider_migration_backfills_existing_realdebrid_evidence(monkeypatch, 
     ).lastrowid
     conn.commit()
 
+    conn.commit()  # Migration runner must never commit an active caller transaction.
     monkeypatch.setattr(plus_db, "_MIGRATIONS_DIR", migrations_dir)
     plus_db.run_migrations(conn)
     plus_db.run_migrations(conn)
@@ -3638,6 +3657,7 @@ def test_completion_cleanup_migration_retains_legacy_removal_scope(monkeypatch, 
     )
     before = dict(conn.execute("SELECT * FROM media_title_removals").fetchone())
     conn.commit()
+    conn.commit()  # Migration runner must never commit an active caller transaction.
     monkeypatch.setattr(plus_db, "_MIGRATIONS_DIR", migrations_dir)
     plus_db.run_migrations(conn)
     plus_db.run_migrations(conn)

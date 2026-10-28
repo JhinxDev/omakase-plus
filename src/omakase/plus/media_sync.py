@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
@@ -47,6 +48,7 @@ from omakase.plus.media_store import (
     upsert_monitor,
 )
 from omakase.plus.media_types import EpisodeCoverage, MediaAsset, MediaCandidate, MediaSyncResult
+from omakase.plus.provider_limits import ProviderRateLimit, cooldown_hooks
 from omakase.plus.providers.compat import (
     acquire,
     capabilities,
@@ -69,6 +71,61 @@ _MEDIA_SUFFIXES = frozenset({".avi", ".m2ts", ".m4v", ".mkv", ".mp4", ".ts"})
 
 class _MonitorWithdrawn(BaseException):
     """Cooperative cancellation which transport error handlers must not swallow."""
+
+
+@dataclass(frozen=True, slots=True)
+class LanguageDispatch:
+    request_id: str
+    actor_user_id: int
+    source_generation: str
+    contract_version: str
+
+
+class _LanguagePermissionChanged(BaseException):
+    pass
+
+
+def _language_result(db, monitor, *, outcome, detail, now, required=None):
+    required = frozenset(required) if required is not None else _required_episodes(monitor)
+    covered = frozenset(covered_episodes(db, int(monitor["id"])))
+    run_id = record_sync_run(
+        db,
+        monitor_id=int(monitor["id"]),
+        outcome=outcome,
+        required_count=len(required),
+        covered_count=len(covered & required),
+        detail=detail,
+        completed_at=now,
+    )
+    return MediaSyncResult(int(monitor["id"]), run_id, outcome, required, covered, (), detail)
+
+
+def _language_heartbeat(db, dispatch, heartbeat):
+    def check():
+        from omakase.plus.language_store import load_request
+
+        try:
+            load_request(
+                db,
+                actor_user_id=dispatch.actor_user_id,
+                request_id=dispatch.request_id,
+                for_acquisition=True,
+            )
+        except ValueError:
+            raise _LanguagePermissionChanged() from None
+        if heartbeat is not None:
+            heartbeat()
+
+    return check
+
+
+def _legacy_language_monitor(db, monitor_id):
+    return (
+        db.execute(
+            "SELECT 1 FROM legacy_language_monitors WHERE monitor_id=?", (monitor_id,)
+        ).fetchone()
+        is not None
+    )
 
 
 def _monitor_withdrawn(db: sqlite3.Connection, monitor_id: int) -> bool:
@@ -125,6 +182,8 @@ async def _download_access_error(provider, external_id: str) -> str:
         return ""
     try:
         return "" if await method(external_id) else "DOWNLOAD_ACCESS_UNVERIFIED"
+    except ProviderRateLimit:
+        raise
     except Exception as exc:
         if (
             isinstance(exc, ProviderBlock)
@@ -280,6 +339,8 @@ async def _refresh_provider_health(
         return
     try:
         receipt = await health_method(checked_at=checked_at)
+    except ProviderRateLimit:
+        raise
     except Exception:
         update_provider_health(
             db,
@@ -490,6 +551,34 @@ async def _attempt_candidate(
             )
         raise _MonitorWithdrawn()
 
+    def retain_paused(error):
+        if adopting or not provider_asset_id:
+            return
+        previous = db.execute(
+            "SELECT id FROM media_assets WHERE monitor_id=? AND torrent_hash=?",
+            (monitor_id, candidate.torrent_hash),
+        ).fetchone()
+        if previous is not None:
+            return
+        asset_id = candidate_upsert(
+            db,
+            monitor_id=monitor_id,
+            torrent_hash=candidate.torrent_hash,
+            source_title=candidate.source_title,
+            provider_id=provider_id,
+            provider_asset_id=provider_asset_id,
+            storage_backend=storage_backend,
+            rd_torrent_id=provider_asset_id if provider_kind == "realdebrid" else "",
+            ownership="monitor_owned",
+            provenance="omakase_created",
+            created_by_run_id=run_id,
+            planned_coverage=candidate.coverage,
+            status="queued",
+            last_error="PROVIDER_RATE_LIMITED",
+        )
+        error.retained_asset_ids += (asset_id,)
+        db.commit()
+
     instant_checked = candidate.seeders == 0 and not adopting
     instant_available = False
     if instant_checked:
@@ -497,6 +586,8 @@ async def _attempt_candidate(
             if heartbeat is not None:
                 heartbeat()
             instant_available = await provider_instant_available(rd, candidate.torrent_hash) is True
+        except ProviderRateLimit:
+            raise
         except Exception:
             instant_available = False
         _guard_withdrawal(db, monitor_id)
@@ -541,6 +632,8 @@ async def _attempt_candidate(
                 now=now,
             )
             return None
+        except ProviderRateLimit:
+            raise
         except Exception:
             provider_asset_id = None
 
@@ -569,6 +662,9 @@ async def _attempt_candidate(
             if heartbeat is not None:
                 heartbeat()
             selected = await select_files(rd, provider_asset_id, "all")
+        except ProviderRateLimit as error:
+            retain_paused(error)
+            raise
         except Exception:
             selected = False
     guard_retained_source(provider_asset_id)
@@ -613,6 +709,9 @@ async def _attempt_candidate(
         if heartbeat is not None:
             heartbeat()
         item = await get_item(rd, provider_asset_id)
+    except ProviderRateLimit as error:
+        retain_paused(error)
+        raise
     except Exception:
         item = None
     guard_retained_source(provider_asset_id)
@@ -653,9 +752,15 @@ async def _attempt_candidate(
         )
         return None
 
-    access_error = (
-        await _download_access_error(rd, provider_asset_id) if item.status == "downloaded" else ""
-    )
+    try:
+        access_error = (
+            await _download_access_error(rd, provider_asset_id)
+            if item.status == "downloaded"
+            else ""
+        )
+    except ProviderRateLimit as error:
+        retain_paused(error)
+        raise
     guard_retained_source(provider_asset_id)
     if access_error:
         asset_id = candidate_upsert(
@@ -851,6 +956,7 @@ async def reconcile_candidates(
     existing_torrents: Mapping[str, ProviderItem | object] | None = None,
     heartbeat: Callable[[], None] | None = None,
     policy: AcquisitionPolicy | None = None,
+    language_dispatch: LanguageDispatch | None = None,
 ) -> MediaSyncResult:
     """Reconcile while honoring durable publication withdrawal at every await."""
     try:
@@ -868,6 +974,7 @@ async def reconcile_candidates(
             existing_torrents=existing_torrents,
             heartbeat=_withdrawal_heartbeat(db, int(monitor["id"]), heartbeat),
             policy=policy,
+            language_dispatch=language_dispatch,
         )
     except _MonitorWithdrawn:
         _keep_withdrawn_inactive(db, int(monitor["id"]))
@@ -888,12 +995,40 @@ async def _reconcile_candidates_active(
     existing_torrents: Mapping[str, ProviderItem | object] | None = None,
     heartbeat: Callable[[], None] | None = None,
     policy: AcquisitionPolicy | None = None,
+    language_dispatch: LanguageDispatch | None = None,
 ) -> MediaSyncResult:
     """Try a deterministic candidate window and persist all terminal evidence."""
     if max_candidates <= 0:
         raise ValueError("max_candidates must be positive")
     monitor_id = int(monitor["id"])
     policy = policy or AcquisitionPolicy()
+    if policy.languages is not None:
+        from omakase.plus.language_store import CONTRACT_VERSION
+        from omakase.plus.media_store import language_request_reuse
+
+        if (
+            not isinstance(language_dispatch, LanguageDispatch)
+            or language_dispatch.contract_version != CONTRACT_VERSION
+        ):
+            return _language_result(
+                db,
+                monitor,
+                outcome="language_pipeline_unsupported",
+                detail="An immutable language request and supported publication adapter are required. Existing media retained.",
+                now=now,
+            )
+        snapshot, frozen, required_snapshot, status = language_request_reuse(
+            db,
+            actor_user_id=language_dispatch.actor_user_id,
+            request_id=language_dispatch.request_id,
+            monitor_id=monitor_id,
+            source_generation=language_dispatch.source_generation,
+        )
+        if frozenset(required_snapshot) != _required_episodes(monitor):
+            raise ValueError("Candidate dispatch does not match the immutable episode scope.")
+        if frozen != policy:
+            raise ValueError("Worker criteria do not match the immutable language request.")
+        heartbeat = _language_heartbeat(db, language_dispatch, heartbeat)
     enforce_seeders = capabilities(rd).kind != "realdebrid"
     aliases = _unique_aliases(searched_aliases)
     run_id = record_sync_run(db, monitor_id=monitor_id, outcome="running")
@@ -1331,6 +1466,8 @@ async def reprobe_identity_assets(
         external_id = str(row["provider_asset_id"] or row["rd_torrent_id"])
         try:
             item = await get_item(rd, external_id)
+        except ProviderRateLimit:
+            raise
         except Exception:
             continue
         if (
@@ -1407,6 +1544,8 @@ async def reprobe_identity_assets(
                 last_error="",
             )
             db.execute("RELEASE SAVEPOINT identity_asset_reprobe")
+        except ProviderRateLimit:
+            raise
         except Exception:
             db.execute("ROLLBACK TO SAVEPOINT identity_asset_reprobe")
             db.execute("RELEASE SAVEPOINT identity_asset_reprobe")
@@ -1443,6 +1582,8 @@ async def _refresh_existing_assets(
         if heartbeat is not None:
             heartbeat()
         provider_summaries = await list_items(rd)
+    except ProviderRateLimit:
+        raise
     except Exception:
         provider_summaries = []
     _guard_withdrawal(db, monitor_id)
@@ -1535,6 +1676,8 @@ async def _refresh_existing_assets(
             if heartbeat is not None:
                 heartbeat()
             item = await get_item(rd, external_id)
+        except ProviderRateLimit:
+            raise
         except Exception:
             item = None
         _guard_withdrawal(db, monitor_id)
@@ -1546,6 +1689,8 @@ async def _refresh_existing_assets(
                     if heartbeat is not None:
                         heartbeat()
                     item = await get_item(rd, current.external_id)
+                except ProviderRateLimit:
+                    raise
                 except Exception:
                     item = None
                 _guard_withdrawal(db, monitor_id)
@@ -1781,6 +1926,10 @@ async def reconcile_monitor(
     now: str,
     max_candidates: int = 20,
     heartbeat: Callable[[], None] | None = None,
+    language_request_id: str | None = None,
+    language_actor_user_id: int | None = None,
+    language_source_generation: str | None = None,
+    language_contract_version: str | None = None,
 ) -> MediaSyncResult:
     """Reconcile while honoring durable publication withdrawal at every await."""
     monitor = db.execute("SELECT * FROM media_monitors WHERE id = ?", (monitor_id,)).fetchone()
@@ -1788,6 +1937,19 @@ async def reconcile_monitor(
         raise ValueError("media monitor not found")
     try:
         _guard_withdrawal(db, int(monitor["id"]))
+        if language_request_id is not None:
+            return await reconcile_language_request(
+                db,
+                monitor_id=monitor_id,
+                rd=rd,
+                now=now,
+                request_id=language_request_id,
+                actor_user_id=language_actor_user_id,
+                source_generation=language_source_generation,
+                contract_version=language_contract_version,
+                max_candidates=max_candidates,
+                heartbeat=heartbeat,
+            )
         return await _reconcile_monitor_active(
             db,
             monitor_id=monitor_id,
@@ -1795,6 +1957,13 @@ async def reconcile_monitor(
             now=now,
             max_candidates=max_candidates,
             heartbeat=_withdrawal_heartbeat(db, monitor_id, heartbeat),
+        )
+    except ProviderRateLimit as error:
+        return replace(
+            _language_result(
+                db, monitor, outcome="provider_rate_limited", detail=error.detail, now=now
+            ),
+            retry_after_seconds=error.retry_after_seconds,
         )
     except _MonitorWithdrawn:
         _keep_withdrawn_inactive(db, int(monitor["id"]))
@@ -1809,18 +1978,33 @@ async def _reconcile_monitor_active(
     now: str,
     max_candidates: int = 20,
     heartbeat: Callable[[], None] | None = None,
+    policy_override: AcquisitionPolicy | None = None,
+    language_dispatch: LanguageDispatch | None = None,
 ) -> MediaSyncResult:
     """Refresh provider assets, search every alias, and reconcile one monitor."""
     monitor = db.execute("SELECT * FROM media_monitors WHERE id = ?", (monitor_id,)).fetchone()
     if monitor is None:
         raise ValueError("media monitor not found")
+    policy = policy_override or load_user_acquisition_policy(db, int(monitor["user_id"]))
+    legacy_note = False
+    if policy.languages is not None and language_dispatch is None:
+        if _legacy_language_monitor(db, monitor_id):
+            policy = replace(policy, languages=None)
+            legacy_note = True
+        else:
+            return _language_result(
+                db,
+                monitor,
+                outcome="language_request_required",
+                detail="Create an explicit immutable language request before acquisition. Existing media retained.",
+                now=now,
+            )
     await _refresh_existing_assets(db, monitor, rd=rd, now=now, heartbeat=heartbeat)
 
     _guard_withdrawal(db, monitor_id)
     aliases = _monitor_aliases(monitor)
     monitor_user_id = int(monitor["user_id"])
     catalog_configuration = configured_catalogs(db, monitor_user_id)
-    policy = load_user_acquisition_policy(db, monitor_user_id)
     # Metadata discovery is for unowned releases, never a route around an
     # existing asset/quarantine or the normal seven-day provider cooldown.
     metadata_excluded_hashes = frozenset(
@@ -1858,6 +2042,8 @@ async def _reconcile_monitor_active(
         if heartbeat is not None:
             heartbeat()
         existing_items = await list_items(rd)
+    except ProviderRateLimit:
+        raise
     except Exception:
         existing_items = []
     _guard_withdrawal(db, monitor_id)
@@ -1888,9 +2074,19 @@ async def _reconcile_monitor_active(
         existing_torrents=existing_torrents,
         heartbeat=heartbeat,
         policy=policy,
+        language_dispatch=language_dispatch,
     )
     _guard_withdrawal(db, monitor_id)
-    plan_stalled_asset_removals(db, monitor_id=monitor_id, now=now)
+    if language_dispatch is None:
+        plan_stalled_asset_removals(db, monitor_id=monitor_id, now=now)
+    if legacy_note:
+        result = replace(
+            result,
+            detail=(
+                result.detail
+                + "; Existing monitor retains legacy English publication. New language criteria require a separate request."
+            )[:500],
+        )
     return result
 
 
@@ -2078,6 +2274,8 @@ async def process_pending_asset_removals(
             if _monitor_withdrawn(db, int(source_monitor["monitor_id"])):
                 continue
             deleted = item is None or await delete_item(rd, external_id)
+        except ProviderRateLimit:
+            raise
         except Exception:
             deleted = False
         db.execute(
@@ -2309,7 +2507,7 @@ async def run_media_sync(
             rd_key = read_secret(db, user_id, "realdebrid_api_key")
             if not rd_key:
                 raise RuntimeError("Real-Debrid API key is not configured")
-            return RealDebridProvider(rd_key)
+            return RealDebridProvider(rd_key, **cooldown_hooks(db, user_id))
 
         provider_factory = default_provider_factory
 
@@ -2326,9 +2524,12 @@ async def run_media_sync(
                 ).fetchall()
             )
         providers_by_user: dict[int, object] = {}
+        paused_users = set()
         for health_user_id in sorted(health_user_ids):
             try:
                 provider = provider_factory(health_user_id)
+            except ProviderRateLimit:
+                raise
             except Exception:
                 existing_provider = db.execute(
                     """SELECT id FROM media_providers
@@ -2348,16 +2549,28 @@ async def run_media_sync(
                 db.commit()
                 continue
             providers_by_user[health_user_id] = provider
-            await _refresh_provider_health(
-                db,
-                user_id=health_user_id,
-                provider=provider,
-                checked_at=started_at,
-            )
+            try:
+                await _refresh_provider_health(
+                    db,
+                    user_id=health_user_id,
+                    provider=provider,
+                    checked_at=started_at,
+                )
+            except ProviderRateLimit:
+                paused_users.add(health_user_id)
             db.commit()
 
         for monitor in selected_monitors:
             monitor_id = int(monitor["id"])
+            if int(monitor["user_id"]) in paused_users:
+                results.append(
+                    SchedulerMonitorResult(
+                        monitor_id,
+                        "provider_rate_limited",
+                        "Provider pause is active; no request sent.",
+                    )
+                )
+                continue
             try:
                 heartbeat()
                 if _keep_withdrawn_inactive(db, monitor_id):
@@ -2426,6 +2639,14 @@ async def run_media_sync(
                 results.append(
                     SchedulerMonitorResult(monitor_id, "withdrawn", "Acquisition stopped")
                 )
+            except ProviderRateLimit:
+                paused_users.add(int(monitor["user_id"]))
+                db.commit()
+                results.append(
+                    SchedulerMonitorResult(
+                        monitor_id, "provider_rate_limited", "Provider requested a pause."
+                    )
+                )
             except Exception:
                 _schedule_monitor_failure(
                     db,
@@ -2445,3 +2666,134 @@ async def run_media_sync(
         released_at = fixed_now or _utc_now()
         release_sync_lease(db, owner=owner, released_at=released_at)
         db.commit()
+
+
+async def reconcile_language_request(
+    db,
+    *,
+    monitor_id,
+    rd,
+    now,
+    request_id,
+    actor_user_id,
+    source_generation,
+    contract_version=None,
+    max_candidates=20,
+    heartbeat=None,
+):
+    """Reuse before acquiring; preserve every incompatible working copy."""
+    from omakase.plus.language_store import CONTRACT_VERSION, bind_acquired_assets
+    from omakase.plus.media_store import language_request_reuse
+
+    monitor = db.execute("SELECT * FROM media_monitors WHERE id=?", (monitor_id,)).fetchone()
+    if monitor is None:
+        raise ValueError("media monitor not found")
+    if not isinstance(source_generation, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", source_generation
+    ):
+        return _language_result(
+            db,
+            monitor,
+            outcome="language_source_unconfirmed",
+            detail="Confirm the exact source generation before using a language request.",
+            now=now,
+        )
+    snapshot, policy, required, status = language_request_reuse(
+        db,
+        actor_user_id=actor_user_id,
+        request_id=request_id,
+        monitor_id=monitor_id,
+        source_generation=source_generation,
+    )
+    if not required or frozenset(required) != _required_episodes(monitor):
+        return _language_result(
+            db,
+            monitor,
+            outcome="language_scope_unsupported",
+            detail="The immutable episode scope must match this monitor's exact current acquisition scope. No acquisition attempted.",
+            now=now,
+            required=required,
+        )
+    if status["language_coverage_complete"]:
+        return _language_result(
+            db,
+            monitor,
+            outcome="language_reused",
+            detail="Existing exact multitrack media satisfies this request; no acquisition or stream selection changed.",
+            now=now,
+            required=required,
+        )
+    existing = covered_episodes(db, monitor_id) & set(required)
+    if existing - set(status["covered_episodes"]):
+        return _language_result(
+            db,
+            monitor,
+            outcome=status["state"],
+            detail="This copy does not yet confirm the requested languages. Existing media stays available; no replacement attempted.",
+            now=now,
+            required=required,
+        )
+    if contract_version != CONTRACT_VERSION:
+        return _language_result(
+            db,
+            monitor,
+            outcome="language_pipeline_unsupported",
+            detail="The publication adapter does not support this language contract. No acquisition attempted.",
+            now=now,
+            required=required,
+        )
+    dispatch = LanguageDispatch(request_id, actor_user_id, source_generation, contract_version)
+    check = _language_heartbeat(db, dispatch, heartbeat)
+    try:
+        check()
+        result = await _reconcile_monitor_active(
+            db,
+            monitor_id=monitor_id,
+            rd=rd,
+            now=now,
+            max_candidates=max_candidates,
+            heartbeat=check,
+            policy_override=policy,
+            language_dispatch=dispatch,
+        )
+        check()
+        bind_acquired_assets(
+            db,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+            asset_ids=[a.id for a in result.accepted_assets],
+        )
+        if result.accepted_assets:
+            result = replace(
+                result,
+                outcome="language_pending_verification",
+                detail="Acquired media awaits exact-file language verification and its approved publication proof.",
+            )
+        return result
+    except ProviderRateLimit as error:
+        if error.retained_asset_ids:
+            try:
+                check()
+                bind_acquired_assets(
+                    db,
+                    actor_user_id=actor_user_id,
+                    request_id=request_id,
+                    asset_ids=list(error.retained_asset_ids),
+                )
+            except (Exception, _LanguagePermissionChanged):
+                for asset_id in error.retained_asset_ids:
+                    db.execute(
+                        "UPDATE media_assets SET status='quarantined',last_error='LANGUAGE_CONTRACT_UNCONFIRMED' WHERE id=? AND created_by_run_id IS NOT NULL AND status='queued'",
+                        (asset_id,),
+                    )
+            db.commit()
+        raise
+    except _LanguagePermissionChanged:
+        return _language_result(
+            db,
+            monitor,
+            outcome="language_permissions_changed",
+            detail="Request permissions changed; acquisition stopped and existing media retained.",
+            now=now,
+            required=required,
+        )

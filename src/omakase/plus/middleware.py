@@ -40,6 +40,19 @@ async def get_current_user(
     from omakase.plus.avatar import avatar_context
 
     request.state.account_avatar = avatar_context(db, row["id"])
+    from omakase.plus import households
+
+    if households.feature_enabled():
+        import sqlite3
+
+        try:
+            request.state.household_navigation = households.navigation_context(
+                db, viewer_id=row["id"]
+            )
+        except (households.HouseholdError, sqlite3.Error):
+            # Missing/stale optional feature metadata never changes the authenticated viewer.
+            request.state.household_navigation = {"available": False}
+
     return User(
         id=row["id"],
         email=row["email"],

@@ -47,12 +47,17 @@
         </small>
       </div>
       <div class="add-result-actions">
+        {% if household_navigation and household_navigation.selected_kind == 'household' %}
+        <form method="post" action="/plus/add/acquire" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="anilist_id" value="{{ target.anilist_id }}"><input type="hidden" name="season" value="{{ season }}"><input type="hidden" name="household_request_key" value="{{ household_request_key }}"><input type="hidden" name="shared_intent" value="catalog"><button type="submit" class="button button-primary" {% if not household_navigation.can_add %}disabled{% endif %}>Add shared title</button></form>
+        {% if household_navigation.can_request %}<form method="post" action="/plus/add/acquire" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="anilist_id" value="{{ target.anilist_id }}"><input type="hidden" name="season" value="{{ season }}"><input type="hidden" name="household_request_key" value="{{ household_request_key }}"><input type="hidden" name="shared_intent" value="request"><button type="submit" class="button button-secondary">Request shared media</button><small>Queues the owner’s acquisition criteria and your permitted language preference. Provider work waits for qualified publication support.</small></form>{% else %}<p>The owner has disabled shared media requests. Adding a shared title does not acquire media.</p>{% endif %}
+        {% else %}
         <form method="post" action="/plus/add/acquire" data-busy-form>
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="anilist_id" value="{{ target.anilist_id }}">
           <input type="hidden" name="season" value="{{ season }}">
           <button class="button button-primary" type="submit" data-busy-label="Adding and checking media…">Add and find {{ 'movie' if target.format == 'MOVIE' else 'episodes' }}</button>
         </form>
+        {% endif %}
         <form method="post" action="/plus/add/plan">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="anilist_id" value="{{ target.anilist_id }}">

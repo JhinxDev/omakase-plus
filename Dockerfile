@@ -7,11 +7,11 @@
 
 FROM python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f AS builder
 WORKDIR /build
+COPY requirements-build.txt ./
+RUN pip install --no-cache-dir --require-hashes -r requirements-build.txt
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
-COPY requirements-build.txt ./
-RUN pip install --no-cache-dir --require-hashes -r requirements-build.txt && \
-    python -m build --wheel --no-isolation --outdir /wheels
+RUN python -m build --wheel --no-isolation --outdir /wheels
 
 FROM python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f AS runtime
 
@@ -21,16 +21,17 @@ RUN apt-get update && \
     useradd --create-home --uid 1000 omakase
 WORKDIR /home/omakase
 
-COPY --from=builder /wheels/*.whl /tmp/
 ARG OMAKASE_AGENT_TOOLS=true
 COPY requirements-runtime.txt requirements-agents.txt /tmp/
 RUN case "$OMAKASE_AGENT_TOOLS" in true) requirements=agents ;; false) requirements=runtime ;; *) exit 2 ;; esac && \
     pip install --no-cache-dir --require-hashes -r /tmp/requirements-$requirements.txt && \
-    pip install --no-cache-dir --no-deps /tmp/*.whl && rm -f /tmp/*.whl /tmp/requirements-runtime.txt /tmp/requirements-agents.txt
+    rm -f /tmp/requirements-runtime.txt /tmp/requirements-agents.txt
+COPY --from=builder /wheels/*.whl /tmp/
+RUN pip install --no-cache-dir --no-deps /tmp/*.whl && rm -f /tmp/*.whl
 
 ARG OMAKASE_REVISION=unknown
 LABEL org.opencontainers.image.source="https://github.com/JhinxDev/omakase-plus"
-LABEL org.opencontainers.image.description="Omakase self-hosted media discovery and orchestration"
+LABEL org.opencontainers.image.description="Omakase private media discovery and orchestration"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.revision=$OMAKASE_REVISION
 

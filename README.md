@@ -87,6 +87,24 @@ Onboarding saves preferences and guidance; it does not install services or chang
 host mounts. Optional qBittorrent acquisition remains scoped to its VPN profile.
 Use only media and services you are authorized to access.
 
+## Next batch: shared libraries, languages and personal tracker sync
+
+**Pending release qualification.** These source guides describe the next batch;
+the deployed `.3` release does not include these features yet. New feature flags
+default off. Activation requires combined migrations 033–036 and rollback qualification.
+A guide, saved preference or passing unit test is not deployment proof.
+
+| Optional feature | What stays separate |
+| --- | --- |
+| [Households](docs/households.md) | Shared catalog/files; each member's progress, ratings, tracker accounts and stream choices |
+| [Audio and subtitles](docs/language-settings.md) | Requested languages, physically verified tracks and the viewer's current Plex selection |
+| [MyAnimeList ↔ AniList](docs/myanimelist-bridge.md) | Each user's verified identities; first-sync preview, conflict decisions and opt-in ongoing checks |
+
+An owner connector never grants members its credentials. Revocation stops future
+access and work without erasing personal history. Language choices never replace
+someone else's working copy. Tracker connections require administrator OAuth setup
+and each user's own consent; no account is connected by this repository.
+
 ## Development and operation
 
 Python 3.11+ and `uv` are required for source development:

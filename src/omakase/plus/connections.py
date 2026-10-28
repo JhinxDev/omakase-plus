@@ -332,6 +332,16 @@ def save_connection(
             [(user_id, name, encrypt(value)) for name, value in values],
         )
         if next_url != previous_url or next_key != previous_key:
+            from omakase.plus import households
+
+            if integration == "plex":
+                from omakase.plus.playback_proof import invalidate_personal_playback
+
+                invalidate_personal_playback(db, user_id=user_id)
+            if households.feature_enabled():
+                households.connection_generation_changed(
+                    db, owner_user_id=user_id, integration=integration
+                )
             db.execute(
                 "DELETE FROM user_connection_health WHERE user_id=? AND integration=?",
                 (user_id, spec.id),
@@ -350,7 +360,27 @@ def disconnect_connection(db, user_id: int, integration: str) -> None:
         names.extend(("overseerr_url", "overseerr_api_key"))
     if integration == "plex":
         names.extend(("plex_movies_section_id", "plex_machine_id"))
+    changed = (
+        db.execute(
+            "SELECT 1 FROM user_secrets WHERE user_id=? AND key_name IN ("
+            + ",".join("?" for _ in names)
+            + ") LIMIT 1",
+            (user_id, *names),
+        ).fetchone()
+        is not None
+    )
     with db:
+        if changed:
+            from omakase.plus import households
+
+            if integration == "plex":
+                from omakase.plus.playback_proof import invalidate_personal_playback
+
+                invalidate_personal_playback(db, user_id=user_id)
+            if households.feature_enabled():
+                households.connection_generation_changed(
+                    db, owner_user_id=user_id, integration=integration
+                )
         db.executemany(
             "DELETE FROM user_secrets WHERE user_id=? AND key_name=?",
             [(user_id, name) for name in names],
@@ -519,14 +549,30 @@ async def _native_check(
 
         if spec.id == "plex":
             body = await fetch("/library/sections")
+            identity_body = await fetch("/identity")
             try:
                 if b"\x00" in body or b"<!DOCTYPE" in body.upper() or b"<!ENTITY" in body.upper():
                     raise ET.ParseError
                 root = ET.fromstring(body)
                 if root.tag != "MediaContainer":
                     raise ET.ParseError
+                if (
+                    any(marker in identity_body.upper() for marker in (b"<!DOCTYPE", b"<!ENTITY"))
+                    or b"\x00" in identity_body
+                ):
+                    raise ET.ParseError
+                identity = ET.fromstring(identity_body)
+                machine = identity.get("machineIdentifier", "")
+                if identity.tag != "MediaContainer" or not re.fullmatch(
+                    r"[A-Za-z0-9_-]{1,128}", machine
+                ):
+                    raise ET.ParseError
             except (ET.ParseError, ValueError):
                 raise _CheckError("invalid_response") from None
+            return {
+                **_health("connected", "connected", connected=True),
+                "_verified_machine": machine,
+            }
         elif spec.id == "prowlarr":
             status = _json(await fetch("/api/v1/system/status"))
             if not isinstance(status, dict) or not isinstance(status.get("version"), str):
@@ -605,8 +651,32 @@ async def test_connection(
         result = _health("error", "transport_timeout")
     except (httpx.HTTPError, OSError):
         result = _health("error", "transport_error")
+    machine = result.pop("_verified_machine", None)
+    # A successful response describes only the exact pair used before awaiting.
+    # Never attach its identity or health to credentials replaced in another request.
     result["checked_at"] = _iso(now)
     with db:
+        if not db.in_transaction:
+            db.execute("BEGIN IMMEDIATE")
+        if _values(db, user_id, spec) != (url, key):
+            return _health("configured", "untested")
+        if machine is not None:
+            previous_machine = _read(db, user_id, "plex_machine_id")
+            if previous_machine and previous_machine != machine:
+                from omakase.plus import households
+                from omakase.plus.playback_proof import invalidate_personal_playback
+
+                invalidate_personal_playback(db, user_id=user_id)
+                if households.feature_enabled():
+                    households.connection_generation_changed(
+                        db, owner_user_id=user_id, integration="plex"
+                    )
+                db.execute("DELETE FROM movie_verifications WHERE user_id=?", (user_id,))
+            db.execute(
+                "INSERT INTO user_secrets(user_id,key_name,encrypted_value) VALUES(?,?,?) "
+                "ON CONFLICT(user_id,key_name) DO UPDATE SET encrypted_value=excluded.encrypted_value,created_at=datetime('now')",
+                (user_id, "plex_machine_id", encrypt(machine)),
+            )
         db.execute(
             "INSERT INTO user_connection_health(user_id,integration,fingerprint,health_json,checked_at) VALUES (?,?,?,?,?) "
             "ON CONFLICT(user_id,integration) DO UPDATE SET fingerprint=excluded.fingerprint,health_json=excluded.health_json,checked_at=excluded.checked_at",

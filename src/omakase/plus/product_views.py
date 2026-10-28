@@ -159,8 +159,8 @@ def dashboard_view(db, *, user_id: int, run: str = "") -> dict[str, Any]:
     }
 
 
-def home_view(db, *, user_id: int) -> dict[str, Any]:
-    titles = library_titles(db, user_id=user_id)
+def home_view(db, *, user_id: int, library_scope=None) -> dict[str, Any]:
+    titles = library_titles(db, user_id=user_id, library_scope=library_scope)
     states = {state: sum(item["state"] == state for item in titles) for state in _states()}
     attention = [item for item in titles if item["state"] == "attention"][:5]
     continue_watching = [item for item in titles if item["lifecycle"] == "in_progress"][:10]
@@ -195,6 +195,7 @@ def library_titles(
     content_type: str = "all",
     query: str = "",
     include_removed: bool = False,
+    library_scope=None,
 ) -> list[dict[str, Any]]:
     """Return stable per-title readiness cards with explicit filters."""
     lifecycle_values = {
@@ -216,6 +217,23 @@ def library_titles(
     text = query.strip().casefold()
     if len(text) > 100:
         raise ProductViewError("library query is too long")
+    if library_scope is not None:
+        from omakase.plus import households
+        from omakase.plus.household_views import anime_cards
+
+        households._require(library_scope.viewer_id == user_id, "Library viewer mismatch.", 403)
+        households.revalidate_scope(db, library_scope)
+        if library_scope.kind == "household":
+            cards = anime_cards(
+                db, library_scope, viewer_id=user_id, query=query, lifecycle=lifecycle
+            )
+            return [
+                card
+                for card in cards
+                if (state == "all" or card["state"] == state)
+                and provider == "all"
+                and content_type != "movies"
+            ]
     visible = plex_visible_counts(db)
     watch_rows = db.execute(
         """SELECT entry.*,
@@ -500,6 +518,17 @@ def library_titles(
                 "publication_detail": publication_detail,
             }
         )
+    if library_scope is not None and library_scope.kind == "personal":
+        # Migrated operational rows remain personal unless explicitly promoted.
+        # Existing personal bindings intentionally retain a title in both scopes.
+        titles = [
+            item
+            for item in titles
+            if not db.execute(
+                "SELECT 1 FROM library_resources r JOIN library_items i ON i.resource_id=r.id WHERE r.owner_user_id=? AND r.domain='anime' AND r.legacy_id=? AND i.state='active' AND i.library_id!=? AND NOT EXISTS(SELECT 1 FROM library_items own WHERE own.library_id=? AND own.state='active' AND own.resource_id=r.id) LIMIT 1",
+                (user_id, str(item["id"]), library_scope.library_id, library_scope.library_id),
+            ).fetchone()
+        ]
     return titles
 
 
@@ -990,16 +1019,23 @@ def activity_view(
         )
     watch_activity = []
     watch_limit = limit if page == 1 else 0
+    from omakase.plus.households import feature_enabled
+
+    retained_title = (
+        "(SELECT i.title FROM watch_library_links link JOIN library_items i ON i.id=link.library_item_id WHERE link.user_id=entry.user_id AND link.watch_entry_id=entry.id ORDER BY i.created_at DESC,i.id LIMIT 1)"
+        if feature_enabled()
+        else "NULL"
+    )
     for row in db.execute(
-        """SELECT event.id, event.source, event.kind, event.episode,
+        f"""SELECT event.id, event.source, event.kind, event.episode,
                   event.disposition, event.reason, event.observed_at,
-                  monitor.id AS monitor_id, monitor.title
+                  entry.id AS personal_entry_id, entry.anilist_id, monitor.id AS monitor_id, COALESCE(monitor.title,{retained_title}) AS title
            FROM watch_events AS event
            JOIN watch_entries AS entry ON entry.id = event.watch_entry_id
-           JOIN media_monitors AS monitor ON monitor.id = entry.monitor_id
-           WHERE event.user_id = ? AND entry.user_id = ? AND monitor.user_id = ?
+           LEFT JOIN media_monitors AS monitor ON monitor.id = entry.monitor_id AND monitor.user_id = entry.user_id
+           WHERE event.user_id = ? AND entry.user_id = ?
            ORDER BY event.observed_at DESC, event.id DESC LIMIT ?""",
-        (user_id, user_id, user_id, watch_limit),
+        (user_id, user_id, watch_limit),
     ).fetchall():
         category = "success" if row["disposition"] == "accepted" else "attention"
         if outcome != "all" and category != outcome:
@@ -1029,8 +1065,11 @@ def activity_view(
         watch_activity.append(
             {
                 "id": int(row["id"]),
-                "monitor_id": int(row["monitor_id"]),
-                "title": row["title"],
+                "monitor_id": int(row["monitor_id"]) if row["monitor_id"] is not None else None,
+                "detail_url": f"/plus/library/{row['monitor_id']}"
+                if row["monitor_id"] is not None
+                else f"/plus/history/anime/{row['personal_entry_id']}",
+                "title": row["title"] or f"AniList #{row['anilist_id']}",
                 "outcome": kind_label,
                 "detail": detail,
                 "source_label": source_label,

@@ -12,7 +12,7 @@ from itertools import zip_longest
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.routing import APIRoute
 
 from omakase.plus.catalog_search import AnimeCatalogSearch, CatalogSearchError, _plain
@@ -99,10 +99,20 @@ def _input(q, kind):
 
 
 def create_search_router(
-    templates, context_factory=None, *, anime_factory=None, movie_factory=None, tv_factory=None
+    templates,
+    context_factory=None,
+    *,
+    anime_factory=None,
+    movie_factory=None,
+    tv_factory=None,
+    households_enabled=False,
 ):
     """Relative routes, to be included by the root Plus router once."""
-    router = APIRouter(dependencies=[Depends(_private)], route_class=_PrivateRoute)
+    from omakase.plus.household_media import read_route_class
+
+    router = APIRouter(
+        dependencies=[Depends(_private)], route_class=read_route_class(_PrivateRoute)
+    )
 
     def context(request, user):
         return (
@@ -120,6 +130,16 @@ def create_search_router(
         return anime_factory(db, user) if anime_factory else AnimeCatalogSearch(db, user.id)
 
     def movies(db, user):
+        if (
+            households_enabled() if callable(households_enabled) else households_enabled
+        ) and movie_factory is None:
+            from omakase.plus.households import selected_scope
+
+            selected = selected_scope(db, viewer_id=user.id)
+            if selected.kind == "household":
+                from omakase.plus.household_catalog import catalog_connections
+
+                return MovieService(db, catalog_connections(db, selected))
         return (
             movie_factory(db, user)
             if movie_factory
@@ -134,10 +154,21 @@ def create_search_router(
                 {**card, "media_type": "anime"} for card in (await anime(db, user).search(q))[:8]
             ]
         if kind == "tv":
+            config = None
+            if (
+                households_enabled() if callable(households_enabled) else households_enabled
+            ) and tv_factory is None:
+                from omakase.plus.households import selected_scope
+
+                selected = selected_scope(db, viewer_id=user.id)
+                if selected.kind == "household":
+                    from omakase.plus.household_catalog import catalog_connections
+
+                    config = catalog_connections(db, selected)
             svc = (
                 tv_factory(db, user)
                 if tv_factory
-                else TVService(db, movie_connections(db, user.id))
+                else TVService(db, config or movie_connections(db, user.id))
             )
             records = await svc.search(user.id, q)
             return [
@@ -200,6 +231,10 @@ def create_search_router(
         return cards
 
     def failure(error):
+        from omakase.plus.households import HouseholdError
+
+        if isinstance(error, HouseholdError):
+            return str(error), "shared_catalog_unavailable", 503, None
         if isinstance(error, (CatalogSearchError, _SearchLimit)):
             return error.detail, error.code, error.status_code, error.retry_after
         if isinstance(error, (MovieError, TVError)):
@@ -278,6 +313,28 @@ def create_search_router(
             categories = list(_KINDS) if kind == "all" else [kind]
             # Exactly one bounded task per selected domain. Domains fail independently.
             outcomes = await asyncio.gather(*(one(category) for category in categories))
+            if households_enabled() if callable(households_enabled) else households_enabled:
+                from omakase.plus.household_views import search_cards
+                from omakase.plus.households import selected_scope
+
+                selected = selected_scope(db, viewer_id=user.id)
+                if selected.kind == "household":
+                    outcomes = [
+                        (
+                            search_cards(
+                                db,
+                                selected,
+                                query=query,
+                                domain={"anime": "anime", "movies": "movie", "tv": "tv"}[category],
+                            )
+                            + [
+                                {**record, "library_id": None, "library_status": None}
+                                for record in records
+                            ],
+                            warning,
+                        )
+                        for category, (records, warning) in zip(categories, outcomes, strict=True)
+                    ]
             warnings = [warning for _, warning in outcomes if warning]
             cards, seen = [], set()
             for row in zip_longest(*(cards for cards, _ in outcomes)):
@@ -292,9 +349,9 @@ def create_search_router(
             # with many results from hiding another domain behind the eight-card cap.
             cards.sort(key=lambda card: card["title"].casefold() != query.casefold())
             status = 200
-            if len(warnings) == len(categories):
+            if not cards and len(warnings) == len(categories):
                 status = 429 if all(w["status"] == 429 for w in warnings) else 503
-            if kind != "all" and warnings:
+            if not cards and kind != "all" and warnings:
                 status = warnings[0]["status"]
             retry = max((w["retry_after"] or 0 for w in warnings), default=0)
             headers = {"Retry-After": str(retry)} if retry else {}
@@ -370,12 +427,41 @@ def create_search_router(
     async def detail(
         request: Request, media_id: int, user=Depends(require_user), db=Depends(get_db)
     ):
+        if households_enabled() if callable(households_enabled) else households_enabled:
+            from omakase.plus.household_views import detail_url
+            from omakase.plus.households import selected_scope
+
+            selected = selected_scope(db, viewer_id=user.id)
+            if selected.kind == "household":
+                # Prefer an exact linked anime season; multiple seasons require explicit selection.
+                matches = db.execute(
+                    "SELECT id FROM library_items WHERE library_id=? AND state='active' AND domain='anime' AND canonical_id=? ORDER BY season_number",
+                    (selected.library_id, str(media_id)),
+                ).fetchall()
+                if len(matches) == 1:
+                    return RedirectResponse(
+                        detail_url(selected, matches[0]["id"]), status_code=307, headers=_CACHE
+                    )
+                if len(matches) > 1:
+                    return RedirectResponse(
+                        f"/plus/libraries/{selected.library_id}",
+                        status_code=307,
+                        headers=_CACHE,
+                    )
         card, error, status = None, "", 200
         headers = dict(_CACHE)
         try:
             if type(media_id) is not int or media_id <= 0:
                 raise CatalogSearchError("invalid_identity")
             card = await anime(db, user).detail(media_id)
+            if (
+                (households_enabled() if callable(households_enabled) else households_enabled)
+                and selected.kind == "household"
+                and card
+            ):
+                # Personal membership is not membership in the selected shared catalog.
+                card = {**card, "library_id": None, "library_status": None}
+
         except (CatalogSearchError, ValueError) as exc:
             error, _, status, retry = failure(exc)
             if retry is not None:

@@ -33,6 +33,7 @@ from omakase.adapters.anilist import AniListCatalogError
 from omakase.engine import LLMOutputParseError
 from omakase.engine import run as run_pipeline
 from omakase.llm.codex import request_context
+from omakase.plus import households
 from omakase.plus.acquisition_policy import (
     ACQUISITION_POLICY_STORAGE_KEY,
     SUPPORTED_RESOLUTIONS,
@@ -78,6 +79,10 @@ from omakase.plus.feedback import feedback_for_prompt, save_feedback
 from omakase.plus.google_auth import create_google_router, google_enabled
 from omakase.plus.health import affected_health_titles, health_guidance
 from omakase.plus.history_artwork_routes import create_history_artwork_router
+from omakase.plus.household_routes import create_household_router
+from omakase.plus.language_routes import create_language_router
+from omakase.plus.language_routes import feature_enabled as language_settings_enabled
+from omakase.plus.mal_routes import create_mal_router
 from omakase.plus.manifest import (
     MANIFEST_SCHEMA,
     MAX_RECEIPT_BYTES,
@@ -114,6 +119,7 @@ from omakase.plus.product_views import (
 from omakase.plus.product_views import (
     normalize_lane as _normalize_lane,
 )
+from omakase.plus.provider_limits import cooldown_hooks
 from omakase.plus.providers.realdebrid import RealDebridProvider
 from omakase.plus.repairs import (
     RepairError,
@@ -141,6 +147,15 @@ from omakase.plus.tracker import (
     mark_attempt,
     mark_failed,
     mark_synced,
+)
+from omakase.plus.tracker_reconciliation import Provider
+from omakase.plus.tracker_sync import (
+    BridgeError,
+    BridgeService,
+    anilist_credential_fingerprint,
+    require_anilist_credential,
+    require_writer_lease,
+    writer_lease,
 )
 from omakase.plus.tv_routes import create_tv_router
 from omakase.plus.update_routes import create_updates_router
@@ -180,6 +195,8 @@ templates.context_processors.append(lambda request: {"google_enabled": google_en
 router = APIRouter(prefix="/plus")
 _STATIC_ASSETS = {
     "dashboard.css": "text/css",
+    "household.css": "text/css",
+    "household.js": "application/javascript",
     "streaming.css": "text/css",
     "atmosphere.css": "text/css",
     "cinema.css": "text/css",
@@ -194,6 +211,8 @@ _STATIC_ASSETS = {
     "feedback.css": "text/css",
     "semantic-states.css": "text/css",
     "notifications.css": "text/css",
+    "tracker-bridge.css": "text/css",
+    "settings-language.css": "text/css",
     "notifications.js": "application/javascript",
     "credentials.css": "text/css",
     "credentials.js": "application/javascript",
@@ -282,7 +301,7 @@ def _removal_provider(db, user_id: int) -> RealDebridProvider:
     api_key = read_secret(db, user_id, "realdebrid_api_key")
     if not api_key:
         raise ValueError("Real-Debrid is not connected")
-    return RealDebridProvider(api_key)
+    return RealDebridProvider(api_key, **cooldown_hooks(db, user_id))
 
 
 @router.get("/health")
@@ -401,8 +420,23 @@ async def library_manifest(request: Request, db=Depends(get_db)):
     limited = _machine_rate_limit(_manifest_rate_limiter, *auth)
     if limited is not None:
         return limited
+    from omakase.plus.language_publication import CAPABILITY
+
+    raw_capabilities = request.headers.get("X-Omakase-Curator-Capabilities", "")
+    capabilities = (
+        tuple(part.strip() for part in raw_capabilities.split(","))
+        if raw_capabilities.strip()
+        else ()
+    )
+    if (
+        len(raw_capabilities) > 256
+        or len(capabilities) > 8
+        or len(set(capabilities)) != len(capabilities)
+        or any(value != CAPABILITY for value in capabilities)
+    ):
+        return _machine_response({"detail": "Unsupported curator capabilities"}, 400)
     try:
-        manifest = build_library_manifest(db)
+        manifest = build_library_manifest(db, peer_capabilities=capabilities)
     except (ManifestContractError, sqlite3.Error):
         return _machine_response({"detail": "Manifest contract unavailable"}, 500)
     return _machine_response(manifest, 200)
@@ -853,6 +887,7 @@ async def _render_dashboard(
             "bulk_preview": bulk_preview,
             "bulk_query": bulk_query,
             "csrf_token": _csrf_token(request),
+            "household_request_key": uuid.uuid4().hex if households.feature_enabled() else "",
             "error": error,
         },
         status_code=status_code,
@@ -879,6 +914,10 @@ async def dashboard(
 def _product_context(request: Request, user, *, active_page: str) -> dict[str, object]:
     return {
         "email": user.email,
+        "households_enabled": households.feature_enabled(),
+        "household_request_key": uuid.uuid4().hex if households.feature_enabled() else "",
+        "language_settings_enabled": language_settings_enabled(),
+        "household_navigation": getattr(request.state, "household_navigation", None),
         **getattr(request.state, "account_avatar", {}),
         "active_page": active_page,
         "csrf_token": _csrf_token(request),
@@ -893,10 +932,21 @@ router.include_router(create_connections_router(templates, _product_context))
 router.include_router(create_updates_router(templates, _product_context))
 router.include_router(create_agent_router(templates, _product_context))
 router.include_router(create_avatar_router(templates, _product_context))
-router.include_router(create_movies_router(templates, _product_context))
-router.include_router(create_tv_router(templates, _product_context))
-router.include_router(create_search_router(templates, _product_context))
+router.include_router(
+    create_movies_router(templates, _product_context, households_enabled=households.feature_enabled)
+)
+router.include_router(
+    create_tv_router(templates, _product_context, households_enabled=households.feature_enabled)
+)
+router.include_router(
+    create_search_router(templates, _product_context, households_enabled=households.feature_enabled)
+)
+router.include_router(
+    create_household_router(templates, _product_context, enabled=households.feature_enabled)
+)
 router.include_router(create_notifications_router())
+router.include_router(create_mal_router(templates, _product_context))
+router.include_router(create_language_router(templates, _product_context))
 router.include_router(create_history_artwork_router())
 router.include_router(create_onboarding_router(templates, _product_context))
 
@@ -919,10 +969,17 @@ async def home_page(
         "home.html",
         {
             **_product_context(request, user, active_page="home"),
-            **home_view(db, user_id=user.id),
+            **home_view(
+                db,
+                user_id=user.id,
+                library_scope=households.selected_scope(db, viewer_id=user.id)
+                if households.feature_enabled()
+                else None,
+            ),
             "watch_history": viewing_history(db, user_id=user.id, limit=6)["items"],
             "message": message,
         },
+        headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
     )
 
 
@@ -984,10 +1041,30 @@ async def library_page(
     user=Depends(require_user),
     db=Depends(get_db),
 ):
+    if households.feature_enabled():
+        selected = households.selected_scope(db, viewer_id=user.id)
+        if selected.kind == "household":
+            from omakase.plus.household_views import collection
+
+            data = collection(db, selected, domain="anime", query=query)
+            return templates.TemplateResponse(
+                request,
+                "household_media.html",
+                {
+                    **_product_context(request, user, active_page="library"),
+                    **data,
+                    "item": None,
+                    "csrf_token": _csrf_token(request),
+                },
+                headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+            )
     try:
         titles = library_titles(
             db,
             user_id=user.id,
+            library_scope=households.selected_scope(db, viewer_id=user.id)
+            if households.feature_enabled()
+            else None,
             lifecycle=lifecycle,
             state=state,
             provider=provider,
@@ -999,6 +1076,9 @@ async def library_page(
             for item in library_titles(
                 db,
                 user_id=user.id,
+                library_scope=households.selected_scope(db, viewer_id=user.id)
+                if households.feature_enabled()
+                else None,
                 lifecycle="all",
             )
         ]
@@ -1145,6 +1225,9 @@ async def add_acquire(
             url=f"/plus/add?message={quote(_clean_download_detail(exc), safe='')}",
             status_code=302,
         )
+    shared = _shared_anime_response(request, user, db, (target,), await request.form())
+    if shared is not None:
+        return shared
     monitor_id = _enroll_media_target(db, user, target)
     receipt = await run_media_sync(
         db,
@@ -1200,6 +1283,21 @@ async def title_page(
     user=Depends(require_user),
     db=Depends(get_db),
 ):
+    if households.feature_enabled():
+        selected = households.selected_scope(db, viewer_id=user.id)
+        if selected.kind == "household":
+            # A monitor URL is never itself an access grant to another account.
+            match = db.execute(
+                "SELECT i.id FROM library_items i JOIN library_resources r ON r.id=i.resource_id WHERE i.library_id=? AND i.state='active' AND r.domain='anime' AND r.owner_user_id=? AND r.legacy_id=?",
+                (selected.library_id, selected.operational_owner_id, str(monitor_id)),
+            ).fetchone()
+            if match is None:
+                raise HTTPException(404, "Title is not in the selected library")
+            return RedirectResponse(
+                f"/plus/libraries/{selected.library_id}/items/{match['id']}",
+                status_code=307,
+                headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+            )
     title = title_detail(db, user_id=user.id, monitor_id=monitor_id)
     if title is None:
         raise HTTPException(status_code=404, detail="Media title not found")
@@ -2304,17 +2402,80 @@ def _ensure_anilist_planning_best_effort(db, user_id: int, anilist_id: int) -> s
     base_url = os.getenv("OMAKASE_PLUS_URL", "http://localhost:8765")
     redirect_uri = f"{base_url}/plus/integrations/anilist/callback"
     try:
-        with with_valid_token(db, user_id, client_id, client_secret, redirect_uri) as token:
-            receipt = ensure_in_planning(token, anilist_id)
-            status = str(receipt["entry"].get("status") or "").strip().upper()
-            if status:
-                return status
+        with writer_lease(db, user_id) as lease:
+            credential = anilist_credential_fingerprint(db, user_id)
+            require_anilist_credential(db, user_id, credential)
+            require_writer_lease(db, user_id, lease)
+            with with_valid_token(db, user_id, client_id, client_secret, redirect_uri) as token:
+                require_writer_lease(db, user_id, lease)
+                require_anilist_credential(db, user_id, credential)
+                receipt = ensure_in_planning(token, anilist_id)
+                require_writer_lease(db, user_id, lease)
+                require_anilist_credential(db, user_id, credential)
+                status = str(receipt["entry"].get("status") or "").strip().upper()
+                if status:
+                    return status
     except (AniListWriteError, KeyError, TypeError, ValueError, httpx.HTTPError):
         pass
     return "PLANNING"
 
 
+def _shared_anime_response(request, user, db, targets, form):
+    if not households.feature_enabled():
+        return None
+    selected = households.selected_scope(db, viewer_id=user.id)
+    if selected.kind != "household":
+        return None
+    from omakase.plus.household_requests import prepare_shared_anime
+
+    base_key = str(form.get("household_request_key", ""))
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", base_key):
+        raise HTTPException(422, "Reload the shared-library form before submitting.")
+    intent = str(form.get("shared_intent", "catalog"))
+    if intent not in {"catalog", "request"}:
+        raise HTTPException(422, "Choose whether to add a shared title or request media.")
+    try:
+        with households._transaction(db):
+            receipts = [
+                prepare_shared_anime(
+                    db,
+                    selected,
+                    target=target,
+                    idempotency_key=f"{base_key}-{target.anilist_id}-{target.season_number or 0}",
+                    request_media=intent == "request",
+                )
+                for target in targets
+            ]
+    except households.HouseholdError as error:
+        return _render_add_page(
+            request, user, options=targets, message=str(error), status_code=error.status
+        )
+    except ValueError:
+        return _render_add_page(
+            request,
+            user,
+            options=targets,
+            message="Saved shared request criteria need review before submission. No provider request was sent.",
+            status_code=422,
+        )
+    if len(receipts) == 1:
+        location = f"/plus/libraries/{selected.library_id}/items/{receipts[0].item_id}"
+    else:
+        location = f"/plus/libraries/{selected.library_id}"
+    return RedirectResponse(
+        location, status_code=303, headers={"Cache-Control": "private, no-store", "Vary": "Cookie"}
+    )
+
+
 def _enroll_media_target(db, user, target) -> int:
+    if (
+        households.feature_enabled()
+        and households.selected_scope(db, viewer_id=user.id).kind == "household"
+    ):
+        raise HTTPException(
+            409,
+            "Shared acquisition requires the checked library request flow. No personal tracker or provider change was made.",
+        )
     existing = db.execute(
         "SELECT id FROM anilist_plannings WHERE user_id = ? AND anilist_id = ?",
         (user.id, target.anilist_id),
@@ -2457,6 +2618,9 @@ async def dashboard_bulk_confirm(
         if target.anilist_id != anilist_id:
             raise HTTPException(status_code=422, detail="AniList identity mismatch")
         targets.append(target)
+    shared = _shared_anime_response(request, user, db, targets, form)
+    if shared is not None:
+        return shared
     monitor_ids = tuple(_enroll_media_target(db, user, target) for target in targets)
     receipt = await run_media_sync(
         db,
@@ -2674,6 +2838,9 @@ async def dashboard_direct_download(
             status_code=302,
         )
 
+    shared = _shared_anime_response(request, user, db, (target,), await request.form())
+    if shared is not None:
+        return shared
     monitor_id = _enroll_media_target(db, user, target)
     receipt = await run_media_sync(
         db,
@@ -2713,10 +2880,18 @@ async def dashboard_remove_plan(
         base_url = os.getenv("OMAKASE_PLUS_URL", "http://localhost:8765")
         redirect_uri = f"{base_url}/plus/integrations/anilist/callback"
         try:
-            with with_valid_token(db, user.id, client_id, client_secret, redirect_uri) as token:
-                from omakase.plus.anilist import remove_from_planning
+            with writer_lease(db, user.id) as lease:
+                credential = anilist_credential_fingerprint(db, user.id)
+                require_anilist_credential(db, user.id, credential)
+                require_writer_lease(db, user.id, lease)
+                with with_valid_token(db, user.id, client_id, client_secret, redirect_uri) as token:
+                    from omakase.plus.anilist import remove_from_planning
 
-                remove_from_planning(token, anilist_id)
+                    require_writer_lease(db, user.id, lease)
+                    require_anilist_credential(db, user.id, credential)
+                    remove_from_planning(token, anilist_id)
+                    require_writer_lease(db, user.id, lease)
+                    require_anilist_credential(db, user.id, credential)
         except (ValueError, httpx.HTTPError):
             pass
 
@@ -3032,6 +3207,7 @@ async def anilist_callback(
             status_code=502,
         )
 
+    BridgeService(db, None, None).disconnect(user.id, Provider.ANILIST)
     store_secret(db, user.id, "anilist_oauth_token", token)
     return RedirectResponse(url="/plus/settings/tracking", status_code=302)
 
@@ -3045,6 +3221,7 @@ async def anilist_disconnect(
 ):
     """Remove the stored AniList OAuth token."""
     _require_csrf(request, csrf_token)
+    BridgeService(db, None, None).disconnect(user.id, Provider.ANILIST)
     delete_secret(db, user.id, "anilist_oauth_token")
     return RedirectResponse(
         url="/plus/settings/tracking?saved=AniList+disconnected", status_code=302
@@ -3077,13 +3254,44 @@ def _sync_completed_tracker_action(
     base_url = os.getenv("OMAKASE_PLUS_URL", "http://localhost:8765")
     redirect_uri = f"{base_url}/plus/integrations/anilist/callback"
     mark_attempt(db, user_id=user_id, action_id=action.id)
+    dispatched = False
     try:
-        with with_valid_token(db, user_id, client_id, client_secret, redirect_uri) as token:
-            remote = save_completed_entry(
-                token,
-                action.media_id,
-                score_ten=action.score_ten,
+        with writer_lease(db, user_id) as lease:
+            credential = anilist_credential_fingerprint(db, user_id)
+            require_anilist_credential(db, user_id, credential)
+            require_writer_lease(db, user_id, lease)
+            with with_valid_token(db, user_id, client_id, client_secret, redirect_uri) as token:
+                require_writer_lease(db, user_id, lease)
+                require_anilist_credential(db, user_id, credential)
+                dispatched = True
+                remote = save_completed_entry(
+                    token,
+                    action.media_id,
+                    score_ten=action.score_ten,
+                )
+            require_writer_lease(db, user_id, lease)
+            require_anilist_credential(db, user_id, credential)
+            mark_synced(
+                db,
+                user_id=user_id,
+                action_id=action.id,
+                remote_entry_id=int(remote["id"]),
             )
+    except BridgeError:
+        mark_failed(
+            db,
+            user_id=user_id,
+            action_id=action.id,
+            detail="AniList outcome needs review; local history preserved"
+            if dispatched
+            else "Tracker writer busy or connection changed; remote action deferred",
+        )
+        return {
+            "tracker_status": "review_required" if dispatched else "deferred",
+            "detail": "Check AniList before retrying; local history was kept."
+            if dispatched
+            else "Another tracker action is active or the connection changed. Local history was kept; retry later.",
+        }
     except (AniListWriteError, httpx.HTTPError):
         mark_failed(
             db,
@@ -3106,12 +3314,7 @@ def _sync_completed_tracker_action(
             "tracker_status": "connection_required",
             "detail": "Connect AniList in Settings to sync the watched entry.",
         }
-    mark_synced(
-        db,
-        user_id=user_id,
-        action_id=action.id,
-        remote_entry_id=int(remote["id"]),
-    )
+
     return {
         "tracker_status": "synced",
         "remote_status": remote["status"],
@@ -3266,12 +3469,25 @@ async def plan_api(
 
     tracker_status = status_val
     try:
-        with with_valid_token(db, user.id, client_id, client_secret, redirect_uri) as token:
-            if status_val == "PLANNING":
-                receipt = ensure_in_planning(token, anilist_id)
-                tracker_status = str(receipt["entry"].get("status") or status_val).upper()
-            else:
-                add_to_planning(token, anilist_id, status_val)
+        with writer_lease(db, user.id) as lease:
+            credential = anilist_credential_fingerprint(db, user.id)
+            require_anilist_credential(db, user.id, credential)
+            require_writer_lease(db, user.id, lease)
+            with with_valid_token(db, user.id, client_id, client_secret, redirect_uri) as token:
+                require_writer_lease(db, user.id, lease)
+                require_anilist_credential(db, user.id, credential)
+                if status_val == "PLANNING":
+                    receipt = ensure_in_planning(token, anilist_id)
+                    tracker_status = str(receipt["entry"].get("status") or status_val).upper()
+                else:
+                    add_to_planning(token, anilist_id, status_val)
+                require_writer_lease(db, user.id, lease)
+                require_anilist_credential(db, user.id, credential)
+    except BridgeError:
+        return {
+            "status": "deferred",
+            "detail": "Tracker writer busy or connection changed. No confirmed list update; retry after review.",
+        }
     except ValueError as e:
         return {"status": "error", "detail": str(e)}
     except httpx.HTTPError as e:

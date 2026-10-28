@@ -19,9 +19,15 @@ from omakase.plus.tv_service import UNSET, TVError, TVService, number
 from omakase.plus.web_security import csrf_token, require_csrf
 
 
-def create_tv_router(templates, context_factory=None, service_factory=None):
+def create_tv_router(
+    templates, context_factory=None, service_factory=None, households_enabled=False
+):
+    from omakase.plus.household_media import read_route_class
+
     router = APIRouter(
-        route_class=bounded_form_route(16384, "TV form is too large", guard=_private)
+        route_class=read_route_class(
+            bounded_form_route(16384, "TV form is too large", guard=_private)
+        )
     )
 
     def service(db, user):
@@ -44,6 +50,24 @@ def create_tv_router(templates, context_factory=None, service_factory=None):
         )
 
     async def render(request, user, db, q="", view="all", error="", offset=0, **extra):
+        if households_enabled() if callable(households_enabled) else households_enabled:
+            from omakase.plus.household_views import collection
+            from omakase.plus.households import selected_scope
+
+            selected = selected_scope(db, viewer_id=user.id)
+            if selected.kind == "household":
+                data = collection(db, selected, domain="tv", query=q, offset=offset)
+                return templates.TemplateResponse(
+                    request,
+                    "household_media.html",
+                    {
+                        **context(request, user),
+                        **data,
+                        "item": None,
+                        "csrf_token": csrf_token(request),
+                    },
+                    headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+                )
         cards = []
         collection_page = None
         try:
@@ -57,6 +81,16 @@ def create_tv_router(templates, context_factory=None, service_factory=None):
                 cards = await svc.list(user.id, view=view)
         except (TVError, MovieError) as exc:
             error = exc.detail
+        if households_enabled() if callable(households_enabled) else households_enabled:
+            from omakase.plus.household_media import personal_legacy_visible
+            from omakase.plus.households import selected_scope
+
+            personal = selected_scope(db, viewer_id=user.id)
+            cards = [
+                card
+                for card in cards
+                if personal_legacy_visible(db, personal, domain="tv", canonical_id=card["tmdb_id"])
+            ]
         return templates.TemplateResponse(
             request,
             "tv.html",
@@ -90,6 +124,22 @@ def create_tv_router(templates, context_factory=None, service_factory=None):
     async def artwork(
         tmdb_id: int, variant: str = "poster", user=Depends(require_user), db=Depends(get_db)
     ):
+        if households_enabled() if callable(households_enabled) else households_enabled:
+            from omakase.plus.household_media import matching_item
+            from omakase.plus.household_views import detail_url
+            from omakase.plus.households import selected_scope
+
+            selected = selected_scope(db, viewer_id=user.id)
+            if selected.kind == "household":
+                if variant not in {"poster", "backdrop"}:
+                    raise HTTPException(422, "Invalid artwork variant")
+                item_id = matching_item(db, selected, domain="tv", canonical_id=tmdb_id)
+                if item_id is not None:
+                    return RedirectResponse(
+                        detail_url(selected, item_id) + "/artwork?variant=" + variant,
+                        status_code=307,
+                        headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+                    )
         if variant not in {"poster", "backdrop"} or not 0 < tmdb_id <= 2147483647:
             raise HTTPException(422, "Invalid TV artwork")
         metadata = TVService(db, movie_connections(db, user.id))._raw(user.id, tmdb_id)
@@ -120,6 +170,55 @@ def create_tv_router(templates, context_factory=None, service_factory=None):
         user=Depends(require_user),
         db=Depends(get_db),
     ):
+        if households_enabled() if callable(households_enabled) else households_enabled:
+            from omakase.plus.household_media import matching_item
+            from omakase.plus.household_views import detail_url
+            from omakase.plus.households import selected_scope
+
+            selected = selected_scope(db, viewer_id=user.id)
+            if selected.kind == "household":
+                item_id = matching_item(db, selected, domain="tv", canonical_id=tmdb_id)
+                if item_id is None:
+                    from omakase.plus.household_catalog import (
+                        actor_catalog_metadata,
+                        catalog_connections,
+                    )
+                    from omakase.plus.household_views import library_name
+
+                    cached = db.execute(
+                        "SELECT 1 FROM tv_catalog WHERE user_id=? AND tmdb_id=?", (user.id, tmdb_id)
+                    ).fetchone()
+                    if not cached:
+                        catalog_config = catalog_connections(db, selected)
+                        reader = (
+                            service_factory(db, user)
+                            if service_factory
+                            else TVService(db, catalog_config)
+                        )
+                        await reader.detail(user.id, tmdb_id)
+                    metadata = actor_catalog_metadata(
+                        db, viewer_id=user.id, domain="tv", canonical_id=str(tmdb_id)
+                    )
+                    return templates.TemplateResponse(
+                        request,
+                        "household_catalog_preview.html",
+                        {
+                            **context(request, user),
+                            "scope": selected,
+                            "library_name": library_name(db, selected),
+                            "metadata": metadata,
+                            "domain": "tv",
+                            "canonical_id": str(tmdb_id),
+                            "poster_url": f"/plus/tv/{tmdb_id}/artwork",
+                            "csrf_token": csrf_token(request),
+                        },
+                        headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+                    )
+                return RedirectResponse(
+                    detail_url(selected, item_id),
+                    status_code=307,
+                    headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+                )
         try:
             _positive(tmdb_id)
             if season is not None:
@@ -153,6 +252,53 @@ def create_tv_router(templates, context_factory=None, service_factory=None):
         )
 
     async def action(request, user, db, operation, **kwargs):
+        if households_enabled() if callable(households_enabled) else households_enabled:
+            from omakase.plus.household_media import (
+                binding,
+                matching_item,
+                save_series_or_movie_history,
+                save_tv_episode,
+            )
+            from omakase.plus.household_views import detail_url
+            from omakase.plus.households import selected_scope
+
+            selected = selected_scope(db, viewer_id=user.id)
+            if selected.kind == "household":
+                item_id = (
+                    matching_item(db, selected, domain="tv", canonical_id=kwargs.get("tmdb_id", 0))
+                    if "tmdb_id" in kwargs
+                    else None
+                )
+                if item_id is None:
+                    raise HTTPException(
+                        409, "Use the selected library's title and personal tracking controls."
+                    )
+                bound = binding(db, selected, item_id=item_id)
+                if operation == "save_history":
+                    fields = {
+                        name: value
+                        for name, value in kwargs.items()
+                        if name in {"status", "rating"} and value is not UNSET
+                    }
+                    save_series_or_movie_history(db, bound, **fields)
+                elif operation == "save_episode":
+                    save_tv_episode(
+                        db,
+                        bound,
+                        season=kwargs["season_number"],
+                        episode=kwargs["episode_number"],
+                        watched=kwargs["watched"],
+                    )
+                else:
+                    raise HTTPException(
+                        409,
+                        "Shared provider checks require the checked library service flow. No operation was sent.",
+                    )
+                return RedirectResponse(
+                    detail_url(selected, item_id),
+                    status_code=303,
+                    headers={"Cache-Control": "private, no-store"},
+                )
         try:
             result = await getattr(service(db, user), operation)(user.id, **kwargs)
         except (TVError, MovieError, ValueError) as exc:

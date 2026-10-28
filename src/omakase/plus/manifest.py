@@ -62,11 +62,14 @@ _BLOCKED_ASSET_CODES = frozenset(
         "DESTINATION_CONFLICT",
         "ENGLISH_SUBTITLE_MISSING",
         "MEDIA_PROBE_FAILED",
+        "LANGUAGE_POLICY_UNCONFIRMED",
         "POLICY_EXCLUDED",
         "SOURCE_UNAVAILABLE",
     }
 )
-_NONRETRYABLE_BLOCKED_ASSET_CODES = frozenset({"DESTINATION_CONFLICT", "POLICY_EXCLUDED"})
+_NONRETRYABLE_BLOCKED_ASSET_CODES = frozenset(
+    {"DESTINATION_CONFLICT", "POLICY_EXCLUDED", "LANGUAGE_POLICY_UNCONFIRMED"}
+)
 _UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _CONTENT_ID_RE = re.compile(r"^(?:[0-9A-F]{40}|[0-9A-F]{64})$")
 _INVENTORY_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -176,7 +179,7 @@ def _canonical_bytes(value: dict[str, Any]) -> bytes:
     )
 
 
-def validate_library_manifest(payload: Any) -> dict[str, Any]:
+def _validate_library_manifest_v2(payload: Any) -> dict[str, Any]:
     """Validate the exact manifest-v2 schema, bounds, counts, and coverage invariants."""
     manifest = _object(payload, {"schema_version", "generated_at", "titles"}, "manifest")
     if manifest["schema_version"] != MANIFEST_SCHEMA:
@@ -391,7 +394,7 @@ def _latest_visible_counts(db: sqlite3.Connection) -> dict[tuple[int, int | None
     }
 
 
-def build_library_manifest(
+def _build_library_manifest_v2(
     db: sqlite3.Connection,
     *,
     generated_at: str | None = None,
@@ -658,7 +661,7 @@ def _validate_blocked_asset(item: Any) -> dict[str, Any]:
     return item
 
 
-def validate_curator_receipt(payload: Any) -> dict[str, Any]:
+def _validate_curator_receipt_v2(payload: Any) -> dict[str, Any]:
     """Validate the exact curator-receipt-v2 schema without accepting unknown data."""
     receipt = _object(
         payload,
@@ -808,9 +811,15 @@ def store_curator_receipt(
     payload: Any,
     *,
     received_at: str | None = None,
+    language_qualification: bool = False,
 ) -> dict[str, Any]:
     """Validate and transactionally replace only later converged live evidence."""
     receipt = validate_curator_receipt(payload)
+    if receipt["schema_version"] == "curator-receipt-v3":
+        from omakase.plus.language_publication import LANGUAGE_PUBLICATION_QUALIFIED
+
+        if not (LANGUAGE_PUBLICATION_QUALIFIED or language_qualification is True):
+            raise ManifestContractError("Language receipt import is not qualified.")
     received_at = _timestamp(received_at or utc_now(), "received_at")
     canonical = _canonical_bytes(receipt)
     receipt_hash = hashlib.sha256(canonical).hexdigest()
@@ -849,6 +858,10 @@ def store_curator_receipt(
             }
         if current is not None and receipt["completed_at"] <= current["completed_at"]:
             raise ReceiptConflictError("curator completion is not later than stored evidence")
+        if receipt["schema_version"] == "curator-receipt-v3":
+            from omakase.plus.language_publication import import_files
+
+            import_files(db, receipt)
         db.execute(
             """INSERT INTO media_curator_receipt_latest
                (id, receipt_json, receipt_hash, curator_run_id, outcome,
@@ -871,8 +884,12 @@ def store_curator_receipt(
             ),
         )
         db.commit()
-    except Exception:
+    except BaseException as error:
         db.rollback()
+        if isinstance(error, ValueError) and not isinstance(error, ManifestContractError):
+            raise ManifestContractError(
+                "Language publication import failed its current binding checks."
+            ) from None
         raise
     return {
         "accepted": True,
@@ -881,3 +898,91 @@ def store_curator_receipt(
         "run_id": receipt["run_id"],
         "receipt_hash": receipt_hash,
     }
+
+
+def validate_library_manifest(payload):
+    if isinstance(payload, dict) and payload.get("schema_version") == "manifest-v3":
+        from omakase.plus.language_publication import validate_manifest
+
+        try:
+            return validate_manifest(payload)
+        except ValueError:
+            raise ManifestContractError("Invalid manifest-v3 language contract.") from None
+    return _validate_library_manifest_v2(payload)
+
+
+def _build_library_manifest_versioned(
+    db, *, generated_at=None, peer_capabilities=(), qualification=False
+):
+    from omakase.plus.language_publication import (
+        CAPABILITY,
+        LANGUAGE_PUBLICATION_QUALIFIED,
+        export_contract,
+    )
+
+    if (
+        not isinstance(peer_capabilities, (tuple, list))
+        or len(peer_capabilities) > 8
+        or any(c != CAPABILITY for c in peer_capabilities)
+        or type(qualification) is not bool
+    ):
+        raise ManifestContractError("Unknown curator publication capability.")
+    has_table = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='publication_language_contracts' AND type='table'"
+    ).fetchone()
+    contracted = (
+        db.execute(
+            "SELECT 1 FROM publication_language_contracts c JOIN media_assets a ON a.id=c.asset_id WHERE a.status='downloaded' AND a.inventory_verified_at IS NOT NULL LIMIT 1"
+        ).fetchone()
+        if has_table
+        else None
+    )
+    capable = CAPABILITY in peer_capabilities and (
+        LANGUAGE_PUBLICATION_QUALIFIED or qualification is True
+    )
+    if contracted and not capable:
+        raise ManifestContractError(
+            "Language publication requires a qualified manifest-v3 peer; current generation retained."
+        )
+    manifest = _build_library_manifest_v2(db, generated_at=generated_at)
+    if not capable:
+        return manifest
+    manifest["schema_version"] = "manifest-v3"
+    for title in manifest["titles"]:
+        for asset in title["assets"]:
+            rows = db.execute(
+                "SELECT c.asset_id FROM publication_language_contracts c JOIN media_assets a ON a.id=c.asset_id JOIN media_monitors m ON m.id=a.monitor_id WHERE m.anilist_id=? AND lower(a.torrent_hash)=lower(?)",
+                (title["anilist_id"], asset["torrent_hash"]),
+            ).fetchall()
+            if rows:
+                if len(rows) != 1:
+                    raise ManifestContractError("Cross-owner publication contract is ambiguous.")
+                asset["language_contract"] = export_contract(db, asset_id=rows[0][0])
+    return validate_library_manifest(manifest)
+
+
+def validate_curator_receipt(payload):
+    if isinstance(payload, dict) and payload.get("schema_version") == "curator-receipt-v3":
+        from omakase.plus.language_publication import validate_receipt
+
+        try:
+            return validate_receipt(payload)
+        except ValueError:
+            raise ManifestContractError("Invalid curator-receipt-v3 language contract.") from None
+    return _validate_curator_receipt_v2(payload)
+
+
+def build_library_manifest(db, *, generated_at=None, peer_capabilities=(), qualification=False):
+    try:
+        return _build_library_manifest_versioned(
+            db,
+            generated_at=generated_at,
+            peer_capabilities=peer_capabilities,
+            qualification=qualification,
+        )
+    except ManifestContractError:
+        raise
+    except ValueError:
+        raise ManifestContractError(
+            "Publication source or language contract is unavailable."
+        ) from None

@@ -25,9 +25,15 @@ def _private():
         raise HTTPException(404, "Not found")
 
 
-def create_movies_router(templates, context_factory=None, *, service_factory=None):
+def create_movies_router(
+    templates, context_factory=None, *, service_factory=None, households_enabled=False
+):
+    from omakase.plus.household_media import read_route_class
+
     router = APIRouter(
-        route_class=bounded_form_route(16_384, "Movie form is too large", guard=_private)
+        route_class=read_route_class(
+            bounded_form_route(16_384, "Movie form is too large", guard=_private)
+        )
     )
 
     def service(db, user):
@@ -50,8 +56,35 @@ def create_movies_router(templates, context_factory=None, *, service_factory=Non
         )
 
     async def render(
-        request, user, db, *, q="", view="all", notice="", action_card=None, sync_result=None
+        request,
+        user,
+        db,
+        *,
+        q="",
+        view="all",
+        notice="",
+        action_card=None,
+        sync_result=None,
+        offset=0,
     ):
+        if households_enabled() if callable(households_enabled) else households_enabled:
+            from omakase.plus.household_views import collection
+            from omakase.plus.households import selected_scope
+
+            selected = selected_scope(db, viewer_id=user.id)
+            if selected.kind == "household":
+                data = collection(db, selected, domain="movie", query=q, offset=offset)
+                return templates.TemplateResponse(
+                    request,
+                    "household_media.html",
+                    {
+                        **context(request, user),
+                        **data,
+                        "item": None,
+                        "csrf_token": csrf_token(request),
+                    },
+                    headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+                )
         svc = service(db, user)
         cards, error = [], ""
         try:
@@ -63,6 +96,18 @@ def create_movies_router(templates, context_factory=None, *, service_factory=Non
         history = MovieHistoryService(svc)
         for card in cards:
             card["history"] = history.get(user.id, card["imdb_id"]) if card.get("imdb_id") else None
+        if households_enabled() if callable(households_enabled) else households_enabled:
+            from omakase.plus.household_media import personal_legacy_visible
+            from omakase.plus.households import selected_scope
+
+            personal = selected_scope(db, viewer_id=user.id)
+            cards = [
+                card
+                for card in cards
+                if personal_legacy_visible(
+                    db, personal, domain="movie", canonical_id=card["imdb_id"]
+                )
+            ]
         return templates.TemplateResponse(
             request,
             "movies.html",
@@ -85,6 +130,7 @@ def create_movies_router(templates, context_factory=None, *, service_factory=Non
     async def page(
         request: Request,
         q: str = "",
+        offset: int = 0,
         view: str = "all",
         notice: str = "",
         remaining: int | None = None,
@@ -95,6 +141,8 @@ def create_movies_router(templates, context_factory=None, *, service_factory=Non
     ):
         if view not in {"all", "requests", "ready", "discover"} or len(q) > 200:
             raise HTTPException(422, "Invalid movie search")
+        if not 0 <= offset <= 10000:
+            raise HTTPException(422, "Invalid library page")
         counts = (remaining, imported, skipped)
         if any(value is not None and not 0 <= value <= 1000 for value in counts):
             raise HTTPException(422, "Invalid sync summary")
@@ -108,6 +156,7 @@ def create_movies_router(templates, context_factory=None, *, service_factory=Non
             user,
             db,
             q=q,
+            offset=offset,
             view=view,
             notice=notice if notice in {"saved", "synced", "updated"} else "",
             sync_result=sync_result,
@@ -117,6 +166,22 @@ def create_movies_router(templates, context_factory=None, *, service_factory=Non
     async def artwork(
         imdb_id: str, variant: str = "poster", user=Depends(require_user), db=Depends(get_db)
     ):
+        if households_enabled() if callable(households_enabled) else households_enabled:
+            from omakase.plus.household_media import matching_item
+            from omakase.plus.household_views import detail_url
+            from omakase.plus.households import selected_scope
+
+            selected = selected_scope(db, viewer_id=user.id)
+            if selected.kind == "household":
+                if variant not in {"poster", "backdrop"}:
+                    raise HTTPException(422, "Invalid artwork variant")
+                item_id = matching_item(db, selected, domain="movie", canonical_id=imdb_id)
+                if item_id is not None:
+                    return RedirectResponse(
+                        detail_url(selected, item_id) + "/artwork?variant=" + variant,
+                        status_code=307,
+                        headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+                    )
         if variant not in {"poster", "backdrop"}:
             raise HTTPException(422, "Invalid artwork variant")
         movie = get_movie(db, user.id, imdb_id)
@@ -156,6 +221,53 @@ def create_movies_router(templates, context_factory=None, *, service_factory=Non
         user=Depends(require_user),
         db=Depends(get_db),
     ):
+        if households_enabled() if callable(households_enabled) else households_enabled:
+            from omakase.plus.household_media import matching_item
+            from omakase.plus.household_views import detail_url
+            from omakase.plus.households import selected_scope
+
+            selected = selected_scope(db, viewer_id=user.id)
+            if selected.kind == "household":
+                item_id = matching_item(db, selected, domain="movie", canonical_id=imdb_id)
+                if item_id is None:
+                    from omakase.plus.household_catalog import (
+                        actor_catalog_metadata,
+                        catalog_connections,
+                    )
+                    from omakase.plus.household_views import library_name
+
+                    cached = get_movie(db, user.id, imdb_id)
+                    if not cached or not cached.get("identity_verified"):
+                        catalog_config = catalog_connections(db, selected)
+                        reader = (
+                            service_factory(db, user)
+                            if service_factory
+                            else MovieService(db, catalog_config)
+                        )
+                        await reader.detail(user.id, imdb_id)
+                    metadata = actor_catalog_metadata(
+                        db, viewer_id=user.id, domain="movie", canonical_id=imdb_id
+                    )
+                    return templates.TemplateResponse(
+                        request,
+                        "household_catalog_preview.html",
+                        {
+                            **context(request, user),
+                            "scope": selected,
+                            "library_name": library_name(db, selected),
+                            "metadata": metadata,
+                            "domain": "movie",
+                            "canonical_id": imdb_id,
+                            "poster_url": f"/plus/movies/{imdb_id}/artwork",
+                            "csrf_token": csrf_token(request),
+                        },
+                        headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+                    )
+                return RedirectResponse(
+                    detail_url(selected, item_id),
+                    status_code=307,
+                    headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+                )
         from omakase.plus.movie_history import MovieHistoryService
         from omakase.plus.movies import _imdb
 
@@ -188,6 +300,15 @@ def create_movies_router(templates, context_factory=None, *, service_factory=Non
         )
 
     async def action(request, user, db, operation, **kwargs):
+        if households_enabled() if callable(households_enabled) else households_enabled:
+            from omakase.plus.households import selected_scope
+
+            if selected_scope(db, viewer_id=user.id).kind == "household":
+                raise HTTPException(
+                    409,
+                    "Use the checked shared-library request flow. No operational action was sent.",
+                    headers={"Cache-Control": "private, no-store"},
+                )
         try:
             return reply(request, await getattr(service(db, user), operation)(user.id, **kwargs))
         except MovieError as exc:

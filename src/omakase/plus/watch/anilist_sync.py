@@ -15,6 +15,13 @@ from omakase.plus.anilist import (
 )
 from omakase.plus.secrets import read_secret
 from omakase.plus.tracker import safe_tracker_detail
+from omakase.plus.tracker_sync import (
+    BridgeError,
+    anilist_credential_fingerprint,
+    require_anilist_credential,
+    require_writer_lease,
+    writer_lease,
+)
 from omakase.plus.watch.repository import (
     claim_tracker_outbox,
     get_tracker_outbox_target,
@@ -53,6 +60,7 @@ def process_tracker_outbox(
     )
     counts = {"claimed": len(items), "synced": 0, "failed": 0, "conflict": 0}
     for item in items:
+        dispatched = False
         try:
             target = get_tracker_outbox_target(db, item=item)
             if item.action == "complete" and target["newer_completion_exists"]:
@@ -66,59 +74,84 @@ def process_tracker_outbox(
                 )
                 counts["conflict"] += 1
                 continue
-            anilist_id = int(target["anilist_id"])
-            token = read_secret(db, item.user_id, "anilist_oauth_token")
-            if not token:
-                raise ValueError("AniList connection is missing or expired")
-            remote = get_authenticated_media_entry(token, anilist_id)
+            with writer_lease(db, item.user_id) as lease:
+                credential = anilist_credential_fingerprint(db, item.user_id)
+                anilist_id = int(target["anilist_id"])
+                token = read_secret(db, item.user_id, "anilist_oauth_token")
+                if not token:
+                    raise ValueError("AniList connection is missing or expired")
+                require_writer_lease(db, item.user_id, lease)
+                require_anilist_credential(db, item.user_id, credential)
+                remote = get_authenticated_media_entry(token, anilist_id)
 
-            if item.action == "complete":
-                if (
-                    remote is not None
-                    and remote.get("status") == "COMPLETED"
-                    and item.score_ten is None
-                ):
-                    remote_entry_id = _remote_id(remote)
-                else:
-                    result = (
-                        save_completed_entry(token, anilist_id, score_ten=item.score_ten)
-                        if item.score_ten is not None
-                        else save_completed_entry(token, anilist_id)
-                    )
-                    remote_entry_id = _remote_id(result)
-            else:
-                remote_progress = int(remote.get("progress", 0)) if remote is not None else 0
-                if remote is not None and (
-                    remote.get("status") == "COMPLETED" or remote_progress > item.progress_episodes
-                ):
-                    mark_tracker_outbox_failed(
-                        db,
-                        item=item,
-                        detail="AniList progress is ahead; local progress was preserved",
-                        updated_at=timestamp,
-                        not_before=None,
-                        conflict=True,
-                    )
-                    counts["conflict"] += 1
-                    continue
-                if remote is not None and remote_progress == item.progress_episodes:
-                    remote_entry_id = _remote_id(remote)
-                else:
-                    remote_entry_id = _remote_id(
-                        save_progress_entry(
-                            token,
-                            anilist_id,
-                            progress=item.progress_episodes,
+                if item.action == "complete":
+                    if (
+                        remote is not None
+                        and remote.get("status") == "COMPLETED"
+                        and item.score_ten is None
+                    ):
+                        remote_entry_id = _remote_id(remote)
+                    else:
+                        require_writer_lease(db, item.user_id, lease)
+                        require_anilist_credential(db, item.user_id, credential)
+                        dispatched = True
+                        result = (
+                            save_completed_entry(token, anilist_id, score_ten=item.score_ten)
+                            if item.score_ten is not None
+                            else save_completed_entry(token, anilist_id)
                         )
-                    )
+                        remote_entry_id = _remote_id(result)
+                else:
+                    remote_progress = int(remote.get("progress", 0)) if remote is not None else 0
+                    if remote is not None and (
+                        remote.get("status") == "COMPLETED"
+                        or remote_progress > item.progress_episodes
+                    ):
+                        mark_tracker_outbox_failed(
+                            db,
+                            item=item,
+                            detail="AniList progress is ahead; local progress was preserved",
+                            updated_at=timestamp,
+                            not_before=None,
+                            conflict=True,
+                        )
+                        counts["conflict"] += 1
+                        continue
+                    if remote is not None and remote_progress == item.progress_episodes:
+                        remote_entry_id = _remote_id(remote)
+                    else:
+                        require_writer_lease(db, item.user_id, lease)
+                        require_anilist_credential(db, item.user_id, credential)
+                        dispatched = True
+                        remote_entry_id = _remote_id(
+                            save_progress_entry(
+                                token,
+                                anilist_id,
+                                progress=item.progress_episodes,
+                            )
+                        )
 
-            mark_tracker_outbox_synced(
+                require_writer_lease(db, item.user_id, lease)
+                require_anilist_credential(db, item.user_id, credential)
+                mark_tracker_outbox_synced(
+                    db,
+                    item=item,
+                    remote_entry_id=remote_entry_id,
+                    synced_at=timestamp,
+                )
+                counts["synced"] += 1
+        except BridgeError:
+            mark_tracker_outbox_failed(
                 db,
                 item=item,
-                remote_entry_id=remote_entry_id,
-                synced_at=timestamp,
+                detail="AniList write outcome needs review; local progress preserved"
+                if dispatched
+                else "Tracker writer busy or connection changed; local progress preserved",
+                updated_at=timestamp,
+                not_before=None if dispatched else _retry_at(timestamp, item.attempt_count),
+                conflict=dispatched,
             )
-            counts["synced"] += 1
+            counts["conflict" if dispatched else "failed"] += 1
         except (AniListWriteError, httpx.HTTPError, ValueError) as exc:
             detail = safe_tracker_detail(exc)
             mark_tracker_outbox_failed(
@@ -126,7 +159,8 @@ def process_tracker_outbox(
                 item=item,
                 detail=detail or "AniList update failed",
                 updated_at=timestamp,
-                not_before=_retry_at(timestamp, item.attempt_count),
+                not_before=None if dispatched else _retry_at(timestamp, item.attempt_count),
+                conflict=dispatched,
             )
-            counts["failed"] += 1
+            counts["conflict" if dispatched else "failed"] += 1
     return counts

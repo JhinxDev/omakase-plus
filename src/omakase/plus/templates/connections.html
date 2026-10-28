@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="/plus/static/connections.css?v={{ asset_version }}">
 <link rel="stylesheet" href="/plus/static/credentials.css?v={{ asset_version }}">
 <script src="/plus/static/credentials.js?v={{ asset_version }}" defer></script>
-<div class="settings-workspace">{{ settings_nav('connections') }}<div class="settings-content">
+<div class="settings-workspace">{{ settings_nav('connections', households_enabled | default(false)) }}<div class="settings-content">
 {% if connections_notice %}<div class="product-notice" role="status">{{ connections_notice }}</div>{% endif %}
 {% if connections_error %}<div class="product-notice connection-error" role="alert">{{ connections_error }}</div>{% endif %}
 <aside class="editorial-panel connection-guidance" aria-label="Connection privacy and movie setup">
@@ -41,6 +41,7 @@
       </ul>
       {% endif %}
     </details>
+    {% set affected_libraries = connection_scopes.get(connection.id, []) if connection_scopes is defined else [] %}{% if affected_libraries | selectattr('kind','equalto','household') | list %}<div class="connection-attention" role="note"><strong>Shared connection</strong><p>Saving a replacement or disconnecting affects {% for library in affected_libraries %}{{ library.name }}{% if not loop.last %}, {% endif %}{% endfor %}. Queued requests are cancelled and new checks are required. Other accounts’ history and ratings stay unchanged.</p></div>{% endif %}
     <details class="connection-editor" {% if not connection.key_saved %}open{% endif %}><summary>{{ 'Edit connection' if connection.key_saved else 'Set up ' ~ connection.name }}</summary>
     <form method="post" action="/plus/settings/connections/{{ connection.id }}/save" class="connection-form" autocomplete="off" data-form-type="other">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

@@ -9,7 +9,7 @@
 {% block content %}
 {% if section == 'ai' %}<link rel="stylesheet" href="/plus/static/credentials.css?v={{ asset_version }}"><script src="/plus/static/credentials.js?v={{ asset_version }}" defer></script>{% endif %}
 {% set backend_labels = {'openai':'OpenAI','anthropic':'Anthropic','gemini':'Google Gemini','deepseek':'DeepSeek','openrouter':'OpenRouter','groq':'Groq','together':'Together AI','ollama':'Ollama','codex':'Codex subscription'} %}
-<div class="settings-workspace">{{ settings_nav(section) }}<div class="settings-content">
+<div class="settings-workspace">{{ settings_nav(section, households_enabled | default(false)) }}<div class="settings-content">
 {% if saved %}<div class="product-notice" role="status">{{ saved }}</div>{% endif %}
 {% if settings_error %}<div class="product-notice notice-danger semantic-notice--error" role="alert">{{ settings_error }}</div>{% endif %}
 {% if section == 'storage' %}{% include '_settings_storage.html' %}{% else %}

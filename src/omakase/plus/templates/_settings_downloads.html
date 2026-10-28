@@ -4,6 +4,7 @@
       <div><h2>Download criteria</h2></div>
       <span class="privacy-stamp">Owner controlled</span>
     </header>
+    {% if language_settings_enabled | default(false) %}<p class="settings-language-link"><a href="/plus/settings/languages">Choose audio and subtitle languages for this library</a></p>{% endif %}
     <div class="settings-explainer">
       <strong>These rules decide which torrent Omakase tries next.</strong>
       <p>Changes apply to future searches. Existing downloads are not replaced. If troubleshooting gets confusing, restore the tested defaults below.</p>

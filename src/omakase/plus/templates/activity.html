@@ -46,7 +46,7 @@
         <td data-label="Time">
           <time data-local-datetime="{{ event.created_at }}" datetime="{{ event.created_at }}" title="{{ event.created_at }} UTC">{{ event.created_at }} UTC</time>
         </td>
-        <td data-label="Title"><a href="/plus/library/{{ event.monitor_id }}">{{ event.title }}</a></td>
+        <td data-label="Title"><a href="{{ event.detail_url | default('/plus/library/' ~ event.monitor_id, true) }}">{{ event.title }}</a></td>
         <td data-label="Outcome"><span class="state-tag state-{{ 'ready' if event.category == 'success' else ('acquiring' if event.category == 'running' else 'attention') }}">{{ event.outcome }}</span></td>
         <td data-label="Coverage"><strong>{{ event.covered }} / {{ event.required }}</strong><small>{{ event.accepted }} accepted</small></td>
         <td data-label="Details"><span>{{ event.detail or 'No detail recorded' }}</span></td>

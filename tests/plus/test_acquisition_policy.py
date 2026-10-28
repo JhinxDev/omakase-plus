@@ -94,3 +94,51 @@ def test_saved_policy_is_not_overwritten_by_new_default_order(tmp_path):
     )
     store_secret(db, user_id, "acquisition_policy", saved.to_json())
     assert load_user_acquisition_policy(db, user_id) == saved
+
+
+def test_schema1_serialization_and_revision_match_pre_language_golden_exactly():
+    policy = AcquisitionPolicy()
+    assert (
+        policy.to_json()
+        == '{"allow_hardsub_fallback":true,"allowed_resolutions":["1080p","2160p","720p"],"max_release_size_gib":150,"minimum_seeders":1,"prefer_batches":true,"prefer_trusted":true,"preferred_seeders":5,"schema_version":1}'
+    )
+    assert policy.revision == "7fc5a9edc00a00e1cad28c8d5b867244560f870528214ab53da6e550ecbbfa9c"
+    assert policy.language_for("anime").audio_required == ()
+    assert policy.language_for("anime").subtitle_required == ("en",)
+    assert policy.language_for("movie").audio_required == ("en",)
+
+
+def test_explicit_schema2_languages_roundtrip_without_changing_quality_or_old_defaults(tmp_path):
+    from omakase.plus.language_policy import DomainLanguagePolicies
+
+    db = get_db(tmp_path)
+    user = db.execute(
+        "INSERT INTO users(email,password_hash) VALUES('languages@fixture.invalid','x')"
+    ).lastrowid
+    policy = AcquisitionPolicy(
+        allowed_resolutions=("720p",),
+        minimum_seeders=2,
+        languages=DomainLanguagePolicies.new_defaults(),
+    )
+    assert policy.schema_version == 2
+    store_secret(db, user, "acquisition_policy", policy.to_json())
+    loaded = load_user_acquisition_policy(db, user)
+    assert loaded == policy and loaded.allowed_resolutions == ("720p",)
+    assert loaded.language_for("anime").audio_preferred == ("ja",)
+    assert loaded.language_for("anime").audio_required == ()
+    assert policy_from_json(AcquisitionPolicy().to_json()).schema_version == 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"schema_version": True},
+        {"schema_version": 2},
+        {"schema_version": 1, "languages": {}},
+        {"schema_version": 2, "languages": {"anime": {}}},
+        {"schema_version": 2, "languages": False},
+    ],
+)
+def test_language_schema_does_not_accept_implicit_defaults_or_unknown_shapes(payload):
+    with pytest.raises(ValueError):
+        policy_from_json(json.dumps(payload))

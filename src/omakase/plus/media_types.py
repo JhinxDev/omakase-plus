@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from omakase.plus.language_policy import normalize_language
+
 
 @dataclass(frozen=True, slots=True)
 class MediaTarget:
@@ -53,11 +55,26 @@ class MediaCandidate:
     is_batch: bool = False
     catalog_kind: str = "nyaa"
     metadata_backed: bool = False
+    advertised_audio_languages: tuple[str, ...] = ()
+    advertised_subtitle_languages: tuple[str, ...] = ()
+    language_advertisement_complete: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "torrent_hash", self.torrent_hash.upper())
         object.__setattr__(self, "coverage", frozenset(self.coverage))
         object.__setattr__(self, "catalog_kind", self.catalog_kind.strip().casefold())
+        for field in ("advertised_audio_languages", "advertised_subtitle_languages"):
+            values = getattr(self, field)
+            if not isinstance(values, (tuple, list)) or len(values) > 8:
+                raise ValueError("Advertised language hints must be a bounded list.")
+            normalized = tuple(
+                dict.fromkeys(
+                    tag for value in values if (tag := normalize_language(value, observation=True))
+                )
+            )
+            object.__setattr__(self, field, normalized)
+        if type(self.language_advertisement_complete) is not bool:
+            raise ValueError("Advertised language completeness must be a boolean.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +115,7 @@ class MediaSyncResult:
     covered: frozenset[int]
     accepted_assets: tuple[MediaAsset, ...]
     detail: str
+    retry_after_seconds: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "required", frozenset(self.required))

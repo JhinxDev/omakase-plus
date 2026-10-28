@@ -22,13 +22,13 @@
 {% macro artwork(item, eager=false) -%}
 <div class="media-art poster-frame" data-fallback-title="{{ item.title }}">
   <span class="media-art-fallback" aria-hidden="true">{{ item.title[:2] | upper }}</span>
-  <img src="/plus/media/{{ item.anilist_id }}/poster" alt="" {% if not eager %}loading="lazy"{% endif %} data-poster>
+  <img src="{{ item.artwork_url | default('/plus/media/' ~ item.anilist_id ~ '/poster', true) }}" alt="" {% if not eager %}loading="lazy"{% endif %} data-poster>
 </div>
 {%- endmacro %}
 
 {% macro media_card(item, badge='', compact=false) -%}
 <article class="media-card{% if compact %} media-card-compact{% endif %}">
-  <a class="media-card-link" href="/plus/library/{{ item.id }}" aria-label="Open {{ item.title }}">
+  <a class="media-card-link" href="{{ item.detail_url | default('/plus/library/' ~ item.id, true) }}" aria-label="Open {{ item.title }}">
     <div class="poster-with-status">{{ artwork(item) }}</div>
     <div class="media-card-body">
       {% if badge %}<span class="media-kicker">{{ badge }}</span>{% endif %}

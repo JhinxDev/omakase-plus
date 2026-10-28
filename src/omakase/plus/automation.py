@@ -13,6 +13,7 @@ import uuid
 
 from omakase.plus.acquisition_policy import load_user_acquisition_policy
 from omakase.plus.nyaa import NyaaTorrent, rank_best, search
+from omakase.plus.provider_limits import ProviderRateLimit, cooldown_hooks
 from omakase.plus.realdebrid import RealDebridClient, RealDebridProviderBlock
 from omakase.plus.secrets import read_secret
 
@@ -101,6 +102,21 @@ async def search_and_download(
     if not rd_key:
         return {"status": "no_rd_key", "detail": "Real-Debrid API key not configured"}
 
+    hooks = cooldown_hooks(db, user_id)
+
+    def paused(error):
+        return {
+            "status": "provider_rate_limited",
+            "http_status": 429,
+            "detail": error.detail,
+            "retry_after_seconds": error.retry_after_seconds,
+        }
+
+    try:
+        hooks["request_guard"]()
+    except ProviderRateLimit as error:
+        return paused(error)
+
     # 2. Search nyaa.si. Direct requests may provide AniList title aliases
     # (English/Romaji/native); try them in order before giving up.
     aliases: list[str] = []
@@ -134,7 +150,7 @@ async def search_and_download(
         candidates = batch_candidates
 
     # 3. Add magnets to Real-Debrid, falling back when a specific hash is rejected.
-    client = RealDebridClient(rd_key)
+    client = RealDebridClient(rd_key, **hooks)
     request_id = uuid.uuid4().hex
     last_failed_rd_id: str | None = None
     last_failure_detail: str | None = None
@@ -147,6 +163,8 @@ async def search_and_download(
         attempted += 1
         try:
             rd_id = await client.add_magnet(candidate.magnet)
+        except ProviderRateLimit as error:
+            return paused(error)
         except RealDebridProviderBlock as exc:
             provider_blocks.append(exc)
             last_failure_detail = (
@@ -184,7 +202,24 @@ async def search_and_download(
             continue
 
         # 4. Select all files to start download
-        files_selected = await client.select_files(rd_id)
+        try:
+            files_selected = await client.select_files(rd_id)
+        except ProviderRateLimit as error:
+            _record_download_attempt(
+                db,
+                user_id=user_id,
+                planning_id=planning_id,
+                request_id=request_id,
+                candidate_rank=candidate_rank,
+                total_candidates=total_candidates,
+                candidate=candidate,
+                status="provider_rate_limited",
+                http_status=429,
+                detail=error.detail,
+                rd_torrent_id=rd_id,
+            )
+            db.commit()
+            return paused(error)
         if not files_selected:
             non_provider_failures += 1
             last_failed_rd_id = rd_id

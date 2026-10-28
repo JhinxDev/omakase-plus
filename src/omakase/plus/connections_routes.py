@@ -55,6 +55,18 @@ def create_connections_router(templates, context_factory=None) -> APIRouter:
             if context_factory
             else {"email": user.email, "active_page": "settings"}
         )
+        from omakase.plus import households
+
+        affected_scopes = (
+            {
+                integration: households.owner_connection_scopes(
+                    db, owner_user_id=user.id, integration=integration
+                )
+                for integration in ("plex", "realdebrid", "prowlarr", "riven", "seerr")
+            }
+            if households.feature_enabled()
+            else {}
+        )
         return templates.TemplateResponse(
             request,
             "connections.html",
@@ -62,6 +74,7 @@ def create_connections_router(templates, context_factory=None) -> APIRouter:
                 **context,
                 "csrf_token": csrf_token(request),
                 "connections": connections.connection_cards(db, user.id),
+                "connection_scopes": affected_scopes,
                 "connections_notice": _NOTICES.get(notice, ""),
                 "connections_error": error,
                 "movies_ready": connections.movie_connections(db, user.id).enabled,

@@ -153,6 +153,7 @@ def apply_local_import_plan(
     root: ConfiguredRoot,
     applied_at: str,
     probe: Callable[..., MediaProbeResult] = probe_media_file,
+    _on_import: Callable | None = None,
 ) -> dict[str, Any]:
     """Re-observe, probe, and transactionally apply one approved import plan."""
     validated = _validated_plan(plan)
@@ -264,12 +265,14 @@ def apply_local_import_plan(
                 verified_at=applied_at,
                 result=result,
             )
+            if _on_import is not None:
+                _on_import(asset_id, result, item)
             imported += 1
             usable += int(result.usable)
             quarantined += int(not result.usable)
         db.execute("RELEASE SAVEPOINT local_import_apply")
         db.commit()
-    except Exception:
+    except BaseException:
         db.execute("ROLLBACK TO SAVEPOINT local_import_apply")
         db.execute("RELEASE SAVEPOINT local_import_apply")
         raise
@@ -437,3 +440,192 @@ def _json_strings(raw: object) -> tuple[str, ...]:
     if not isinstance(values, list):
         return ()
     return tuple(str(value) for value in values if isinstance(value, str))
+
+
+def apply_language_local_import_plan(
+    db,
+    *,
+    plan,
+    expected_plan_hash,
+    root,
+    applied_at,
+    actor_user_id,
+    request_id,
+    source_generation=None,
+    probe=probe_media_file,
+    qualification=False,
+):
+    """Explicit typed, hash-bound local adoption. Default English API is unchanged.
+
+    Existing plan ownership grants the physical import; the real viewer retains
+    their request/evaluation. This performs no acquisition, selection or deletion.
+    """
+    from dataclasses import replace
+
+    from omakase.plus import households
+    from omakase.plus.language_policy import evaluate_language, rule_from_mapping
+    from omakase.plus.language_publication import LANGUAGE_PUBLICATION_QUALIFIED
+    from omakase.plus.language_source import local_connector_scope
+    from omakase.plus.language_store import (
+        _transaction,
+        approve_publication_contract,
+        current_request_source,
+        load_request,
+        persist_request_probe,
+    )
+    from omakase.plus.publication_episodes import approved_file_episodes
+
+    if db.in_transaction:
+        raise LocalImportError("Commit request preparation before typed local import.")
+    if type(qualification) is not bool or not (LANGUAGE_PUBLICATION_QUALIFIED or qualification):
+        raise LocalImportError("Typed local language import is not qualified.")
+    validated = _validated_plan(plan)
+    if len(validated["files"]) != 1:
+        raise LocalImportError("Typed local import requires one exact request/file plan.")
+    user_id = int(validated["user_id"])
+    _validate_user_and_root(db, user_id=user_id, root=root)
+    snapshot, _, required = load_request(db, actor_user_id=actor_user_id, request_id=request_id)
+    if snapshot.domain != "anime":
+        raise LocalImportError("Typed local import requires an exact anime resource.")
+    binding = db.execute(
+        "SELECT r.* FROM language_request_bindings b JOIN library_resources r ON r.id=b.resource_id WHERE b.request_id=?",
+        (request_id,),
+    ).fetchone()
+    item = validated["files"][0]
+    if (
+        binding is None
+        or binding["owner_user_id"] != user_id
+        or binding["legacy_id"] != str(item["monitor_id"])
+        or binding["connector_scope"] != local_connector_scope(root)
+    ):
+        raise LocalImportError("Local plan is not bound to this exact owned request resource/root.")
+    source = current_request_source(db, snapshot, asserted_generation=source_generation)
+    row = db.execute("SELECT * FROM language_request_policies WHERE id=?", (request_id,)).fetchone()
+    rule = rule_from_mapping(json.loads(row["publication_policy_json"]))
+    monitor = db.execute(
+        "SELECT * FROM media_monitors WHERE id=? AND user_id=?", (item["monitor_id"], user_id)
+    ).fetchone()
+    if monitor is None or int(monitor["anilist_id"]) != int(item["anilist_id"]):
+        raise LocalImportError("Local plan canonical identity changed.")
+    actual = approved_file_episodes(
+        item["locator"],
+        media_format=monitor["format"],
+        season=monitor["season_number"] or 0,
+        expected=monitor["expected_episodes"],
+        anilist_id=monitor["anilist_id"],
+        numbering_override=item["numbering_override"],
+        approved_coverage=item["episode_coverage"],
+        sole_file=True,
+    )
+    if required and not actual <= set(required):
+        raise LocalImportError("Local file escapes the immutable request episode scope.")
+    evaluation = []
+
+    def revalidate():
+        fresh, _, _ = load_request(db, actor_user_id=actor_user_id, request_id=request_id)
+        scope = households.resolve_scope(db, viewer_id=actor_user_id, library_id=fresh.library_id)
+        if (
+            scope.membership_revision != row["membership_revision"]
+            or scope.policy_revision != row["library_policy_revision"]
+            or current_request_source(db, fresh) != source
+        ):
+            raise LocalImportError("Local request authorization or configured root changed.")
+        return scope
+
+    def policy_probe(*args, **kwargs):
+        revalidate()
+        if probe is probe_media_file:
+            from omakase.plus.publication_probe import local_only_probe_runner
+
+            result = probe(*args, **kwargs, runner=local_only_probe_runner)
+        else:
+            result = probe(*args, **kwargs)
+        usable_video = any(
+            v.get("codec") in {"h264", "hevc", "h265", "av1", "vp9", "mpeg4", "mpeg2video", "vc1"}
+            and v.get("width", 0) > 0
+            and v.get("height", 0) > 0
+            for v in result.video_streams
+        )
+        if (
+            result.outcome == "error"
+            or not usable_video
+            or result.language_evidence is None
+            or result.inventory_fingerprint != item["content_sha256"]
+        ):
+            raise LocalImportError("Local file lacks a current exact structural/language probe.")
+        approved = evaluate_language(rule, result.language_evidence, domain="anime")
+        if not approved.physical_compatible:
+            raise LocalImportError(
+                "Local file does not satisfy the frozen owner publication policy."
+            )
+        stat = require_media_file(root, item["locator"]).stat()
+        return replace(
+            result,
+            outcome="usable",
+            detail="Frozen language policy satisfied by exact local file probe.",
+            byte_range_receipt={
+                **result.byte_range_receipt,
+                "publication_stat": {
+                    "size": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns,
+                    "device": stat.st_dev,
+                    "inode": stat.st_ino,
+                },
+                "publication_scope": {"format": monitor["format"], "sole_file": True},
+            },
+        )
+
+    def bind(asset_id, result, planned, *, approve=True):
+        scope = revalidate()
+        if approve:
+            owner = households.resolve_scope(db, viewer_id=user_id, library_id=scope.library_id)
+            approve_publication_contract(
+                db, scope=owner, resource_id=binding["id"], asset_id=asset_id, rule=rule
+            )
+        probe_id = persist_probe_result(
+            db,
+            asset_id=asset_id,
+            file_locator=planned["locator"],
+            verified_at=applied_at,
+            result=result,
+        )
+        evaluation.append(
+            persist_request_probe(
+                db,
+                actor_user_id=actor_user_id,
+                request_id=request_id,
+                asset_id=asset_id,
+                probe_id=probe_id,
+                evidence=result.language_evidence,
+                episodes=tuple(sorted(actual)),
+                source_generation=source.source_generation,
+                observed_at=applied_at,
+            )
+        )
+
+    result = apply_local_import_plan(
+        db,
+        plan=validated,
+        expected_plan_hash=expected_plan_hash,
+        root=root,
+        applied_at=applied_at,
+        probe=policy_probe,
+        _on_import=bind,
+    )
+    if not evaluation and result["already_present"]:
+        observed = policy_probe(root, item["locator"], inventory_fingerprint=item["content_sha256"])
+        asset = db.execute(
+            "SELECT id FROM media_assets WHERE monitor_id=? AND storage_backend='local' AND provider_asset_id=? AND lower(torrent_hash)=?",
+            (item["monitor_id"], item["locator"], item["content_sha256"]),
+        ).fetchone()
+        if asset is None:
+            raise LocalImportError("Existing local asset identity changed.")
+        with _transaction(db):
+            bind(asset[0], observed, item, approve=False)
+    return {
+        **result,
+        "language_request_id": request_id,
+        "language_evaluation_id": evaluation[0][0],
+        "language_state": evaluation[0][1].state,
+        "physical_compatible": evaluation[0][1].physical_compatible,
+    }

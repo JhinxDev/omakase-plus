@@ -71,6 +71,27 @@ def _removal_context(
     return monitor, list(assets), shared
 
 
+def _household_removal_guard(db, monitor):
+    from omakase.plus import households
+
+    if not households.feature_enabled():
+        return {"has_shared_references": False, "blocked": False}
+    from omakase.plus.household_media import managed_removal_guard
+
+    return managed_removal_guard(
+        db,
+        operational_owner_id=int(monitor["user_id"]),
+        domain="anime",
+        canonical_id=str(monitor["anilist_id"]),
+        season=int(monitor["season_number"] or 0),
+    )
+
+
+def _household_removal_denied(db, monitor):
+    guard = _household_removal_guard(db, monitor)
+    return guard["has_shared_references"] or guard["blocked"]
+
+
 def _provider_deletion_eligible(asset: sqlite3.Row) -> bool:
     return (
         asset["provider_kind"] == "realdebrid"
@@ -93,6 +114,7 @@ def title_removal_preview(
         user_id=user_id,
         monitor_id=monitor_id,
     )
+    household_guard = _household_removal_guard(db, monitor)
     eligible_count = sum(_provider_deletion_eligible(asset) for asset in assets)
     existing = db.execute(
         """SELECT id, status, scope, detail FROM media_title_removals
@@ -127,6 +149,7 @@ def title_removal_preview(
         "eligible_provider_count": eligible_count,
         "retained_asset_count": len(assets) - eligible_count,
         "shared_plex_title": shared,
+        "household_blocked": household_guard["has_shared_references"] or household_guard["blocked"],
         "progress": progress,
     }
 
@@ -276,6 +299,51 @@ def request_bulk_title_removal(
 
 
 def request_title_removal(
+    db, *, user_id, monitor_id, confirmation, requested_at, scope="plex_and_provider", commit=True
+):
+    """Existing removal pipeline with a serialized, default-gated shared-resource fence."""
+    from omakase.plus import households
+
+    if not households.feature_enabled():
+        return _request_title_removal_impl(
+            db,
+            user_id=user_id,
+            monitor_id=monitor_id,
+            confirmation=confirmation,
+            requested_at=requested_at,
+            scope=scope,
+            commit=commit,
+        )
+    started = not db.in_transaction
+    if started:
+        db.execute("BEGIN IMMEDIATE")
+    else:
+        # Acquire the SQLite writer fence before checking references in an outer batch.
+        db.execute(
+            "UPDATE media_monitors SET id=id WHERE id=? AND user_id=?", (monitor_id, user_id)
+        )
+    try:
+        monitor, _, _ = _removal_context(db, user_id=user_id, monitor_id=monitor_id)
+        if _household_removal_denied(db, monitor):
+            raise TitleRemovalError(
+                "Shared media must stay available. Remove its library membership instead; physical files and personal history are retained."
+            )
+        return _request_title_removal_impl(
+            db,
+            user_id=user_id,
+            monitor_id=monitor_id,
+            confirmation=confirmation,
+            requested_at=requested_at,
+            scope=scope,
+            commit=commit,
+        )
+    except Exception:
+        if started:
+            db.rollback()
+        raise
+
+
+def _request_title_removal_impl(
     db: sqlite3.Connection,
     *,
     user_id: int,
@@ -483,6 +551,12 @@ def confirm_plex_removals(db: sqlite3.Connection, receipt: Any) -> tuple[int, ..
            WHERE status = 'awaiting_plex' ORDER BY id"""
     ).fetchall()
     for row in rows:
+        monitor = db.execute(
+            "SELECT id,user_id,anilist_id,season_number FROM media_monitors WHERE id=? AND user_id=?",
+            (row["monitor_id"], row["user_id"]),
+        ).fetchone()
+        if monitor is None or _household_removal_denied(db, monitor):
+            continue
         key = (int(row["anilist_id"]), row["season_number"])
         if (
             receipt["manifest_generated_at"] <= row["requested_at"]
@@ -544,6 +618,12 @@ async def process_provider_removals(
     processed = 0
     providers: dict[int, object] = {}
     for removal in removals:
+        monitor = db.execute(
+            "SELECT id,user_id,anilist_id,season_number FROM media_monitors WHERE id=? AND user_id=?",
+            (removal["monitor_id"], removal["user_id"]),
+        ).fetchone()
+        if monitor is None or _household_removal_denied(db, monitor):
+            continue
         effective_completed_at = max(completed_at, str(removal["plex_removed_at"]))
         user_id = int(removal["user_id"])
         pending = db.execute(

@@ -608,10 +608,16 @@ def _machine_token() -> str:
 
 
 def _fetch_manifest(config: LoadedRuntimeConfig, token: str) -> dict:
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    if os.getenv("OMAKASE_PLUS_LANGUAGE_PUBLICATION_QUALIFIED", "false").strip().lower() == "true":
+        from omakase.plus.language_publication import CAPABILITY, LANGUAGE_PUBLICATION_QUALIFIED
+
+        if LANGUAGE_PUBLICATION_QUALIFIED:
+            headers["X-Omakase-Curator-Capabilities"] = CAPABILITY
     try:
         response = httpx.get(
             config.runtime.manifest_url,
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            headers=headers,
             timeout=30,
         )
         response.raise_for_status()
@@ -774,12 +780,20 @@ def _build_approved_plan(
     persist_probe_cache: bool = True,
 ) -> ApprovedRunPlan:
     probe_cache = probe_cache if probe_cache is not None else _subtitle_probe_cache(config)
+    language_probe = None
+    if manifest.get("schema_version") == "manifest-v3":
+        from functools import partial
+
+        from language_publication import probe_file
+
+        language_probe = partial(probe_file, ffprobe=config.subtitles.ffprobe_path)
     try:
         overlay = build_overlay_plan(
             config.filesystem,
             manifest,
             subtitle_probe=probe_cache.probe,
             require_english_subtitles=config.subtitles.require_english_subtitle,
+            language_probe=language_probe,
         )
     except Exception:
         if persist_probe_cache:
@@ -1323,7 +1337,7 @@ def _receipt(
         for asset in plan.overlay_plan.blocked_assets
     ]
     outcome = "degraded" if blocked_assets or not converged and mode == "live" else "success"
-    return {
+    receipt = {
         "schema_version": "curator-receipt-v2",
         "run_id": f"curator-{plan.plan_hash[:24]}",
         "started_at": started_at,
@@ -1338,6 +1352,11 @@ def _receipt(
         "blocked_assets": blocked_assets,
         "errors": [],
     }
+
+    if plan.overlay_plan.language_v3:
+        receipt["schema_version"] = "curator-receipt-v3"
+        receipt["language_files"] = list(plan.overlay_plan.language_files)
+    return receipt
 
 
 def _read_removal_proof(path: Path, expected_plan_hash: str) -> TopologyRemovalProof:

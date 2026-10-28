@@ -62,7 +62,7 @@
     <details class="single-add">
       <summary>Add one title with a season or arc hint</summary>
       <form class="dashboard-form add-form" method="post" action="/plus/dashboard/direct-download">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="household_request_key" value="{{ household_request_key }}"><input type="hidden" name="shared_intent" value="request">
         <div class="field">
           <label for="direct-query">Anime or AniList URL</label>
           <input id="direct-query" type="text" name="query" placeholder="Golden Kamuy or AniList URL" autocomplete="off">
@@ -86,7 +86,7 @@
       <span class="summary-pill">{{ bulk_preview | length }} requests</span>
     </div>
     <form method="post" action="/plus/dashboard/bulk-confirm" class="dashboard-form" data-busy-form>
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="household_request_key" value="{{ household_request_key }}"><input type="hidden" name="shared_intent" value="request">
       <div class="preview-list">
         {% for row in bulk_preview %}
         <div class="preview-row preview-{{ row.state }}">

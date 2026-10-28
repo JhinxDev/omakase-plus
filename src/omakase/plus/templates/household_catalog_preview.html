@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% block title %}{{ metadata.title }} · Omakase{% endblock %}
+{% block eyebrow %}{{ 'Movie' if domain == 'movie' else 'TV' }} catalog · {{ library_name }}{% endblock %}
+{% block page_title %}{{ metadata.title }}{% endblock %}
+{% block page_intro %}<p class="page-intro">A public catalog title. Add it to this shared library without importing anyone’s watching or rating.</p>{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/plus/static/household.css?v={{ asset_version }}"><script src="/plus/static/household.js?v={{ asset_version }}" defer></script>
+<section class="editorial-panel household-panel household-media-detail"><span class="household-poster-frame"><span class="household-art-fallback" aria-hidden="true">Image unavailable</span><img class="household-poster" src="{{ poster_url }}" data-household-poster loading="lazy" decoding="async" alt=""></span><div><h2>{{ metadata.title }}</h2>{% if metadata.year %}<p>{{ metadata.year }}</p>{% endif %}{% if metadata.overview %}<p>{{ metadata.overview }}</p>{% endif %}<p>Not in this shared library yet. Catalog membership does not prove media availability or grant Plex access.</p><form method="post" action="/plus/libraries/{{ scope.library_id }}/catalog/add"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="domain" value="{{ domain }}"><input type="hidden" name="canonical_id" value="{{ canonical_id }}"><button class="button button-primary" type="submit" {% if scope.role != 'owner' and not scope.members_can_add %}disabled{% endif %}>Add shared title</button></form><p>Future shared catalog additions are visible to all current members. Your personal list, history and rating stay separate.</p></div></section>
+{% endblock %}

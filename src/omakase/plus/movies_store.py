@@ -278,13 +278,34 @@ def get_verification(
 def save_verification(
     conn: sqlite3.Connection, user_id: int, imdb_id: str, receipt: dict[str, Any]
 ) -> None:
-    fields = ", ".join(_RECEIPT_FIELDS)
-    placeholders = ", ".join("?" for _ in _RECEIPT_FIELDS)
-    updates = ", ".join(f"{name}=excluded.{name}" for name in _RECEIPT_FIELDS)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(movie_verifications)")}
+    proof_fields = (
+        "proof_schema",
+        "language_evaluation_id",
+        "physical_fingerprint",
+        "selected_stream_id",
+        "playback_context",
+        "source_generation",
+        "playback_selection_id",
+        "selected_subtitle_id",
+        "movie_file_observation_id",
+        "movie_byte_observation_id",
+    )
+    names = _RECEIPT_FIELDS + tuple(name for name in proof_fields if name in columns)
+    values = {**receipt, "proof_schema": receipt.get("proof_schema", 1)}
+    if values["proof_schema"] not in (1, 2):
+        raise ValueError("Unknown movie verification proof schema")
+    if values["proof_schema"] == 2 and not set(proof_fields) <= columns:
+        raise ValueError("Movie language proof migration is unavailable")
+    if values["proof_schema"] == 1:
+        values.update({name: None for name in proof_fields if name != "proof_schema"})
+    fields = ", ".join(names)
+    placeholders = ", ".join("?" for _ in names)
+    updates = ", ".join(f"{name}=excluded.{name}" for name in names)
     conn.execute(
         f"INSERT INTO movie_verifications (user_id, imdb_id, {fields}) "
         f"VALUES (?, ?, {placeholders}) ON CONFLICT(user_id, imdb_id, fingerprint) DO UPDATE SET {updates}",
-        (user_id, imdb_id, *(receipt.get(key) for key in _RECEIPT_FIELDS)),
+        (user_id, imdb_id, *(values.get(key) for key in names)),
     )
     conn.commit()
 

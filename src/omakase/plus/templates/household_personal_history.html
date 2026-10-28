@@ -1,0 +1,8 @@
+{% extends 'base.html' %}
+{% block title %}My anime history · Omakase{% endblock %}
+{% block eyebrow %}My history{% endblock %}
+{% block page_title %}{{ entry.title or 'AniList #' ~ entry.anilist_id }}{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/plus/static/household.css?v={{ asset_version }}">
+<section class="editorial-panel household-panel"><h2>My watching and rating</h2><p>{{ entry.status|title }} · {{ entry.progress_episodes }}{% if entry.episode_total %}/{{ entry.episode_total }}{% endif %} watched{% if entry.rating is not none %} · Your rating {{ entry.rating }}/10{% endif %}</p><p>This personal record stays with your account. It does not grant access to shared media or another member’s services.</p><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="event_key" value="{{ tracking_event_key }}"><label for="own-history-action">My watching</label><select id="own-history-action" name="kind"><option value="progress">Record episode watched</option><option value="completed">Mark completed</option></select><label for="own-history-episode">Episode</label><input id="own-history-episode" name="episode" type="number" min="1" max="10000" required><label for="own-history-rating">Your rating (optional, when completed)</label><input id="own-history-rating" name="rating" type="number" min="1" max="10" step="1"><button type="submit" class="button button-secondary">Save my watching</button></form><a class="button button-secondary" href="/plus/activity">Back to my history</a></section>
+{% endblock %}

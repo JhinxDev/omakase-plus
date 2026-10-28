@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from omakase.plus.provider_limits import ProviderRateLimit
 from omakase.plus.providers.contracts import (
     ProviderBlock,
     ProviderCapabilities,
@@ -25,12 +26,21 @@ class RealDebridProvider:
         local_storage=False,
     )
 
-    def __init__(self, api_key: str, *, timeout: float = 15.0):
-        self._client = RealDebridClient(api_key, timeout=timeout)
+    def __init__(
+        self, api_key: str, *, timeout: float = 15.0, request_guard=None, rate_limit_observer=None
+    ):
+        self._client = RealDebridClient(
+            api_key,
+            timeout=timeout,
+            request_guard=request_guard,
+            rate_limit_observer=rate_limit_observer,
+        )
 
     async def health(self, *, checked_at: str) -> ProviderHealth:
         try:
             await self._client.list_torrents()
+        except ProviderRateLimit:
+            raise
         except Exception:
             return ProviderHealth(
                 status="error",

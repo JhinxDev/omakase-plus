@@ -130,6 +130,46 @@ def test_all_tables_exist(_fresh_db):
         "anime_synopses",
         "agent_audit",
         "notification_state",
+        "asset_language_observations",
+        "household_invites",
+        "household_memberships",
+        "language_current_sources",
+        "language_evaluations",
+        "language_publication_current_files",
+        "language_request_assets",
+        "language_request_bindings",
+        "language_request_policies",
+        "language_request_sources",
+        "legacy_language_monitors",
+        "libraries",
+        "library_item_interest",
+        "library_items",
+        "library_language_defaults",
+        "library_request_events",
+        "library_resources",
+        "library_selections",
+        "library_settings",
+        "member_language_preferences",
+        "movie_byte_observations",
+        "movie_file_observations",
+        "personal_libraries",
+        "provider_cooldowns",
+        "publication_language_contracts",
+        "tracker_bridge_baselines",
+        "tracker_bridge_connections",
+        "tracker_bridge_id_mappings",
+        "tracker_bridge_leases",
+        "tracker_bridge_outbox",
+        "tracker_bridge_plans",
+        "tracker_bridge_preferences",
+        "tracker_bridge_scans",
+        "tracker_bridge_worker_state",
+        "tracker_mal_oauth_states",
+        "viewer_current_playback_checks",
+        "viewer_current_playback_credentials",
+        "viewer_playback_bindings",
+        "viewer_selection_observations",
+        "watch_library_links",
         "_migrations",  # internal tracking table
     }
     assert tables == expected, (
@@ -138,8 +178,10 @@ def test_all_tables_exist(_fresh_db):
     assert len(tables) == len(expected)
 
 
-def test_recommendation_feedback_migration_runs_before_existing_lane_error(monkeypatch, tmp_path):
-    """Feedback table should exist even if run_history.lane was added before migration 003."""
+def test_partial_unrecorded_lane_migration_fails_without_partial_feedback_table(
+    monkeypatch, tmp_path
+):
+    """An unrecorded duplicate column must roll back the whole migration file."""
     first_pass_dir = tmp_path / "migrations-without-003"
     first_pass_dir.mkdir()
     migrations_dir = plus_db._MIGRATIONS_DIR
@@ -160,13 +202,22 @@ def test_recommendation_feedback_migration_runs_before_existing_lane_error(monke
     conn.commit()
 
     monkeypatch.setattr(plus_db, "_MIGRATIONS_DIR", migrations_dir)
-    plus_db.run_migrations(conn)
+    with pytest.raises(sqlite3.OperationalError, match="duplicate column name: lane"):
+        plus_db.run_migrations(conn)
+    assert not conn.in_transaction
+    assert (
+        conn.execute(
+            "SELECT 1 FROM _migrations WHERE name='003-recommendation-intelligence.sql'"
+        ).fetchone()
+        is None
+    )
+    assert "lane" in {r[1] for r in conn.execute("PRAGMA table_info(run_history)")}
 
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
         ("recommendation_feedback",),
     ).fetchone()
-    assert row is not None
+    assert row is None
 
 
 # ---------------------------------------------------------------------------

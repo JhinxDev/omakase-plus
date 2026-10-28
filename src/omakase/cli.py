@@ -178,6 +178,23 @@ from omakase.plus.agent_cli import agent_cli  # noqa: E402
 plus.add_command(agent_cli)
 
 
+@plus.command("sync-trackers")
+@click.option("--max-accounts", default=2, type=click.IntRange(1, 10), show_default=True)
+@click.option("--budget-seconds", default=60, type=click.IntRange(1, 120), show_default=True)
+@click.option("--data-dir", default=None, type=click.Path(path_type=Path, file_okay=False))
+def sync_trackers_command(max_accounts, budget_seconds, data_dir):
+    """Run one bounded opted-in tracker rotation; no timer is installed."""
+    from omakase.plus.tracker_bridge_worker import sync_trackers_once
+
+    try:
+        receipt = sync_trackers_once(
+            data_dir=data_dir, max_accounts=max_accounts, budget_seconds=budget_seconds
+        )
+    except Exception as exc:
+        raise click.ClickException("Tracker synchronization check failed") from exc
+    click.echo(json.dumps(receipt, sort_keys=True))
+
+
 @plus.command("sync-media")
 def sync_media_command():
     """Reconcile every due media monitor once."""

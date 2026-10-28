@@ -705,6 +705,7 @@ class MovieService:
         imdb_id: str,
         tmdb_id: int,
         edition: str | None = None,
+        _authorize_submission: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         """Explicit intake only. Auth repair never reclaims an acknowledged write."""
         self._guard(user_id)
@@ -748,6 +749,8 @@ class MovieService:
                         backend_id=existing["backend_id"],
                     )
                 return self._card(user_id, metadata)
+            if _authorize_submission is not None:
+                _authorize_submission()
             claimed = store.claim_submission(
                 self.db,
                 self._scope,
@@ -1190,6 +1193,10 @@ class MovieService:
         cached = store.get_verification(self.db, user_id, card["imdb_id"], observed.fingerprint)
         if cached is None:
             return None
+        # Policy-specific receipts need their real viewer/request applicability
+        # checked; an English legacy read cannot reuse a schema2 ready flag.
+        if cached.get("proof_schema", 1) != 1:
+            return None
         if cached["fingerprint"] != observed.fingerprint or observed.eligibility_code is not None:
             store.invalidate_verification(self.db, user_id, card["imdb_id"])
             return None
@@ -1332,6 +1339,49 @@ class MovieService:
         result = self._cached(user_id, card, observed)
         assert result is not None
         return result
+
+    async def request_language(self, actor_user_id: int, *, request_id: str) -> dict[str, Any]:
+        from omakase.plus.movie_languages import request_language
+
+        return await request_language(self, actor_user_id, request_id=request_id)
+
+    def _language_card(self, actor_user_id: int, request_id: str):
+        from omakase.plus.households import resolve_scope
+        from omakase.plus.language_store import load_request
+
+        store.require_user(self.db, actor_user_id)
+        snapshot, _, _ = load_request(self.db, actor_user_id=actor_user_id, request_id=request_id)
+        if snapshot.domain != "movie":
+            raise MovieError("invalid_input")
+        scope = resolve_scope(self.db, viewer_id=actor_user_id, library_id=snapshot.library_id)
+        imdb_id = _imdb(snapshot.media_identity.removeprefix("imdb:"))
+        metadata = store.get_movie(self.db, scope.operational_owner_id, imdb_id)
+        if metadata is None or not metadata["identity_verified"]:
+            raise MovieError("identity_mismatch")
+        return self._card(actor_user_id, metadata)
+
+    @staticmethod
+    def _language_unavailable():
+        return {
+            "state": "verifying",
+            "code": "language_proof_required",
+            "detail": "This account needs a current movie language and playback check.",
+            "plex_url": None,
+        }
+
+    def language_status(self, actor_user_id: int, *, request_id: str) -> dict[str, Any]:
+        from omakase.plus.movie_languages import language_status
+
+        return language_status(self, actor_user_id, request_id=request_id)
+
+    async def verify_language(
+        self, actor_user_id: int, *, request_id: str, rating_key: str
+    ) -> dict[str, Any]:
+        from omakase.plus.movie_languages import verify_language
+
+        return await verify_language(
+            self, actor_user_id, request_id=request_id, rating_key=rating_key
+        )
 
     async def _hydrate(
         self, user_id: int, *, excluded: set[str], records: list[dict[str, Any]]

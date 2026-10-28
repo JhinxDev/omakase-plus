@@ -6,6 +6,7 @@ import json
 import re
 from datetime import datetime, timezone
 
+from omakase.plus.households import feature_enabled
 from omakase.plus.movies_store import require_user
 
 _MAX_RECENT = 5000
@@ -87,13 +88,15 @@ def _anime(row):
         "status_label": "Completed"
         if row["kind"] == "completed"
         else ("Watched" if watched else "Progress saved"),
-        "rating": None,
+        "rating": row["current_rating"],
         "time_label": label,
         "artwork_url": f"/plus/history/artwork/anime/{row['id']}"
         if episode and row["season_number"] and row["owned_monitor_id"]
         else None,
         "episode_artwork": True,
-        "detail_url": f"/plus/catalog/anime/{media_id}",
+        "detail_url": f"/plus/catalog/anime/{media_id}"
+        if row["owned_monitor_id"] or not feature_enabled()
+        else f"/plus/history/anime/{row['personal_entry_id']}",
     }
 
 
@@ -237,6 +240,12 @@ def viewing_history(db, user_id: int, limit: int = 24, page: int = 1) -> dict:
         or (page - 1) * limit >= _MAX_RECENT
     ):
         raise ValueError("Choose a valid viewing-history page and limit")
+
+    retained_title = (
+        "(SELECT i.title FROM watch_library_links link JOIN library_items i ON i.id=link.library_item_id WHERE link.user_id=w.user_id AND link.watch_entry_id=w.id ORDER BY i.created_at DESC,i.id LIMIT 1)"
+        if feature_enabled()
+        else "NULL"
+    )
     rows = db.execute(
         "WITH ranked AS (SELECT e.*,ROW_NUMBER() OVER (PARTITION BY e.watch_entry_id,e.episode "
         "ORDER BY e.observed_at DESC,e.id DESC) AS occurrence FROM watch_events e "
@@ -245,7 +254,7 @@ def viewing_history(db, user_id: int, limit: int = 24, page: int = 1) -> dict:
         "AND e.kind IN ('progress','completed') AND e.source IN ('plex','apple_tv','anilist','manual') "
         "AND e.confidence IN ('exact','manual') AND e.reason!='completion_score_updated' "
         "AND lower(e.event_key) NOT LIKE '%bulk%' AND lower(e.event_key) NOT LIKE '%migration%') "
-        "SELECT r.*,w.anilist_id,w.season_number,w.episode_total,m.id AS owned_monitor_id,m.title,m.expected_episodes "
+        f"SELECT r.*,w.id AS personal_entry_id,w.anilist_id,w.season_number,w.episode_total,m.id AS owned_monitor_id,COALESCE(m.title,{retained_title}) AS title,m.expected_episodes,(SELECT score_ten FROM watch_events score WHERE score.user_id=w.user_id AND score.watch_entry_id=w.id AND score.disposition='accepted' AND score.score_ten IS NOT NULL ORDER BY score.id DESC LIMIT 1) AS current_rating "
         "FROM ranked r JOIN watch_entries w ON w.id=r.watch_entry_id AND w.user_id=? "
         "LEFT JOIN media_monitors m ON m.id=w.monitor_id AND m.user_id=w.user_id AND m.anilist_id=w.anilist_id "
         "WHERE r.occurrence=1 ORDER BY r.observed_at DESC,r.id DESC LIMIT ?",

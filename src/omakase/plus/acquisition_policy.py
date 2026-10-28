@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from omakase.plus.language_policy import DomainLanguagePolicies, domains_from_mapping
 from omakase.plus.secrets import read_secret
 
 _RESOLUTIONS = ("2160p", "1080p", "720p")
@@ -21,6 +22,7 @@ _FIELDS = {
     "prefer_trusted",
     "prefer_batches",
     "schema_version",
+    "languages",
 }
 
 
@@ -35,9 +37,14 @@ class AcquisitionPolicy:
     allow_hardsub_fallback: bool = True
     prefer_trusted: bool = True
     prefer_batches: bool = True
+    languages: DomainLanguagePolicies | None = None
     schema_version: int = field(default=1, init=False)
 
     def __post_init__(self) -> None:
+        if self.languages is not None:
+            if not isinstance(self.languages, DomainLanguagePolicies):
+                raise ValueError("Language criteria must be typed policies.")
+            object.__setattr__(self, "schema_version", 2)
         resolutions = tuple(self.allowed_resolutions)
         if any(not isinstance(value, str) for value in resolutions):
             raise ValueError("Resolution choices are invalid.")
@@ -74,7 +81,7 @@ class AcquisitionPolicy:
     @property
     def revision(self) -> str:
         payload = json.dumps(
-            asdict(self),
+            self.to_mapping(),
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
@@ -84,8 +91,17 @@ class AcquisitionPolicy:
     def max_release_size_bytes(self) -> int:
         return self.max_release_size_gib * 1024**3
 
+    def to_mapping(self) -> dict[str, Any]:
+        payload = asdict(self)
+        if self.languages is None:
+            payload.pop("languages")
+        return payload
+
     def to_json(self) -> str:
-        return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+        return json.dumps(self.to_mapping(), sort_keys=True, separators=(",", ":"))
+
+    def language_for(self, domain: str):
+        return (self.languages or DomainLanguagePolicies.legacy_defaults()).for_domain(domain)
 
     def settings_view(self) -> dict[str, Any]:
         seeder_label = "seeder" if self.minimum_seeders == 1 else "seeders"
@@ -122,8 +138,14 @@ def policy_from_mapping(values: Mapping[str, object]) -> AcquisitionPolicy:
         raise ValueError("Download criteria contain an unknown setting.")
     normalized = dict(values)
     schema_version = normalized.pop("schema_version", 1)
-    if schema_version != 1:
+    if type(schema_version) is not int or schema_version not in (1, 2):
         raise ValueError("Download criteria use an unsupported version.")
+    if schema_version == 1 and "languages" in normalized:
+        raise ValueError("Language criteria require version 2.")
+    if schema_version == 2:
+        if "languages" not in normalized:
+            raise ValueError("Version 2 needs explicit language criteria.")
+        normalized["languages"] = domains_from_mapping(normalized["languages"])
     resolutions = normalized.get("allowed_resolutions")
     if isinstance(resolutions, list):
         normalized["allowed_resolutions"] = tuple(resolutions)

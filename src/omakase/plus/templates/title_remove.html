@@ -38,7 +38,8 @@
   <div class="removal-actions"><a class="button button-primary" href="/plus/library/{{ removal.monitor_id }}">Back to title</a><a class="button button-secondary" href="/plus/library">Your anime</a></div>
   {% else %}
   <p class="removal-lead">Remove this anime’s managed media from Plex{% if removal.eligible_provider_count %} and delete eligible Real-Debrid downloads{% endif %}. Automatic monitoring will stop. This does not remove your tracking entry.</p>
-  {% if removal.shared_plex_title %}
+  {% if removal.household_blocked | default(false) %}<div class="product-notice notice-danger removal-error" role="alert"><strong>Shared media is protected.</strong> A library membership or keep/use claim still needs this media. Physical removal is unavailable. Remove this library’s catalog membership in Household settings instead; personal history and files are retained.</div>
+  {% elif removal.shared_plex_title %}
   <div class="product-notice notice-danger removal-error" role="alert">
     <strong>Removal is blocked.</strong> Another Omakase library uses this Plex title. Their media must stay available.
   </div>
@@ -89,7 +90,7 @@
       class="button button-danger button-wide"
       type="submit"
       data-busy-label="Starting removal…"
-      {% if removal.shared_plex_title or removal.asset_count == 0 %}disabled{% endif %}
+      {% if removal.shared_plex_title or removal.household_blocked | default(false) or removal.asset_count == 0 %}disabled{% endif %}
     >Remove from Plex{% if removal.eligible_provider_count %} and Real-Debrid{% endif %}</button></div>
   </form>
   {% endif %}

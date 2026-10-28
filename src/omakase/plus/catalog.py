@@ -15,6 +15,7 @@ from omakase.plus.coverage import (
     parse_episode_coverage,
 )
 from omakase.plus.identity import identity_rejection_reason
+from omakase.plus.language_policy import language_matches
 from omakase.plus.media_types import MediaCandidate
 from omakase.plus.nyaa import NyaaTorrent, search
 
@@ -136,6 +137,9 @@ def candidate_from_torrent(
     anilist_id: int | None = None,
     catalog_kind: str = "nyaa",
     policy: AcquisitionPolicy | None = None,
+    advertised_audio_languages: tuple[str, ...] = (),
+    advertised_subtitle_languages: tuple[str, ...] = (),
+    language_advertisement_complete: bool = False,
 ) -> MediaCandidate | None:
     policy = policy or AcquisitionPolicy()
     torrent_hash = torrent_hash_from_magnet(torrent.magnet)
@@ -160,6 +164,9 @@ def candidate_from_torrent(
         is_trusted=torrent.is_trusted,
         is_batch=torrent.is_batch,
         catalog_kind=catalog_kind,
+        advertised_audio_languages=advertised_audio_languages,
+        advertised_subtitle_languages=advertised_subtitle_languages,
+        language_advertisement_complete=language_advertisement_complete,
     )
 
 
@@ -248,11 +255,37 @@ def _quality_tier(candidate: MediaCandidate, policy: AcquisitionPolicy) -> int:
     return len(policy.allowed_resolutions) - index
 
 
+def _language_hint_key(candidate, policy):
+    """Advertisement ranking only. No hint is a verified track or ready claim."""
+    if policy.languages is None:
+        return (0, 0, 0)
+    rule = policy.language_for("anime")
+
+    def matches(tags, observed):
+        return sum(any(language_matches(tag, value) for value in observed) for tag in tags)
+
+    required = matches(rule.audio_required, candidate.advertised_audio_languages) + matches(
+        rule.subtitle_required, candidate.advertised_subtitle_languages
+    )
+    audio = sum(
+        (len(rule.audio_preferred) - i)
+        for i, tag in enumerate(rule.audio_preferred)
+        if any(language_matches(tag, v) for v in candidate.advertised_audio_languages)
+    )
+    subtitles = sum(
+        (len(rule.subtitle_preferred) - i)
+        for i, tag in enumerate(rule.subtitle_preferred)
+        if any(language_matches(tag, v) for v in candidate.advertised_subtitle_languages)
+    )
+    return required, audio, subtitles
+
+
 def _preference_key(
     candidate: MediaCandidate,
     policy: AcquisitionPolicy,
-) -> tuple[int, int, int, int]:
+) -> tuple:
     return (
+        _language_hint_key(candidate, policy),
         _quality_tier(candidate, policy),
         candidate.score,
         candidate.seeders,
@@ -270,6 +303,7 @@ def rank_candidates(
         sorted(
             candidates,
             key=lambda candidate: (
+                tuple(-v for v in _language_hint_key(candidate, policy)),
                 -_quality_tier(candidate, policy),
                 -candidate.score,
                 -candidate.seeders,

@@ -1566,3 +1566,26 @@ def covered_episodes(db: sqlite3.Connection, monitor_id: int) -> set[int]:
             )
         )
     return covered
+
+
+def language_request_reuse(db, *, actor_user_id, request_id, monitor_id, source_generation):
+    """Evaluate the viewer's immutable rule against existing exact-file evidence."""
+    from omakase.plus.language_store import (
+        LanguageContractError,
+        evaluate_existing_resource,
+        load_request,
+    )
+
+    snapshot, policy, required = load_request(
+        db, actor_user_id=actor_user_id, request_id=request_id, for_acquisition=True
+    )
+    binding = db.execute(
+        "SELECT r.* FROM language_request_bindings b JOIN library_resources r ON r.id=b.resource_id WHERE b.request_id=?",
+        (request_id,),
+    ).fetchone()
+    if binding is None or binding["domain"] != "anime" or binding["legacy_id"] != str(monitor_id):
+        raise LanguageContractError("Language request is not bound to this monitor.")
+    status = evaluate_existing_resource(
+        db, actor_user_id=actor_user_id, request_id=request_id, source_generation=source_generation
+    )
+    return snapshot, policy, required, status

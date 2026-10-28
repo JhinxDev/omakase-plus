@@ -32,6 +32,7 @@ from omakase.plus.plex_setup import (
     apply_plex_setup_plan,
     plan_plex_setup,
 )
+from omakase.plus.provider_limits import cooldown_hooks
 from omakase.plus.providers.realdebrid import RealDebridProvider
 from omakase.plus.secrets import read_secret
 from omakase.plus.series_adoption import (
@@ -55,7 +56,19 @@ def sync_media_once() -> SchedulerReceipt:
         # Retry only work already submitted by the live watch controls. Do not
         # replay the dormant historical outbox as a side effect of this release.
         process_tracker_outbox(get_db(), attempted_only=True)
-    return asyncio.run(run_media_sync(get_db(), entrypoint="cli"))
+    from omakase.plus.tracker_bridge_worker import sync_trackers_once
+
+    # Independent opt-in tracker work; no household acquisition is activated.
+    sync_trackers_once()
+
+    async def reconcile_once():
+        from omakase.plus.household_requests import consume_shared_anime_queue
+
+        db = get_db()
+        await consume_shared_anime_queue(db)
+        return await run_media_sync(db, entrypoint="cli")
+
+    return asyncio.run(reconcile_once())
 
 
 def _utc_now() -> str:
@@ -96,7 +109,7 @@ def _provider_for_user(db, user_id: int) -> RealDebridProvider:
     api_key = read_secret(db, user_id, "realdebrid_api_key")
     if not api_key:
         raise ValueError("Real-Debrid credentials are unavailable for this user")
-    return RealDebridProvider(api_key)
+    return RealDebridProvider(api_key, **cooldown_hooks(db, user_id))
 
 
 def _request_rows(path: Path) -> list[dict[str, object]]:
