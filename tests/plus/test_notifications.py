@@ -514,5 +514,159 @@ def test_serialized_current_rating_preserves_zero_instead_of_truthiness():
         "href": "/plus/library/1/remove",
         "created_at": STAMP,
         "read_at": None,
+        "artwork_ref": 1,
     }
     assert module()._item(row)["rating"] == 0
+
+
+def _notification_poster_movie(db, url, *, number=1, user=1):
+    imdb = movie(db, number=number, user=user)
+    db.execute(
+        "UPDATE movie_catalog SET poster_url=? WHERE user_id=? AND imdb_id=?", (url, user, imdb)
+    )
+    db.commit()
+    return imdb
+
+
+def _notification_poster_tv(db, url, *, number=42, user=1):
+    db.execute(
+        "INSERT INTO tv_catalog VALUES(?,?,?,?)",
+        (user, number, json.dumps({"title": "Synthetic TV", "poster_url": url}), STAMP),
+    )
+    db.execute(
+        "INSERT INTO tv_history(user_id,tmdb_id,status,status_source,updated_at) VALUES(?,?,'completed','manual',?)",
+        (user, number, STAMP),
+    )
+    db.commit()
+
+
+def test_notification_posters_use_owned_local_routes_all_domains_and_cleanup(db):
+    monitor, entry = anime(db, number=12)
+    asset(db, monitor)
+    _notification_poster_movie(db, "https://image.tmdb.org/t/p/w500/movie.jpg", number=34)
+    _notification_poster_tv(db, "https://image.tmdb.org/t/p/original/tv.png")
+    anime(db, number=99, user=2)
+    _notification_poster_movie(db, "https://image.tmdb.org/t/p/w500/foreign.jpg", number=98, user=2)
+    _notification_poster_tv(db, "https://image.tmdb.org/t/p/w500/foreign-tv.jpg", number=97, user=2)
+    items = module().notification_feed(db, user_id=1)["items"]
+    assert len(items) == 4
+    assert {item["artwork_url"] for item in items} == {
+        "/plus/media/12/poster",
+        "/plus/movies/tt0000034/artwork",
+        "/plus/tv/42/artwork",
+    }
+    assert not any("http" in item["artwork_url"] for item in items)
+    assert (
+        next(item for item in items if item["kind"] == "removal_reminder")["artwork_url"]
+        == "/plus/media/12/poster"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        None,
+        "",
+        "http://image.tmdb.org/t/p/w500/a.jpg",
+        "https://localhost/a.jpg",
+        "https://image.tmdb.org.evil.test/t/p/w500/a.jpg",
+        "https://user@image.tmdb.org/t/p/w500/a.jpg",
+        "https://image.tmdb.org:444/t/p/w500/a.jpg",
+        "//image.tmdb.org/t/p/w500/a.jpg",
+        "https://image.tmdb.org/t/p/w500/a.jpg?token=secret",
+        "https://image.tmdb.org/t/p/w500/../a.jpg",
+        "javascript:alert(1)",
+    ],
+)
+def test_notification_posters_missing_or_untrusted_metadata_stays_neutral(db, url):
+    _notification_poster_movie(db, url)
+    _notification_poster_tv(db, url)
+    assert all(
+        item["artwork_url"] is None for item in module().notification_feed(db, user_id=1)["items"]
+    )
+
+
+def test_notification_posters_never_borrow_other_account_catalog_artwork(db):
+    _notification_poster_movie(db, None, number=1, user=1)
+    _notification_poster_movie(db, "https://image.tmdb.org/t/p/w500/foreign.jpg", number=1, user=2)
+    _notification_poster_tv(db, None, user=1)
+    _notification_poster_tv(db, "https://image.tmdb.org/t/p/w500/foreign-tv.jpg", user=2)
+    assert all(
+        item["artwork_url"] is None for item in module().notification_feed(db, user_id=1)["items"]
+    )
+
+
+def test_notification_poster_feed_is_sqlite_only_no_image_disk_or_network(db, browser, monkeypatch):
+    import socket
+    from pathlib import Path
+
+    import omakase.plus.movie_artwork as movie_art
+    import omakase.plus.posters as posters
+
+    anime(db, number=12)
+    _notification_poster_movie(db, "https://image.tmdb.org/t/p/w500/movie.jpg")
+    _notification_poster_tv(db, "https://image.tmdb.org/t/p/w500/tv.jpg")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError(
+            "The notification feed must not load images, cache files, metadata or providers"
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", forbidden)
+    monkeypatch.setattr(socket, "create_connection", forbidden)
+    monkeypatch.setattr(posters, "poster_bytes", forbidden)
+    monkeypatch.setattr(movie_art, "movie_artwork", forbidden)
+    monkeypatch.setattr(Path, "open", forbidden)
+    before = db.total_changes
+    response = browser[0].get("/plus/api/notifications")
+    assert response.status_code == 200
+    assert len(response.json()["items"]) == 3
+    assert all(item["artwork_url"].startswith("/plus/") for item in response.json()["items"])
+    assert db.total_changes == before
+
+
+@pytest.mark.parametrize("media_type", ["movie", "tv"])
+def test_notification_movie_tv_artwork_routes_recheck_catalog_account(
+    db, browser, monkeypatch, media_type
+):
+    import io
+
+    from PIL import Image
+
+    client, _ = browser
+    own = "https://image.tmdb.org/t/p/w500/own.jpg"
+    other = "https://image.tmdb.org/t/p/w500/foreign.jpg"
+    if media_type == "movie":
+        import omakase.plus.movies_routes as routes
+
+        _notification_poster_movie(db, own, number=1)
+        _notification_poster_movie(db, other, number=2, user=2)
+        client.app.include_router(routes.create_movies_router(None), prefix="/plus")
+        owned_url = "/plus/movies/tt0000001/artwork"
+        foreign_url = "/plus/movies/tt0000002/artwork"
+    else:
+        import omakase.plus.tv_routes as routes
+        from omakase.plus.movies import MovieConnections
+
+        _notification_poster_tv(db, own, number=1)
+        _notification_poster_tv(db, other, number=2, user=2)
+        monkeypatch.setattr(routes, "movie_connections", lambda *_: MovieConnections())
+        client.app.include_router(routes.create_tv_router(None), prefix="/plus")
+        owned_url = "/plus/tv/1/artwork"
+        foreign_url = "/plus/tv/2/artwork"
+    stream = io.BytesIO()
+    Image.new("RGB", (20, 30), "purple").save(stream, format="PNG")
+    called = []
+
+    async def artwork(url):
+        called.append(url)
+        return stream.getvalue(), "image/png"
+
+    monkeypatch.setattr(routes, "movie_artwork", artwork)
+    response = client.get(owned_url)
+    assert response.status_code == 200 and response.headers["content-type"] == "image/webp"
+    assert called == [own]
+    assert client.get(foreign_url).status_code == 404
+    assert called == [own]
+    client.cookies.clear()
+    assert client.get(owned_url).status_code == 401

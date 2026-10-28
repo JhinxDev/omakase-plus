@@ -13,4 +13,4 @@ Opening **Rate title** or **Review media** marks that reminder as read without d
 
 Close the panel, press Escape or click outside to continue. The list scrolls within the screen on phones. If a request fails, use **Try again** or refresh/sign in when the message requests it. Missing optional services do not prevent ordinary rating reminders.
 
-The header makes one deferred local check per page and reuses it when opened. It does not poll, import history, contact providers, run paid inference, acquire media or start removal. Artwork may use a neutral media-type placeholder; no poster lookup is triggered by opening the bell.
+The header makes one deferred local check per page and reuses it when opened. It does not poll, import history, contact providers, run paid inference, acquire media or start removal. Posters appear beside each reminder when artwork is available. Images start loading only when you open the list, through the same artwork cache used elsewhere in Omakase. A cache miss may make its normal bounded metadata/CDN request; missing artwork keeps a neutral fallback.

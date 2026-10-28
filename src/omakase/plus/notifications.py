@@ -15,7 +15,7 @@ _COUNT_CAP = 100
 
 _ANIME = """
 WITH anime AS (
- SELECT e.id AS entry_id,m.id AS monitor_id,m.title,e.completed_at AS created_at,
+ SELECT e.id AS entry_id,m.id AS monitor_id,m.anilist_id,m.title,e.completed_at AS created_at,
         COALESCE((SELECT v.score_ten FROM watch_events v
                   WHERE v.watch_entry_id=e.id AND v.user_id=e.user_id
                     AND v.disposition='accepted' AND v.score_ten IS NOT NULL
@@ -37,14 +37,14 @@ _SOURCES = {
     "anime_rating": """
 SELECT 'completed_unrated:anime:'||entry_id||':'||created_at AS id,
         'completed_unrated' AS kind,'anime' AS media_type,title,rating,created_at,
-        '/plus/library/'||monitor_id||'#watch-tracking' AS href
+        '/plus/library/'||monitor_id||'#watch-tracking' AS href,anilist_id AS artwork_ref
  FROM anime WHERE rating IS NULL
 """,
     "movie_rating": """
 SELECT 'completed_unrated:movie:'||h.imdb_id||':'||COALESCE(h.status_updated_at,h.updated_at),
         'completed_unrated','movie',c.title,h.rating,
         COALESCE(h.status_updated_at,h.updated_at),
-        '/plus/movies/'||h.imdb_id||'#movie-rating'
+        '/plus/movies/'||h.imdb_id||'#movie-rating',c.poster_url
  FROM movie_history h JOIN movie_catalog c ON c.user_id=h.user_id AND c.imdb_id=h.imdb_id
  WHERE h.user_id=:user_id AND h.status='completed' AND h.rating IS NULL
        AND h.status_source IN ('manual','plex')
@@ -52,7 +52,8 @@ SELECT 'completed_unrated:movie:'||h.imdb_id||':'||COALESCE(h.status_updated_at,
     "tv_rating": """
 SELECT 'completed_unrated:tv:'||h.tmdb_id||':'||h.updated_at,
         'completed_unrated','tv',COALESCE(json_extract(c.metadata_json,'$.title'),'TV show'),
-        h.rating,h.updated_at,'/plus/tv/'||h.tmdb_id||'#tv-history'
+        h.rating,h.updated_at,'/plus/tv/'||h.tmdb_id||'#tv-history',
+        json_extract(c.metadata_json,'$.poster_url')
  FROM tv_history h JOIN tv_catalog c ON c.user_id=h.user_id AND c.tmdb_id=h.tmdb_id
  WHERE h.user_id=:user_id AND h.status='completed' AND h.rating IS NULL
        AND h.status_source IN ('manual','plex')
@@ -60,7 +61,7 @@ SELECT 'completed_unrated:tv:'||h.tmdb_id||':'||h.updated_at,
     "anime_media": """
 SELECT 'removal_reminder:anime:'||n.monitor_id||':'||n.created_at,
         'removal_reminder','anime',n.title,n.rating,n.created_at,
-        '/plus/library/'||n.monitor_id||'/remove'
+        '/plus/library/'||n.monitor_id||'/remove',n.anilist_id
  FROM anime n
  WHERE NOT EXISTS (SELECT 1 FROM media_title_removals r
                    WHERE r.user_id=:user_id AND r.monitor_id=n.monitor_id
@@ -95,7 +96,7 @@ SELECT 'removal_reminder:anime:'||n.monitor_id||':'||n.created_at,
 def _window_sql(source: str) -> str:
     return (
         _ANIME
-        + ",candidate(id,kind,media_type,title,rating,created_at,href) AS ("
+        + ",candidate(id,kind,media_type,title,rating,created_at,href,artwork_ref) AS ("
         + _SOURCES[source]
         + """
         ) SELECT c.*,s.read_at FROM candidate c LEFT JOIN notification_state s
@@ -112,6 +113,30 @@ def _params(user_id: int) -> dict:
     if type(user_id) is not int or user_id < 1:
         raise ValueError("Choose a valid account")
     return {"user_id": user_id}
+
+
+def _artwork_url(row: sqlite3.Row) -> str | None:
+    """Emit only existing local routes; the feed never loads artwork or metadata."""
+    reference = row["artwork_ref"]
+    if row["media_type"] == "anime":
+        if type(reference) is int and 0 < reference <= 2_147_483_647:
+            return f"/plus/media/{reference}/poster"
+        return None
+    # Match the same fixed public CDN policy used by movie_artwork. A saved
+    # missing/untrusted URL must never become an arbitrary image request.
+    if not isinstance(reference, str) or not re.fullmatch(
+        r"https://image\.tmdb\.org/t/p/(?:w[0-9]{2,4}|original)/[A-Za-z0-9_-]{1,160}\.(?:jpg|png)",
+        reference,
+    ):
+        return None
+    if row["media_type"] == "movie":
+        identity = re.fullmatch(r"/plus/movies/(tt[0-9]{7,10})#movie-rating", row["href"])
+        return f"/plus/movies/{identity[1]}/artwork" if identity else None
+    if row["media_type"] == "tv":
+        identity = re.fullmatch(r"/plus/tv/([1-9][0-9]{0,9})#tv-history", row["href"])
+        if identity and int(identity[1]) <= 2_147_483_647:
+            return f"/plus/tv/{identity[1]}/artwork"
+    return None
 
 
 def _item(row: sqlite3.Row) -> dict:
@@ -132,7 +157,7 @@ def _item(row: sqlite3.Row) -> dict:
         "rating": row["rating"],
         "created_at": row["created_at"],
         "read": row["read_at"] is not None,
-        "artwork_url": None,
+        "artwork_url": _artwork_url(row),
     }
 
 

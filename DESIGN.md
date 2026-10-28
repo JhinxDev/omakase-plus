@@ -27,3 +27,7 @@ Technical pass, rendered creative acceptance, production identity and physical-d
 The Account utility group includes a 44px notification bell. It uses one deferred, deadline-bound same-origin local-DB read per page; there is no polling or provider lookup. Unknown/loading/error never claims zero unread. The compact nonmodal panel uses the existing Geist/midnight/iris system, 14px corners, 14–16px body/title text, current saved rating, and neutral media-type art placeholders when no cached artwork is provided.
 
 Primary links open the existing rating or guarded removal-review flow. Each item has one primary Rate/Review media link and a compact 44px Dismiss cross. Primary-link activation marks read through a nonblocking CSRF-protected keepalive POST; dismissal is a separate account-scoped action. Both use the returned feed without another GET. The panel supports Close, Escape, outside dismissal and focus return, and closes when keyboard focus moves outside. Phones use viewport-bounded height, an independently scrolling list and safe-area gutters. Readiness and saved progress remain distinct; a reminder performs no import, provider call, acquisition or removal.
+
+### Notification artwork
+
+Show the media poster in each notification instead of a media-type abbreviation when artwork is available. Keep the tile size stable, crop covers consistently, and load images only after the panel opens. Resolve artwork through existing local routes; a missing or failed image falls back without shifting the text or actions.

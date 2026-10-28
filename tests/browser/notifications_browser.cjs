@@ -13,14 +13,14 @@ const html = fs.readFileSync(process.argv[2], 'utf8').replace('</main>', '<butto
 const staticRoot = path.join(product, 'static');
 const allowed = new Set([...html.matchAll(/\/plus\/static\/([^?"/]+)/g)].map(m => m[1]));
 const items = [
- { id:'completed_unrated:anime:101:2026-10-28T06:00:00',kind:'completed_unrated',media_type:'anime',title:'The Garden at the End of a Very Long Adventure',message:'You finished this title. Add your rating whenever you like.',href:'/plus/library/101#watch-tracking',rating:null,read:false,artwork_url:null },
- { id:'removal_reminder:anime:102',kind:'removal_reminder',media_type:'anime',title:'A Quiet Constellation',message:'Completed managed media is saved. Review it when you are ready.',href:'/plus/library/102/remove',rating:8.5,read:false,artwork_url:null },
- { id:'completed_unrated:movie:tt1234567',kind:'completed_unrated',media_type:'movie',title:'The Last Evening',message:'Record your rating for this completed film.',href:'/plus/movies/tt1234567#movie-rating',rating:null,read:false,artwork_url:null },
- { id:'completed_unrated:tv:45',kind:'completed_unrated',media_type:'tv',title:'The Map of Tomorrow',message:'Your series is marked complete.',href:'/plus/tv/45#tv-history',rating:null,read:true,artwork_url:null },
- { id:'completed_unrated:anime:999',kind:'completed_unrated',media_type:'anime',title:'<img src=x onerror=alert(1)>',message:'An unsafe destination must never become a link.',href:'javascript:alert(1)',rating:null,read:true,artwork_url:null },
+ { id:'completed_unrated:anime:101:2026-10-28T06:00:00',kind:'completed_unrated',media_type:'anime',title:'The Garden at the End of a Very Long Adventure',message:'You finished this title. Add your rating whenever you like.',href:'/plus/library/101#watch-tracking',rating:null,read:false,artwork_url:'/plus/media/101/poster' },
+ { id:'removal_reminder:anime:102',kind:'removal_reminder',media_type:'anime',title:'A Quiet Constellation',message:'Completed managed media is saved. Review it when you are ready.',href:'/plus/library/102/remove',rating:8.5,read:false,artwork_url:'/plus/media/102/poster' },
+ { id:'completed_unrated:movie:tt1234567',kind:'completed_unrated',media_type:'movie',title:'The Last Evening',message:'Record your rating for this completed film.',href:'/plus/movies/tt1234567#movie-rating',rating:null,read:false,artwork_url:'/plus/movies/tt1234567/artwork' },
+ { id:'completed_unrated:tv:45',kind:'completed_unrated',media_type:'tv',title:'The Map of Tomorrow',message:'Your series is marked complete.',href:'/plus/tv/45#tv-history',rating:null,read:true,artwork_url:'/plus/tv/45/artwork' },
+ { id:'completed_unrated:anime:999',kind:'completed_unrated',media_type:'anime',title:'<img src=x onerror=alert(1)>',message:'An unsafe destination must never become a link.',href:'javascript:alert(1)',rating:null,read:true,artwork_url:'https://untrusted.invalid/poster.jpg' },
 ];
 let current = [], mode = 'normal', mutationStatus = 200;
-let reads = 0, mutations = [];
+let reads = 0, mutations = [], posterRequests = [];
 let deferNextRead = false, releaseHeldResponse = null;
 const serveOnly = process.argv.includes('--serve-only');
 const feed = () => ({ items:current,unread_count:current.filter(i => !i.read).length,count:current.length,count_capped:false,limit:20 });
@@ -43,6 +43,12 @@ const server = http.createServer((req,res) => {
   if(deferNextRead && match[2]==='read') {deferNextRead=false;releaseHeldResponse=()=>res.end(responseBody);return;}
   res.end(responseBody);return;
  }
+ if (/^\/plus\/(media\/[1-9]\d*\/poster|movies\/tt\d+\/artwork|tv\/[1-9]\d*\/artwork)$/.test(url.pathname)) {
+  posterRequests.push(url.pathname);
+  if (url.pathname === '/plus/media/102/poster') {res.writeHead(404);res.end();return;}
+  res.writeHead(200,{'content-type':'image/svg+xml','cache-control':'private,max-age=3600'});
+  res.end(url.pathname === '/plus/tv/45/artwork' ? '<svg xmlns="http://www.w3.org/2000/svg" width="2" height="3"></svg>' : '<svg xmlns="http://www.w3.org/2000/svg" width="230" height="320" viewBox="0 0 230 320"><rect width="230" height="320" fill="#18243c"/><circle cx="155" cy="85" r="40" fill="#c4b5fd"/><path d="M0 300L100 120L230 300Z" fill="#53627c"/><path d="M0 320L160 170L230 320Z" fill="#25354f"/></svg>');return;
+ }
  if (url.pathname.startsWith('/plus/static/')) {
   const name=path.basename(url.pathname);
   if (!allowed.has(name)) {res.writeHead(404);res.end();return;}
@@ -61,7 +67,7 @@ const server = http.createServer((req,res) => {
  const browser=await chromium.launch({channel:'msedge',headless:true});
  const receipts=[];
  async function setup(width,scenario='normal') {
-  current=structuredClone(items);mode=scenario;reads=0;mutations=[];mutationStatus=200;
+  current=structuredClone(items);mode=scenario;reads=0;mutations=[];posterRequests=[];mutationStatus=200;
   const context=await browser.newContext({viewport:{width,height:900},reducedMotion:'reduce'});
   const page=await context.newPage();const failures=[];
   page.on('pageerror',error=>failures.push(error.message));
@@ -74,7 +80,7 @@ const server = http.createServer((req,res) => {
    const {context,page,failures}=await setup(width);
    const toggle=page.locator('[data-notification-toggle]'),panel=page.locator('[data-notification-panel]');
    await page.waitForFunction(()=>!document.querySelector('[data-notification-badge]').hidden);
-   assert.equal(reads,1);assert.equal(await toggle.getAttribute('aria-label'),'Notifications, 3 unread');
+   assert.equal(reads,1);assert.equal(posterRequests.length,0,'Closed bell must never load posters');assert.equal(await toggle.getAttribute('aria-label'),'Notifications, 3 unread');
    const geometry=await page.evaluate(()=>{
     const box=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};};
     return {brand:box('.stream-brand'),bell:box('.notification-bell'),account:box('.account-menu summary'),search:box(innerWidth>900?'.header-search':'.header-search-mobile'),overflow:document.documentElement.scrollWidth-innerWidth};
@@ -84,7 +90,17 @@ const server = http.createServer((req,res) => {
    await toggle.focus();await page.keyboard.press('Enter');await panel.waitFor({state:'visible'});
    assert(await page.locator('[data-notification-close]').evaluate(el=>el===document.activeElement));
    assert.equal(await panel.locator('.notification-item').count(),5);
-   assert.equal(await panel.locator('a[href^="javascript:"]').count(),0);assert.equal(await panel.locator('img').count(),0);
+   assert.equal(await panel.locator('a[href^="javascript:"]').count(),0);
+   await page.waitForFunction(()=>{const image=document.querySelector('.notification-item .notification-art img');return image?.complete && image.naturalWidth>2;});
+   const firstArt=panel.locator('.notification-art').first();assert.equal(await firstArt.innerText(),'');
+   assert.equal(await firstArt.locator('img').getAttribute('alt'),'');assert.equal(await firstArt.locator('img').getAttribute('loading'),'lazy');
+   const posterGeometry=await firstArt.locator('img').evaluate(img=>{const box=img.getBoundingClientRect(),tile=img.parentElement.getBoundingClientRect();return {cover:getComputedStyle(img).objectFit==='cover',width:box.width,height:box.height,tileWidth:tile.width,tileHeight:tile.height,clientWidth:img.parentElement.clientWidth,clientHeight:img.parentElement.clientHeight};});
+   assert(posterGeometry.cover && posterGeometry.width===posterGeometry.clientWidth && posterGeometry.height===posterGeometry.clientHeight);
+   assert.equal(posterGeometry.tileWidth,width<359?38:46);assert.equal(posterGeometry.tileHeight,width<359?54:64);
+   const failedArt=panel.locator('.notification-item').nth(1).locator('.notification-art');await failedArt.getByText('AN',{exact:true}).waitFor();assert.equal(await failedArt.locator('img').count(),0);
+   const blankArt=panel.locator('.notification-item').nth(3).locator('.notification-art');await blankArt.scrollIntoViewIfNeeded();await blankArt.getByText('TV',{exact:true}).waitFor();assert.equal(await blankArt.locator('img').count(),0);
+   assert.equal(await panel.locator('img[src^="https:"]').count(),0,'Untrusted external artwork must never become an image');
+   assert.equal(posterRequests.length,4);await panel.locator('.notification-content').evaluate(el=>el.scrollTop=0);
    assert.equal(await panel.getByText('Your rating 8.5/10',{exact:true}).count(),1);
    assert.equal(await panel.getByRole('link',{name:/Review media:/}).getAttribute('href'),'/plus/library/102/remove');
    const dimensions=await panel.evaluate(el=>{const r=el.getBoundingClientRect();return {left:r.left,right:r.right,bottom:r.bottom,height:r.height,scrollable:el.querySelector('.notification-content').scrollHeight>el.querySelector('.notification-content').clientHeight};});
@@ -120,7 +136,7 @@ const server = http.createServer((req,res) => {
    const previousMutations=mutations.length;await page.locator('meta[name="csrf-token"]').evaluate(el=>el.content='');
    await panel.getByRole('button',{name:'Dismiss The Last Evening',exact:true}).click();
    assert.equal(mutations.length,previousMutations,'Missing CSRF must not send a mutation');
-   assert.deepEqual(failures,[]);receipts.push({width,geometry,panel:dimensions,oneIdleGet:true,readDismissCsrf:true,unsafeHrefBlocked:true,testedPanelAxeViolations:0,keyboardAndOutside:true,mutationErrorPreserved:true});
+   assert.deepEqual(failures,[]);receipts.push({width,geometry,panel:dimensions,oneIdleGet:true,readDismissCsrf:true,posterOnOpen:true,posterCoverStable:true,missingAndTransparentFallback:true,unsafeArtBlocked:true,unsafeHrefBlocked:true,testedPanelAxeViolations:0,keyboardAndOutside:true,mutationErrorPreserved:true});
    await context.close();
   }
   {

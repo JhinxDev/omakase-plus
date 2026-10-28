@@ -31,6 +31,16 @@
       : [/^\/plus\/library\/[1-9]\d*#watch-tracking$/, /^\/plus\/movies\/tt\d+#movie-rating$/, /^\/plus\/tv\/[1-9]\d*#tv-history$/];
     return patterns.some(pattern => pattern.test(value)) ? value : null;
   }
+  function artworkHref(value, item) {
+    if (typeof value !== 'string') return null;
+    const patterns = {
+      anime: /^\/plus\/media\/([1-9]\d*)\/poster$/,
+      movie: /^\/plus\/movies\/tt[0-9]{7,10}\/artwork$/,
+      tv: /^\/plus\/tv\/([1-9]\d*)\/artwork$/,
+    };
+    const match = patterns[item.media_type]?.exec(value);
+    return match && (item.media_type === 'movie' || Number(match[1]) <= 2147483647) ? value : null;
+  }
   function normalize(data) {
     if (!data || !Array.isArray(data.items) || !Number.isInteger(data.unread_count) || data.unread_count < 0 || data.unread_count > 100) throw new Error('Invalid notification response');
     const items = data.items.slice(0, 20).filter(item => item && typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 300 && ['completed_unrated', 'removal_reminder'].includes(item.kind) && ['anime', 'movie', 'tv'].includes(item.media_type) && typeof item.title === 'string');
@@ -111,7 +121,26 @@
     row.dataset.notificationId = item.id;
     row.dataset.read = String(item.read === true);
     const art = element('span', 'notification-art', { anime: 'AN', movie: 'MV', tv: 'TV' }[item.media_type]);
-    art.setAttribute('aria-hidden', 'true'); // Backend intentionally supplies no uncached/provider artwork.
+    art.setAttribute('aria-hidden', 'true');
+    const artwork = artworkHref(item.artwork_url, item);
+    if (artwork) {
+      // Rows exist only while the panel is open: the idle feed never loads posters.
+      const image = document.createElement('img');
+      image.alt = '';
+      image.width = 46;
+      image.height = 64;
+      image.loading = 'lazy';
+      image.decoding = 'async';
+      image.referrerPolicy = 'no-referrer';
+      const fallback = () => { art.textContent = { anime: 'AN', movie: 'MV', tv: 'TV' }[item.media_type]; };
+      image.addEventListener('error', fallback, { once: true });
+      image.addEventListener('load', () => {
+        // Existing artwork routes return this tiny transparent SVG when unavailable.
+        if (image.naturalWidth <= 2 && image.naturalHeight <= 3) fallback();
+      }, { once: true });
+      art.replaceChildren(image);
+      image.src = artwork;
+    }
     const copy = element('div', 'notification-item-copy');
     copy.append(element('div', 'notification-kind', item.kind === 'completed_unrated' ? 'Finished watching' : 'Media review'), element('h3', '', item.title.slice(0, 250)));
     copy.append(element('p', 'notification-message', typeof item.message === 'string' ? item.message.slice(0, 500) : 'Review your saved title.'));

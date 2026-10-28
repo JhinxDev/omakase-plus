@@ -17,7 +17,7 @@
 .notification-item { display: grid; grid-template-columns: 46px minmax(0,1fr); gap: 12px; padding: 18px; border-bottom: 1px solid #222831; }
 .notification-item:last-child { border-bottom: 0; }
 .notification-art { display: grid; place-items: center; align-self: start; width: 46px; height: 64px; border: 1px solid #303640; border-radius: 8px; background: #1d2430; color: #a7abb2; font-size: 12px; font-weight: 600; overflow: hidden; }
-.notification-art img { width: 100%; height: 100%; object-fit: cover; }
+.notification-art img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .notification-item-copy { min-width: 0; }
 .notification-kind { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; color: #a7abb2; font-size: 12px; line-height: 1.4; }
 .notification-item:not([data-read=true]) .notification-kind::before { content: ''; width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: #c4b5fd; }
