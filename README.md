@@ -36,6 +36,8 @@ Apple TV progress is manual. No media, provider account or API key is included.
 
 ## Start with the app
 
+Want Claude Code or Codex to handle host setup? [Copy one setup prompt](docs/setup-with-an-agent.md). It checks your existing installation, starts with the app alone and keeps secrets on your computer.
+
 Clone the repository:
 
 ```sh
@@ -68,6 +70,10 @@ deployment access, not source-code visibility. Keep authentication and private
 network defaults when deploying this public source.
 
 ## Choose your setup
+
+![Omakase Plus connections: discover through AniList, Seerr or your AI; organize search, watchlists, progress and ratings; optionally open Plex and connect media services](docs/images/connections-v2.png)
+
+Start with personal planning, then add the connections you use. Movie and TV catalog search requires Seerr; playback stays in optional Plex.
 
 | Setup | Start here | Separate administrator work |
 | --- | --- | --- |
