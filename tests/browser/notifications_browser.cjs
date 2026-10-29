@@ -13,7 +13,7 @@ const html = fs.readFileSync(process.argv[2], 'utf8').replace('</main>', '<butto
 const staticRoot = path.join(product, 'static');
 const allowed = new Set([...html.matchAll(/\/plus\/static\/([^?"/]+)/g)].map(m => m[1]));
 const items = [
- { id:'completed_unrated:anime:101:2026-10-28T06:00:00',kind:'completed_unrated',media_type:'anime',title:'The Garden at the End of a Very Long Adventure',message:'You finished this title. Add your rating whenever you like.',href:'/plus/library/101#watch-tracking',rating:null,read:false,artwork_url:'/plus/media/101/poster' },
+ { id:'completed_unrated:anime:101:2026-10-28T06:00:00',kind:'completed_unrated',media_type:'anime',title:'The Garden at the End of a Very Long Adventure',message:'You finished this title. Add your rating whenever you like.',href:'/plus/library/101#watch-tracking',rating:null,read:false,artwork_url:'/plus/media/101/poster',actions:[{kind:'rate',href:'/plus/library/101#watch-tracking'},{kind:'review_media',href:'/plus/library/101/remove'}] },
  { id:'removal_reminder:anime:102',kind:'removal_reminder',media_type:'anime',title:'A Quiet Constellation',message:'Completed managed media is saved. Review it when you are ready.',href:'/plus/library/102/remove',rating:8.5,read:false,artwork_url:'/plus/media/102/poster' },
  { id:'completed_unrated:movie:tt1234567',kind:'completed_unrated',media_type:'movie',title:'The Last Evening',message:'Record your rating for this completed film.',href:'/plus/movies/tt1234567#movie-rating',rating:null,read:false,artwork_url:'/plus/movies/tt1234567/artwork' },
  { id:'completed_unrated:tv:45',kind:'completed_unrated',media_type:'tv',title:'The Map of Tomorrow',message:'Your series is marked complete.',href:'/plus/tv/45#tv-history',rating:null,read:true,artwork_url:'/plus/tv/45/artwork' },
@@ -85,11 +85,14 @@ const server = http.createServer((req,res) => {
     const box=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};};
     return {brand:box('.stream-brand'),bell:box('.notification-bell'),account:box('.account-menu summary'),search:box(innerWidth>900?'.header-search':'.header-search-mobile'),overflow:document.documentElement.scrollWidth-innerWidth};
    });
-   assert.equal(geometry.overflow,0);assert(geometry.bell.height>=44&&geometry.bell.width>=44);assert(geometry.account.height>=44&&geometry.account.width>=44);
+   assert.equal(geometry.overflow,0);
+   if(width>1100) assert(await page.locator('.account-label').evaluate(el=>el.clientWidth<=132&&getComputedStyle(el).textOverflow==='ellipsis'),'Long account names must remain bounded');assert(geometry.bell.height>=44&&geometry.bell.width>=44);assert(geometry.account.height>=44&&geometry.account.width>=44);
    assert(geometry.brand.right<=geometry.search.left+1);assert(geometry.search.right<=geometry.bell.left+1);assert(geometry.bell.right<=geometry.account.left+1);
    await toggle.focus();await page.keyboard.press('Enter');await panel.waitFor({state:'visible'});
    assert(await page.locator('[data-notification-close]').evaluate(el=>el===document.activeElement));
    assert.equal(await panel.locator('.notification-item').count(),5);
+   const combined=panel.locator('.notification-item').first();assert.equal(await combined.locator('a').count(),2);assert.equal(await combined.getByRole('link',{name:'Review media: '+items[0].title,exact:true}).getAttribute('href'),'/plus/library/101/remove');
+   assert.equal(await page.locator('.account-menu summary').getAttribute('aria-label'),'Open account and utilities menu for '+await page.locator('.account-label').textContent());
    assert.equal(await panel.locator('a[href^="javascript:"]').count(),0);
    await page.waitForFunction(()=>{const image=document.querySelector('.notification-item .notification-art img');return image?.complete && image.naturalWidth>2;});
    const firstArt=panel.locator('.notification-art').first();assert.equal(await firstArt.innerText(),'');
@@ -102,7 +105,7 @@ const server = http.createServer((req,res) => {
    assert.equal(await panel.locator('img[src^="https:"]').count(),0,'Untrusted external artwork must never become an image');
    assert.equal(posterRequests.length,4);await panel.locator('.notification-content').evaluate(el=>el.scrollTop=0);
    assert.equal(await panel.getByText('Your rating 8.5/10',{exact:true}).count(),1);
-   assert.equal(await panel.getByRole('link',{name:/Review media:/}).getAttribute('href'),'/plus/library/102/remove');
+   assert.equal(await panel.getByRole('link',{name:'Review media: '+items[1].title,exact:true}).getAttribute('href'),'/plus/library/102/remove');
    const dimensions=await panel.evaluate(el=>{const r=el.getBoundingClientRect();return {left:r.left,right:r.right,bottom:r.bottom,height:r.height,scrollable:el.querySelector('.notification-content').scrollHeight>el.querySelector('.notification-content').clientHeight};});
    assert(dimensions.left>=0&&dimensions.right<=width&&dimensions.bottom<=900);assert(dimensions.scrollable);
    if(width<=900) assert(dimensions.bottom<=await page.locator('.mobile-primary-nav').evaluate(el=>el.getBoundingClientRect().top),'Panel must clear bottom navigation');

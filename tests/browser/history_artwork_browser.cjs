@@ -42,7 +42,12 @@ const server=http.createServer((req,res)=>{
   for(let i=0;i<5;i++){
    const image=cards.nth(i).locator('img');await cards.nth(i).scrollIntoViewIfNeeded();
    const missing=i===2||i===4;
-   if(missing){
+   const fallback=await image.getAttribute('data-history-fallback');
+   if(missing&&fallback&&['/plus/media/21/poster','/plus/tv/42/artwork'].includes(fallback)){
+    await page.waitForFunction(el=>el.dataset.artworkScope==='series'&&el.complete&&el.naturalWidth>0,await image.elementHandle());
+    assert(await cards.nth(i).locator('[data-history-artwork-label]').isVisible());
+    assert.equal(await cards.nth(i).locator('[data-history-artwork-label]').innerText(),'Series artwork');
+   }else if(missing){
     await page.waitForFunction(el=>el.dataset.artworkScope==='unavailable',await image.elementHandle());
     assert(await image.isHidden());
     assert(await cards.nth(i).locator('[data-history-placeholder]').isVisible());
@@ -56,8 +61,7 @@ const server=http.createServer((req,res)=>{
    }
    assert.equal(await image.getAttribute('loading'),'lazy');
   }
-  assert.equal(counts['/plus/media/21/poster']||0,0,'Missing episode must not request series poster');
-  assert.equal(counts['/plus/tv/42/artwork']||0,0,'Missing TV episode must not request series poster');
+  if((counts['/plus/media/21/poster']||0)||(counts['/plus/tv/42/artwork']||0))assert(await cards.locator('[data-artwork-scope=series]').count()>0,'Series covers must be explicitly labeled');
   assert.equal(await cards.nth(5).locator('img').getAttribute('src'),'/plus/movies/tt0084787/artwork');
   assert((await cards.nth(0).innerText()).includes('Observed'));
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);
@@ -66,9 +70,9 @@ const server=http.createServer((req,res)=>{
   await page.evaluate(()=>{document.activeElement?.blur();window.scrollTo(0,0);});
   await page.waitForTimeout(150);
   await page.screenshot({path:path.join(output,`${surface}-${width}.png`),fullPage:true});
-  receipt.push({surface,width,actualTemplate:true,exactPixelsDistinct:true,deliberateEpisodePlaceholder:true,movieUnchanged:true,noOverflow:true,noExternalRequests:true});await context.close();
+  receipt.push({surface,width,actualTemplate:true,exactPixelsDistinct:true,truthfulArtworkScope:true,movieUnchanged:true,noOverflow:true,noExternalRequests:true});await context.close();
  }
- fs.writeFileSync(path.join(output,'receipt.json'),JSON.stringify({method:'Actual home/activity/base templates + actual CSS/JS; synthetic local episode images only; unavailable exact stills use episode placeholders',cases:receipt},null,2));
+ fs.writeFileSync(path.join(output,'receipt.json'),JSON.stringify({method:'Actual home/activity/base templates + actual CSS/JS; synthetic local episode images only; unavailable exact stills use explicitly labeled series covers when available, otherwise episode placeholders',cases:receipt},null,2));
  console.log(JSON.stringify({result:'PASS',cases:receipt.length,widths:[320,390,1440]}));
  }finally{await browser.close();await new Promise(r=>server.close(r));}
 })().catch(error=>{console.error(error);server.closeAllConnections();server.close();process.exit(1);});

@@ -122,7 +122,7 @@ def test_anilist_checkpoint_is_recorded_once_without_fabricated_episode_dates(db
     assert item["time_label"] == "Recorded" and item["source_label"] == "AniList"
     assert item["episode_title"] is None
     assert item["artwork_url"].startswith("/plus/history/artwork/anime/")
-    assert "series_artwork_url" not in item
+    assert item["series_artwork_url"] == "/plus/media/21/poster"
     assert item["episode_artwork"] is True
 
 
@@ -255,3 +255,12 @@ def test_tv_history_is_owner_scoped_and_uses_observation_dates(db):
     assert episode["source_detail"] == "Added manually"
     complete = next(c for c in cards if not c["episode"])
     assert complete["status_label"] == "Completed" and complete["rating"] == 8
+
+
+def test_manual_series_completion_is_not_presented_as_an_episode(db):
+    _, watch = entry(db)
+    event(db, watch, episode=None, source="manual", kind="completed")
+    card = feed(db)["items"][0]
+    assert card["episode"] is None and card["event_label"] == "Series completed"
+    assert card["artwork_url"] is None and card["series_artwork_url"] == "/plus/media/21/poster"
+    assert card["watched_at"] is None

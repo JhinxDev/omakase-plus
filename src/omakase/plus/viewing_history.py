@@ -94,6 +94,12 @@ def _anime(row):
         if episode and row["season_number"] and row["owned_monitor_id"]
         else None,
         "episode_artwork": True,
+        "series_artwork_url": f"/plus/media/{media_id}/poster",
+        "event_label": "Series completed"
+        if row["kind"] == "completed" and not episode
+        else "Progress updated"
+        if not episode
+        else None,
         "detail_url": f"/plus/catalog/anime/{media_id}"
         if row["owned_monitor_id"] or not feature_enabled()
         else f"/plus/history/anime/{row['personal_entry_id']}",
@@ -186,6 +192,7 @@ def _television(db, user_id):
                 "recorded_at": stamp,
                 "artwork_url": f"/plus/history/artwork/tv/{tmdb}/{row['season_number']}/{row['episode_number']}",
                 "episode_artwork": True,
+                "series_artwork_url": f"/plus/tv/{tmdb}/artwork",
                 "detail_url": f"/plus/tv/{tmdb}?season={row['season_number']}",
             }
         )
@@ -219,6 +226,7 @@ def _television(db, user_id):
                 else "From Plex",
                 "artwork_url": None,
                 "episode_artwork": True,
+                "series_artwork_url": f"/plus/tv/{tmdb}/artwork",
                 "detail_url": f"/plus/tv/{tmdb}",
             }
         )

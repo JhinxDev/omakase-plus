@@ -93,19 +93,65 @@ SELECT 'removal_reminder:anime:'||n.monitor_id||':'||n.created_at,
 }
 
 
+# One anime row owns both reasons. Keep the exact managed-media eligibility shared.
+_MEDIA_ELIGIBILITY = _SOURCES["anime_media"].split(" WHERE ", 1)[1].strip()
+_ASSET_QUERY = _MEDIA_ELIGIBILITY.split(" AND EXISTS (", 1)[1].rsplit(")", 1)[0]
+_MEDIA_REVISION = (
+    "("
+    + _ASSET_QUERY.replace("SELECT 1 FROM media_assets", "SELECT MAX(a.id) FROM media_assets", 1)
+    + ")"
+)
+_MEDIA_CHANGED = (
+    "("
+    + _ASSET_QUERY.replace(
+        "SELECT 1 FROM media_assets", "SELECT MAX(a.created_at) FROM media_assets", 1
+    )
+    + ")"
+)
+_SOURCES["anime_rating"] = _SOURCES["anime_rating"].replace(
+    "FROM anime WHERE rating IS NULL",
+    "FROM anime n WHERE rating IS NULL AND NOT (" + _MEDIA_ELIGIBILITY + ")",
+)
+_SOURCES["anime_media"] = (
+    _SOURCES["anime_media"]
+    .replace(
+        "n.monitor_id||':'||n.created_at",
+        "n.monitor_id||':'||n.created_at||':asset:'||" + _MEDIA_REVISION,
+    )
+    .replace("n.anilist_id\n FROM", "n.anilist_id," + _MEDIA_CHANGED + "\n FROM")
+)
+
+
 def _window_sql(source: str) -> str:
+    candidate = _SOURCES[source]
+    if source != "anime_media":
+        candidate = "SELECT d.*,NULL FROM (" + candidate + ") d"
+    # Honor prior-version read/dismiss state only for media that already existed
+    # at that acknowledgement. A newly managed asset is a genuinely new signal.
+    legacy_read = "CASE WHEN replace(legacy.read_at,' ','T')>=replace(c.signal_at,' ','T') THEN legacy.read_at END"
+    legacy_dismiss = "CASE WHEN replace(legacy.dismissed_at,' ','T')>=replace(c.signal_at,' ','T') THEN legacy.dismissed_at END"
+    read = "COALESCE(s.read_at," + legacy_read + ")"
+    dismissed = "COALESCE(s.dismissed_at," + legacy_dismiss + ")"
     return (
         _ANIME
-        + ",candidate(id,kind,media_type,title,rating,created_at,href,artwork_ref) AS ("
-        + _SOURCES[source]
-        + """
-        ) SELECT c.*,s.read_at FROM candidate c LEFT JOIN notification_state s
-        ON s.user_id=:user_id AND s.notification_id=c.id
-        WHERE (:include_dismissed OR s.dismissed_at IS NULL)
-          AND (NOT :unread_only OR s.read_at IS NULL)
-          AND (:target_id IS NULL OR c.id=:target_id)
-        ORDER BY c.created_at DESC LIMIT :cap
-        """
+        + ",candidate(id,kind,media_type,title,rating,created_at,href,artwork_ref,signal_at) AS ("
+        + candidate
+        + ") SELECT c.*,"
+        + read
+        + " AS read_at FROM candidate c LEFT JOIN notification_state s"
+        + " ON s.user_id=:user_id AND s.notification_id=c.id"
+        + " LEFT JOIN notification_state legacy ON legacy.user_id=:user_id"
+        + " AND legacy.notification_id=substr(c.id,1,instr(c.id,':asset:')-1)"
+        + " AND NOT EXISTS (SELECT 1 FROM notification_state upgraded WHERE upgraded.user_id=:user_id"
+        + " AND upgraded.notification_id LIKE legacy.notification_id||':asset:%')"
+        + " WHERE (:include_dismissed OR "
+        + dismissed
+        + " IS NULL)"
+        + " AND (NOT :unread_only OR "
+        + read
+        + " IS NULL)"
+        + " AND (:target_id IS NULL OR c.id=:target_id)"
+        + " ORDER BY c.created_at DESC LIMIT :cap"
     )
 
 
@@ -147,8 +193,28 @@ def _item(row: sqlite3.Row) -> dict:
         "kind": row["kind"],
         "media_type": row["media_type"],
         "title": title or "Untitled",
+        "actions": (
+            [
+                {
+                    "kind": "rate",
+                    "label": "Rate title",
+                    "href": (row["href"].removesuffix("/remove") + "#watch-tracking")
+                    if review
+                    else row["href"],
+                }
+            ]
+            if row["rating"] is None
+            else []
+        )
+        + (
+            [{"kind": "review_media", "label": "Review media", "href": row["href"]}]
+            if review
+            else []
+        ),
         "message": (
-            "Saved records show completed, Omakase-managed Real-Debrid media. Keeping or removing it is your choice."
+            "You finished this title. Add your rating and review its saved managed media whenever you are ready."
+            if review and row["rating"] is None
+            else "Saved records show completed, Omakase-managed Real-Debrid media. Keeping or removing it is your choice."
             if review
             else "You marked this title watched. Add your rating when you are ready."
         ),
@@ -210,15 +276,30 @@ def set_notification_state(
     if source is None:
         return False
     params.update(cap=1, unread_only=False, include_dismissed=True, target_id=notification_id)
-    if db.execute(_window_sql(source), params).fetchone() is None:
+    row = db.execute(_window_sql(source), params).fetchone()
+    if row is None:
         return False
+    identities = [notification_id]
+    if source == "anime_media":
+        identities.append(notification_id.split(":asset:", 1)[0])
+        if row["rating"] is None:
+            monitor_id = int(row["href"].split("/")[-2])
+            entry = db.execute(
+                "SELECT id,completed_at FROM watch_entries WHERE user_id=? AND monitor_id=? AND status='completed'",
+                (user_id, monitor_id),
+            ).fetchone()
+            if entry:
+                identities.append(f"completed_unrated:anime:{entry['id']}:{entry['completed_at']}")
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with db:
-        db.execute(
+        db.executemany(
             """INSERT INTO notification_state(user_id,notification_id,read_at,dismissed_at)
                VALUES(?,?,?,?) ON CONFLICT(user_id,notification_id) DO UPDATE SET
                read_at=COALESCE(notification_state.read_at,excluded.read_at),
                dismissed_at=COALESCE(notification_state.dismissed_at,excluded.dismissed_at)""",
-            (user_id, notification_id, now, now if action == "dismiss" else None),
+            [
+                (user_id, identity, now, now if action == "dismiss" else None)
+                for identity in identities
+            ],
         )
     return True

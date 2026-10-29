@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import ipaddress
 import json
+import os
 import re
+import tempfile
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from xml.etree import ElementTree
 
 import httpx
+from PIL import Image
 
 from omakase.plus.artwork_delivery import optimized_artwork
 from omakase.plus.connections import (
@@ -25,13 +29,14 @@ from omakase.plus.connections import (
     private_connections_enabled,
 )
 from omakase.plus.outbound import OutboundError, blocked_address, pin_destination
-from omakase.plus.posters import PosterUnavailable
+from omakase.plus.posters import PosterUnavailable, poster_cache_root
 
 _METADATA_LIMIT = 512 * 1024
 _IMAGE_LIMIT = 6 * 1024 * 1024
 _CACHE_BYTES = 16 * 1024 * 1024
 _CACHE = OrderedDict()
 _INFLIGHT = {}
+_RESOLVE_GATES = {}
 _LOCK = threading.Lock()
 _STILL = re.compile(r"/[A-Za-z0-9_-]{1,160}\.(?:jpg|png)")
 
@@ -107,7 +112,9 @@ def anime_identity(db, user_id, event_id):
         refs = json.loads(candidate["managed_paths_json"])
     except (ValueError, TypeError, RecursionError):
         raise EpisodeArtworkUnavailable() from None
-    _require(refs == [{"canonical_title": row["title"], "season_number": season}])
+    # The snapshot writer normalizes wire dictionaries to tuple pairs before
+    # serializing them. Read the stored contract, not the wire representation.
+    _require(refs == [[row["title"], season]])
     _require(bool(re.fullmatch(r"[1-9][0-9]{0,31}", candidate["rating_key"])))
     return EpisodeIdentity(
         user_id,
@@ -349,6 +356,75 @@ async def _tv_still(reader, identity):
     return await reader.read("/t/p/w780" + path, image=True, public=True)
 
 
+def _disk_root(user_id):
+    root = poster_cache_root() / "history-stills" / str(user_id)
+    if root.is_symlink() or any(parent.is_symlink() for parent in root.parents):
+        raise OSError("Unsafe artwork cache")
+    return root
+
+
+def _disk_read(user_id, fingerprint):
+    try:
+        path = _disk_root(user_id) / (fingerprint + ".webp")
+        if not path.is_file() or path.is_symlink():
+            return None
+        stat = path.stat()
+        if (
+            stat.st_nlink != 1
+            or not 0 < stat.st_size <= _IMAGE_LIMIT
+            or time.time() - stat.st_mtime > 86400
+        ):
+            return None
+        payload = path.read_bytes()
+        if not (payload.startswith(b"RIFF") and payload[8:12] == b"WEBP"):
+            return None
+        with Image.open(io.BytesIO(payload)) as image:
+            if image.format != "WEBP" or image.width > 2560 or image.height > 1440:
+                return None
+            image.verify()
+        return payload
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return None
+
+
+def _disk_write(user_id, fingerprint, payload):
+    """Only sanitized derivatives, opaque source keys and one bounded private cache."""
+    temporary = None
+    try:
+        root = _disk_root(user_id)
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=root, prefix=".history-", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(payload)
+        temporary.chmod(0o600)
+        os.replace(temporary, root / (fingerprint + ".webp"))
+        temporary = None
+        entries = []
+        for path in root.iterdir():
+            if (
+                re.fullmatch(r"[0-9a-f]{64}\.webp", path.name)
+                and path.is_file()
+                and not path.is_symlink()
+                and path.stat().st_nlink == 1
+            ):
+                stat = path.stat()
+                entries.append((stat.st_mtime, path, stat.st_size))
+        entries.sort(reverse=True)
+        total = 0
+        for index, (_, path, size) in enumerate(entries):
+            total += size
+            if index >= 64 or total > _CACHE_BYTES:
+                path.unlink()
+    except OSError:
+        pass
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+
+
 async def episode_artwork(db, identity, *, transport=None, resolver=None):
     """Only call after a fresh owned-row lookup, including before cache hits."""
     source = _source(db, identity)
@@ -358,13 +434,21 @@ async def episode_artwork(db, identity, *, transport=None, resolver=None):
                 source.origin,
                 source.key,
                 source.machine,
-                identity,
+                identity.user_id,
+                identity.media_type,
+                identity.media_id,
+                identity.season,
+                identity.episode,
+                identity.show_key,
                 identity.canonical_title,
                 identity.saved_still,
             )
         ).encode()
     ).hexdigest()
     cache_key = (identity.user_id, fingerprint)
+    persisted = await asyncio.to_thread(_disk_read, identity.user_id, fingerprint)
+    if persisted is not None:
+        return persisted, "image/webp"
     now = time.monotonic()
     loop = asyncio.get_running_loop()
     inflight_key = (loop, cache_key)
@@ -376,8 +460,14 @@ async def episode_artwork(db, identity, *, transport=None, resolver=None):
             return cached[1], "image/webp"
         task = _INFLIGHT.get(inflight_key)
         if task is None:
-            _require(len(_INFLIGHT) < 4)
-            task = loop.create_task(_resolve(source, identity, cache_key, transport, resolver))
+            _require(len(_INFLIGHT) < 32)
+            for old_loop in list(_RESOLVE_GATES):
+                if old_loop.is_closed():
+                    _RESOLVE_GATES.pop(old_loop, None)
+            gate = _RESOLVE_GATES.setdefault(loop, asyncio.Semaphore(4))
+            task = loop.create_task(
+                _resolve(source, identity, cache_key, transport, resolver, gate)
+            )
             _INFLIGHT[inflight_key] = task
             task.add_done_callback(lambda done: _forget(inflight_key))
     return await asyncio.shield(task)
@@ -388,17 +478,19 @@ def _forget(key):
         _INFLIGHT.pop(key, None)
 
 
-async def _resolve(source, identity, cache_key, transport, resolver):
+async def _resolve(source, identity, cache_key, transport, resolver, gate):
     payload = None
     try:
         async with asyncio.timeout(10):
-            reader = _Reader(source, transport=transport, resolver=resolver)
-            raw = await (
-                _plex_still(reader, identity)
-                if identity.media_type == "anime"
-                else _tv_still(reader, identity)
-            )
-            payload, kind = await asyncio.to_thread(optimized_artwork, raw, kind="banner")
+            async with gate:
+                reader = _Reader(source, transport=transport, resolver=resolver)
+                raw = await (
+                    _plex_still(reader, identity)
+                    if identity.media_type == "anime"
+                    else _tv_still(reader, identity)
+                )
+                payload, kind = await asyncio.to_thread(optimized_artwork, raw, kind="banner")
+                await asyncio.to_thread(_disk_write, identity.user_id, cache_key[1], payload)
     except (
         EpisodeArtworkUnavailable,
         PosterUnavailable,

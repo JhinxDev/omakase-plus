@@ -6339,16 +6339,7 @@ body.product-body {
   color: var(--stream-text);
 }
 
-.library-lifecycle-tabs a[aria-current="page"]::after {
-  position: absolute;
-  right: 0.7rem;
-  bottom: 0;
-  left: 0.7rem;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--stream-accent);
-  content: "";
-}
+
 
 .filter-bar {
   display: grid;

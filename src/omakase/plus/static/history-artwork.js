@@ -1,15 +1,29 @@
-/* Missing exact episode imagery stays an honest episode placeholder. */
+/* Exact episode stills may fall back to an explicitly labeled series cover. */
 (() => {
   'use strict';
   document.querySelectorAll('[data-history-artwork]').forEach((image) => {
-    const placeholder = image.parentElement.querySelector('[data-history-placeholder]');
+    const frame = image.parentElement;
+    const placeholder = frame.querySelector('[data-history-placeholder]');
+    const label = frame.parentElement.querySelector('[data-history-artwork-label]');
     const unavailable = () => {
+      const fallback = image.dataset.historyFallback || '';
+      if (image.dataset.artworkScope !== 'series' && /^\/plus\/(?:media\/[1-9][0-9]*\/poster|tv\/[1-9][0-9]*\/artwork)$/.test(fallback)) {
+        image.dataset.artworkScope = 'series';
+        image.src = fallback;
+        return;
+      }
       image.hidden = true;
       image.dataset.artworkScope = 'unavailable';
       if (placeholder) placeholder.hidden = false;
+      if (label) label.hidden = true;
     };
-    image.dataset.artworkScope = 'episode';
-    image.addEventListener('error', unavailable, { once: true });
-    if (image.complete && !image.naturalWidth) unavailable();
+    image.addEventListener('load', () => {
+      if (label) label.hidden = image.dataset.artworkScope !== 'series';
+    });
+    image.addEventListener('error', unavailable);
+    if (image.complete) {
+      if (!image.naturalWidth) unavailable();
+      else if (label) label.hidden = image.dataset.artworkScope !== 'series';
+    }
   });
 })();

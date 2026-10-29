@@ -9,11 +9,11 @@ from fastapi.testclient import TestClient
 from omakase.plus import routes
 
 
-def render_notification_header():
+def render_notification_header(display_name="Sample viewer"):
     return routes.templates.get_template("base.html").render(
         active_page="home",
         email="viewer@example.invalid",
-        display_name="Sample viewer",
+        display_name=display_name,
         avatar_available=False,
         movies_enabled=True,
         csrf_token="notification-fixture-csrf",
@@ -70,6 +70,11 @@ def test_authenticated_home_route_renders_bell_with_real_session_and_no_provider
         "INSERT INTO users(id,email,password_hash) VALUES(1,'viewer@example.invalid','fixture')"
     )
     db.commit()
+    from omakase.plus import secrets as account_secrets
+
+    monkeypatch.setenv("OMAKASE_PLUS_MASTER_KEY", "synthetic-header-key")
+    monkeypatch.setattr(account_secrets, "_KEY", None)
+    account_secrets.store_secret(db, 1, "display_name", "Jhinx")
     session = create_session(db, 1)
     app = FastAPI()
     app.include_router(routes.router)
@@ -80,9 +85,27 @@ def test_authenticated_home_route_renders_bell_with_real_session_and_no_provider
             response = client.get("/plus/home")
             assert response.status_code == 200
             assert response.text.count("data-notifications>") == 1
+            assert 'class="account-label" title="Jhinx">Jhinx</span>' in response.text
             assert 'aria-label="Notifications"' in response.text
             assert 'name="csrf-token" content="' in response.text
             assert "/plus/static/notifications.js?v=" in response.text
             assert client.get("/plus/api/notifications").json()["items"] == []
     finally:
         db.close()
+
+
+@pytest.mark.parametrize(
+    "name,label",
+    [
+        ("Jhinx", "Jhinx"),
+        ("  ", "Account"),
+        (None, "Account"),
+        ("<script>alert(1)</script>", "&lt;script&gt;alert(1)&lt;/script&gt;"),
+    ],
+)
+def test_saved_header_name_is_escaped_trimmed_and_falls_back(name, label):
+    html = render_notification_header(name)
+    assert f">{label}</span>" in html
+    assert "<script>alert(1)</script>" not in html
+    if name and name.strip():
+        assert f"for {label}" in html

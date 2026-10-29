@@ -75,9 +75,10 @@
           </section>
         </div>
       <details class="account-menu" data-account-menu>
-        <summary aria-label="Open account and utilities menu">
+        {% set account_name = display_name | default("", true) | trim %}
+        <summary aria-label="Open account and utilities menu{% if account_name %} for {{ account_name }}{% endif %}">
           <span class="account-avatar" aria-hidden="true">{% if avatar_available %}<img src="/plus/account/avatar?v={{ avatar_revision }}" alt="" width="32" height="32">{% else %}{{ email[:1] | upper }}{% endif %}</span>
-          <span class="account-label">Account</span>
+          <span class="account-label" title="{{ account_name or 'Account' }}">{{ account_name or 'Account' }}</span>
         </summary>
         <div class="account-popover">
           {% if display_name %}<strong class="account-email">{{ display_name }}</strong>{% endif %}

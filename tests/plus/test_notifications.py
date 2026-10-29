@@ -549,7 +549,7 @@ def test_notification_posters_use_owned_local_routes_all_domains_and_cleanup(db)
     _notification_poster_movie(db, "https://image.tmdb.org/t/p/w500/foreign.jpg", number=98, user=2)
     _notification_poster_tv(db, "https://image.tmdb.org/t/p/w500/foreign-tv.jpg", number=97, user=2)
     items = module().notification_feed(db, user_id=1)["items"]
-    assert len(items) == 4
+    assert len(items) == 3
     assert {item["artwork_url"] for item in items} == {
         "/plus/media/12/poster",
         "/plus/movies/tt0000034/artwork",
@@ -670,3 +670,85 @@ def test_notification_movie_tv_artwork_routes_recheck_catalog_account(
     assert called == [own]
     client.cookies.clear()
     assert client.get(owned_url).status_code == 401
+
+
+def test_completed_unrated_managed_title_is_one_item_with_two_actions_and_one_unread(db):
+    monitor, entry = anime(db)
+    asset(db, monitor)
+    feed = module().notification_feed(db, user_id=1)
+    assert feed["count"] == feed["unread_count"] == len(feed["items"]) == 1
+    item = feed["items"][0]
+    assert item["artwork_url"] == "/plus/media/1/poster" and item["rating"] is None
+    assert item["actions"] == [
+        {"kind": "rate", "label": "Rate title", "href": f"/plus/library/{monitor}#watch-tracking"},
+        {
+            "kind": "review_media",
+            "label": "Review media",
+            "href": f"/plus/library/{monitor}/remove",
+        },
+    ]
+    assert module().set_notification_state(db, user_id=1, notification_id=item["id"], action="read")
+    score(db, entry, value=7)
+    updated = module().notification_feed(db, user_id=1)
+    assert updated["count"] == 1 and updated["unread_count"] == 0
+    assert updated["items"][0]["id"] == item["id"] and updated["items"][0]["rating"] == 7
+    assert [a["kind"] for a in updated["items"][0]["actions"]] == ["review_media"]
+
+
+def test_combined_dismissal_survives_rating_or_media_resolution_and_is_owner_scoped(db):
+    monitor, entry = anime(db)
+    owned = asset(db, monitor)
+    other, _ = anime(db, number=2, user=2)
+    asset(db, other, user=2, number=2)
+    svc = module()
+    item = svc.notification_feed(db, user_id=1)["items"][0]
+    assert svc.set_notification_state(db, user_id=1, notification_id=item["id"], action="dismiss")
+    assert svc.set_notification_state(db, user_id=1, notification_id=item["id"], action="dismiss")
+    assert svc.notification_feed(db, user_id=1)["count"] == 0
+    assert svc.notification_feed(db, user_id=2)["count"] == 1
+    db.execute("UPDATE media_assets SET status='removed' WHERE id=?", (owned,))
+    db.commit()
+    assert svc.notification_feed(db, user_id=1)["count"] == 0  # Rating reason was dismissed too.
+    db.execute("UPDATE watch_entries SET completed_at='2026-11-01T08:00:00Z' WHERE id=?", (entry,))
+    db.commit()
+    rewatch = svc.notification_feed(db, user_id=1)
+    assert rewatch["count"] == rewatch["unread_count"] == 1
+    assert [a["kind"] for a in rewatch["items"][0]["actions"]] == ["rate"]
+
+
+def test_new_managed_asset_resurfaces_once_without_score_edit_resurfacing(db):
+    monitor, entry = anime(db)
+    asset(db, monitor)
+    svc = module()
+    old = svc.notification_feed(db, user_id=1)["items"][0]
+    assert svc.set_notification_state(db, user_id=1, notification_id=old["id"], action="dismiss")
+    score(db, entry, value=8)
+    assert svc.notification_feed(db, user_id=1)["count"] == 0
+    added = asset(db, monitor, number=2)
+    # Same-second creation must use the new asset revision, not old timestamp aliases.
+    assert added is not None
+    fresh = svc.notification_feed(db, user_id=1)
+    assert fresh["count"] == fresh["unread_count"] == 1 and fresh["items"][0]["id"] != old["id"]
+    assert fresh["items"][0]["rating"] == 8
+    assert [a["kind"] for a in fresh["items"][0]["actions"]] == ["review_media"]
+
+
+def test_prior_media_signal_dismissal_honored_only_for_assets_present_then(db):
+    monitor, _ = anime(db)
+    first = asset(db, monitor)
+    db.execute("UPDATE media_assets SET created_at='2026-01-01T00:00:00Z' WHERE id=?", (first,))
+    db.execute(
+        "INSERT INTO notification_state(user_id,notification_id,read_at,dismissed_at) VALUES(1,?,?,?)",
+        (f"removal_reminder:anime:{monitor}:{STAMP}", STAMP, STAMP),
+    )
+    db.commit()
+    svc = module()
+    assert svc.notification_feed(db, user_id=1)["count"] == 0
+    newer = asset(db, monitor, number=2)
+    db.execute("UPDATE media_assets SET created_at='2026-11-01T00:00:00Z' WHERE id=?", (newer,))
+    db.commit()
+    assert (
+        svc.notification_feed(db, user_id=1)["count"]
+        == svc.notification_feed(db, user_id=1)["unread_count"]
+        == 1
+    )

@@ -45,3 +45,7 @@
 .notification-close svg { width: 20px; height: 20px; }
 
 .notification-item-actions .notification-dismiss { width: 44px; padding: 0; border-color: transparent; margin-left: auto; font-size: 24px; font-weight: 400; color: #a7abb2; }
+
+/* Bound saved names while preserving the full escaped summary accessible name. */
+.header-utilities .account-label { max-width: 132px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.header-utilities .account-avatar { flex: 0 0 32px; }

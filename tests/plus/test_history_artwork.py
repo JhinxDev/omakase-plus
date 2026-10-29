@@ -30,8 +30,9 @@ def png(color="red"):
 
 
 @pytest.fixture
-def db(monkeypatch):
+def db(monkeypatch, tmp_path):
     monkeypatch.setenv("OMAKASE_PLUS_PRIVATE", "true")
+    monkeypatch.setattr(art, "poster_cache_root", lambda: tmp_path / "posters")
     conn = sqlite3.connect(":memory:", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     run_migrations(conn)
@@ -56,7 +57,7 @@ def db(monkeypatch):
     )
     conn.execute(
         "INSERT INTO plex_library_items(snapshot_id,rating_key,section,media_type,title,season_number,episode_total,watched_through,canonical_title,managed_paths_json,path_identity_complete) VALUES(1,'100','Anime','show','Display name',1,2,0,'Exact Anime',?,1)",
-        (json.dumps([{"canonical_title": "Exact Anime", "season_number": 1}]),),
+        (json.dumps([["Exact Anime", 1]]),),
     )
     conn.execute(
         "INSERT INTO tv_catalog VALUES(1,42,?,?)", (json.dumps({"title": "Exact TV"}), STAMP)
@@ -466,7 +467,7 @@ def test_disabled_private_mode_hides_image_router_before_account_lookup(db, monk
         )
 
 
-def test_history_without_exact_episode_identity_uses_placeholder_not_series_art(db):
+def test_history_without_exact_episode_identity_offers_labeled_series_art(db):
     from omakase.plus.viewing_history import viewing_history
 
     db.execute("UPDATE watch_entries SET monitor_id=NULL WHERE id=1")
@@ -479,7 +480,8 @@ def test_history_without_exact_episode_identity_uses_placeholder_not_series_art(
     completed = next(card for card in cards if card["id"] == "tv-42-completed")
     assert all(card["artwork_url"] is None and card["episode_artwork"] for card in anime)
     assert completed["artwork_url"] is None and completed["episode_artwork"]
-    assert not any("series_artwork_url" in card for card in cards)
+    assert all(card["series_artwork_url"] == "/plus/media/21/poster" for card in anime)
+    assert completed["series_artwork_url"] == "/plus/tv/42/artwork"
 
 
 @pytest.mark.parametrize(
@@ -500,3 +502,127 @@ def test_root_wired_episode_assets_are_served_from_actual_static_allowlist(monke
         assert (
             response.content == (Path(main_routes.__file__).parent / "static" / name).read_bytes()
         )
+
+
+def test_actual_snapshot_writer_stored_pairs_resolve_owned_episode(db):
+    from omakase.plus.watch.plex_sync import store_plex_library_snapshot
+
+    payload = {
+        "schema_version": "plex-library-snapshot-v1",
+        "generated_at": "2026-10-28T11:00:00Z",
+        "items": [
+            {
+                "rating_key": "100",
+                "section": "Anime",
+                "media_type": "show",
+                "title": "Display name",
+                "season_number": 1,
+                "episode_total": 2,
+                "watched_through": 0,
+                "last_viewed_at": None,
+                "canonical_title": "Exact Anime",
+                "managed_paths": [{"canonical_title": "Exact Anime", "season_number": 1}],
+                "path_identity_complete": True,
+            }
+        ],
+    }
+    store_plex_library_snapshot(db, payload, received_at="2026-10-28T11:00:00Z")
+    stored = db.execute(
+        "SELECT managed_paths_json FROM plex_library_items ORDER BY id DESC LIMIT 1"
+    ).fetchone()[0]
+    assert json.loads(stored) == [["Exact Anime", 1]]
+    assert art.anime_identity(db, 1, 1).show_key == "100"
+    with pytest.raises(art.EpisodeArtworkUnavailable):
+        art.anime_identity(db, 2, 1)
+
+
+def test_episode_disk_cache_survives_memory_reset_but_checks_current_binding(db, monkeypatch):
+    monkeypatch.setattr(art, "_source", source)
+    calls = []
+    identity = art.anime_identity(db, 1, 1)
+    first = asyncio.run(art.episode_artwork(db, identity, transport=plex_transport(calls)))
+    assert len(calls) == 4
+    art._CACHE.clear()
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("Persistent cache must not refetch the source")
+
+    monkeypatch.setattr(art, "_plex_still", forbidden)
+    assert asyncio.run(art.episode_artwork(db, art.anime_identity(db, 1, 1))) == first
+    files = list((art.poster_cache_root() / "history-stills" / "1").glob("*.webp"))
+    assert len(files) == 1 and "fixture-secret" not in files[0].name
+    db.execute("DELETE FROM watch_events WHERE id=1")
+    with pytest.raises(art.EpisodeArtworkUnavailable):
+        art.anime_identity(db, 1, 1)
+
+
+def test_noncanonical_reference_shapes_do_not_grant_episode_images(db):
+    db.execute(
+        "UPDATE plex_library_items SET managed_paths_json=?",
+        (json.dumps([{"canonical_title": "Exact Anime", "season_number": 1}]),),
+    )
+    with pytest.raises(art.EpisodeArtworkUnavailable):
+        art.anime_identity(db, 1, 1)
+
+
+def test_persisted_still_is_not_reused_after_connection_machine_changes(db, monkeypatch):
+    monkeypatch.setattr(art, "_source", source)
+    identity = art.anime_identity(db, 1, 1)
+    asyncio.run(art.episode_artwork(db, identity, transport=plex_transport([])))
+    art._CACHE.clear()
+    monkeypatch.setattr(
+        art,
+        "_source",
+        lambda db, identity: art._Source(
+            "https://plex.fixture", "fixture-secret", "plex", "different-machine"
+        ),
+    )
+    calls = []
+    with pytest.raises(art.EpisodeArtworkUnavailable):
+        asyncio.run(art.episode_artwork(db, identity, transport=plex_transport(calls)))
+    assert len(calls) == 1 and calls[0].url.path == "/identity"
+
+
+def test_persistent_cache_rejects_corrupt_webp_and_contains_no_source_locator(db, monkeypatch):
+    monkeypatch.setattr(art, "_source", source)
+    identity = art.anime_identity(db, 1, 1)
+    asyncio.run(art.episode_artwork(db, identity, transport=plex_transport([])))
+    file = next((art.poster_cache_root() / "history-stills" / "1").glob("*.webp"))
+    assert b"fixture-secret" not in file.read_bytes() and b"plex.fixture" not in file.read_bytes()
+    file.write_bytes(b"RIFF0000WEBPnot-a-real-image")
+    art._CACHE.clear()
+    calls = []
+    result = asyncio.run(art.episode_artwork(db, identity, transport=plex_transport(calls)))
+    assert result[1] == "image/webp" and len(calls) == 4
+
+
+def test_distinct_history_cards_queue_with_at_most_four_active_resolutions(db, monkeypatch):
+    monkeypatch.setattr(art, "_source", source)
+    for number in range(3, 9):
+        db.execute(
+            "INSERT INTO watch_events(id,watch_entry_id,user_id,source,event_key,kind,episode,confidence,disposition,observed_at) VALUES(?,1,1,'manual',?,'progress',?,'manual','accepted',?)",
+            (number, "manual-concurrency-" + str(number), number, STAMP),
+        )
+    active = 0
+    peak = 0
+    resolved = []
+
+    async def exact_still(reader, identity):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.02)
+        resolved.append(identity.episode)
+        active -= 1
+        return png()
+
+    monkeypatch.setattr(art, "_plex_still", exact_still)
+
+    async def resolve_all():
+        return await asyncio.gather(
+            *(art.episode_artwork(db, art.anime_identity(db, 1, number)) for number in range(1, 9))
+        )
+
+    results = asyncio.run(resolve_all())
+    assert len(results) == 8 and all(kind == "image/webp" for _, kind in results)
+    assert sorted(resolved) == list(range(1, 9)) and peak == 4

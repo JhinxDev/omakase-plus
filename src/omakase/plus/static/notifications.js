@@ -24,9 +24,9 @@
     if (text !== undefined) node.textContent = text;
     return node;
   }
-  function internalHref(value, item) {
+  function internalHref(value, item, actionKind) {
     if (typeof value !== 'string') return null;
-    const patterns = item.kind === 'removal_reminder'
+    const patterns = (actionKind ? actionKind === 'review_media' && item.media_type === 'anime' : item.kind === 'removal_reminder')
       ? [/^\/plus\/library\/[1-9]\d*\/remove$/]
       : [/^\/plus\/library\/[1-9]\d*#watch-tracking$/, /^\/plus\/movies\/tt\d+#movie-rating$/, /^\/plus\/tv\/[1-9]\d*#tv-history$/];
     return patterns.some(pattern => pattern.test(value)) ? value : null;
@@ -147,14 +147,21 @@
     const rating = typeof item.rating === 'number' && Number.isFinite(item.rating) && item.rating >= 0 && item.rating <= 10 ? `Your rating ${item.rating}/10` : 'Not rated yet';
     copy.append(element('p', 'notification-rating', rating));
     const actions = element('div', 'notification-item-actions');
-    const href = internalHref(item.href, item);
-    if (href) {
-      const link = element('a', 'notification-primary', item.kind === 'completed_unrated' ? 'Rate title' : 'Review media');
+    const candidates = Array.isArray(item.actions) ? item.actions.slice(0, 2) : [{ kind: item.kind === 'removal_reminder' ? 'review_media' : 'rate', href: item.href }];
+    const destinations = new Set();
+    for (const action of candidates) {
+      if (!action || !['rate', 'review_media'].includes(action.kind)) continue;
+      if (action.kind === 'review_media' && item.media_type !== 'anime') continue;
+      const href = internalHref(action.href, item, action.kind);
+      if (!href || destinations.has(href)) continue;
+      const link = element('a', destinations.size ? 'notification-secondary' : 'notification-primary', action.kind === 'rate' ? 'Rate title' : 'Review media');
+      destinations.add(href);
       link.href = href;
       link.setAttribute('aria-label', `${link.textContent}: ${item.title}`);
       link.addEventListener('click', () => acknowledge(item));
       actions.append(link);
-    } else copy.append(element('p', 'notification-message', 'Open this title from your library to continue.'));
+    }
+    if (!destinations.size) copy.append(element('p', 'notification-message', 'Open this title from your library to continue.'));
     const dismiss = element('button', 'notification-dismiss', '\u00d7');
     dismiss.type = 'button';
     dismiss.title = 'Dismiss reminder';
