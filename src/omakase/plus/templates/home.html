@@ -10,7 +10,7 @@
 <a class="button button-secondary" href="/plus/library">Browse library</a>
 {% endblock %}
 {% block content %}
-{% set featured_choices = (continue_watching | default([]) | selectattr('state', 'equalto', 'ready') | list) + (ready_to_watch | default([])) %}
+{% set featured_choices = (continue_watching | default([])) + (ready_to_watch | default([])) %}
 {% set featured = featured_choices | first %}
 <section class="cinema-hero" aria-labelledby="featured-title">
   {% if featured %}

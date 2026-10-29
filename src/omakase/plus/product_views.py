@@ -14,6 +14,7 @@ from omakase.plus.catalog_config import configured_catalogs
 from omakase.plus.health import reason_label
 from omakase.plus.manifest import validate_curator_receipt
 from omakase.plus.media_store import covered_episodes, verified_asset_coverage
+from omakase.plus.viewing_history import anime_viewing_recency
 
 _ANILIST_ID_RE = re.compile(r"https://anilist\.co/anime/(\d+)/")
 _LANES = frozenset({"best_match", "new_seasons", "hidden_gems", "plan_list"})
@@ -163,7 +164,14 @@ def home_view(db, *, user_id: int, library_scope=None) -> dict[str, Any]:
     titles = library_titles(db, user_id=user_id, library_scope=library_scope)
     states = {state: sum(item["state"] == state for item in titles) for state in _states()}
     attention = [item for item in titles if item["state"] == "attention"][:5]
-    continue_watching = [item for item in titles if item["lifecycle"] == "in_progress"][:10]
+    in_progress = [item for item in titles if item["lifecycle"] == "in_progress"]
+    recency = anime_viewing_recency(db, user_id) if in_progress else {}
+    # Stable ties retain the existing library order; rank before the shelf cap.
+    continue_watching = sorted(
+        in_progress,
+        key=lambda item: recency.get((item["anilist_id"], int(item["season_number"] or 0)), ""),
+        reverse=True,
+    )[:10]
     confirmation_needed = [item for item in titles if item["has_pending_confirmation"]][:5]
     ready = [item for item in titles if item["lifecycle"] == "ready_to_start"][:10]
     new_episodes = [

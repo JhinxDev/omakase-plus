@@ -63,3 +63,19 @@ Movie history uses the actual film title as its heading. Episodic history keeps
 readable normal-case show identity above the episode/event label. Core history
 identity, source and date remain readable on phones; exact timestamps, watched
 progress, personal ratings and artwork fallback labels retain their meanings.
+
+## Continue watching and featured title
+
+Order all eligible in-progress titles by this viewer's accepted viewing activity
+before applying the ten-card shelf limit. Normalize timestamp offsets. Ignore
+rating-only edits, operational updates, rejected/inferred observations and bulk
+imports. A Plex season snapshot uses its validated season last-viewed timestamp
+for title recency; import time is not new viewing. This must not turn an aggregate
+season timestamp into an exact episode watch date in History. Unknown recency
+follows dated titles with the existing stable library order as a tie fallback.
+
+When Continue watching has items, the cinematic stage uses that same first item.
+A partially available title retains its honest availability and details action;
+an older fully ready title must not displace it. Use the ready-to-start fallback
+only when no in-progress title exists. Current viewer and selected-library access
+boundaries continue to govern the eligible cards.

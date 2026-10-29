@@ -10,6 +10,16 @@ from omakase.plus.households import feature_enabled
 from omakase.plus.movies_store import require_user
 
 _MAX_RECENT = 5000
+_ANIME_VIEWING_EVENTS = (
+    "e.disposition='accepted' AND e.kind IN ('progress','completed') "
+    "AND e.source IN ('plex','apple_tv','anilist','manual') "
+    "AND e.confidence IN ('exact','manual') AND e.reason!='completion_score_updated' "
+    "AND lower(e.event_key) NOT LIKE '%bulk%' AND lower(e.event_key) NOT LIKE '%migration%'"
+)
+_PLEX_SEASON_ACTIVITY = re.compile(
+    r"plex:snapshot:[1-9][0-9]{0,31}:s(?P<season>[0-9]+):e(?P<episode>[0-9]+):"
+    r"(?P<stamp>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)"
+)
 
 
 def _stamp(value):
@@ -36,26 +46,68 @@ def _title(value, maximum=300):
     return re.sub(r"<[^>]*>", "", value).strip() or None
 
 
-def _anime(row):
+def _anime_event_times(row):
     recorded = _stamp(row["observed_at"])
-    if recorded is None:
-        return None
     try:
         payload = json.loads(row["payload_json"] or "{}")
     except (ValueError, TypeError, RecursionError):
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
-    episode = row["episode"] if row["episode"] and row["episode"] > 0 else None
-    episode_title = _title(payload.get("episode_title") or payload.get("episode_name"), 300)
-    if payload.get("episode") is not None and payload["episode"] != episode:
-        episode_title = None
     watched = None
     if row["source"] in {"plex", "apple_tv"}:
         # Season snapshots combine highest watched episode with latest activity
         # across the season. Their timestamp cannot date that specific episode.
         if not (row["source"] == "plex" and row["event_key"].startswith("plex:snapshot:")):
             watched = _stamp(payload.get("watched_at")) or recorded
+    return payload, recorded, watched
+
+
+def anime_viewing_recency(db, user_id: int) -> dict[tuple[int, int], str]:
+    """Title/season activity for Home, not a fabricated episode watch date.
+
+    A Plex snapshot's observation time is an import time. Its validated season
+    last-viewed value can rank the title, while History keeps its honest label.
+    Read only this viewer's accepted events; callers retain library visibility.
+    """
+    require_user(db, user_id)
+    rows = db.execute(
+        "SELECT e.source,e.event_key,e.episode,e.observed_at,e.payload_json,"
+        "w.anilist_id,w.season_number FROM watch_events e JOIN watch_entries w "
+        "ON w.id=e.watch_entry_id AND w.user_id=e.user_id "
+        f"WHERE e.user_id=? AND w.user_id=? AND w.status='watching' AND {_ANIME_VIEWING_EVENTS}",
+        (user_id, user_id),
+    )
+    recency = {}
+    for row in rows:
+        _, recorded, watched = _anime_event_times(row)
+        if recorded is None:
+            continue
+        activity = watched or recorded
+        if row["source"] == "plex" and row["event_key"].startswith("plex:snapshot:"):
+            snapshot = _PLEX_SEASON_ACTIVITY.fullmatch(row["event_key"])
+            if (
+                snapshot is None
+                or int(snapshot["season"]) != row["season_number"]
+                or int(snapshot["episode"]) != row["episode"]
+            ):
+                continue
+            activity = _stamp(snapshot["stamp"])
+            if activity is None:
+                continue
+        identity = (int(row["anilist_id"]), int(row["season_number"]))
+        recency[identity] = max(recency.get(identity, ""), activity)
+    return recency
+
+
+def _anime(row):
+    payload, recorded, watched = _anime_event_times(row)
+    if recorded is None:
+        return None
+    episode = row["episode"] if row["episode"] and row["episode"] > 0 else None
+    episode_title = _title(payload.get("episode_title") or payload.get("episode_name"), 300)
+    if payload.get("episode") is not None and payload["episode"] != episode:
+        episode_title = None
     source = {"plex": "Plex", "apple_tv": "Apple TV", "anilist": "AniList", "manual": "Manual"}[
         row["source"]
     ]
@@ -258,10 +310,7 @@ def viewing_history(db, user_id: int, limit: int = 24, page: int = 1) -> dict:
         "WITH ranked AS (SELECT e.*,ROW_NUMBER() OVER (PARTITION BY e.watch_entry_id,e.episode "
         "ORDER BY e.observed_at DESC,e.id DESC) AS occurrence FROM watch_events e "
         "JOIN watch_entries w ON w.id=e.watch_entry_id AND w.user_id=e.user_id "
-        "WHERE e.user_id=? AND w.user_id=? AND e.disposition='accepted' "
-        "AND e.kind IN ('progress','completed') AND e.source IN ('plex','apple_tv','anilist','manual') "
-        "AND e.confidence IN ('exact','manual') AND e.reason!='completion_score_updated' "
-        "AND lower(e.event_key) NOT LIKE '%bulk%' AND lower(e.event_key) NOT LIKE '%migration%') "
+        f"WHERE e.user_id=? AND w.user_id=? AND {_ANIME_VIEWING_EVENTS}) "
         f"SELECT r.*,w.id AS personal_entry_id,w.anilist_id,w.season_number,w.episode_total,m.id AS owned_monitor_id,COALESCE(m.title,{retained_title}) AS title,m.expected_episodes,(SELECT score_ten FROM watch_events score WHERE score.user_id=w.user_id AND score.watch_entry_id=w.id AND score.disposition='accepted' AND score.score_ten IS NOT NULL ORDER BY score.id DESC LIMIT 1) AS current_rating "
         "FROM ranked r JOIN watch_entries w ON w.id=r.watch_entry_id AND w.user_id=? "
         "LEFT JOIN media_monitors m ON m.id=w.monitor_id AND m.user_id=w.user_id AND m.anilist_id=w.anilist_id "
