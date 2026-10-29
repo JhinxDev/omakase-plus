@@ -6,8 +6,28 @@ import subprocess
 import threading
 
 
-def bounded_probe_runner(command, *, capture_output=True, text=True, timeout=30, check=False):
-    """Cap stdout while the process runs; never buffer unbounded ffprobe output."""
+def bounded_probe_runner(
+    command,
+    *,
+    capture_output=True,
+    text=True,
+    encoding="utf-8",
+    errors="strict",
+    timeout=30,
+    check=False,
+):
+    """Cap ffprobe stdout and decode using the caller's supported UTF-8 policy."""
+    if (
+        capture_output is not True
+        or text is not True
+        or check is not False
+        or encoding not in ("utf-8", "utf8", "utf_8")
+        or errors not in ("strict", "replace")
+        or isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not 0 < timeout <= 120
+    ):
+        raise ValueError("Unsupported bounded probe decoding or execution options.")
     output = bytearray()
     exceeded = threading.Event()
     process = subprocess.Popen(
@@ -38,7 +58,9 @@ def bounded_probe_runner(command, *, capture_output=True, text=True, timeout=30,
         process.stdout.close()
     if exceeded.is_set() or reader.is_alive():
         raise ValueError("Exact-file probe output exceeded its size or read bound.")
-    return subprocess.CompletedProcess(command, process.returncode, output.decode("utf-8"), "")
+    return subprocess.CompletedProcess(
+        command, process.returncode, output.decode("utf-8", errors=errors), ""
+    )
 
 
 def local_only_probe_runner(command, **kwargs):
