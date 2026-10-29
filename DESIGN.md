@@ -79,3 +79,21 @@ A partially available title retains its honest availability and details action;
 an older fully ready title must not displace it. Use the ready-to-start fallback
 only when no in-progress title exists. Current viewer and selected-library access
 boundaries continue to govern the eligible cards.
+
+## Settings navigation affordances
+
+Account, Your experience and Your services are static group headings, visually
+separated from destinations. Every desktop destination is a consistent bordered
+row with a subtle surface and a decorative forward cue. Inactive links remain
+clearly actionable; hover and keyboard focus are visible. The current destination
+keeps a stronger iris surface and inset marker with exactly one aria-current.
+Named semantic groups do not add headings to the tab order or change routes.
+
+Phones keep the compact horizontal settings rail and hide group headings. Links
+become clear bordered chips with44px targets; keyboard focus can scroll a chip
+into view. Decorative arrows are hidden here to preserve space. Existing optional
+Household visibility, identity, forms, permissions and settings behavior stay intact.
+While a phone settings link has keyboard focus, proximity snapping yields to the
+browser's focus scrolling. The overflowing rail also reveals a focused link with
+native scrollIntoView using nearest alignment, keeping its target and outline
+reachable without changing media-shelf controls.

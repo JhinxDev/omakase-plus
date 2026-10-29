@@ -1,7 +1,34 @@
+{% macro settings_link(label, href, current=false) -%}
+<a href="{{ href }}" {% if current %}aria-current="page"{% endif %}>
+  <span class="settings-nav-label">{{ label }}</span>
+  <svg class="settings-nav-arrow" aria-hidden="true" focusable="false" viewBox="0 0 16 16"><path d="m6 3 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+</a>
+{%- endmacro %}
+
 {% macro settings_nav(active='preferences', household_enabled=false) -%}
 <nav class="settings-navigation" aria-label="Settings navigation">
-  <section><h2>Account</h2><a href="/plus/settings/profile" {% if active == 'profile' %}aria-current="page"{% endif %}>Your profile</a><a href="/plus/auth/google/account" {% if active == 'signin' %}aria-current="page"{% endif %}>Sign-in methods</a>{% if household_enabled | default(false) %}<a href="/plus/settings/household" {% if active == 'household' %}aria-current="page"{% endif %}>Household</a>{% endif %}</section>
-  <section><h2>Your experience</h2><a href="/plus/settings/preferences" {% if active == 'preferences' %}aria-current="page"{% endif %}>Preferences</a><a href="/plus/settings/tracking" {% if active == 'tracking' %}aria-current="page"{% endif %}>Anime tracking</a><a href="/plus/settings/downloads" {% if active == 'downloads' %}aria-current="page"{% endif %}>Download criteria</a></section>
-  <section><h2>Your services</h2><a href="/plus/settings/connections" {% if active == 'connections' %}aria-current="page"{% endif %}>Connections</a><a href="/plus/settings/storage" {% if active == 'storage' %}aria-current="page"{% endif %}>Storage &amp; downloads</a><a href="/plus/settings/sources" {% if active == 'sources' %}aria-current="page"{% endif %}>Source filters</a><a href="/plus/settings/ai" {% if active == 'ai' %}aria-current="page"{% endif %}>AI provider</a><a href="/plus/health/overview">Service health</a><a href="/plus/setup">Setup guide</a><a href="/plus/settings/agents" {% if active == 'agents' %}aria-current="page"{% endif %}>Agent tools</a><a href="/plus/settings/updates" {% if active == 'updates' %}aria-current="page"{% endif %}>About &amp; updates</a></section>
+  <section aria-labelledby="settings-account-heading">
+    <h2 id="settings-account-heading">Account</h2>
+    {{ settings_link('Your profile', '/plus/settings/profile', active == 'profile') }}
+    {{ settings_link('Sign-in methods', '/plus/auth/google/account', active == 'signin') }}
+    {% if household_enabled | default(false) %}{{ settings_link('Household', '/plus/settings/household', active == 'household') }}{% endif %}
+  </section>
+  <section aria-labelledby="settings-experience-heading">
+    <h2 id="settings-experience-heading">Your experience</h2>
+    {{ settings_link('Preferences', '/plus/settings/preferences', active == 'preferences') }}
+    {{ settings_link('Anime tracking', '/plus/settings/tracking', active == 'tracking') }}
+    {{ settings_link('Download criteria', '/plus/settings/downloads', active == 'downloads') }}
+  </section>
+  <section aria-labelledby="settings-services-heading">
+    <h2 id="settings-services-heading">Your services</h2>
+    {{ settings_link('Connections', '/plus/settings/connections', active == 'connections') }}
+    {{ settings_link('Storage & downloads', '/plus/settings/storage', active == 'storage') }}
+    {{ settings_link('Source filters', '/plus/settings/sources', active == 'sources') }}
+    {{ settings_link('AI provider', '/plus/settings/ai', active == 'ai') }}
+    {{ settings_link('Service health', '/plus/health/overview') }}
+    {{ settings_link('Setup guide', '/plus/setup') }}
+    {{ settings_link('Agent tools', '/plus/settings/agents', active == 'agents') }}
+    {{ settings_link('About & updates', '/plus/settings/updates', active == 'updates') }}
+  </section>
 </nav>
 {%- endmacro %}

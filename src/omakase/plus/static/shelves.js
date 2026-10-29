@@ -6,6 +6,12 @@
     menu.addEventListener('keydown', event => { if (event.key === 'Escape') { menu.open = false; menu.querySelector('summary').focus(); } });
   });
   document.querySelectorAll('.settings-navigation').forEach(nav => {
+    nav.addEventListener('focusin', event => {
+      const link = event.target.closest('a');
+      if (link && nav.scrollWidth > nav.clientWidth) {
+        link.scrollIntoView({block: 'nearest', inline: 'nearest', behavior: 'auto'});
+      }
+    });
     const active = nav.querySelector('[aria-current="page"]');
     if (active && nav.scrollWidth > nav.clientWidth) {
       nav.scrollLeft = Math.max(0, active.offsetLeft - nav.offsetLeft - (nav.clientWidth - active.clientWidth) / 2);
