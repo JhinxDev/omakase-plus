@@ -421,7 +421,7 @@ def create_showcase(data: Path, catalog, *, library_state="personal"):
                     confidence="manual",
                     event_key=f"sample:{aid}",
                 ),
-                observed_at=STAMP,
+                observed_at=row.get("sample_last_viewed_at") or STAMP,
             )
         if row.get("overview"):
             store_synopsis(db, aid, row["overview"])
@@ -951,6 +951,7 @@ def create_showcase(data: Path, catalog, *, library_state="personal"):
             "/plus/onboarding",
             "/plus/account/avatar",
             "/plus/auth/google/account",
+            "/plus/households/join",
             "/plus/search",
             "/plus/search/suggestions",
             "/plus/discover",

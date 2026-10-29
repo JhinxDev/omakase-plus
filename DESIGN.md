@@ -6,7 +6,7 @@ This source candidate records the maintained interface contract. Technical, crea
 
 Artwork leads; one primary action follows. Geist is served locally. Pale iris carries selection/action, emerald confirmed availability, amber partial/attention, slate unknown, muted red destructive/failure. Every state has meaningful words as well as color. Availability, watching, rating and media verification are independent.
 
-Home uses a 64–72vh cinematic stage, a genuine wide image, long text-protection gradient and bottom fade. Preserve the artwork's midtones. Inadequate landscape images fall back to a crisp source-sized portrait inside a broad blurred atmosphere from the same title. Blur is an intentional color field, never a claim of sharp source detail. Never leave one small portrait floating on flat black. No automatic rotation. Phone art leads above a compact text block. Reduced motion is fully composed immediately.
+Home uses a 64–72vh cinematic stage, a genuine wide image, long text-protection gradient and bottom fade. Preserve the artwork's midtones. Inadequate landscape images fall back to a crisp source-sized portrait with its exact intrinsic aspect, one rounded visible edge and a restrained shadow. A smooth dark gradient uses two colors sampled from the displayed artwork; no enlarged blurred duplicate or translucent letterbox matte sits behind it. Unreadable artwork keeps a neutral dark fallback. No automatic rotation. Phone art leads above a compact text block. Reduced motion is fully composed immediately.
 
 ## Shared components
 
@@ -97,3 +97,11 @@ While a phone settings link has keyboard focus, proximity snapping yields to the
 browser's focus scrolling. The overflowing rail also reveals a focused link with
 native scrollIntoView using nearest alignment, keeping its target and outline
 reachable without changing media-shelf controls.
+
+## Text and separate actions
+
+Direct explanatory paragraphs in editorial, utility and empty-state panels have
+20px of separation before a following action group, standalone button or form.
+This is a shared block boundary, including Household's create/join choices and
+Storage's management link. Natural wrapping and existing 44/48px targets remain.
+Inline controls and paragraphs elsewhere keep their existing compact rhythm.

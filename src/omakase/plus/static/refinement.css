@@ -18,6 +18,9 @@
 
 #connection-riven .service-logo{background:#f0f1f5;padding:5px;box-sizing:border-box}
 
+/* Explanatory blocks need their own space before a separate action group. */
+.product-body :is(.editorial-panel,.utility-panel,.product-empty,.quiet-state)>p+:is(.button,form,.household-actions,.connection-actions,.settings-submit,.button-row){margin-block-start:1.25rem}
+
 /* Keep the artwork immersive inside a soft frame, with room for the first shelf. */
 .page-home .cinema-hero{margin:1rem 0 0;border-radius:24px;min-height:clamp(420px,39vw,620px)}
 .page-home .cinema-hero-copy{padding:3rem 3.25rem 4rem}

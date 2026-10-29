@@ -14,7 +14,7 @@
 {% set featured = featured_choices | first %}
 <section class="cinema-hero" aria-labelledby="featured-title">
   {% if featured %}
-  <div class="cinema-hero-atmosphere" aria-hidden="true"><img src="/plus/media/{{ featured.anilist_id }}/poster" alt="" fetchpriority="low"></div>
+  <div class="cinema-hero-atmosphere" aria-hidden="true"></div>
   <picture class="cinema-hero-art" data-hero-quality data-hero-poster="/plus/media/{{ featured.anilist_id }}/poster"><img src="/plus/media/{{ featured.anilist_id }}/banner?display=hero-v3" alt="" fetchpriority="high"></picture>
   {% endif %}
   <div class="cinema-hero-copy">
