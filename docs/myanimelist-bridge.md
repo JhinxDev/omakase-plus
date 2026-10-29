@@ -1,9 +1,10 @@
 # MyAnimeList connection and personal AniList reconciliation
 
-**Next batch · pending release qualification.** These source instructions are not
-part of the deployed `.3` release yet. Feature flags remain off until the exact
-candidate and combined migration/rollback checks pass. No owner/provider account
-has been connected by these source changes.
+**Released optional capability.** Personal tracker reconciliation is included in
+the release. New-install feature flags default off; each installation needs
+operator qualification before activation. Real MyAnimeList application credentials,
+provider readiness and each user's own connected identities are required. No real
+MyAnimeList write or automatic account connection is established by this guide.
 
 ## Start with a preview
 

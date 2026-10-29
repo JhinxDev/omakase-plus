@@ -1,9 +1,10 @@
 # Shared libraries, personal records
 
-**Next batch · pending release qualification.** This capability is not in the
-currently deployed `.3` release. `OMAKASE_PLUS_HOUSEHOLDS_ENABLED` defaults off and
-requires private mode. Keep it off until the exact app/worker/curator release and
-combined migrations are qualified. App-only use remains available without it.
+**Released optional capability.** `OMAKASE_PLUS_HOUSEHOLDS_ENABLED` defaults off
+on new installations and requires private mode. Each installation needs operator
+qualification of its app/worker/curator release and combined migrations before
+activation. Existing users are not silently moved into a shared library. App-only
+use remains available without a household.
 
 ## A household is a library, not a shared login
 

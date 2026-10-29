@@ -26,7 +26,7 @@ Technical pass, rendered creative acceptance, production identity and physical-d
 
 The Account utility group includes a 44px notification bell. It uses one deferred, deadline-bound same-origin local-DB read per page; there is no polling or provider lookup. Unknown/loading/error never claims zero unread. The compact nonmodal panel uses the existing Geist/midnight/iris system, 14px corners, 14–16px body/title text, current saved rating, and neutral media-type art placeholders when no cached artwork is provided.
 
-Primary links open the existing rating or guarded removal-review flow. Each item has one primary Rate/Review media link and a compact 44px Dismiss cross. Primary-link activation marks read through a nonblocking CSRF-protected keepalive POST; dismissal is a separate account-scoped action. Both use the returned feed without another GET. The panel supports Close, Escape, outside dismissal and focus return, and closes when keyboard focus moves outside. Phones use viewport-bounded height, an independently scrolling list and safe-area gutters. Readiness and saved progress remain distinct; a reminder performs no import, provider call, acquisition or removal.
+Primary links open the existing rating or guarded removal-review flow. Each completed title has one card. When both reminders apply, it offers separate Rate title and Review media actions, with one unread/dismiss state and a compact 44px Dismiss cross. Saving a rating keeps the media-review action; a genuinely new completion or managed asset can create a fresh reminder. Primary-link activation marks read through a nonblocking CSRF-protected keepalive POST; dismissal is a separate account-scoped action. Both use the returned feed without another GET. The panel supports Close, Escape, outside dismissal and focus return, and closes when keyboard focus moves outside. Phones use viewport-bounded height, an independently scrolling list and safe-area gutters. Readiness and saved progress remain distinct; a reminder performs no import, provider call, acquisition or removal.
 
 ### Notification artwork
 
@@ -45,6 +45,6 @@ No old secret is returned to the browser.
 Health warnings name the saved failure evidence and link to the relevant settings.
 Host-managed metadata sources explain the actual operator configuration boundary.
 
-Viewing history uses authenticated exact-episode stills. Missing identity or image
-proof produces an episode placeholder. Series posters are not presented as episode
-stills; movies and original history timestamps keep their established behavior.
+Viewing history first uses an authenticated exact-episode still. When exact imagery is unavailable, a loaded series cover is visibly labeled Series artwork; if neither image is available, an episode-specific accessible placeholder remains. A series cover never claims to be an episode still. Series-level manual completion says Series completed, and a progress-only event says Progress updated. Movies and original history timestamps keep their established behavior.
+
+The header shows the saved display name beside the avatar, with Account as the empty-name fallback. Long names truncate visually while the full escaped name remains accessible. Anime collection tabs use one active underline.

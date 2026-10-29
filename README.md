@@ -87,12 +87,13 @@ Onboarding saves preferences and guidance; it does not install services or chang
 host mounts. Optional qBittorrent acquisition remains scoped to its VPN profile.
 Use only media and services you are authorized to access.
 
-## Next batch: shared libraries, languages and personal tracker sync
+## Optional shared libraries, languages and personal tracker sync
 
-**Pending release qualification.** These source guides describe the next batch;
-the deployed `.3` release does not include these features yet. New feature flags
-default off. Activation requires combined migrations 033–036 and rollback qualification.
-A guide, saved preference or passing unit test is not deployment proof.
+**Released optional capabilities.** Shared libraries, language settings and personal
+tracker reconciliation are included in the release. New-install feature flags
+default off. Each installation needs operator qualification of combined migrations
+033–036, rollback and its configured adapters before opt-in activation. A saved
+preference or passing unit test is not proof of working provider connections.
 
 | Optional feature | What stays separate |
 | --- | --- |

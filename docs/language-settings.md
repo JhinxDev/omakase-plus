@@ -1,9 +1,10 @@
 # Audio and subtitle settings
 
-**Next batch · pending release qualification.** These source instructions are not
-part of the deployed `.3` release yet. Feature flags remain off until the exact
-candidate and combined migration/rollback checks pass. No owner/provider account
-has been connected by these source changes.
+**Released optional capability.** Language settings are included in the release.
+New-install feature flags default off; each installation needs operator
+qualification of combined migrations, rollback and its configured media adapters
+before activation. Saving a preference does not connect a provider account or
+establish verified tracks.
 
 ## Choose, preview, save
 
