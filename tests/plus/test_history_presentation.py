@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -101,6 +102,15 @@ def test_actual_history_template_distinguishes_series_completion_and_cover_fallb
     assert 'data-history-fallback="/plus/media/21/poster"' in pages["history"]
     assert "Series artwork" in pages["history"]
     assert pages["library"].count('aria-label="Library views"') == 1
+
+
+def test_movie_identity_is_a_heading_and_episode_event_semantics_are_retained():
+    history = fixtures()["history"]
+    assert re.search(r"<h3\b[^>]*>The Thing</h3>", history)
+    assert not re.search(r"<h3\b[^>]*>Movie</h3>", history)
+    assert "E10" in history and "S1 · E2" in history and "Series completed" in history
+    assert 'datetime="2026-10-28T10:00:00Z"' in history
+    assert "Your rating" in history and "8/10" in history
 
 
 if __name__ == "__main__":

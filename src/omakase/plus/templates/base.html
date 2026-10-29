@@ -1,5 +1,7 @@
 <!DOCTYPE html>
 {% from "_icons.html" import icon %}
+{% set library_choices = household_navigation.libraries if household_navigation and household_navigation.available else [] %}
+{% set current_library = library_choices | selectattr('id', 'equalto', household_navigation.selected_id) | first | default(none) if library_choices else none %}
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -25,6 +27,7 @@
   <link rel="stylesheet" href="/plus/static/notifications.css?v={{ asset_version }}">
   <script src="/plus/static/notifications.js?v={{ asset_version }}" defer></script>
   <link rel="stylesheet" href="/plus/static/history-artwork.css?v={{ asset_version }}">
+  {% if households_enabled %}<link rel="stylesheet" href="/plus/static/household.css?v={{ asset_version }}">{% endif %}
   <script src="/plus/static/history-artwork.js?v={{ asset_version }}" defer></script>
   <script src="/plus/static/hero-quality.js?v={{ asset_version }}" defer></script>
   <script src="/plus/static/shelves.js?v={{ asset_version }}" defer></script>
@@ -83,6 +86,7 @@
         <div class="account-popover">
           {% if display_name %}<strong class="account-email">{{ display_name }}</strong>{% endif %}
           <span class="account-email" title="{{ email }}">{{ email }}</span>
+          {% if households_enabled %}<a class="account-library" href="/plus/settings/household">{% if current_library %}{{ 'Shared library: ' if current_library.kind == 'household' else '' }}{{ current_library.name }}{% else %}Library settings{% endif %}</a>{% endif %}
           <a href="/plus/settings" {% if active_page == 'settings' %}aria-current="page"{% endif %}>Settings</a>
           <form method="post" action="/plus/logout">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -107,10 +111,7 @@
 
     <div class="product-workspace">
       {% if households_enabled %}
-      <link rel="stylesheet" href="/plus/static/household.css?v={{ asset_version }}">
-      <section class="library-scope-bar" aria-label="Library scope">
-      {% if household_navigation and household_navigation.available %}<form method="post" action="/plus/settings/household/select"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ request.url.path }}"><label for="active-library-scope">Library</label><select id="active-library-scope" name="library_id">{% for library in household_navigation.libraries %}<option value="{{ library.id }}" {% if library.id == household_navigation.selected_id %}selected{% endif %}>{{ library.name }}</option>{% endfor %}</select><button type="submit" class="button button-secondary">Switch library</button></form>{% else %}<p>Library selection is temporarily unavailable.</p>{% endif %}<a href="/plus/settings/household">Household settings</a>
-      </section>
+        {% include "_library_context.html" %}
       {% endif %}
 
       {% block masthead %}

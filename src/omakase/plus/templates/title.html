@@ -140,8 +140,8 @@
           {% for score in range(10, 0, -1) %}<option value="{{ score }}">{{ score }} / 10</option>{% endfor %}
         </select>
       </label>
-      <button class="button button-primary" type="submit" data-busy-label="Saving…">{{ 'Update AniList score' if title.watch_status == 'completed' else 'Mark series complete' }}</button>
-      <p class="episode-help">Completion and your optional score sync to AniList automatically. {% if remove_completed_from_plex and title.watch_status != 'completed' %}This season or movie will be removed from Plex unless you choose to keep it. Your history, rating and source media stay saved.{% else %}This does not delete media.{% endif %}</p>
+      <button class="button button-primary" type="submit" data-busy-label="Saving…">{{ 'Save rating' if title.watch_status == 'completed' else 'Mark series complete' }}</button>
+      <p class="episode-help">Saved in Omakase. If you have connected AniList, Omakase attempts to sync completion and your optional score. {% if remove_completed_from_plex and title.watch_status != 'completed' %}This season or movie will be removed from Plex unless you choose to keep it. Your history, rating and source media stay saved.{% else %}This does not delete media.{% endif %}</p>
     </form>
   </div>
   </details>

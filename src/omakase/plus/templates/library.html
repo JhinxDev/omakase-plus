@@ -8,28 +8,31 @@
 {% block page_actions %}<a class="button button-primary" href="/plus/add">Add anime</a>{% endblock %}
 {% block content %}
 <div class="watchlist-browser">
+<div class="library-views">
 <nav class="library-lifecycle-tabs" aria-label="Library views">
   {% for value, label in [('active','Active watchlist'),('in_progress','Watching'),('ready_to_start','Ready'),('waiting','Pending'),('completed','Completed'),('all','All titles')] %}
   <a href="/plus/library?lifecycle={{ value }}&query={{ query | urlencode }}&state={{ state_filter }}&provider={{ provider_filter }}&content_type={{ content_type_filter }}" {% if lifecycle_filter == value %}aria-current="page"{% endif %}>{{ label }}</a>
   {% endfor %}
 </nav>
+<span class="library-views-cue" aria-hidden="true">›</span>
+</div>
 {% call(slot) collection_search('/plus/library', 'anime', 'Filter your saved collection', 'Search your anime', query, 'query', 'Find a saved title', titles | length) %}
 {% if slot == 'fields' %}
   <input type="hidden" name="lifecycle" value="{{ lifecycle_filter }}">
   <datalist id="library-title-suggestions">
     {% for title in title_suggestions %}<option value="{{ title }}">{% endfor %}
   </datalist>
-  <label class="collection-search-type"><span>Type</span>
+{% else %}
+  <details class="watchlist-filter-details" {% if content_type_filter != 'all' or state_filter != 'all' or provider_filter != 'all' %}open{% endif %}>
+  <summary>More filters{% if content_type_filter != 'all' or state_filter != 'all' or provider_filter != 'all' %} · active{% endif %}</summary>
+  <div class="watchlist-extra-filters">
+  <label><span>Type</span>
     <select name="content_type">
       {% for value, label in [('all','All anime'),('series','Series'),('movies','Movies')] %}
       <option value="{{ value }}" {% if content_type_filter == value %}selected{% endif %}>{{ label }}</option>
       {% endfor %}
     </select>
   </label>
-{% else %}
-  <details class="watchlist-filter-details" {% if state_filter != 'all' or provider_filter != 'all' %}open{% endif %}>
-  <summary>More filters{% if state_filter != 'all' or provider_filter != 'all' %} · active{% endif %}</summary>
-  <div class="watchlist-extra-filters">
   <label><span>Readiness</span>
     <select name="state">
       {% for value, label in [('all','All states'),('ready','Ready'),('acquiring','Finding episodes'),('attention','Needs action'),('planned','Planned')] %}
@@ -52,7 +55,6 @@
 {% endcall %}
 
 <div class="library-count">
-  <span><strong>{{ titles | length }}</strong> {{ 'title' if titles | length == 1 else 'titles' }} in this view</span><i></i>
   {% if plex_library.connected %}
   <span class="plex-library-status">
     {{ plex_library.title_count }} titles in Plex · synced

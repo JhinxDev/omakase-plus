@@ -296,19 +296,18 @@ The default ZIP excludes SQLite, secrets, magnets, tracker URLs, full
 filenames, and watch history. Paths/names found in included logs are replaced by
 short hashes.
 
-On PowerShell-capable Docker hosts, the checked-in upgrade script renders every
-selected profile, verifies a clean exact Git revision, backs up and checks
-SQLite, deploys, waits for health, proves the OCI revision, and writes a
-rollback receipt:
+The legacy PowerShell automatic upgrade and rollback helpers are disabled before
+any operation. They cannot qualify combined-schema consumers, and their former
+database restore could overwrite newer account/history/shared state. Old receipts
+are historical metadata, not permission to replay those operations.
 
-```powershell
-.\scripts\omakase-local-upgrade.ps1 -StackRoot C:\Omakase -Profiles plex
-.\scripts\omakase-local-rollback.ps1 -StackRoot C:\Omakase `
-  -ReceiptPath C:\Omakase\receipts\upgrade-<timestamp>.json
-```
-
-Do not update by changing tags and recreating containers by hand. Preserve the
-receipt, secret file, Omakase database, Plex config, and library independently.
+Use [current-data recovery](current-data-recovery.md) and the
+[release checklist](release-checklist.md) for a manually qualified update of your
+selected Compose setup. Preserve current data and WAL/SHM, the protected master
+key, exact current/prior images and recorded writer states. Save prepared recovery
+metadata before activation; record failure and actual verification separately.
+Do not resume unrestricted old writers against migrated shared data. Deliberate
+disaster restoration requires its own data-loss decision.
 
 ## Primary references
 

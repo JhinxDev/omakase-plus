@@ -5,7 +5,7 @@
 {% block page_title %}About & updates{% endblock %}
 {% block page_intro %}<p class="page-intro">See which Omakase Plus release this host runs and check for a newer release.</p>{% endblock %}
 {% block content %}
-<div class="settings-workspace">{{ settings_nav('updates') }}<div class="settings-content updates-content">
+<div class="settings-workspace">{{ settings_nav('updates', households_enabled) }}<div class="settings-content updates-content">
 <section class="editorial-panel settings-section update-card" aria-labelledby="installed-heading">
 <h2 id="installed-heading">Omakase Plus</h2><div class="update-installed"><span>Installed release</span><strong class="status-chip status-neutral">{{ installed_version }}</strong><span>Stable channel</span></div>
 <p>Updates are installed separately by your host administrator. This page only checks public release information.</p>

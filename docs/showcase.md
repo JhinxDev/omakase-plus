@@ -27,6 +27,13 @@ continuation and external-action forms return 405. The runner always binds to
 temporary database. Forced termination may leave an unused temporary directory;
 no existing directory is reused on the next run.
 
+Household and language pages are enabled in this isolated sample. Use
+`--library-state personal` (the default), `multiple`, `shared` or `unavailable`
+to inspect native personal/household scope or the explicit navigation-failure
+presentation. Shared fixtures start with an empty separate library; personal
+media is never promoted. Switching and all other writes still return 405.
+Tracker worker/writer flags stay off and no provider account is connected.
+
 ## Explicit artwork/metadata contract
 
 The caller supplies a JSON manifest and artwork directory through arguments,
@@ -96,9 +103,9 @@ sample watch history or availability as verified user/provider outcomes.
 
 ## Configuration and networking isolation
 
-The runner refuses inherited `OMAKASE_*` variables. It sets only five owned
+The runner refuses inherited `OMAKASE_*` variables. It sets only seven owned
 application variables for its fresh data directory, random key/invite, private
-mode and loopback host list. Before the first `omakase` import, it suppresses the
+mode, loopback host list and two optional UI gates. Before the first `omakase` import, it suppresses the
 package's custom repository `.env` existence check without reading that file.
 `PYTHON_DOTENV_DISABLED=1` is also set and `dotenv.load_dotenv` is guarded before
 application imports. A process-local `.env` text-read guard remains active. The
@@ -107,9 +114,10 @@ before/after every request; unexpected configuration drift stops the preview.
 Do not remove these guards to reuse a production-configured shell.
 
 The middleware permits only GET/HEAD on the showcase interface, local artwork
-and static routes. Writes return 405, OAuth and other out-of-scope routes return
+and static routes, including same-origin search suggestions and notifications.
+Writes return 405, OAuth and other out-of-scope routes return
 404, and untrusted hosts are rejected. Browser CSP uses same-origin resources
-and `connect-src 'none'`. External DNS and socket connections are denied. Only
+and `connect-src 'self'`. External DNS and socket connections are denied. Only
 loopback socket connects remain for Windows asyncio's wake-up socketpair. The
 runner contains no provider credentials and never calls a remote catalog.
 These scoped safeguards are not a general sandbox for untrusted Python code.

@@ -290,6 +290,19 @@ def test_completed_title_preserves_reopen_and_separate_media_removal():
     assert "requires a separate confirmation" in html
 
 
+@pytest.mark.parametrize("status", ["watching", "completed"])
+def test_title_completion_copy_distinguishes_local_save_from_optional_tracker_sync(status):
+    title = title_context()
+    title["watch_status"] = status
+    html = render("title.html", title=title)
+    assert "Saved in Omakase" in html
+    assert "If you have connected AniList" in html
+    assert "sync to AniList automatically" not in html
+    assert "Update AniList score" not in html
+    if status == "completed":
+        assert "Save rating" in html
+
+
 def test_collection_search_scope_and_form_contract_are_explicit():
     library = render("library.html", **library_context())
     movies = render("movies.html", cards=[], query="test", view="all")
@@ -306,10 +319,80 @@ def test_collection_search_scope_and_form_contract_are_explicit():
         )
         assert search["class"] == "collection-search"
         assert field in search["inputs"]
-        assert f'href="/plus/search?kind={kind}"' in html
+        if kind == "anime":
+            assert 'href="/plus/add"' in html
+        else:
+            assert f'href="/plus/search?kind={kind}"' in html
         assert scope in html
     assert 'name="lifecycle"' in library
     assert 'name="state"' in library and 'name="provider"' in library
+
+
+def test_active_anime_type_remains_visible_inside_expanded_filters():
+    context = library_context()
+    context["content_type_filter"] = "movies"
+    html = render("library.html", **context)
+    parsed = Forms()
+    parsed.feed(html)
+    assert "open" in parsed.details["watchlist-filter-details"]
+    assert html.count('name="content_type"') == 1
+    assert html.index('class="watchlist-filter-details"') < html.index('name="content_type"')
+
+
+def test_personal_library_context_needs_no_global_switch_form():
+    from types import SimpleNamespace
+
+    html = render(
+        "base.html",
+        request=SimpleNamespace(url=SimpleNamespace(path="/plus/home")),
+        households_enabled=True,
+        household_navigation={
+            "available": True,
+            "selected_id": "personal-sample",
+            "selected_kind": "personal",
+            "libraries": [
+                {"id": "personal-sample", "name": "Personal library", "kind": "personal"}
+            ],
+        },
+    )
+    assert 'action="/plus/settings/household/select"' not in html
+    assert 'class="library-context"' not in html
+    assert 'class="account-library"' in html and "Personal library" in html
+
+
+def test_multiple_libraries_keep_explicit_selection_and_escaped_shared_identity():
+    from types import SimpleNamespace
+
+    html = render(
+        "base.html",
+        request=SimpleNamespace(url=SimpleNamespace(path="/plus/library")),
+        households_enabled=True,
+        household_navigation={
+            "available": True,
+            "selected_id": "shared-sample",
+            "selected_kind": "household",
+            "libraries": [
+                {"id": "personal-sample", "name": "Personal library", "kind": "personal"},
+                {"id": "shared-sample", "name": "<Home> & friends", "kind": "household"},
+            ],
+        },
+    )
+    assert "data-library-context" in html and "Shared library" in html
+    assert "&lt;Home&gt; &amp; friends" in html and "<Home>" not in html
+    forms = Forms()
+    forms.feed(html)
+    switch = next(f for f in forms.forms if f.get("action") == "/plus/settings/household/select")
+    assert switch["inputs"]["csrf_token"] == "test-csrf"
+    assert switch["inputs"]["next"] == "/plus/library"
+    assert 'value="shared-sample" selected' in html
+
+
+def test_unavailable_library_context_offers_recovery_without_a_switch():
+    html = render("base.html", households_enabled=True, household_navigation={"available": False})
+    assert 'class="library-context library-context-unavailable"' in html
+    assert 'action="/plus/settings/household/select"' not in html
+    assert "Library selection is temporarily unavailable" in html
+    assert 'href="/plus/settings/household"' in html
 
 
 def test_missing_anime_is_never_ready_zero():

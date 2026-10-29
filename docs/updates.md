@@ -1,6 +1,6 @@
 # About & updates
 
-Omakase Plus has its own product release identifier, `2026.10.27.1`, in
+Omakase Plus has its own date-based product release identifier in
 `src/omakase/plus/update_service.py`. It is independent of the generic Omakase
 CLI/package version (`0.4.0`). Update the product constant with each Plus release.
 
@@ -17,9 +17,11 @@ This feature only displays release information. It never pulls source, executes
 commands, downloads software, changes settings or installs anything. The case
 study at `https://jhinx.dev/work/omakase-plus` is release context, not a hosted
 application. Source publication status and the intended source destination are
-stated in the repository README. Administrators use the exact-revision local
-upgrade and rollback procedure in [Storage and Plex](local-storage-plex-setup.md)
-and the [release checklist](release-checklist.md).
+stated in the repository README. Administrators follow the manually qualified
+[current-data update/recovery procedure](current-data-recovery.md) and
+[release checklist](release-checklist.md). Legacy automatic upgrade/rollback
+helpers are disabled; checking for updates does not authorize restoring an older
+database or enabling unrestricted old writers.
 
 ## Public metadata contract
 
@@ -28,8 +30,8 @@ and the [release checklist](release-checklist.md).
   "schema_version": 1,
   "product": "omakase-plus",
   "channel": "stable",
-  "version": "2026.10.27.1",
-  "released_at": "2026-10-27T23:00:00Z",
+  "version": "2026.10.29.1",
+  "released_at": "2026-10-29T06:00:00Z",
   "notes_url": "https://jhinx.dev/work/omakase-plus",
   "summary": "Private Omakase Plus release information."
 }

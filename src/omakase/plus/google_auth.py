@@ -350,7 +350,7 @@ async def _form_csrf(request: Request) -> None:
     require_csrf(request, tokens[0])
 
 
-def create_google_router(templates, set_session_cookie) -> APIRouter:
+def create_google_router(templates, set_session_cookie, context_factory=None) -> APIRouter:
     """Include once in routes.router; reuse its template globals/session policy."""
     router = APIRouter(prefix="/auth/google")
 
@@ -440,6 +440,11 @@ def create_google_router(templates, set_session_cookie) -> APIRouter:
                 request,
                 "google_account.html",
                 {
+                    **(
+                        context_factory(request, user, active_page="settings")
+                        if context_factory
+                        else {}
+                    ),
                     "email": user.email,
                     "active_page": "settings",
                     "csrf_token": csrf_token(request),

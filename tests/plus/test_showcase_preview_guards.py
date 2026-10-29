@@ -4,6 +4,7 @@ import json
 import os
 import runpy
 import socket
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
@@ -32,6 +33,39 @@ def test_only_empty_temporary_data_and_finite_environment_are_accepted(tmp_path)
     with patch.dict(os.environ, {}, clear=True):
         with pytest.raises(SystemExit, match="newly created empty"):
             module["prepare_environment"](tmp_path)
+
+
+def test_optional_ui_is_present_without_enabling_tracker_writers(tmp_path):
+    with patch.dict(os.environ, {}, clear=True):
+        environment = script()["prepare_environment"](tmp_path)
+    assert environment["OMAKASE_PLUS_HOUSEHOLDS_ENABLED"] == "true"
+    assert environment["OMAKASE_PLUS_LANGUAGE_SETTINGS_ENABLED"] == "true"
+    assert "OMAKASE_TRACKER_BRIDGE_WORKER_ENABLED" not in environment
+    assert "OMAKASE_TRACKER_BRIDGE_WRITERS_READY" not in environment
+
+
+@pytest.mark.parametrize("state", ["personal", "multiple", "shared", "unavailable"])
+def test_library_fixtures_use_native_scope_without_adopting_personal_titles(state):
+    from omakase.plus import households
+    from omakase.plus.db import run_migrations
+
+    with sqlite3.connect(":memory:") as db:
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
+        run_migrations(db)
+        db.execute(
+            "INSERT INTO users(id,email,password_hash) VALUES(1,'alex@example.com','sample')"
+        )
+        db.commit()
+        script()["seed_library_fixture"](db, user_id=1, state=state)
+        navigation = households.navigation_context(db, viewer_id=1)
+        assert len(navigation["libraries"]) == (2 if state in {"multiple", "shared"} else 1)
+        assert navigation["selected_kind"] == ("household" if state == "shared" else "personal")
+        assert db.execute("SELECT count(*) FROM library_items").fetchone()[0] == 0
+        changes = db.total_changes
+        with pytest.raises(ValueError, match="Unknown library fixture"):
+            script()["seed_library_fixture"](db, user_id=1, state="owner-data")
+        assert db.total_changes == changes
 
 
 @pytest.mark.parametrize("relative", ["../outside.jpg", "https://example.invalid/poster.jpg"])

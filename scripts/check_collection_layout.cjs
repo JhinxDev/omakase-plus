@@ -71,7 +71,7 @@ for(const name of ['cinema.css','streaming.css','tv.css']) evidence.sourceSha256
     const query=page.locator('.collection-search-query input');
     await query.focus();await query.press('Tab');
     const next=await page.evaluate(()=>document.activeElement.tagName);
-    assert.equal(next,kind==='library'?'SELECT':'BUTTON','natural primary search keyboard order');
+    assert.equal(next,'BUTTON','natural primary search keyboard order');
     const disclosure=page.locator('.watchlist-filter-details>summary,.tv-card-inventory>summary').first();
     if(await disclosure.count()){
      await disclosure.focus();const open=await disclosure.evaluate(n=>n.parentElement.open);

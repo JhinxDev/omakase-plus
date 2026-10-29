@@ -57,7 +57,9 @@ acquisition remains unsupported. Review the exact release's supported adapters
 before enabling shared intake.
 
 Back up the DB and encryption key and qualify combined migrations 033–036 upgrade,
-protected personal records and old-version rollback before enabling this batch.
+protected personal records and a qualified current-data recovery route before
+activation. Never infer unrestricted old-version write compatibility from an
+additive migration. See [current-data recovery](current-data-recovery.md).
 No installation prompt should expose the app publicly or enable acquisition merely
 to demonstrate household setup. See [language settings](language-settings.md),
 [personal tracker sync](myanimelist-bridge.md) and the

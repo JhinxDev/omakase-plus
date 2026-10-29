@@ -404,15 +404,18 @@
   }
 
   function setupAccountMenu() {
-    const menu = document.querySelector("[data-account-menu]");
-    if (!menu) return;
-    document.addEventListener("click", (event) => {
-      if (menu.open && !menu.contains(event.target)) menu.open = false;
-    });
-    menu.addEventListener("keydown", (event) => {
-      if (event.key !== "Escape") return;
-      menu.open = false;
-      menu.querySelector("summary")?.focus();
+    document.querySelectorAll("[data-account-menu], [data-library-context]").forEach((menu) => {
+      document.addEventListener("click", (event) => {
+        if (menu.open && !menu.contains(event.target)) menu.open = false;
+      });
+      menu.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        menu.open = false;
+        menu.querySelector("summary")?.focus();
+      });
+      menu.addEventListener("focusout", (event) => {
+        if (!menu.contains(event.relatedTarget)) menu.open = false;
+      });
     });
   }
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from unittest.mock import AsyncMock
 
@@ -67,6 +68,31 @@ def test_main_navigation_scope_switch_and_revoked_refresh_keep_actual_viewer(sta
     assert response.status_code == 200 and "Shared Home" not in response.text
     assert hh.selected_scope(db, viewer_id=2).library_id == personal
     assert member.get(f"/plus/libraries/{lib}").status_code == 404
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/plus/settings/profile",
+        "/plus/settings/agents",
+        "/plus/auth/google/account",
+        "/plus/settings/updates",
+    ],
+)
+def test_settings_navigation_keeps_optional_household_context(state, monkeypatch, enabled, path):
+    app, db, sessions, lib, items = state
+    monkeypatch.setenv("OMAKASE_PLUS_HOUSEHOLDS_ENABLED", str(enabled).lower())
+    member, _ = client(app, sessions[2])
+    response = member.get(path)
+    assert response.status_code == 200
+    navigation = re.search(
+        r'<nav[^>]*aria-label="Settings navigation"[^>]*>(.*?)</nav>', response.text, re.S
+    )
+    assert navigation is not None
+    assert ('href="/plus/settings/household"' in navigation.group(1)) == enabled
+    assert "person2@example.invalid" in response.text
+    assert "person1@example.invalid" not in response.text
 
 
 def test_main_collection_monitor_url_and_art_links_are_selected_scope_checked(state):

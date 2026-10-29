@@ -35,6 +35,22 @@
 .household-panel select { height: 48px; }
 .household-episode-list { list-style: none; padding: 0; display: grid; gap: 24px; } .household-episode-list li { min-width: 0; border-top: 1px solid #303640; padding-top: 16px; } .household-episode-list h3 { font-size: 17px; line-height: 1.5; overflow-wrap: anywhere; }
 .household-poster-frame { position: relative; display: block; width: 120px; aspect-ratio: 2 / 3; border-radius: 10px; overflow: hidden; background: #1b2230; } .household-art-fallback { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; font-size: 14px; color: #aeb7c7; padding: 12px; } .household-poster-frame .household-poster { position: relative; z-index: 1; width: 100%; height: 100%; } .household-poster-frame .household-poster[hidden] { display: none; }
-.library-scope-bar { margin: 16px clamp(1rem,4vw,4.5rem) 0; border: 1px solid #303640; border-radius: 12px; background: #111620; padding: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 16px; } .library-scope-bar form { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-width: 0; flex: 1; } .library-scope-bar label { font-size: 14px; } .library-scope-bar select { min-width: 0; max-width: 100%; height: 48px; flex: 1; } .library-scope-bar .button,.library-scope-bar>a { min-height: 48px; display: inline-flex; align-items: center; } @media(max-width:480px) { .library-scope-bar form { width: 100%; flex-basis: 100%; flex-shrink: 0; } .library-scope-bar select { flex-basis: 100%; } }
+.library-context { margin: 8px clamp(1rem,4vw,4.5rem) 0; min-width: 0; display: flex; align-items: center; gap: 12px; color: #aeb7c7; font-size: 14px; }
+.library-context details { position: relative; min-width: 0; max-width: 100%; }
+.library-context summary { display: flex; align-items: center; gap: 8px; min-height: 44px; max-width: 100%; cursor: pointer; list-style: none; color: #d9d2ee; }
+.library-context summary::-webkit-details-marker { display: none; }
+.library-context summary>svg { width: 18px; height: 18px; flex: none; }
+.library-context summary>span:not(.library-context-chevron) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library-context-chevron { flex: none; font-size: 18px; }
+.library-context-panel { position: absolute; z-index: 60; inset: calc(100% + 4px) auto auto 0; width: min(340px,calc(100vw - 32px)); box-sizing: border-box; padding: 16px; border: 1px solid #394359; border-radius: 14px; background: #111824; box-shadow: 0 16px 36px #0008; }
+.library-context-panel form { display: grid; gap: 10px; min-width: 0; }
+.library-context-panel label { font-size: 14px; color: #d5dbe7; }
+.library-context-panel select { min-width: 0; width: 100%; height: 48px; padding: 0 12px; color: #f3effa; border: 1px solid #45516a; border-radius: 10px; background: #0e1727; font: inherit; }
+.library-context-panel .button { width: 100%; min-height: 44px; }
+.library-context a { display: inline-flex; align-items: center; min-height: 44px; color: #cbbaf0; }
+.library-context-panel>a { margin-top: 8px; }
+.library-context :is(summary,select,button,a):focus-visible { outline: 2px solid #d5c6ff; outline-offset: 3px; }
+.library-context-unavailable { flex-wrap: wrap; gap: 0 12px; }
+.library-context-unavailable>span { line-height: 1.6; }
 
 .household-media-grid a { text-decoration: none; } .household-media-grid a:hover h2 { text-decoration: underline; }

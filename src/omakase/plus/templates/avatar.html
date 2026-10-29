@@ -8,7 +8,7 @@
 {% block content %}
 <link rel="stylesheet" href="/plus/static/avatar.css?v={{ asset_version }}">
 <script src="/plus/static/profile.js?v={{ asset_version }}" defer></script>
-<div class="settings-workspace">{{ settings_nav('profile') }}<div class="settings-content">
+<div class="settings-workspace">{{ settings_nav('profile', households_enabled) }}<div class="settings-content">
 {% if profile_notice %}<div class="product-notice" role="status">{{ profile_notice }}</div>{% endif %}
 {% if profile_error %}<div class="product-notice profile-error" role="alert">{{ profile_error }}</div>{% endif %}
 <section class="editorial-panel profile-picture-panel" aria-labelledby="profile-name-heading">

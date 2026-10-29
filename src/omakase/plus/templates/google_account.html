@@ -5,7 +5,7 @@
 {% block page_title %}Sign-in methods{% endblock %}
 {% block page_intro %}<p class="page-intro">Manage how you sign in to your private library.</p>{% endblock %}
 {% block content %}
-<div class="settings-workspace">{{ settings_nav('signin') }}<div class="settings-content">
+<div class="settings-workspace">{{ settings_nav('signin', households_enabled) }}<div class="settings-content">
 <section class="editorial-panel google-account-panel" aria-labelledby="google-status">
   <header class="google-account-heading">
     <span class="google-account-mark" aria-hidden="true">G</span>

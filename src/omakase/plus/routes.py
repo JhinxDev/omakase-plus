@@ -666,9 +666,6 @@ def _delete_session_cookie(response: Response) -> None:
     )
 
 
-router.include_router(create_google_router(templates, _set_session_cookie))
-
-
 # ── Login ───────────────────────────────────────────────────
 
 
@@ -928,6 +925,7 @@ def _product_context(request: Request, user, *, active_page: str) -> dict[str, o
     }
 
 
+router.include_router(create_google_router(templates, _set_session_cookie, _product_context))
 router.include_router(create_connections_router(templates, _product_context))
 router.include_router(create_updates_router(templates, _product_context))
 router.include_router(create_agent_router(templates, _product_context))

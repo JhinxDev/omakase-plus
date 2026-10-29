@@ -5,7 +5,7 @@
 {% block page_title %}Agent tools{% endblock %}
 {% block page_intro %}<p class="page-intro">Connect an assistant to your server, with permissions you control.</p>{% endblock %}
 {% block content %}
-<div class="settings-workspace">{{ settings_nav('agents') }}<div class="settings-content agents-content"><div class="settings-layout">
+<div class="settings-workspace">{{ settings_nav('agents', households_enabled) }}<div class="settings-content agents-content"><div class="settings-layout">
   <section class="editorial-panel settings-section" aria-labelledby="agent-read-heading">
     <header class="panel-heading"><h2 id="agent-read-heading">Start read-only</h2><span class="status-chip status-good">No open port</span></header>
     <div class="settings-explainer">

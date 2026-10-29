@@ -31,7 +31,10 @@ ENV_NAMES = {
     "OMAKASE_PLUS_MASTER_KEY",
     "OMAKASE_PLUS_INVITE",
     "OMAKASE_ALLOWED_HOSTS",
+    "OMAKASE_PLUS_HOUSEHOLDS_ENABLED",
+    "OMAKASE_PLUS_LANGUAGE_SETTINGS_ENABLED",
 }
+LIBRARY_STATES = ("personal", "multiple", "shared", "unavailable")
 GUARD = {"package_env_suppressed": 0, "dotenv_calls": 0, "env_read_attempts": 0}
 
 
@@ -264,6 +267,8 @@ def prepare_environment(data: Path):
         OMAKASE_PLUS_MASTER_KEY=secrets.token_urlsafe(48),
         OMAKASE_PLUS_INVITE=secrets.token_urlsafe(32),
         OMAKASE_ALLOWED_HOSTS="127.0.0.1,localhost,testserver",
+        OMAKASE_PLUS_HOUSEHOLDS_ENABLED="true",
+        OMAKASE_PLUS_LANGUAGE_SETTINGS_ENABLED="true",
         PYTHON_DOTENV_DISABLED="1",
     )
     return dict(os.environ)
@@ -347,7 +352,23 @@ def prohibit_outbound():
     socket.getaddrinfo = local_lookup
 
 
-def create_showcase(data: Path, catalog):
+def seed_library_fixture(db, *, user_id: int, state: str):
+    """Native, empty synthetic scopes; no promotion of personal records or media."""
+    if state not in LIBRARY_STATES:
+        raise ValueError("Unknown library fixture")
+    from omakase.plus import households
+
+    personal = households.ensure_personal_library(db, user_id=user_id)
+    db.commit()
+    if state in {"multiple", "shared"}:
+        households.create_household(db, user_id=user_id, name="Morgan household")
+    if state != "shared":
+        households.select_library(
+            db, households.resolve_scope(db, viewer_id=user_id, library_id=personal)
+        )
+
+
+def create_showcase(data: Path, catalog, *, library_state="personal"):
     environment = prepare_environment(data)
     sys.path.insert(0, str(ROOT / "src"))
     prohibit_outbound()
@@ -373,6 +394,7 @@ def create_showcase(data: Path, catalog):
     )
     db.commit()
     store_secret(db, uid, "display_name", "Alex Morgan")
+    seed_library_fixture(db, user_id=uid, state=library_state)
     save_avatar(db, uid, next(iter(catalog["anime"].values()))["poster"].read_bytes())
     for index, (aid, row) in enumerate(catalog["anime"].items()):
         count = max(1, min(1000, int(row.get("episodes", 12))))
@@ -482,17 +504,26 @@ def create_showcase(data: Path, catalog):
     db.commit()
     session = create_session(db, uid)
     db.close()
-    from fastapi import HTTPException
+    from fastapi import Depends, HTTPException
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
     from fastapi.routing import APIRoute
     from jinja2 import ChoiceLoader, DictLoader
 
     from omakase.plus import product_views, routes
     from omakase.plus.catalog_search import AnimeCatalogSearch, CatalogSearchError
+    from omakase.plus.middleware import require_user
     from omakase.plus.movie_discovery import MovieDiscoveryService
     from omakase.plus.movies import MovieService
     from omakase.plus.tv_service import TVService
     from omakase.web.server import app
+
+    if library_state == "unavailable":
+        from omakase.plus import households
+
+        def unavailable_navigation(*_args, **_kwargs):
+            raise households.HouseholdError("Synthetic optional-library metadata unavailable")
+
+        households.navigation_context = unavailable_navigation
 
     # Actual application templates, with only the demo disclosure text replaced.
     loader = routes.templates.env.loader
@@ -674,13 +705,14 @@ def create_showcase(data: Path, catalog):
         ],
     }
     app.state.showcase_route_map = route_map
+    app.state.showcase_library_state = library_state
 
     async def fixture_routes():
         return JSONResponse(route_map)
 
-    async def fixture_state(request: Request, journey: str, state: str):
+    async def fixture_state(request: Request, journey: str, state: str, user=Depends(require_user)):
         context = {
-            **routes._product_context(request, sample_user, active_page="library"),
+            **routes._product_context(request, user, active_page="library"),
             "synthetic_review": True,
             "showcase_state_notice": STATE_NOTICE,
         }
@@ -918,6 +950,7 @@ def create_showcase(data: Path, catalog):
             "/plus/activity",
             "/plus/onboarding",
             "/plus/account/avatar",
+            "/plus/auth/google/account",
             "/plus/search",
             "/plus/search/suggestions",
             "/plus/discover",
@@ -927,6 +960,7 @@ def create_showcase(data: Path, catalog):
             "/plus/signup",
             "/plus/health/overview",
             "/plus/setup",
+            "/plus/api/notifications",
         } or path.startswith(
             (
                 "/plus/static/",
@@ -934,6 +968,7 @@ def create_showcase(data: Path, catalog):
                 "/plus/tv/",
                 "/plus/movies/",
                 "/plus/library/",
+                "/plus/libraries/",
                 "/plus/settings",
                 "/plus/demo/",
                 "/plus/catalog/anime/",
@@ -951,7 +986,7 @@ def create_showcase(data: Path, catalog):
         response = await call_next(request)
         response.headers["X-Omakase-Demo"] = "real-media-sample-account-read-only"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
         )
         assert_isolated()
         return response
@@ -1018,6 +1053,13 @@ def check(app, catalog):
         )
         assert client.get("/plus/demo/states/removal/unknown").status_code == 404
         populated = client.get("/plus/demo/states/title/populated").text
+        assert "Alex Morgan" in populated and "/plus/account/avatar?v=" in populated
+        assert ("Library selection is temporarily unavailable" in populated) == (
+            app.state.showcase_library_state == "unavailable"
+        )
+        feed = client.get("/plus/api/notifications")
+        assert feed.status_code == 200
+        assert "connect-src 'self'" in feed.headers["Content-Security-Policy"]
         assert "[SAMPLE RELEASE]" in populated and "Selectable English subtitles" in populated
         assert "Latest library check" in populated and "Synthetic library check" in populated
         assert (
@@ -1051,6 +1093,11 @@ def check(app, catalog):
             "/sources",
             "/storage",
             "/connections",
+            "/household",
+            "/languages",
+            "/profile",
+            "/agents",
+            "/updates",
         ):
             assert client.get("/plus/settings" + section).status_code == 200
         for method in ("POST", "PUT", "PATCH", "DELETE"):
@@ -1089,12 +1136,13 @@ def main():
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--art-dir", type=Path, required=True)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--library-state", choices=LIBRARY_STATES, default="personal")
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535:
         parser.error("Use an unprivileged local port")
     catalog = load_manifest(args.manifest, args.art_dir)
     with tempfile.TemporaryDirectory(prefix="omakase-sample-showcase-") as temporary:
-        app = create_showcase(Path(temporary), catalog)
+        app = create_showcase(Path(temporary), catalog, library_state=args.library_state)
         if args.check:
             check(app, catalog)
         else:

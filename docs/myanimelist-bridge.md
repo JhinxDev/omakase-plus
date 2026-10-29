@@ -215,30 +215,26 @@ not claim a native build receipt. Root must build the exact candidate, confirm
 source-only rebuild reuses dependency layers, and confirm a changed relevant lock
 invalidates its dependency layer, then repeat image/runtime/R1 acceptance.
 
-## Mandatory combined upgrade and rollback gate (R1)
+## Combined upgrade and current-data recovery
 
 Migration035 creates only independent tables/indexes with user foreign keys and
 owner-bound plan/outbox links; it does not rebuild existing media/watch tables.
-Its fixture verifies pre-existing row/schema preservation and old-migrator use on
-a database containing035. That is **not** a native all-consumer acceptance receipt.
-Household033, language034 and movie proof036 have their own compatibility requirements; don't
-extrapolate035 additivity to the combined schema.
+Its isolated additivity checks do not qualify unrestricted old consumers against
+the combined household033, language034 and media-proof036 schema.
 
-Before any production schema change or bridge activation, root must bind the exact
-app, worker and curator candidates/rollback identities, dependencies/config/mounts
-and an owned pre-upgrade backup. Qualify a fresh install AND an isolated upgrade of
-the actual current schema with migrations 033–036. Record migrations, integrity/foreign-key
-checks, protected history/rating/ownership/session hashes and consumer startup.
-Exercise all three consumers against the upgraded clone with provider mutations
-blocked. Also run the exact prior app/worker/curator versions against that upgraded
-clone under the intended additive code-only rollback. A032-only or UI-only receipt
-cannot satisfy this combined gate. Do not restore a stale DB after writers resume.
-If any consumer cannot safely use the combined schema, stop promotion and repair
-that owning compatibility issue or document a separately safe recovery before
-activation. Preserve previous releases/backups; never use a broad cleanup/prune.
+Before upgrading an installation or enabling bridge writers, qualify enabled
+app/worker/curator consumers on an isolated current-data copy, preserve protected
+records and bind exact current/candidate/recovery identities. Save durable
+recovery metadata before activation. If verification fails, keep current migrated
+data and writers fenced. Use a qualified forward fix or separately restricted
+read-only recovery; do not restore a stale DB or resume unrestricted old writers.
+Legacy automatic upgrade/rollback helpers are disabled. See
+[current-data recovery](current-data-recovery.md) and the
+[release checklist](release-checklist.md).
 
-This task does not run migration035 on production, register clients, log in, write
-real trackers, deploy, enable jobs, or claim native/provider acceptance.
+Operator OAuth setup, personal consent, first reviewed preview/conflict decisions
+and opt-in remain separate. Source tests, global flags or a migration receipt
+cannot establish a user's real tracker authorization.
 
 ## Focused verification
 

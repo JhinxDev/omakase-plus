@@ -410,7 +410,7 @@ def test_activity_defaults_to_visual_viewing_history_and_keeps_system_work_separ
     assert 'href="/plus/catalog/anime/151807"' in card.group(1)
     assert 'src="/plus/media/151807/poster"' not in card.group(1)
     assert 'aria-label="Episode 4 image unavailable"' in card.group(1)
-    assert 'data-history-placeholder' in card.group(1)
+    assert "data-history-placeholder" in card.group(1)
     assert "Image unavailable" in card.group(1)
     assert 'aria-label="Solo Leveling, episode 4"' in card.group(1)
     assert '<h3 title="Episode 4">E4</h3>' in card.group(1)

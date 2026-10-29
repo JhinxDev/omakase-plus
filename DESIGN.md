@@ -48,3 +48,18 @@ Host-managed metadata sources explain the actual operator configuration boundary
 Viewing history first uses an authenticated exact-episode still. When exact imagery is unavailable, a loaded series cover is visibly labeled Series artwork; if neither image is available, an episode-specific accessible placeholder remains. A series cover never claims to be an episode still. Series-level manual completion says Series completed, and a progress-only event says Progress updated. Movies and original history timestamps keep their established behavior.
 
 The header shows the saved display name beside the avatar, with Account as the empty-name fallback. Long names truncate visually while the full escaped name remains accessible. Anime collection tabs use one active underline.
+
+## 2026-10-29 task hierarchy and history identity
+
+A single personal library needs no global switch form. Account retains its library
+context and settings link. Genuine choices use a compact selected-library disclosure
+with a native select and explicit submit; a shared selection remains visible by name.
+Unavailable navigation offers a compact recovery link and never invents a scope.
+Switching retains CSRF protection and does not occur on focus or selection alone.
+
+Collection controls are one compact toolbar, with explicit saved/catalog scope,
+one result count, 48px native controls and an accessible advanced-filter disclosure.
+Movie history uses the actual film title as its heading. Episodic history keeps
+readable normal-case show identity above the episode/event label. Core history
+identity, source and date remain readable on phones; exact timestamps, watched
+progress, personal ratings and artwork fallback labels retain their meanings.
