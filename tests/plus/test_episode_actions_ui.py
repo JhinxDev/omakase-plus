@@ -67,7 +67,11 @@ def test_resurfaced_title_renders_explicit_action_and_quality_without_watch_get_
     assert 'name="intent" value="episodes_quality"' in page
     with _connect(client) as db:
         assert [tuple(row) for row in db.execute("SELECT * FROM watch_entries")] == before
-    assert "View new episode" in client.get("/plus/home").text
+    home = client.get("/plus/home").text
+    assert "View episodes" in home and f'href="/plus/library/{monitor}#episode-3"' in home
+    assert "More info" in home and f'href="/plus/library/{monitor}#overview"' in home
+    with _connect(client) as db:
+        assert [tuple(row) for row in db.execute("SELECT * FROM watch_entries")] == before
 
 
 def test_continuation_post_is_guarded_and_duplicate_post_is_idempotent(client):

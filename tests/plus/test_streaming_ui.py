@@ -396,7 +396,9 @@ def test_title_page_leads_with_artwork_progress_and_separates_technical_details(
 
 def test_activity_defaults_to_visual_viewing_history_and_keeps_system_work_separate(client):
     _signup(client)
-    _seed_continue_title(client)
+    monitor_id = _seed_continue_title(client)
+    with _connect(client) as connection:
+        before = [tuple(row) for row in connection.execute("SELECT * FROM watch_entries")]
 
     response = client.get("/plus/activity")
     html = response.text
@@ -407,7 +409,7 @@ def test_activity_defaults_to_visual_viewing_history_and_keeps_system_work_separ
     assert '<div class="history-grid">' in html
     card = re.search(r'<article class="history-card">(.*?)</article>', html, re.DOTALL)
     assert card is not None
-    assert 'href="/plus/catalog/anime/151807"' in card.group(1)
+    assert f'href="/plus/library/{monitor_id}#overview"' in card.group(1)
     assert 'src="/plus/media/151807/poster"' not in card.group(1)
     assert 'aria-label="Episode 4 image unavailable"' in card.group(1)
     assert "data-history-placeholder" in card.group(1)
@@ -427,6 +429,8 @@ def test_activity_defaults_to_visual_viewing_history_and_keeps_system_work_separ
     assert 'aria-label="Activity outcome"' in system.text
     assert 'href="/plus/activity?view=system&outcome=attention"' in system.text
     assert 'class="history-grid"' not in system.text
+    with _connect(client) as connection:
+        assert [tuple(row) for row in connection.execute("SELECT * FROM watch_entries")] == before
 
 
 def test_title_exposes_episode_availability_without_confusing_watched_with_ready(client):
@@ -437,7 +441,10 @@ def test_title_exposes_episode_availability_without_confusing_watched_with_ready
 
     episodes = re.search(r'<ol class="viewer-episode-grid">(.*?)</ol>', html, re.DOTALL)
     assert episodes is not None
-    assert len(re.findall(r'<li class="viewer-episode', episodes.group(1))) == 12
+    assert (
+        len(re.findall(r'<li\b[^>]*\bclass="viewer-episode(?:\s[^"]*)?"', episodes.group(1))) == 12
+    )
+    assert re.findall(r'id="episode-(\d+)"', episodes.group(1)) == [str(n) for n in range(1, 13)]
     assert episodes.group(1).count("Not yet verified") == 12
     assert episodes.group(1).count(">Watched</span>") == 4
     assert episodes.group(1).count(">Up next</span>") == 1
