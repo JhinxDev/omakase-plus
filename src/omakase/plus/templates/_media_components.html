@@ -8,11 +8,15 @@
 {%- endmacro %}
 
 {% macro ready_badge(item) -%}
+{% if item.resurfaced %}
+<span role="status" class="ready-count is-partial" aria-label="New episode {{ item.next_episode }} found. Plex availability is unconfirmed.">Episode {{ item.next_episode }} found</span>
+{% else %}
 {% set usable = item.usable | default(0, true) | int %}
 {% set visible = item.plex_visible | default(0, true) | int %}
 {% set ready = [usable, visible] | min %}
 {% set required = item.required | default(0, true) | int %}
 <span role="status" class="ready-count {% if ready >= required and required > 0 and item.state == 'ready' %}is-ready{% elif ready %}is-partial{% else %}is-waiting{% endif %}" aria-label="{{ item.title }}: {{ ready }} of {{ required if required else 'unknown' }} required episodes verified and in Plex">{% if required and ready >= required and item.state == 'ready' %}In Plex <b>{{ ready }}/{{ required }}</b>{% elif required and ready %}Partial <b>{{ ready }}/{{ required }}</b>{% elif required %}Missing {{ required }} {{ 'episode' if required == 1 else 'episodes' }}{% else %}Availability unknown{% endif %}</span>
+{% endif %}
 {%- endmacro %}
 
 {% macro source_badge(item) -%}

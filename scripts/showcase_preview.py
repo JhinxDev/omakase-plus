@@ -352,6 +352,78 @@ def prohibit_outbound():
     socket.getaddrinfo = local_lookup
 
 
+EPISODE_STATES = (
+    "complete-fallback",
+    "resurfaced",
+    "download-pending",
+    "publication-pending",
+    "no-result",
+    "busy",
+)
+
+
+def episode_presentation_card(catalog, state):
+    """Finite display-only Q9 states; executable service proof lives in tests."""
+    if state not in EPISODE_STATES:
+        raise ValueError("Unknown episode presentation state")
+    title = title_presentation_card(catalog)
+    total = title["episode_total"]
+    fallback = [episode for episode in (6, 7, 8, 9, 10, 12, 13) if episode <= total]
+    title.update(
+        usable=total,
+        required=total,
+        plex_visible=total,
+        usable_episodes=list(range(1, total + 1)),
+        upcoming_episodes=[],
+        can_recheck=True,
+        active=False,
+        release_status="FINISHED",
+        release_status_label="Finished airing",
+        next_check_at="",
+        state="ready",
+        status_label="Sample full library",
+        progress_episodes=3,
+        next_episode=4,
+        progress_percent=round(300 / total),
+        episode_qualities={},
+        fallback_episodes=fallback,
+        watch_revision=7,
+        resurfaced=False,
+        score_ten=9,
+    )
+    for episode in title["usable_episodes"]:
+        quality = "720p" if episode in fallback else "1080p"
+        title["episode_qualities"][episode] = {
+            "quality": quality,
+            "label": "720p fallback release" if quality == "720p" else "1080p release",
+            "detail": "Synthetic release-quality presentation; no physical media or current publication was verified.",
+            "alternates": ["1080p"] if state == "publication-pending" and quality == "720p" else [],
+        }
+    if state == "resurfaced":
+        title.update(
+            watch_status="completed",
+            progress_episodes=2,
+            next_episode=3,
+            required=3,
+            usable=3,
+            plex_visible=2,
+            usable_episodes=[1, 2, 3],
+            upcoming_episodes=list(range(4, total + 1)),
+            resurfaced=True,
+            lifecycle_label="New episode found",
+            release_status="RELEASING",
+            release_status_label="Currently airing",
+            active=True,
+            state="partial",
+            status_label="Episode 3 found · Plex availability unconfirmed",
+            fallback_episodes=[],
+            episode_qualities={
+                episode: title["episode_qualities"][episode] for episode in (1, 2, 3)
+            },
+        )
+    return title
+
+
 def seed_library_fixture(db, *, user_id: int, state: str):
     """Native, empty synthetic scopes; no promotion of personal records or media."""
     if state not in LIBRARY_STATES:
@@ -668,6 +740,7 @@ def create_showcase(data: Path, catalog, *, library_state="personal"):
     state_routes += [f"/plus/demo/states/settings/{state}" for state in ("saved", "error")]
     state_routes += [f"/plus/demo/states/login/{state}" for state in ("validation", "failed")]
     state_routes += ["/plus/demo/states/signup/validation", "/plus/demo/states/title/populated"]
+    state_routes += [f"/plus/demo/states/episodes/{state}" for state in EPISODE_STATES]
     state_routes += [
         f"/plus/demo/states/onboarding/{path}"
         for path in ("existing_stack", "fresh_plex", "app_only")
@@ -757,6 +830,37 @@ def create_showcase(data: Path, catalog, *, library_state="personal"):
                     "error": STATE_NOTICE,
                 },
             )
+        elif journey == "episodes" and state in EPISODE_STATES:
+            outcomes = {
+                "download-pending": "1080p downloads are in progress. Existing usable copies are retained.",
+                "publication-pending": "Higher releases found; replacement publication is unconfirmed. Existing usable copies are retained.",
+                "no-result": "Episode recheck finished. No publishable 1080p replacement found. Existing usable copies are retained.",
+                "busy": "An episode check is already running. No additional check was started.",
+            }
+            rendered = routes.templates.TemplateResponse(
+                request,
+                "title.html",
+                {
+                    **context,
+                    "title": episode_presentation_card(catalog, state),
+                    "message": outcomes.get(state, ""),
+                    "related_titles": [],
+                    "retry_notice": "",
+                },
+            )
+            body = rendered.body.decode("utf-8")
+            notice = (
+                '<p class="product-notice" role="status">'
+                + STATE_NOTICE
+                + " Episode quality, history and outcomes on this page are synthetic presentation fixtures.</p>"
+            )
+            body = re.sub(r"(<main\b[^>]*>)", lambda match: match.group(1) + notice, body, count=1)
+            if state == "busy":
+                body = body.replace(
+                    'data-busy-label="Checking episodes…">Find missing episodes &amp; 1080p',
+                    'data-busy-label="Checking episodes…" disabled aria-busy="true">Checking episodes…',
+                )
+            response = HTMLResponse(body)
         elif journey == "title" and state == "populated":
             rendered = routes.templates.TemplateResponse(
                 request,

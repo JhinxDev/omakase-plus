@@ -179,6 +179,99 @@ def ingest_watch_event(
         raise WatchServiceError(str(exc)) from exc
 
 
+def continue_new_episode(
+    db: sqlite3.Connection,
+    *,
+    user_id: int,
+    monitor_id: int,
+    episode: int,
+    expected_revision: int,
+    observed_at: str | None = None,
+) -> WatchIngestResult:
+    """Explicitly continue a completed season against current exact episode evidence."""
+    from omakase.plus.media_store import covered_episodes
+
+    if isinstance(episode, bool) or not isinstance(episode, int) or episode <= 0:
+        raise WatchServiceError("continuation requires an exact positive episode")
+    if (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 0
+    ):
+        raise WatchServiceError("continuation requires the current watch revision")
+    timestamp = observed_at or _utc_now()
+    try:
+        with _transaction(db):
+            monitor = db.execute(
+                "SELECT * FROM media_monitors WHERE id=? AND user_id=?", (monitor_id, user_id)
+            ).fetchone()
+            entry = repository.get_watch_entry(db, user_id=user_id, monitor_id=monitor_id)
+            if monitor is None or entry is None or entry.id is None:
+                raise WatchServiceError("title does not exist for this user")
+            key = f"manual:continue:{entry.id}:{expected_revision}:{episode}"
+            duplicate = repository.find_watch_event(
+                db, user_id=user_id, source="manual", event_key=key
+            )
+            if duplicate is not None:
+                return WatchIngestResult(entry, "ignored", "duplicate_event", int(duplicate["id"]))
+            excluded = db.execute(
+                """SELECT 1 FROM media_title_removals WHERE monitor_id=?
+                   UNION ALL SELECT 1 FROM completion_plex_cleanup_blocks WHERE monitor_id=?
+                   LIMIT 1""",
+                (monitor_id, monitor_id),
+            ).fetchone()
+            expected = int(monitor["expected_episodes"] or 0)
+            required = (
+                expected
+                if monitor["release_status"] == "FINISHED"
+                else int(monitor["aired_episodes"] or 0)
+            )
+            if (
+                entry.revision != expected_revision
+                or entry.status != "completed"
+                or not entry.episode_total
+                or entry.progress_episodes < entry.episode_total
+                or episode != entry.progress_episodes + 1
+                or episode > required
+                or monitor["format"] == "MOVIE"
+                or excluded
+                or episode not in covered_episodes(db, monitor_id)
+            ):
+                raise WatchServiceError("new episode or watch progress changed; refresh this title")
+            current_total = expected if expected >= max(required, episode) else None
+            reopened = WatchEvent.reopen(
+                episode=entry.progress_episodes, event_key=f"{key}:reopen", force=True
+            )
+            decision = reduce_watch_event(
+                replace(entry, episode_total=current_total), reopened, observed_at=timestamp
+            )
+            if decision.disposition != "accepted":
+                raise WatchServiceError("continuation cannot precede the current watch observation")
+            repository.insert_watch_event(
+                db,
+                user_id=user_id,
+                entry_id=entry.id,
+                event=reopened,
+                decision=decision,
+                observed_at=timestamp,
+                previous_completion=entry,
+            )
+            repository.update_watch_entry(db, previous=entry, updated=decision.entry)
+            # Only the final user progress produces a tracker intent. Existing consent and
+            # remote-completion conflict rules still apply to that ordinary outbox action.
+            return ingest_watch_event(
+                db,
+                user_id=user_id,
+                monitor_id=monitor_id,
+                event=WatchEvent.progress(
+                    source="manual", episode=episode, confidence="manual", event_key=key
+                ),
+                observed_at=timestamp,
+            )
+    except repository.WatchRepositoryError as exc:
+        raise WatchServiceError(str(exc)) from exc
+
+
 def resolve_watch_confirmation(
     db: sqlite3.Connection,
     *,

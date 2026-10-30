@@ -614,6 +614,11 @@ def _fetch_manifest(config: LoadedRuntimeConfig, token: str) -> dict:
 
         if LANGUAGE_PUBLICATION_QUALIFIED:
             headers["X-Omakase-Curator-Capabilities"] = CAPABILITY
+            from omakase.plus.quality_publication import CAPABILITY as QUALITY_CAPABILITY
+            from omakase.plus.quality_publication import QUALITY_PUBLICATION_QUALIFIED
+
+            if QUALITY_PUBLICATION_QUALIFIED:
+                headers["X-Omakase-Curator-Capabilities"] += "," + QUALITY_CAPABILITY
     try:
         response = httpx.get(
             config.runtime.manifest_url,
@@ -781,7 +786,7 @@ def _build_approved_plan(
 ) -> ApprovedRunPlan:
     probe_cache = probe_cache if probe_cache is not None else _subtitle_probe_cache(config)
     language_probe = None
-    if manifest.get("schema_version") == "manifest-v3":
+    if manifest.get("schema_version") in {"manifest-v3", "manifest-v4"}:
         from functools import partial
 
         from language_publication import probe_file
@@ -1356,6 +1361,18 @@ def _receipt(
     if plan.overlay_plan.language_v3:
         receipt["schema_version"] = "curator-receipt-v3"
         receipt["language_files"] = list(plan.overlay_plan.language_files)
+    if plan.overlay_plan.quality_v4:
+        from omakase.plus.quality_publication import SELECTION
+
+        receipt.update(
+            schema_version="curator-receipt-v4",
+            quality_selection=SELECTION,
+            manifest_sha256=plan.overlay_plan.manifest_digest,
+            selection_applied=mode == "live"
+            and converged
+            and not plan.overlay_plan.holds_current_generation,
+            publication_files=list(plan.overlay_plan.publication_files),
+        )
     return receipt
 
 

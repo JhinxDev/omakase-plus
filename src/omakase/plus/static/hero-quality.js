@@ -8,44 +8,66 @@
     let frame = 0;
     let lastSource = "";
     let transparent = false;
+    const regions = {
+      tl: [0, 0, 6, 6], top: [24, 0, 16, 4], tr: [58, 0, 6, 6],
+      left: [0, 24, 4, 16], right: [60, 24, 4, 16],
+      bl: [0, 58, 6, 6], bottom: [24, 60, 16, 4], br: [58, 58, 6, 6],
+    };
+
+    function clearPalette() {
+      const hero = picture.closest('.cinema-hero');
+      if (!hero) return;
+      Object.keys(regions).forEach(region => hero.style.removeProperty(`--hero-edge-${region}`));
+      hero.dataset.heroPalette = 'fallback';
+    }
 
     function sampleArtwork() {
       if (image.naturalWidth <= 3 || image.naturalHeight <= 3) return {transparent: true};
       try {
         const canvas = document.createElement("canvas");
-        canvas.width = canvas.height = 16;
+        canvas.width = canvas.height = 64;
         const context = canvas.getContext("2d", {willReadFrequently: true});
-        context.drawImage(image, 0, 0, 16, 16);
-        const pixels = context.getImageData(0, 0, 16, 16).data;
-        const colors = new Map();
-        const total = [0, 0, 0];
-        let opaque = 0;
-        for (let index = 0; index < pixels.length; index += 4) {
-          if (pixels[index + 3] <= 16) continue;
-          const rgb = [pixels[index], pixels[index + 1], pixels[index + 2]];
-          opaque += 1;
-          rgb.forEach((value, channel) => { total[channel] += value; });
-          const high = Math.max(...rgb), low = Math.min(...rgb);
-          const saturation = high ? (high - low) / high : 0;
-          const light = rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722;
-          if (light < 28 || light > 225 || saturation < .12) continue;
-          const key = rgb.map(value => Math.floor(value / 32)).join(',');
-          const color = colors.get(key) || {score: 0, count: 0, rgb: [0, 0, 0]};
-          color.score += .25 + saturation;
-          color.count += 1;
-          rgb.forEach((value, channel) => { color.rgb[channel] += value; });
-          colors.set(key, color);
+        context.drawImage(image, 0, 0, 64, 64);
+        const pixels = context.getImageData(0, 0, 64, 64).data;
+        if (!pixels.some((value, index) => index % 4 === 3 && value > 16)) return {transparent: true};
+        const edges = {};
+        for (const [region, [x, y, width, height]] of Object.entries(regions)) {
+          const total = [0, 0, 0], chromatic = [0, 0, 0];
+          let opaque = 0, chromaticWeight = 0;
+          for (let row = y; row < y + height; row += 1) {
+            for (let column = x; column < x + width; column += 1) {
+              const index = (row * 64 + column) * 4;
+              if (pixels[index + 3] <= 16) continue;
+              const rgb = [pixels[index], pixels[index + 1], pixels[index + 2]];
+              const weight = pixels[index + 3] / 255;
+              opaque += weight;
+              rgb.forEach((value, channel) => { total[channel] += value * weight; });
+              const high = Math.max(...rgb), low = Math.min(...rgb);
+              const saturation = high ? (high - low) / high : 0;
+              const light = rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722;
+              if (light < 20 || light > 232 || saturation < .1) continue;
+              const colorWeight = weight * (.5 + saturation);
+              chromaticWeight += colorWeight;
+              rgb.forEach((value, channel) => { chromatic[channel] += value * colorWeight; });
+            }
+          }
+          edges[region] = chromaticWeight ? chromatic.map(value => Math.round(value / chromaticWeight))
+            : opaque ? total.map(value => Math.round(value / opaque)) : [22, 25, 35];
         }
-        if (!opaque) return {transparent: true};
-        const ranked = [...colors.values()].sort((a, b) => b.score - a.score)
-          .map(color => color.rgb.map(value => Math.round(value / color.count)));
-        const primary = ranked[0] || total.map(value => Math.round(value / opaque));
-        const secondary = ranked.find(rgb => Math.hypot(...rgb.map((value, channel) => value - primary[channel])) > 70) || primary;
-        return {transparent: false, primary, secondary};
+        return {transparent: false, edges};
       } catch (_) {
         // A non-readable canvas must not discard otherwise valid artwork.
         return {transparent: false};
       }
+    }
+
+    function placeAtmosphere() {
+      const hero = picture.closest('.cinema-hero');
+      if (!hero) return;
+      const bounds = hero.getBoundingClientRect(), art = image.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) return;
+      const anchors = {xleft: [art.left - bounds.left, bounds.width], xcenter: [art.left + art.width / 2 - bounds.left, bounds.width], xright: [art.right - bounds.left, bounds.width], ytop: [art.top - bounds.top, bounds.height], ycenter: [art.top + art.height / 2 - bounds.top, bounds.height], ybottom: [art.bottom - bounds.top, bounds.height]};
+      Object.entries(anchors).forEach(([name, [value, total]]) => hero.style.setProperty(`--hero-edge-${name}`, `${Math.max(0, Math.min(100, value / total * 100)).toFixed(2)}%`));
     }
 
     function fallback() {
@@ -61,6 +83,7 @@
       if (!image.complete) return;
       // The request can fail before this deferred script attaches its listener.
       if (!image.naturalWidth || !image.naturalHeight) {
+        clearPalette();
         picture.dataset.heroState = "unavailable";
         fallback();
         return;
@@ -71,9 +94,10 @@
         const sampled = sampleArtwork();
         transparent = sampled.transparent;
         const hero = picture.closest('.cinema-hero');
-        if (hero && sampled.primary) {
-          hero.style.setProperty('--hero-color-primary', sampled.primary.join(','));
-          hero.style.setProperty('--hero-color-secondary', sampled.secondary.join(','));
+        clearPalette();
+        if (hero && sampled.edges) {
+          Object.entries(sampled.edges).forEach(([region, rgb]) => hero.style.setProperty(`--hero-edge-${region}`, rgb.join(',')));
+          hero.dataset.heroPalette = 'perimeter-v1';
         }
       }
       const rect = picture.getBoundingClientRect();
@@ -85,6 +109,7 @@
       picture.style.setProperty("--hero-native-width", `${image.naturalWidth / density}px`);
       picture.style.setProperty("--hero-native-height", `${image.naturalHeight / density}px`);
       picture.dataset.heroState = transparent ? "unavailable" : landscape && scale <= 1.25 ? "cover" : "contained";
+      placeAtmosphere();
       if (transparent || (picture.dataset.heroState === "contained" && !fallbackAttempted)) fallback();
     }
 
@@ -92,8 +117,9 @@
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(assess);
     }
-    image.addEventListener("load", schedule);
+    image.addEventListener("load", () => { lastSource = ''; schedule(); });
     image.addEventListener("error", () => {
+      clearPalette();
       picture.dataset.heroState = "unavailable";
       fallback();
     });

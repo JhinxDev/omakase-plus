@@ -8,6 +8,23 @@ from omakase.plus.language_policy import normalize_language
 
 
 @dataclass(frozen=True, slots=True)
+class MediaRecheckIntent:
+    """One explicitly requested owner/title check, never a global upgrade policy."""
+
+    actor_user_id: int
+    monitor_id: int
+    upgrade_to_1080: bool
+
+    def __post_init__(self) -> None:
+        if any(
+            type(value) is not int or value <= 0 for value in (self.actor_user_id, self.monitor_id)
+        ):
+            raise ValueError("A recheck needs one positive owner and monitor identity.")
+        if type(self.upgrade_to_1080) is not bool:
+            raise ValueError("Quality upgrade intent must be explicit.")
+
+
+@dataclass(frozen=True, slots=True)
 class MediaTarget:
     """Resolved AniList identity and the facts needed to place and monitor it."""
 

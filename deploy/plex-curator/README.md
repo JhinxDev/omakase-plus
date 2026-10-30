@@ -231,6 +231,44 @@ On publication or pointer-sync failure, the prior selection is restored and both
 retained generations are preserved. Different content remains a real validation
 failure. Scan deferral, backup/proof checks and the generation layout are unchanged.
 
+## Qualified whole-file quality selection
+
+`quality-fallback-v1` negotiates `manifest-v4`, `overlay-plan-v8` and
+`curator-receipt-v4`. It requires both the existing language-policy capability
+and positive operator qualification on the app and curator. The quality gate is
+`OMAKASE_PLUS_QUALITY_PUBLICATION_QUALIFIED=true`; it defaults off. Install the
+matching app package and all curator modules, including `quality_selection.py`,
+then qualify the pair in isolation before enabling it. A query parameter or peer
+header cannot grant operator qualification. Old peers retain their v2/v3 rules.
+
+Each candidate keeps its full verified inventory and current connector binding.
+The curator qualifies complete source files before it chooses an exact physical
+file partition. Its receipt includes every qualified candidate file with an
+explicit selected flag, so the app independently recomputes the same selection.
+A failed preferred copy claims no episodes. Separate fallback files can fill the
+remaining episodes. If a single fallback file contains E1–E2, keep that whole
+file when a preferred E1 alone would lose E2; unrelated titles can still publish.
+Hold the generation only when no safe complete partition for an overlapping
+upgrade title is available. Existing legacy specials stay with selected sources.
+
+Approved language policy applies to its exact overlapping episode scope.
+Conflicting approved policies on the same episode fail closed. A different
+policy on a disjoint episode does not erase its existing qualification. Movies
+retain every successfully qualified version rather than the series partition.
+
+The importer binds current inventory, source, logical identity and exact parsed
+episode ranges. Only selected policy-bound files update current file proofs;
+v3 still requires full coverage. Held attempts preserve current selection and
+append scoped failure evidence through existing run/candidate history without
+inventing a provider observation. Release labels do not claim measured video
+resolution, and selected files do not prove exact Plex indexing or playback.
+
+For a paired rollback, fence the writers and disable the new capability before
+returning either side to its prior compatible source. Preserve current database
+contents and verified retained generations; resume only a compatible verified
+pair. This source capability is separate from native qualification and release
+acceptance.
+
 ## Rollback
 
 Stop the timer, then atomically select the retained prior generation:

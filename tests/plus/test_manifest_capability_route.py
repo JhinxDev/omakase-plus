@@ -65,3 +65,32 @@ def test_machine_auth_precedes_capability_negotiation(client):
         "/plus/api/library-manifest", headers={"X-Omakase-Curator-Capabilities": "unknown"}
     )
     assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "language,quality,capabilities,expected",
+    [
+        (True, True, "language-policy-v1,quality-fallback-v1", 200),
+        (True, False, "language-policy-v1,quality-fallback-v1", 500),
+        (False, True, "language-policy-v1,quality-fallback-v1", 500),
+        (True, True, "quality-fallback-v1", 500),
+    ],
+)
+def test_quality_peer_cannot_supply_its_own_operator_qualification(
+    client, monkeypatch, language, quality, capabilities, expected
+):
+    from omakase.plus import quality_publication
+
+    monkeypatch.setattr(language_publication, "LANGUAGE_PUBLICATION_QUALIFIED", language)
+    monkeypatch.setattr(quality_publication, "QUALITY_PUBLICATION_QUALIFIED", quality)
+    response = client.get(
+        "/plus/api/library-manifest?quality_qualification=true",
+        headers={
+            "Authorization": "Bearer fixture-machine-token",
+            "X-Omakase-Curator-Capabilities": capabilities,
+        },
+    )
+    assert response.status_code == expected
+    if expected == 200:
+        assert response.json()["schema_version"] == "manifest-v4"
+    assert response.headers["cache-control"] == "private, no-store"

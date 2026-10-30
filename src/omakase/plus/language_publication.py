@@ -301,7 +301,6 @@ def import_files(db, receipt):
         and receipt["outcome"] in {"success", "degraded"},
         "Only converged live publication evidence can update current file proofs.",
     )
-    from omakase.plus.language_store import record_observation
     from omakase.plus.manifest import build_library_manifest
 
     current = build_library_manifest(
@@ -310,6 +309,13 @@ def import_files(db, receipt):
         peer_capabilities=(CAPABILITY,),
         qualification=True,
     )
+    _import_current_files(db, receipt, current)
+
+
+def _import_current_files(db, receipt, current):
+    """Persist proofs only after v3 full scope or v4 exact selection was validated."""
+    from omakase.plus.language_store import record_observation
+
     expected = {}
     for title in current["titles"]:
         for asset in title["assets"]:

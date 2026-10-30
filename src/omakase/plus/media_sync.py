@@ -47,7 +47,13 @@ from omakase.plus.media_store import (
     upsert_asset,
     upsert_monitor,
 )
-from omakase.plus.media_types import EpisodeCoverage, MediaAsset, MediaCandidate, MediaSyncResult
+from omakase.plus.media_types import (
+    EpisodeCoverage,
+    MediaAsset,
+    MediaCandidate,
+    MediaRecheckIntent,
+    MediaSyncResult,
+)
 from omakase.plus.provider_limits import ProviderRateLimit, cooldown_hooks
 from omakase.plus.providers.compat import (
     acquire,
@@ -957,6 +963,7 @@ async def reconcile_candidates(
     heartbeat: Callable[[], None] | None = None,
     policy: AcquisitionPolicy | None = None,
     language_dispatch: LanguageDispatch | None = None,
+    recheck: MediaRecheckIntent | None = None,
 ) -> MediaSyncResult:
     """Reconcile while honoring durable publication withdrawal at every await."""
     try:
@@ -975,6 +982,7 @@ async def reconcile_candidates(
             heartbeat=_withdrawal_heartbeat(db, int(monitor["id"]), heartbeat),
             policy=policy,
             language_dispatch=language_dispatch,
+            recheck=recheck,
         )
     except _MonitorWithdrawn:
         _keep_withdrawn_inactive(db, int(monitor["id"]))
@@ -996,12 +1004,18 @@ async def _reconcile_candidates_active(
     heartbeat: Callable[[], None] | None = None,
     policy: AcquisitionPolicy | None = None,
     language_dispatch: LanguageDispatch | None = None,
+    recheck: MediaRecheckIntent | None = None,
 ) -> MediaSyncResult:
     """Try a deterministic candidate window and persist all terminal evidence."""
     if max_candidates <= 0:
         raise ValueError("max_candidates must be positive")
     monitor_id = int(monitor["id"])
     policy = policy or AcquisitionPolicy()
+    checks = None
+    if recheck is not None:
+        from omakase.plus.episode_recheck import targets
+
+        checks = targets(db, monitor, _required_episodes(monitor), policy, recheck)
     if policy.languages is not None:
         from omakase.plus.language_store import CONTRACT_VERSION
         from omakase.plus.media_store import language_request_reuse
@@ -1034,6 +1048,19 @@ async def _reconcile_candidates_active(
     run_id = record_sync_run(db, monitor_id=monitor_id, outcome="running")
     required = _required_episodes(monitor)
     covered = set(covered_episodes(db, monitor_id))
+    upgrade_search = (
+        (checks.upgrades - checks.pending) if checks and checks.upgrade_allowed else frozenset()
+    )
+    acquired_preferred: set[int] = set()
+    in_flight = set(checks.downloading) if checks else set()
+    in_flight_preferred: set[int] = set()
+
+    def needed(quality=None):
+        remaining = (set(required) - covered) - in_flight
+        if quality is None or quality == "1080p":
+            remaining.update(upgrade_search - acquired_preferred - in_flight_preferred)
+        return remaining
+
     ranked = rank_candidates(tuple(candidates), policy=policy)
     eligible: list[MediaCandidate] = []
     hardsub_fallbacks: list[MediaCandidate] = []
@@ -1113,9 +1140,9 @@ async def _reconcile_candidates_active(
         nonlocal attempted_total, cap_reached, skipped_provider_blocks
         for candidate in plan:
             _guard_withdrawal(db, monitor_id)
-            if required <= covered:
+            if not needed():
                 break
-            if candidate.coverage.isdisjoint(required - covered):
+            if candidate.coverage.isdisjoint(needed(candidate.quality)):
                 _record_attempt(
                     db,
                     monitor_id=monitor_id,
@@ -1181,15 +1208,32 @@ async def _reconcile_candidates_active(
             if asset is not None:
                 accepted.append(asset)
                 covered.update(asset.usable_coverage)
+                if asset.quality == "1080p":
+                    acquired_preferred.update(asset.usable_coverage)
+            elif checks is not None:
+                pending_asset = db.execute(
+                    "SELECT status,planned_coverage_json FROM media_assets WHERE monitor_id=? AND torrent_hash=?",
+                    (monitor_id, candidate.torrent_hash),
+                ).fetchone()
+                if pending_asset is not None and pending_asset["status"] in {
+                    "requested",
+                    "queued",
+                    "waiting_files",
+                    "downloading",
+                }:
+                    scope = set(json.loads(pending_asset["planned_coverage_json"])) & required
+                    in_flight.update(scope)
+                    if candidate.quality == "1080p":
+                        in_flight_preferred.update(scope)
 
     for quality in policy.allowed_resolutions:
-        if not (required - covered) or cap_reached:
+        if not needed() or cap_reached:
             break
         if quality == "720p" and not provider_complete:
             continue
-        primary = select_episode_cover(required - covered, candidates_by_quality[quality])
+        primary = select_episode_cover(needed(quality), candidates_by_quality[quality])
         await attempt_plan(primary, fallback=quality == "720p")
-        if not (required - covered) or cap_reached:
+        if not needed() or cap_reached:
             break
         backup = [
             candidate
@@ -1199,16 +1243,16 @@ async def _reconcile_candidates_active(
         await attempt_plan(backup, fallback=quality == "720p")
     if policy.allow_hardsub_fallback:
         for quality in policy.allowed_resolutions:
-            if not (required - covered) or cap_reached or not provider_complete:
+            if not needed() or cap_reached or not provider_complete:
                 break
             hardsub_candidates = [
                 candidate for candidate in hardsub_fallbacks if candidate.quality == quality
             ]
             await attempt_plan(
-                select_episode_cover(required - covered, hardsub_candidates),
+                select_episode_cover(needed(quality), hardsub_candidates),
                 fallback=True,
             )
-            if not (required - covered) or cap_reached:
+            if not needed() or cap_reached:
                 break
             await attempt_plan(
                 [
@@ -1279,6 +1323,34 @@ async def _reconcile_candidates_active(
     usable_count = len(required & covered)
     outcome = "complete" if required <= covered else "degraded"
     detail = f"Coverage {usable_count}/{len(required)}; {outcome}"
+    if checks is not None:
+        detail = f"Episode recheck finished; playable inventory {usable_count}/{len(required)}."
+        if checks.upgrades:
+            downloads = (checks.preferred_downloading | in_flight_preferred) & checks.upgrades
+            pending = checks.pending | (
+                (acquired_preferred | in_flight_preferred) & checks.upgrades
+            )
+            if not checks.upgrade_allowed:
+                outcome = "upgrade_blocked"
+                detail += " 1080p upgrades are excluded by your download criteria."
+            elif pending:
+                outcome = "upgrade_pending"
+                if downloads:
+                    detail += (
+                        f" 1080p downloads are in progress for {len(downloads)} fallback episodes."
+                    )
+                if pending - downloads:
+                    detail += f" Higher releases found for {len(pending - downloads)} fallback episodes; replacement publication is unconfirmed."
+            else:
+                outcome = "upgrade_not_found"
+                detail += f" No publishable 1080p replacement found for {len(checks.upgrades)} fallback episodes."
+            detail += " Existing usable copies retained."
+        if not required <= covered:
+            if (required - covered) & in_flight:
+                outcome = "download_pending"
+                detail += f" Downloads are in progress for {len((required - covered) & in_flight)} missing episodes."
+            else:
+                outcome = "degraded"
     if skipped_provider_blocks:
         detail += (
             f"; skipped {skipped_provider_blocks} recently rejected provider "
@@ -1308,6 +1380,7 @@ async def _reconcile_candidates_active(
             detail += f"; search budget {max_candidates} reached"
         if provider_complete:
             detail += "; configured Nyaa catalog checked"
+    detail = detail[:500]
     complete_sync_run(
         db,
         sync_run_id=run_id,
@@ -1930,6 +2003,7 @@ async def reconcile_monitor(
     language_actor_user_id: int | None = None,
     language_source_generation: str | None = None,
     language_contract_version: str | None = None,
+    recheck: MediaRecheckIntent | None = None,
 ) -> MediaSyncResult:
     """Reconcile while honoring durable publication withdrawal at every await."""
     monitor = db.execute("SELECT * FROM media_monitors WHERE id = ?", (monitor_id,)).fetchone()
@@ -1957,6 +2031,7 @@ async def reconcile_monitor(
             now=now,
             max_candidates=max_candidates,
             heartbeat=_withdrawal_heartbeat(db, monitor_id, heartbeat),
+            recheck=recheck,
         )
     except ProviderRateLimit as error:
         return replace(
@@ -1980,6 +2055,7 @@ async def _reconcile_monitor_active(
     heartbeat: Callable[[], None] | None = None,
     policy_override: AcquisitionPolicy | None = None,
     language_dispatch: LanguageDispatch | None = None,
+    recheck: MediaRecheckIntent | None = None,
 ) -> MediaSyncResult:
     """Refresh provider assets, search every alias, and reconcile one monitor."""
     monitor = db.execute("SELECT * FROM media_monitors WHERE id = ?", (monitor_id,)).fetchone()
@@ -1988,7 +2064,7 @@ async def _reconcile_monitor_active(
     policy = policy_override or load_user_acquisition_policy(db, int(monitor["user_id"]))
     legacy_note = False
     if policy.languages is not None and language_dispatch is None:
-        if _legacy_language_monitor(db, monitor_id):
+        if _legacy_language_monitor(db, monitor_id) and not (recheck and recheck.upgrade_to_1080):
             policy = replace(policy, languages=None)
             legacy_note = True
         else:
@@ -2018,6 +2094,11 @@ async def _reconcile_monitor_active(
         )
         if row[0]
     )
+    search_episodes = _required_episodes(monitor) - covered_episodes(db, monitor_id)
+    if recheck is not None:
+        from omakase.plus.episode_recheck import targets
+
+        search_episodes = targets(db, monitor, _required_episodes(monitor), policy, recheck).search
     windows = await search_alias_windows(
         aliases,
         season=int(_monitor_value(monitor, "season_number", 1) or 1),
@@ -2026,7 +2107,7 @@ async def _reconcile_monitor_active(
         heartbeat=heartbeat,
         additional_catalogs=catalog_configuration.sources,
         policy=policy,
-        missing_episodes=sorted(_required_episodes(monitor) - covered_episodes(db, monitor_id)),
+        missing_episodes=sorted(search_episodes),
         media_format=str(monitor["format"]),
         metadata_excluded_hashes=metadata_excluded_hashes,
     )
@@ -2075,9 +2156,10 @@ async def _reconcile_monitor_active(
         heartbeat=heartbeat,
         policy=policy,
         language_dispatch=language_dispatch,
+        **({"recheck": recheck} if recheck is not None else {}),
     )
     _guard_withdrawal(db, monitor_id)
-    if language_dispatch is None:
+    if language_dispatch is None and recheck is None:
         plan_stalled_asset_removals(db, monitor_id=monitor_id, now=now)
     if legacy_note:
         result = replace(
@@ -2426,6 +2508,7 @@ def _selected_monitors(
     *,
     now: str,
     monitor_ids: Sequence[int] | None,
+    include_finished_inactive: bool = False,
 ) -> list[sqlite3.Row]:
     if monitor_ids is None:
         return [
@@ -2439,11 +2522,11 @@ def _selected_monitors(
     placeholders = ",".join("?" for _ in normalized)
     return list(
         db.execute(
-            f"""SELECT * FROM media_monitors WHERE active = 1 AND id IN ({placeholders})
+            f"""SELECT * FROM media_monitors WHERE (active = 1 OR (? = 1 AND release_status = 'FINISHED')) AND id IN ({placeholders})
                 AND NOT EXISTS (SELECT 1 FROM media_title_removals r WHERE r.monitor_id = media_monitors.id)
                 AND NOT EXISTS (SELECT 1 FROM completion_plex_cleanup_blocks b WHERE b.monitor_id = media_monitors.id)
                 ORDER BY id""",
-            normalized,
+            (int(include_finished_inactive), *normalized),
         ).fetchall()
     )
 
@@ -2458,8 +2541,38 @@ async def run_media_sync(
     identity_resolver: Callable[[str, str], object] | None = None,
     provider_factory: Callable[[int], object] | None = None,
     rd_factory: Callable[[int], object] | None = None,
+    recheck: MediaRecheckIntent | None = None,
 ) -> SchedulerReceipt:
     """Shared lease-acquiring entrypoint for every immediate and scheduled sync."""
+    if recheck is not None:
+        if (
+            not isinstance(recheck, MediaRecheckIntent)
+            or monitor_ids is None
+            or tuple(monitor_ids) != (recheck.monitor_id,)
+        ):
+            raise ValueError("A recheck must select exactly its single authorized title.")
+        owned = db.execute(
+            "SELECT user_id,active,release_status,format FROM media_monitors WHERE id=?",
+            (recheck.monitor_id,),
+        ).fetchone()
+        if owned is None or owned["user_id"] != recheck.actor_user_id:
+            raise ValueError("A recheck must belong to its requesting owner.")
+        if recheck.upgrade_to_1080 and owned["format"] == "MOVIE":
+            raise ValueError("Episode upgrade intent is not a movie acquisition policy.")
+        if _monitor_withdrawn(db, recheck.monitor_id) or (
+            not owned["active"] and owned["release_status"] != "FINISHED"
+        ):
+            return SchedulerReceipt(
+                outcome="not_eligible", monitor_results=(), recovered_owner_hash=""
+            )
+        if recheck.upgrade_to_1080:
+            from omakase.plus.language_publication import LANGUAGE_PUBLICATION_QUALIFIED
+            from omakase.plus.quality_publication import QUALITY_PUBLICATION_QUALIFIED
+
+            if not (QUALITY_PUBLICATION_QUALIFIED and LANGUAGE_PUBLICATION_QUALIFIED):
+                return SchedulerReceipt(
+                    outcome="not_qualified", monitor_results=(), recovered_owner_hash=""
+                )
     fixed_now = now
     started_at = fixed_now or _utc_now()
     owner = lease_owner or secrets.token_urlsafe(32)
@@ -2513,7 +2626,12 @@ async def run_media_sync(
 
     results: list[SchedulerMonitorResult] = []
     try:
-        selected_monitors = _selected_monitors(db, now=started_at, monitor_ids=monitor_ids)
+        selected_monitors = _selected_monitors(
+            db,
+            now=started_at,
+            monitor_ids=monitor_ids,
+            include_finished_inactive=recheck is not None,
+        )
         health_user_ids = {int(row["user_id"]) for row in selected_monitors}
         if monitor_ids is None:
             health_user_ids.update(
@@ -2604,13 +2722,14 @@ async def run_media_sync(
                 provider = providers_by_user.get(monitor_user_id)
                 if provider is None:
                     provider = provider_factory(monitor_user_id)
-                await process_pending_asset_removals(
-                    db,
-                    rd=provider,
-                    lease_owner=owner,
-                    now=started_at,
-                    monitor_id=monitor_id,
-                )
+                if recheck is None:
+                    await process_pending_asset_removals(
+                        db,
+                        rd=provider,
+                        lease_owner=owner,
+                        now=started_at,
+                        monitor_id=monitor_id,
+                    )
                 heartbeat()
                 sync_result = await reconcile_monitor(
                     db,
@@ -2618,13 +2737,15 @@ async def run_media_sync(
                     rd=provider,
                     now=started_at,
                     heartbeat=heartbeat,
+                    **({"recheck": recheck} if recheck is not None else {}),
                 )
-                schedule_monitor(
-                    db,
-                    monitor_id=monitor_id,
-                    now=started_at,
-                    sync_result=sync_result,
-                )
+                if recheck is None:
+                    schedule_monitor(
+                        db,
+                        monitor_id=monitor_id,
+                        now=started_at,
+                        sync_result=sync_result,
+                    )
                 db.commit()
                 results.append(
                     SchedulerMonitorResult(
@@ -2648,12 +2769,22 @@ async def run_media_sync(
                     )
                 )
             except Exception:
-                _schedule_monitor_failure(
-                    db,
-                    monitor_id=monitor_id,
-                    now=started_at,
-                    detail="SYNC_FAILED",
-                )
+                if recheck is None:
+                    _schedule_monitor_failure(
+                        db, monitor_id=monitor_id, now=started_at, detail="SYNC_FAILED"
+                    )
+                else:
+                    record_sync_run(
+                        db,
+                        monitor_id=monitor_id,
+                        outcome="degraded",
+                        detail="SYNC_FAILED",
+                        completed_at=started_at,
+                    )
+                    db.execute(
+                        "UPDATE media_monitors SET last_checked_at=?,last_result='SYNC_FAILED' WHERE id=?",
+                        (started_at, monitor_id),
+                    )
                 db.commit()
                 results.append(SchedulerMonitorResult(monitor_id, "degraded", "SYNC_FAILED"))
         outcome = "degraded" if any(item.outcome == "degraded" for item in results) else "complete"

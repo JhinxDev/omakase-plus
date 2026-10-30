@@ -6,7 +6,7 @@ This source candidate records the maintained interface contract. Technical, crea
 
 Artwork leads; one primary action follows. Geist is served locally. Pale iris carries selection/action, emerald confirmed availability, amber partial/attention, slate unknown, muted red destructive/failure. Every state has meaningful words as well as color. Availability, watching, rating and media verification are independent.
 
-Home uses a 64–72vh cinematic stage, a genuine wide image, long text-protection gradient and bottom fade. Preserve the artwork's midtones. Inadequate landscape images fall back to a crisp source-sized portrait with its exact intrinsic aspect, one rounded visible edge and a restrained shadow. A smooth dark gradient uses two colors sampled from the displayed artwork; no enlarged blurred duplicate or translucent letterbox matte sits behind it. Unreadable artwork keeps a neutral dark fallback. No automatic rotation. Phone art leads above a compact text block. Reduced motion is fully composed immediately.
+Home uses a 64–72vh cinematic stage, a genuine wide image, long text-protection gradient and bottom fade. Preserve the artwork's midtones. Inadequate landscape images fall back to a crisp source-sized portrait with its exact intrinsic aspect, one rounded visible edge and a restrained shadow. Sample eight narrow regions around the displayed image's perimeter. Blend each region at its corresponding visible corner or side, including the lower center; a small saturated patch must not dominate a different edge. Recalculate anchors after resizing, refresh colors on image loads, and clear them on unreadable artwork. The text keeps dark protection while the lower colored edge remains visible. There is no enlarged blurred duplicate or translucent letterbox matte. No automatic rotation. Phone art leads above a compact text block. Reduced motion is fully composed immediately.
 
 ## Shared components
 
@@ -105,3 +105,25 @@ Direct explanatory paragraphs in editorial, utility and empty-state panels have
 This is a shared block boundary, including Household's create/join choices and
 Storage's management link. Natural wrapping and existing 44/48px targets remain.
 Inline controls and paragraphs elsewhere keep their existing compact rhythm.
+
+## Episode rechecks and quality
+
+The episode section owns one explicit season refresh action for missing episodes
+and 1080p anime replacements. Anime prefers1080p and uses720p as fallback;2160p
+is mainly for movies and TV. Preserve existing higher copies. Current copies
+remain until a qualified publication selects a replacement. Downloading, a found
+release and successful publication are distinct states, with actual pending work
+and honest busy/no-result/blocked outcomes. Repeated submission is prevented and
+back navigation restores the action.
+
+Each episode card uses a real separate quality row. Amber identifies720p
+fallbacks;1080p stays quieter. Release claims remain labeled release quality.
+Measured dimensions require current source, exact file and episode proof. A new
+higher release cannot hide the still-selected fallback. Phones stack the section
+heading and action with breathing room; watch controls span the full title grid.
+
+A previously completed run can return when its exact next aired episode exists.
+Retain its original completion and rating until an explicit guarded continue and
+mark-watched action. Metadata/GET rendering does not edit watch history. Counts
+alone never claim that exact new episode is in Plex. The shelf and hero retain
+actual viewing recency, with a View new episode details action when appropriate.

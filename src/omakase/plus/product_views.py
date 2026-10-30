@@ -11,6 +11,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from omakase.plus.anime_synopsis import cached_synopsis
 from omakase.plus.catalog_config import configured_catalogs
+from omakase.plus.episode_quality import episode_qualities
 from omakase.plus.health import reason_label
 from omakase.plus.manifest import validate_curator_receipt
 from omakase.plus.media_store import covered_episodes, verified_asset_coverage
@@ -167,16 +168,15 @@ def home_view(db, *, user_id: int, library_scope=None) -> dict[str, Any]:
     in_progress = [item for item in titles if item["lifecycle"] == "in_progress"]
     recency = anime_viewing_recency(db, user_id) if in_progress else {}
     # Stable ties retain the existing library order; rank before the shelf cap.
-    continue_watching = sorted(
+    ordered_resume = sorted(
         in_progress,
         key=lambda item: recency.get((item["anilist_id"], int(item["season_number"] or 0)), ""),
         reverse=True,
-    )[:10]
+    )
+    continue_watching = ordered_resume[:10]
     confirmation_needed = [item for item in titles if item["has_pending_confirmation"]][:5]
     ready = [item for item in titles if item["lifecycle"] == "ready_to_start"][:10]
-    new_episodes = [
-        item for item in titles if item["new_episode_ready"] and item["lifecycle"] == "in_progress"
-    ][:10]
+    new_episodes = [item for item in ordered_resume if item.get("new_episode_available")][:10]
     recent = activity_view(db, user_id=user_id, limit=6)["events"]
     return {
         "summary": {
@@ -309,7 +309,16 @@ def library_titles(
         qualities = [
             quality for quality in ("1080p", "2160p", "720p") if quality in quality_coverage
         ]
-        fallback_episodes = sorted(quality_coverage.get("720p", set()))
+        effective_quality = episode_qualities(db, assets)
+        if required:
+            effective_quality = {
+                episode: value
+                for episode, value in effective_quality.items()
+                if episode <= required
+            }
+        fallback_episodes = sorted(
+            episode for episode, value in effective_quality.items() if value["quality"] == "720p"
+        )
         plex = visible.get((int(monitor["anilist_id"]), monitor["season_number"]))
         plex_visible = int(plex[1]) if plex else 0
         curator_usable = int(plex[0]) if plex else 0
@@ -384,29 +393,68 @@ def library_titles(
             else None
         )
         monitor_total = int(monitor["expected_episodes"] or 0)
-        episode_total = stored_total or (monitor_total if monitor_total > 0 else None)
+        episode_total = max(stored_total or 0, monitor_total, required) or None
+        cleanup_blocked = (
+            db.execute(
+                "SELECT 1 FROM completion_plex_cleanup_blocks WHERE monitor_id=?", (monitor["id"],)
+            ).fetchone()
+            is not None
+        )
+        resurfaced = bool(
+            watch_status == "completed"
+            and stored_total
+            and progress_episodes >= stored_total
+            and progress_episodes + 1 in coverage
+            and progress_episodes < required
+            and not removal_status
+            and not cleanup_blocked
+            and not is_movie
+        )
         next_episode = None
-        if watch_status != "completed" and (
+        if (watch_status != "completed" or resurfaced) and (
             episode_total is None or progress_episodes < episode_total
         ):
             next_episode = progress_episodes + 1
-        new_episode_ready = bool(next_episode is not None and plex_visible >= next_episode)
-        if watch_status == "completed":
+        new_episode_available = bool(
+            next_episode in coverage
+            and next_episode <= required
+            and not removal_status
+            and not cleanup_blocked
+        )
+        # Current curator receipts expose counts, not exact Plex episode membership.
+        new_episode_ready = False
+        caught_up = bool(
+            str(monitor["release_status"]) == "RELEASING"
+            and required > 0
+            and progress_episodes >= required
+            and not new_episode_available
+        )
+        if watch_status == "completed" and not resurfaced:
             title_lifecycle = "completed"
+        elif caught_up:
+            title_lifecycle = "waiting"
         elif progress_episodes > 0:
             title_lifecycle = "in_progress"
-        elif new_episode_ready or readiness == "ready":
+        elif (new_episode_available and usable < required) or readiness == "ready":
             title_lifecycle = "ready_to_start"
         else:
             title_lifecycle = "waiting"
         missing_media = max(0, required - usable)
         missing_plex = max(0, required - plex_visible)
-        if title_lifecycle == "completed":
+        if caught_up:
+            lifecycle_label = "Caught up"
+        elif resurfaced:
+            lifecycle_label = "New episode found"
+        elif title_lifecycle == "completed":
             lifecycle_label = "Completed"
         elif title_lifecycle == "in_progress":
             lifecycle_label = "In progress"
         elif title_lifecycle == "ready_to_start":
-            lifecycle_label = "Ready to start"
+            lifecycle_label = (
+                "Episode found"
+                if new_episode_available and readiness != "ready"
+                else "Ready to start"
+            )
         elif removal_status:
             lifecycle_label = status_label
         elif publication_pending:
@@ -424,8 +472,17 @@ def library_titles(
         else:
             lifecycle_label = "Needs setup"
         if not removal_status:
-            if new_episode_ready and readiness != "ready":
-                status_label = f"Episode {next_episode} is ready"
+            if resurfaced:
+                status_label = f"Episode {next_episode} found · Plex availability unconfirmed"
+            elif caught_up:
+                status_label = "Caught up · Waiting for the next episode"
+            elif (
+                new_episode_available
+                and readiness != "ready"
+                and missing_media > 0
+                and not publication_pending
+            ):
+                status_label = f"Episode {next_episode} found · Plex availability unconfirmed"
             elif required <= 0:
                 status_label = "No episodes have aired yet"
             elif missing_media and not provider_kinds:
@@ -442,7 +499,7 @@ def library_titles(
             continue
         if lifecycle not in {"active", "all", title_lifecycle}:
             continue
-        if watch_status == "completed":
+        if watch_status == "completed" and not resurfaced:
             progress_percent = 100
         elif episode_total:
             progress_percent = min(100, round((progress_episodes / episode_total) * 100))
@@ -498,7 +555,12 @@ def library_titles(
                 "provider_summary": provider_summary,
                 "asset_count": len(assets),
                 "release_qualities": qualities,
-                "fallback_episodes": fallback_episodes,
+                "fallback_episodes": [] if readiness == "archived" else fallback_episodes,
+                "episode_qualities": {} if readiness == "archived" else effective_quality,
+                "can_recheck": not removal_status
+                and not cleanup_blocked
+                and readiness != "archived"
+                and (bool(monitor["active"]) or monitor["release_status"] == "FINISHED"),
                 "last_result": clean_detail(
                     removal_row["detail"]
                     if removal_row is not None
@@ -507,6 +569,7 @@ def library_titles(
                 "next_check_at": monitor["next_check_at"] or "",
                 "removal_status": removal_status,
                 "watch_entry_id": int(watch["id"]) if watch is not None else None,
+                "watch_revision": int(watch["revision"]) if watch is not None else None,
                 "watch_status": watch_status,
                 "lifecycle": title_lifecycle,
                 "lifecycle_label": lifecycle_label,
@@ -522,6 +585,13 @@ def library_titles(
                     watch is not None and int(watch["pending_confirmation_count"] or 0)
                 ),
                 "new_episode_ready": new_episode_ready,
+                "new_episode_available": new_episode_available,
+                "resurfaced": resurfaced,
+                "caught_up": caught_up,
+                "episode_availability_label": "Plex availability unconfirmed"
+                if new_episode_available
+                else "",
+                "resume_action_label": "View new episode" if resurfaced else "Continue series",
                 "publication_pending": publication_pending,
                 "publication_detail": publication_detail,
             }

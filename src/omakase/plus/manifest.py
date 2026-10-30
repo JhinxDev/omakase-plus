@@ -398,6 +398,7 @@ def _build_library_manifest_v2(
     db: sqlite3.Connection,
     *,
     generated_at: str | None = None,
+    retain_fallbacks: bool = False,
 ) -> dict[str, Any]:
     """Build one cross-user-deduplicated manifest from usable RD file evidence."""
     generated_at = _timestamp(generated_at or utc_now(), "generated_at")
@@ -554,7 +555,11 @@ def _build_library_manifest_v2(
                 assets.append(asset)
                 claimed_coverage.add(1)
                 continue
-            novel_coverage = sorted(set(asset["episode_coverage"]) - claimed_coverage)
+            novel_coverage = sorted(
+                set(asset["episode_coverage"])
+                if retain_fallbacks
+                else set(asset["episode_coverage"]) - claimed_coverage
+            )
             if not novel_coverage:
                 continue
             asset["episode_coverage"] = novel_coverage
@@ -812,14 +817,20 @@ def store_curator_receipt(
     *,
     received_at: str | None = None,
     language_qualification: bool = False,
+    quality_qualification: bool = False,
 ) -> dict[str, Any]:
     """Validate and transactionally replace only later converged live evidence."""
     receipt = validate_curator_receipt(payload)
-    if receipt["schema_version"] == "curator-receipt-v3":
+    if receipt["schema_version"] in {"curator-receipt-v3", "curator-receipt-v4"}:
         from omakase.plus.language_publication import LANGUAGE_PUBLICATION_QUALIFIED
 
         if not (LANGUAGE_PUBLICATION_QUALIFIED or language_qualification is True):
             raise ManifestContractError("Language receipt import is not qualified.")
+    if receipt["schema_version"] == "curator-receipt-v4":
+        from omakase.plus.quality_publication import QUALITY_PUBLICATION_QUALIFIED
+
+        if not (QUALITY_PUBLICATION_QUALIFIED or quality_qualification is True):
+            raise ManifestContractError("Quality receipt import is not qualified.")
     received_at = _timestamp(received_at or utc_now(), "received_at")
     canonical = _canonical_bytes(receipt)
     receipt_hash = hashlib.sha256(canonical).hexdigest()
@@ -827,6 +838,7 @@ def store_curator_receipt(
         receipt["mode"] == "live"
         and receipt["topology_converged"] is True
         and receipt["outcome"] in {"success", "degraded"}
+        and receipt.get("selection_applied", True)
     )
     db.execute("BEGIN IMMEDIATE")
     try:
@@ -847,6 +859,11 @@ def store_curator_receipt(
                 "run_id": receipt["run_id"],
                 "receipt_hash": receipt_hash,
             }
+        if receipt["schema_version"] == "curator-receipt-v4":
+            from omakase.plus.quality_publication import record_failures, validate_current_selection
+
+            validate_current_selection(db, receipt)
+            record_failures(db, receipt)
         if not eligible:
             db.commit()
             return {
@@ -862,6 +879,10 @@ def store_curator_receipt(
             from omakase.plus.language_publication import import_files
 
             import_files(db, receipt)
+        elif receipt["schema_version"] == "curator-receipt-v4":
+            from omakase.plus.quality_publication import import_selection
+
+            import_selection(db, receipt)
         db.execute(
             """INSERT INTO media_curator_receipt_latest
                (id, receipt_json, receipt_hash, curator_run_id, outcome,
@@ -901,6 +922,13 @@ def store_curator_receipt(
 
 
 def validate_library_manifest(payload):
+    if isinstance(payload, dict) and payload.get("schema_version") == "manifest-v4":
+        from omakase.plus.quality_publication import validate_manifest
+
+        try:
+            return validate_manifest(payload)
+        except (ValueError, TypeError, KeyError, StopIteration):
+            raise ManifestContractError("Invalid manifest-v4 quality selection contract.") from None
     if isinstance(payload, dict) and payload.get("schema_version") == "manifest-v3":
         from omakase.plus.language_publication import validate_manifest
 
@@ -912,19 +940,23 @@ def validate_library_manifest(payload):
 
 
 def _build_library_manifest_versioned(
-    db, *, generated_at=None, peer_capabilities=(), qualification=False
+    db, *, generated_at=None, peer_capabilities=(), qualification=False, quality_qualification=False
 ):
     from omakase.plus.language_publication import (
         CAPABILITY,
         LANGUAGE_PUBLICATION_QUALIFIED,
         export_contract,
     )
+    from omakase.plus.quality_publication import CAPABILITY as QUALITY_CAPABILITY
+    from omakase.plus.quality_publication import QUALITY_PUBLICATION_QUALIFIED, SELECTION, priority
 
     if (
         not isinstance(peer_capabilities, (tuple, list))
         or len(peer_capabilities) > 8
-        or any(c != CAPABILITY for c in peer_capabilities)
+        or any(c not in {CAPABILITY, QUALITY_CAPABILITY} for c in peer_capabilities)
+        or len(set(peer_capabilities)) != len(peer_capabilities)
         or type(qualification) is not bool
+        or type(quality_qualification) is not bool
     ):
         raise ManifestContractError("Unknown curator publication capability.")
     has_table = db.execute(
@@ -940,11 +972,18 @@ def _build_library_manifest_versioned(
     capable = CAPABILITY in peer_capabilities and (
         LANGUAGE_PUBLICATION_QUALIFIED or qualification is True
     )
+    quality = QUALITY_CAPABILITY in peer_capabilities
+    if quality and not (
+        capable and (QUALITY_PUBLICATION_QUALIFIED or quality_qualification is True)
+    ):
+        raise ManifestContractError(
+            "Quality publication requires both qualified paired capabilities."
+        )
     if contracted and not capable:
         raise ManifestContractError(
             "Language publication requires a qualified manifest-v3 peer; current generation retained."
         )
-    manifest = _build_library_manifest_v2(db, generated_at=generated_at)
+    manifest = _build_library_manifest_v2(db, generated_at=generated_at, retain_fallbacks=quality)
     if not capable:
         return manifest
     manifest["schema_version"] = "manifest-v3"
@@ -958,10 +997,39 @@ def _build_library_manifest_versioned(
                 if len(rows) != 1:
                     raise ManifestContractError("Cross-owner publication contract is ambiguous.")
                 asset["language_contract"] = export_contract(db, asset_id=rows[0][0])
+            if quality:
+                from omakase.plus.quality_publication import source_generation
+
+                sources = db.execute(
+                    "SELECT a.id,a.inventory_fingerprint FROM media_assets a JOIN media_monitors m ON m.id=a.monitor_id WHERE m.anilist_id=? AND upper(a.torrent_hash)=? AND a.status='downloaded' AND a.inventory_verified_at IS NOT NULL",
+                    (title["anilist_id"], asset["torrent_hash"]),
+                ).fetchall()
+                generations = {r[1] for r in sources}
+                if len(generations) != 1:
+                    raise ManifestContractError("Quality source inventory is ambiguous.")
+                asset["inventory_generation"] = generations.pop()
+                bindings = {source_generation(db, r[0]) for r in sources}
+                if len(bindings) != 1:
+                    raise ManifestContractError("Quality connector source is ambiguous.")
+                asset["source_generation"] = bindings.pop()
+        if quality:
+            title["assets"].sort(key=priority)
+    if quality:
+        manifest["schema_version"] = "manifest-v4"
+        manifest["quality_selection"] = SELECTION
     return validate_library_manifest(manifest)
 
 
 def validate_curator_receipt(payload):
+    if isinstance(payload, dict) and payload.get("schema_version") == "curator-receipt-v4":
+        from omakase.plus.quality_publication import validate_receipt
+
+        try:
+            return validate_receipt(payload)
+        except (ValueError, TypeError, KeyError):
+            raise ManifestContractError(
+                "Invalid curator-receipt-v4 quality selection contract."
+            ) from None
     if isinstance(payload, dict) and payload.get("schema_version") == "curator-receipt-v3":
         from omakase.plus.language_publication import validate_receipt
 
@@ -972,13 +1040,16 @@ def validate_curator_receipt(payload):
     return _validate_curator_receipt_v2(payload)
 
 
-def build_library_manifest(db, *, generated_at=None, peer_capabilities=(), qualification=False):
+def build_library_manifest(
+    db, *, generated_at=None, peer_capabilities=(), qualification=False, quality_qualification=False
+):
     try:
         return _build_library_manifest_versioned(
             db,
             generated_at=generated_at,
             peer_capabilities=peer_capabilities,
             qualification=qualification,
+            quality_qualification=quality_qualification,
         )
     except ManifestContractError:
         raise

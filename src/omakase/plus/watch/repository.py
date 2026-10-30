@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -221,12 +222,29 @@ def insert_watch_event(
     decision: WatchDecision,
     observed_at: str,
     score_ten: int | None = None,
+    previous_completion: WatchEntry | None = None,
 ) -> int:
+    payload = {}
+    if previous_completion is not None:
+        if (
+            event.source != "manual"
+            or event.kind != "reopened"
+            or previous_completion.id != entry_id
+            or previous_completion.user_id != user_id
+            or previous_completion.status != "completed"
+        ):
+            raise WatchRepositoryError("previous completion does not match this manual reopen")
+        payload = {
+            "previous_completed_at": previous_completion.completed_at,
+            "previous_episode_total": previous_completion.episode_total,
+            "previous_revision": previous_completion.revision,
+        }
     cursor = db.execute(
         """INSERT INTO watch_events
            (watch_entry_id, user_id, source, event_key, kind, episode,
-            playback_fraction, confidence, force, disposition, reason, observed_at, score_ten)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            playback_fraction, confidence, force, disposition, reason, observed_at, score_ten,
+            payload_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             entry_id,
             user_id,
@@ -241,6 +259,7 @@ def insert_watch_event(
             decision.reason,
             observed_at,
             score_ten,
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
         ),
     )
     return int(cursor.lastrowid)

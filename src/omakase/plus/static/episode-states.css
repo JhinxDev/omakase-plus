@@ -1,10 +1,18 @@
 /* Viewing progress owns the tile. Media verification owns only its green check. */
 .viewer-episodes .viewer-episode {
+  display:grid;
+  grid-template-columns:auto minmax(0,1fr) auto;
+  align-items:center;
+  gap:8px 12px;
   background:#131925;
   border:1px solid #344052;
   outline:none;
   min-width:0;
 }
+.viewer-episodes .episode-number { grid-column:1; grid-row:1/span 2; }
+.viewer-episodes .episode-copy { grid-column:2; grid-row:1; }
+.viewer-episodes .episode-copy h3 { overflow-wrap:normal; word-break:normal; }
+.viewer-episodes .episode-watch-state { grid-column:3; grid-row:1; }
 .viewer-episodes .viewer-episode.is-verified { background:#131925; border-color:#344052; }
 .viewer-episodes .viewer-episode.is-watched { background:#25223a; border-color:#554771; }
 .viewer-episodes .viewer-episode.is-watched .episode-number,
@@ -19,6 +27,28 @@
 .viewer-episodes .episode-verification-icon { display:inline-flex; align-items:center; justify-content:center; width:19px; height:19px; box-sizing:border-box; border:1px solid #4e9874; border-radius:50%; color:#a2e6bd; background:#183428; }
 .viewer-episodes .episode-watch-state { font-size:.7rem; line-height:1.5; }
 .viewer-episodes .episode-release-date time { white-space:nowrap; }
+.viewer-episodes .episode-quality-row { grid-column:2/-1; display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; min-width:0; }
+.viewer-episodes .episode-quality { display:inline-flex; align-items:center; min-height:24px; padding:2px 8px; border:1px solid #465266; border-radius:6px; color:#cad4e3; font-size:.75rem; line-height:1.5; }
+.viewer-episodes .episode-quality.quality-fallback { color:#ffd69a; border-color:#967345; background:#352a1c; }
+.viewer-episodes .episode-quality-alternate { color:#b6c3d7; font-size:.75rem; line-height:1.6; overflow-wrap:anywhere; }
+.viewer-episodes .episode-recheck { margin:0; }
+.viewer-episodes .episode-recheck-help { color:#b6c3d7; line-height:1.7; margin:0 0 24px; max-width:80ch; }
+@media(max-width:600px) {
+  .viewer-episodes .stream-section-heading { flex-direction:column; align-items:stretch; gap:20px; }
+  .viewer-episodes .episode-recheck { width:100%; }
+  .viewer-episodes .episode-recheck .button { width:100%; min-height:44px; white-space:normal; }
+}
+@media(max-width:700px) {
+  .streaming-title-hero { grid-template-columns:100px minmax(0,1fr); }
+  .streaming-title-hero > .media-art { grid-column:1; grid-row:1/span 2; justify-self:start; width:100px; }
+  .streaming-title-hero .title-view-progress > div:first-child > :not(.state-tag):not(.title-genres) { grid-column:1/-1; grid-row:auto; }
+  .streaming-title-hero .title-view-progress > div:first-child > .state-tag { grid-column:2; grid-row:1; }
+  .streaming-title-hero .title-view-progress > div:first-child > .title-genres { grid-column:2; grid-row:2; }
+  .streaming-title-hero .title-watch-controls { grid-column:1/-1; min-width:0; width:100%; box-sizing:border-box; }
+  .streaming-title-hero .title-watch-controls .watch-actions > form { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; width:100%; }
+  .streaming-title-hero .title-watch-controls .watch-actions label { min-width:0; width:100%; font-size:.875rem; }
+  .streaming-title-hero .title-watch-controls .watch-actions :is(input,select,button) { width:100%; min-height:44px; box-sizing:border-box; font-size:.875rem; }
+}
 /* Keep operational detail legible without nesting a wall of dark panels. */
 .title-technical-details { color:#e6eaf2; }
 .title-technical-details > summary { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px 24px; font-size:1rem; font-weight:600; }

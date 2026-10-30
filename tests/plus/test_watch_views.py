@@ -156,7 +156,7 @@ def test_lifecycle_filters_cover_in_progress_ready_waiting_completed_and_all(
     assert len(library_titles(db, user_id=user_id, lifecycle="all")) == 4
 
 
-def test_playable_first_episode_is_ready_even_when_the_rest_of_the_season_is_missing(
+def test_verified_first_episode_is_found_without_inferring_exact_plex_membership(
     db: sqlite3.Connection,
 ) -> None:
     user_id = _user(db)
@@ -173,10 +173,11 @@ def test_playable_first_episode_is_ready_even_when_the_rest_of_the_season_is_mis
         if item["id"] == monitor_id
     )
 
-    assert item["new_episode_ready"] is True
+    assert item["new_episode_ready"] is False
+    assert item["new_episode_available"] is True
     assert item["lifecycle"] == "ready_to_start"
-    assert item["lifecycle_label"] == "Ready to start"
-    assert item["status_label"] == "Episode 1 is ready"
+    assert item["lifecycle_label"] == "Episode found"
+    assert item["status_label"] == "Episode 1 found · Plex availability unconfirmed"
 
 
 def test_waiting_titles_explain_no_source_versus_no_aired_episodes(

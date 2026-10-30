@@ -383,12 +383,17 @@ class OverlayPlan:
     plan_hash: str
     language_files: tuple[dict, ...] = ()
     language_v3: bool = False
+    publication_files: tuple[dict, ...] = ()
+    quality_v4: bool = False
+    quality_hold: bool = False
 
     @property
     def holds_current_generation(self) -> bool:
         """Avoid an empty destructive swap when every current title was blocked."""
-        return bool(self.title_publications) and not any(
-            publication.published_episodes for publication in self.title_publications
+        return (
+            self.quality_hold
+            or bool(self.title_publications)
+            and not any(publication.published_episodes for publication in self.title_publications)
         )
 
     def _unsigned(self) -> dict:
@@ -408,6 +413,10 @@ class OverlayPlan:
         if self.language_v3:
             result["schema_version"] = "overlay-plan-v7"
             result["language_files"] = list(self.language_files)
+        if self.quality_v4:
+            result["schema_version"] = "overlay-plan-v8"
+            result["publication_files"] = list(self.publication_files)
+            result["quality_hold"] = self.quality_hold
         return result
 
     def to_dict(self) -> dict:
@@ -415,7 +424,11 @@ class OverlayPlan:
 
     @classmethod
     def from_dict(cls, payload: dict) -> OverlayPlan:
-        v3 = isinstance(payload, dict) and payload.get("schema_version") == "overlay-plan-v7"
+        v4 = isinstance(payload, dict) and payload.get("schema_version") == "overlay-plan-v8"
+        v3 = isinstance(payload, dict) and payload.get("schema_version") in {
+            "overlay-plan-v7",
+            "overlay-plan-v8",
+        }
         if not isinstance(payload, dict) or set(payload) != (
             {
                 "schema_version",
@@ -429,9 +442,10 @@ class OverlayPlan:
                 "plan_hash",
             }
             | ({"language_files"} if v3 else set())
+            | ({"publication_files", "quality_hold"} if v4 else set())
         ):
             raise CuratorValidationError("overlay plan has an unknown shape")
-        if payload["schema_version"] not in {_PLAN_SCHEMA, "overlay-plan-v7"}:
+        if payload["schema_version"] not in {_PLAN_SCHEMA, "overlay-plan-v7", "overlay-plan-v8"}:
             raise CuratorValidationError("overlay plan schema is unsupported")
         digest = _sha256_value(payload["manifest_digest"], "manifest digest")
         plan_hash = _sha256_value(payload["plan_hash"], "plan hash")
@@ -533,8 +547,27 @@ class OverlayPlan:
                 raise CuratorValidationError("Invalid language publication files")
             for proof in language_files:
                 validate_file(proof)
-                if proof["source"] not in {entry.source for entry in entries}:
+                if not v4 and proof["source"] not in {entry.source for entry in entries}:
                     raise CuratorValidationError("Language proof is not a staged media source")
+        publication_files = tuple(payload.get("publication_files", ()))
+        if v4:
+            from omakase.plus.quality_publication import validate_publication_file
+
+            if (
+                not isinstance(payload["publication_files"], list)
+                or len(publication_files) > 4000
+                or type(payload["quality_hold"]) is not bool
+            ):
+                raise CuratorValidationError("Invalid quality publication facts")
+            for file in publication_files:
+                validate_publication_file(file)
+                if file["selected"] and file["source"] not in {entry.source for entry in entries}:
+                    raise CuratorValidationError("Selected source is not staged")
+            if any(
+                proof["source"] not in {file["source"] for file in publication_files}
+                for proof in language_files
+            ):
+                raise CuratorValidationError("Language proof has no qualified candidate")
         plan = cls(
             manifest_digest=digest,
             excluded_riven_folders=excluded,
@@ -546,6 +579,9 @@ class OverlayPlan:
             plan_hash=plan_hash,
             language_files=language_files,
             language_v3=v3,
+            publication_files=publication_files,
+            quality_v4=v4,
+            quality_hold=payload.get("quality_hold", False),
         )
         if not hashlib.sha256(_canonical_bytes(plan._unsigned())).hexdigest() == plan_hash:
             raise CuratorValidationError("overlay plan hash does not match its content")
@@ -774,6 +810,7 @@ def build_overlay_plan(
     require_english_subtitles: bool = False,
     language_probe=None,
     language_qualification: bool = False,
+    quality_qualification: bool = False,
 ) -> OverlayPlan:
     """Produce one mutation-free, partial-safe plan for both Anime sections."""
     if require_english_subtitles and subtitle_probe is None:
@@ -782,6 +819,19 @@ def build_overlay_plan(
         manifest = validate_library_manifest(manifest)
     except ValueError as exc:
         raise CuratorValidationError("manifest-v2 validation failed") from exc
+
+    if manifest["schema_version"] == "manifest-v4":
+        from quality_selection import build_quality_plan
+
+        return build_quality_plan(
+            config,
+            manifest,
+            subtitle_probe=subtitle_probe,
+            require_english_subtitles=require_english_subtitles,
+            language_probe=language_probe,
+            language_qualification=language_qualification,
+            quality_qualification=quality_qualification,
+        )
 
     v3 = manifest["schema_version"] == "manifest-v3"
     if v3:
@@ -1370,6 +1420,19 @@ def apply_overlay_plan(
             path = (source_root / proof["source"]).resolve(strict=True)
             path.relative_to(source_root)
             validate_source(path, proof)
+    if plan.quality_v4:
+        source_root = config.source_root.resolve(strict=True)
+        for file in plan.publication_files:
+            path = (source_root / file["source"]).resolve(strict=True)
+            path.relative_to(source_root)
+            current = path.stat()
+            if file["stat"] != {
+                "size": current.st_size,
+                "mtime_ns": current.st_mtime_ns,
+                "file_device": current.st_dev,
+                "file_inode": current.st_ino,
+            }:
+                raise CuratorValidationError("qualified source stat changed before publication")
     previous = _selected_generation(config)
     if plan.holds_current_generation:
         return OverlayApplyResult(previous, previous, plan.plan_hash, changed=False)

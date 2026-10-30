@@ -388,8 +388,21 @@
         if (event.defaultPrevented) return;
         const button = form.querySelector("button[type='submit']");
         if (!button) return;
+        if (form.hasAttribute("data-single-flight")) {
+          if (form.dataset.submitting === "true") { event.preventDefault(); return; }
+          form.dataset.submitting = "true";
+          button.disabled = true;
+        }
         const busyLabel = button.dataset.busyLabel;
         if (busyLabel) setButtonBusy(button, busyLabel);
+      });
+    });
+    window.addEventListener("pageshow", (event) => {
+      if (!event.persisted) return;
+      document.querySelectorAll('form[data-single-flight][data-submitting="true"]').forEach((form) => {
+        delete form.dataset.submitting;
+        const button = form.querySelector("button[type='submit']");
+        if (button) { button.disabled = false; clearButtonBusy(button, true); }
       });
     });
   }

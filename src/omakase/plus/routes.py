@@ -93,6 +93,7 @@ from omakase.plus.manifest import (
 )
 from omakase.plus.media_store import upsert_monitor
 from omakase.plus.media_sync import reconcile_curator_blocked_assets, run_media_sync
+from omakase.plus.media_types import MediaRecheckIntent
 from omakase.plus.middleware import require_user
 from omakase.plus.movies_routes import create_movies_router
 from omakase.plus.notifications_routes import create_notifications_router
@@ -180,6 +181,7 @@ from omakase.plus.watch.plex_sync import (
 from omakase.plus.watch.repository import get_watch_entry
 from omakase.plus.watch.service import (
     WatchServiceError,
+    continue_new_episode,
     ingest_watch_event,
     resolve_watch_confirmation,
 )
@@ -421,6 +423,7 @@ async def library_manifest(request: Request, db=Depends(get_db)):
     if limited is not None:
         return limited
     from omakase.plus.language_publication import CAPABILITY
+    from omakase.plus.quality_publication import CAPABILITY as QUALITY_CAPABILITY
 
     raw_capabilities = request.headers.get("X-Omakase-Curator-Capabilities", "")
     capabilities = (
@@ -432,7 +435,7 @@ async def library_manifest(request: Request, db=Depends(get_db)):
         len(raw_capabilities) > 256
         or len(capabilities) > 8
         or len(set(capabilities)) != len(capabilities)
-        or any(value != CAPABILITY for value in capabilities)
+        or any(value not in {CAPABILITY, QUALITY_CAPABILITY} for value in capabilities)
     ):
         return _machine_response({"detail": "Unsupported curator capabilities"}, 400)
     try:
@@ -1389,6 +1392,36 @@ async def watch_next_episode(
     return _watch_action_redirect(monitor_id, message, completed=result.entry.status == "completed")
 
 
+@router.post("/library/{monitor_id}/watch/continue")
+async def watch_continue_episode(
+    request: Request,
+    monitor_id: int,
+    episode: int = Form(...),
+    watch_revision: int = Form(...),
+    csrf_token: str = Form(""),
+    user=Depends(require_user),
+    db=Depends(get_db),
+):
+    _require_csrf(request, csrf_token)
+    try:
+        result = continue_new_episode(
+            db,
+            user_id=user.id,
+            monitor_id=monitor_id,
+            episode=episode,
+            expected_revision=watch_revision,
+            observed_at=_canonical_now(),
+        )
+    except (ValueError, WatchServiceError) as exc:
+        return _watch_action_error(monitor_id, exc)
+    await _sync_manual_watch(db, result)
+    return _watch_action_redirect(
+        monitor_id,
+        f"Progress updated through episode {result.entry.progress_episodes}.",
+        completed=result.entry.status == "completed",
+    )
+
+
 @router.post("/library/{monitor_id}/watch/episode")
 async def watch_exact_episode(
     request: Request,
@@ -1918,10 +1951,13 @@ async def retry_title(
     request: Request,
     monitor_id: int,
     csrf_token: str = Form(""),
+    intent: str = Form("missing"),
     user=Depends(require_user),
     db=Depends(get_db),
 ):
     _require_csrf(request, csrf_token)
+    if intent not in {"missing", "episodes_quality"}:
+        raise HTTPException(status_code=422, detail="Unsupported episode check")
     owned = db.execute(
         "SELECT 1 FROM media_monitors WHERE id = ? AND user_id = ?",
         (monitor_id, user.id),
@@ -1932,8 +1968,25 @@ async def retry_title(
         db,
         entrypoint="product_retry",
         monitor_ids=(monitor_id,),
+        recheck=MediaRecheckIntent(
+            user.id, monitor_id, upgrade_to_1080=intent == "episodes_quality"
+        ),
     )
-    message = f"Retry {receipt.outcome}"
+    if receipt.outcome == "already_running":
+        message = "An episode check is already running. No additional check was started."
+    elif receipt.outcome == "not_eligible":
+        message = "This title is not eligible for an episode check. Review its library status."
+    elif receipt.outcome == "not_qualified":
+        message = "Episode quality upgrades are not enabled on this installation yet. Your current copies are kept."
+    elif receipt.monitor_results:
+        result = receipt.monitor_results[0]
+        message = (
+            "The episode check could not finish. Your existing episodes were kept."
+            if result.detail == "SYNC_FAILED"
+            else result.detail
+        )
+    else:
+        message = "No episode check was performed. Your existing episodes were kept."
     return RedirectResponse(
         url=f"/plus/library/{monitor_id}?message={quote(message, safe='')}",
         status_code=302,
