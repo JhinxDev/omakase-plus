@@ -4,9 +4,10 @@ const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypt
 const {chromium}=require(require.resolve('playwright',{paths:[qaRuntime()]}));
 const base=process.env.OMAKASE_REVIEW_URL||'http://127.0.0.1:4419';assert.equal(new URL(base).hostname,'127.0.0.1');
 const output=process.env.OMAKASE_EPISODE_QA_OUTPUT||qaOutput('episode_rechecks');fs.mkdirSync(output,{recursive:true});
-const states=['complete-fallback','resurfaced','download-pending','publication-pending','no-result','busy'];
+const requestedStates=(process.argv.find(value=>value.startsWith('--state='))?.slice(8)||'').split(',').filter(Boolean);
+const states=['complete-fallback','resurfaced','download-pending','publication-pending','no-result','busy','upgrades-unavailable'].filter(state=>!requestedStates.length||requestedStates.includes(state));
 const receipt={url:base,source:{},scenarios:[],limitations:['Synthetic read-only presentation fixtures verify rendering and busy JavaScript, not provider jobs, publication, watch persistence or physical devices. Service and authenticated POST evidence is separate.']};
-for(const file of ['src/omakase/plus/templates/title.html','src/omakase/plus/templates/_media_components.html','src/omakase/plus/static/episode-states.css','scripts/showcase_preview.py'])receipt.source[file]=crypto.createHash('sha256').update(fs.readFileSync(path.join(__dirname,'..',file))).digest('hex');
+for(const file of ['src/omakase/plus/templates/title.html','src/omakase/plus/templates/_media_components.html','src/omakase/plus/static/episode-states.css','src/omakase/plus/static/dashboard.js','scripts/showcase_preview.py'])receipt.source[file]=crypto.createHash('sha256').update(fs.readFileSync(path.join(__dirname,'..',file))).digest('hex');
 (async()=>{
  const browser=await chromium.launch(qaBrowser());
  try{
@@ -33,6 +34,7 @@ for(const file of ['src/omakase/plus/templates/title.html','src/omakase/plus/tem
     else assert.ok(facts.rows.some(row=>row.quality==='720p fallback release'),'fallback is visible per episode');
     if(state==='busy')assert.ok(facts.button.disabled&&facts.button.text==='Checking episodes…','busy state is truthful and prevents duplicate click');
     if(state==='publication-pending')assert.ok(facts.text.includes('1080p found · publication unconfirmed'));
+    if(state==='upgrades-unavailable'){assert.equal(facts.button.text,'Find missing episodes');assert.ok(facts.text.includes('1080p upgrade checks are not enabled'));assert.equal(await page.locator('.episode-recheck input[name="intent"]').inputValue(),'missing');}
     await page.locator('.viewer-episodes').screenshot({path:path.join(output,`${state}-${width}-episodes.png`)});
     if(state==='resurfaced')await page.locator('#watch-tracking').screenshot({path:path.join(output,`${state}-${width}-continue.png`)});
     if(state==='complete-fallback'){

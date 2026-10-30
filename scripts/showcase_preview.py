@@ -359,6 +359,7 @@ EPISODE_STATES = (
     "publication-pending",
     "no-result",
     "busy",
+    "upgrades-unavailable",
 )
 
 
@@ -376,6 +377,7 @@ def episode_presentation_card(catalog, state):
         usable_episodes=list(range(1, total + 1)),
         upcoming_episodes=[],
         can_recheck=True,
+        quality_recheck_enabled=state != "upgrades-unavailable",
         active=False,
         release_status="FINISHED",
         release_status_label="Finished airing",

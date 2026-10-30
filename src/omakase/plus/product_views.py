@@ -206,6 +206,9 @@ def library_titles(
     library_scope=None,
 ) -> list[dict[str, Any]]:
     """Return stable per-title readiness cards with explicit filters."""
+    from omakase.plus.language_publication import LANGUAGE_PUBLICATION_QUALIFIED
+    from omakase.plus.quality_publication import QUALITY_PUBLICATION_QUALIFIED
+
     lifecycle_values = {
         "active",
         "in_progress",
@@ -561,6 +564,8 @@ def library_titles(
                 and not cleanup_blocked
                 and readiness != "archived"
                 and (bool(monitor["active"]) or monitor["release_status"] == "FINISHED"),
+                "quality_recheck_enabled": LANGUAGE_PUBLICATION_QUALIFIED
+                and QUALITY_PUBLICATION_QUALIFIED,
                 "last_result": clean_detail(
                     removal_row["detail"]
                     if removal_row is not None

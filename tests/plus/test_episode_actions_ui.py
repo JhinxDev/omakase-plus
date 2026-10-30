@@ -18,8 +18,12 @@ from tests.plus.test_streaming_ui import client as client
 
 @pytest.fixture(autouse=True)
 def no_external(monkeypatch):
+    from omakase.plus import language_publication, quality_publication
+
     monkeypatch.setenv("OMAKASE_PLUS_REVIEW_MODE", "true")
     monkeypatch.setattr(routes, "ensure_anime_synopsis", AsyncMock(return_value={}))
+    monkeypatch.setattr(language_publication, "LANGUAGE_PUBLICATION_QUALIFIED", True)
+    monkeypatch.setattr(quality_publication, "QUALITY_PUBLICATION_QUALIFIED", True)
 
 
 def resurfaced(client):
@@ -161,3 +165,48 @@ def test_recheck_busy_does_not_report_false_completion(client, monkeypatch):
     )
     assert "already%20running" in response.headers["location"]
     assert "complete" not in response.headers["location"]
+
+
+@pytest.mark.parametrize("language,quality", [(False, False), (False, True), (True, False)])
+def test_unqualified_installation_keeps_a_rendered_missing_only_action(
+    client, monkeypatch, language, quality
+):
+    from omakase.plus import language_publication, quality_publication
+
+    monkeypatch.setattr(language_publication, "LANGUAGE_PUBLICATION_QUALIFIED", language)
+    monkeypatch.setattr(quality_publication, "QUALITY_PUBLICATION_QUALIFIED", quality)
+    monitor, _ = resurfaced(client)
+    page = client.get(f"/plus/library/{monitor}").text
+    assert 'name="intent" value="missing"' in page
+    assert ">Find missing episodes</button>" in page
+    assert "1080p upgrade checks are not enabled" in page
+    run = AsyncMock(
+        return_value=SimpleNamespace(
+            outcome="complete",
+            monitor_results=(
+                SimpleNamespace(
+                    monitor_id=monitor, outcome="complete", detail="Missing episodes checked."
+                ),
+            ),
+        )
+    )
+    with monkeypatch.context() as scoped:
+        scoped.setattr(routes, "run_media_sync", run)
+        response = client.post(
+            f"/plus/library/{monitor}/retry",
+            data={"csrf_token": token(client, monitor), "intent": "missing"},
+            follow_redirects=False,
+        )
+    assert response.status_code == 302
+    assert run.await_args.kwargs["recheck"].upgrade_to_1080 is False
+    with _connect(client) as db:
+        watch = [tuple(row) for row in db.execute("SELECT * FROM watch_entries")]
+    explicit = client.post(
+        f"/plus/library/{monitor}/retry",
+        data={"csrf_token": token(client, monitor), "intent": "episodes_quality"},
+        follow_redirects=False,
+    )
+    assert "not%20enabled" in explicit.headers["location"]
+    with _connect(client) as db:
+        assert [tuple(row) for row in db.execute("SELECT * FROM watch_entries")] == watch
+        assert db.execute("SELECT count(*) FROM media_sync_lease").fetchone()[0] == 0

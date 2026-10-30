@@ -109,7 +109,9 @@ Inline controls and paragraphs elsewhere keep their existing compact rhythm.
 ## Episode rechecks and quality
 
 The episode section owns one explicit season refresh action for missing episodes
-and 1080p anime replacements. Anime prefers1080p and uses720p as fallback;2160p
+and, on qualified installations,1080p anime replacements. An installation without
+upgrade qualification keeps its missing-only action and explains that upgrades
+are unavailable; an explicit upgrade request still fails closed. Anime prefers1080p and uses720p as fallback;2160p
 is mainly for movies and TV. Preserve existing higher copies. Current copies
 remain until a qualified publication selects a replacement. Downloading, a found
 release and successful publication are distinct states, with actual pending work

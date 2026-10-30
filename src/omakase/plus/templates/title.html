@@ -163,12 +163,12 @@
     {% if title.can_recheck %}
     <form method="post" action="/plus/library/{{ title.id }}/retry" data-busy-form data-single-flight class="episode-recheck">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <input type="hidden" name="intent" value="{{ 'missing' if title.format == 'MOVIE' else 'episodes_quality' }}">
-      <button class="button button-secondary" type="submit" data-busy-label="Checking episodes…">{{ 'Find missing release' if title.format == 'MOVIE' else 'Find missing episodes & 1080p' }}</button>
+      <input type="hidden" name="intent" value="{{ 'episodes_quality' if title.format != 'MOVIE' and title.quality_recheck_enabled else 'missing' }}">
+      <button class="button button-secondary" type="submit" data-busy-label="Checking episodes…">{{ 'Find missing release' if title.format == 'MOVIE' else 'Find missing episodes & 1080p' if title.quality_recheck_enabled else 'Find missing episodes' }}</button>
     </form>
     {% endif %}
   </header>
-  {% if title.can_recheck %}<p class="episode-recheck-help">{% if title.format == 'MOVIE' %}Check again for this release.{% else %}Refresh this season for missing episodes and 1080p replacements.{% endif %} Current usable copies stay until a replacement passes publication checks.</p>{% endif %}
+  {% if title.can_recheck %}<p class="episode-recheck-help">{% if title.format == 'MOVIE' %}Check again for this release.{% elif title.quality_recheck_enabled %}Refresh this season for missing episodes and 1080p replacements.{% else %}Check this season again for missing episodes. 1080p upgrade checks are not enabled on this installation yet.{% endif %} Current usable copies stay until a replacement passes publication checks.</p>{% endif %}
   {% set episode_count = title.display_episode_count | default(title.required) %}
   {% if episode_count %}
   <ol class="viewer-episode-grid">
