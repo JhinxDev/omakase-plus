@@ -131,7 +131,7 @@ def anime_cards(db, scope, *, viewer_id, query="", lifecycle="active"):
                 "lifecycle": title_lifecycle,
                 "lifecycle_label": "Completed"
                 if status == "completed"
-                else "Not tracked"
+                else "Not watched"
                 if history is None
                 else "Watching"
                 if progress

@@ -741,7 +741,11 @@ def create_showcase(data: Path, catalog, *, library_state="personal"):
     state_routes = [f"/plus/demo/states/removal/{state}" for state in sorted(removal_states)]
     state_routes += [f"/plus/demo/states/settings/{state}" for state in ("saved", "error")]
     state_routes += [f"/plus/demo/states/login/{state}" for state in ("validation", "failed")]
-    state_routes += ["/plus/demo/states/signup/validation", "/plus/demo/states/title/populated"]
+    state_routes += [
+        "/plus/demo/states/signup/validation",
+        "/plus/demo/states/title/populated",
+        "/plus/demo/states/title/long-synopsis",
+    ]
     state_routes += [f"/plus/demo/states/episodes/{state}" for state in EPISODE_STATES]
     state_routes += [
         f"/plus/demo/states/onboarding/{path}"
@@ -863,13 +867,31 @@ def create_showcase(data: Path, catalog, *, library_state="personal"):
                     'data-busy-label="Checking episodes…" disabled aria-busy="true">Checking episodes…',
                 )
             response = HTMLResponse(body)
-        elif journey == "title" and state == "populated":
+        elif journey == "title" and state in {"populated", "long-synopsis"}:
+            presentation = title_presentation_card(catalog)
+            if state == "long-synopsis":
+                preview = "A long synopsis fixture checks stable artwork framing while the full story is expanded."
+                more = "\n".join(
+                    [
+                        "A group of travelers reaches a quiet town at the edge of a vast, unfamiliar landscape. Each person brings a different reason for making the journey.",
+                        "An unexpected discovery changes their plans. They must decide which promises to keep and how to help the people who have welcomed them.",
+                        "The route ahead leads through busy cities, remote villages and places that have been forgotten. Their growing friendship shapes the choices they make along the way.",
+                        "This paragraph deliberately adds enough readable content to exercise the expanded disclosure on a narrow display without altering the dimensions of the artwork layer.",
+                        "The same poster, backdrop and controls remain in place as the synopsis opens and closes. This is synthetic review copy, not a claim about an actual title.",
+                    ]
+                )
+                presentation.update(
+                    description=preview + "\n" + more,
+                    description_preview=preview,
+                    description_more=more,
+                    genres=["Action", "Comedy", "Drama", "Romance"],
+                )
             rendered = routes.templates.TemplateResponse(
                 request,
                 "title.html",
                 {
                     **context,
-                    "title": title_presentation_card(catalog),
+                    "title": presentation,
                     "message": "",
                     "related_titles": [],
                     "retry_notice": "",

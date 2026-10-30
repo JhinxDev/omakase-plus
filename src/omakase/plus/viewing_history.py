@@ -100,7 +100,7 @@ def anime_viewing_recency(db, user_id: int) -> dict[tuple[int, int], str]:
     return recency
 
 
-def _anime(row):
+def _anime(row, *, personal_navigation=True):
     payload, recorded, watched = _anime_event_times(row)
     if recorded is None:
         return None
@@ -152,7 +152,9 @@ def _anime(row):
         else "Progress updated"
         if not episode
         else None,
-        "detail_url": f"/plus/catalog/anime/{media_id}"
+        "detail_url": f"/plus/library/{row['owned_monitor_id']}#overview"
+        if row["owned_monitor_id"] and personal_navigation
+        else f"/plus/catalog/anime/{media_id}"
         if row["owned_monitor_id"] or not feature_enabled()
         else f"/plus/history/anime/{row['personal_entry_id']}",
     }
@@ -313,11 +315,24 @@ def viewing_history(db, user_id: int, limit: int = 24, page: int = 1) -> dict:
         f"WHERE e.user_id=? AND w.user_id=? AND {_ANIME_VIEWING_EVENTS}) "
         f"SELECT r.*,w.id AS personal_entry_id,w.anilist_id,w.season_number,w.episode_total,m.id AS owned_monitor_id,COALESCE(m.title,{retained_title}) AS title,m.expected_episodes,(SELECT score_ten FROM watch_events score WHERE score.user_id=w.user_id AND score.watch_entry_id=w.id AND score.disposition='accepted' AND score.score_ten IS NOT NULL ORDER BY score.id DESC LIMIT 1) AS current_rating "
         "FROM ranked r JOIN watch_entries w ON w.id=r.watch_entry_id AND w.user_id=? "
-        "LEFT JOIN media_monitors m ON m.id=w.monitor_id AND m.user_id=w.user_id AND m.anilist_id=w.anilist_id "
+        "LEFT JOIN media_monitors m ON m.id=w.monitor_id AND m.user_id=w.user_id AND m.anilist_id=w.anilist_id AND m.season_number=w.season_number "
         "WHERE r.occurrence=1 ORDER BY r.observed_at DESC,r.id DESC LIMIT ?",
         (user_id, user_id, user_id, _MAX_RECENT),
     ).fetchall()
-    items = [card for row in rows if (card := _anime(row)) is not None]
+    personal_navigation = True
+    if feature_enabled():
+        from omakase.plus.households import HouseholdError, selected_scope
+
+        try:
+            personal_navigation = selected_scope(db, viewer_id=user_id).kind == "personal"
+        except HouseholdError:
+            # An unknown selection is never permission to bypass catalog resolution.
+            personal_navigation = False
+    items = [
+        card
+        for row in rows
+        if (card := _anime(row, personal_navigation=personal_navigation)) is not None
+    ]
     items.extend(_movies(db, user_id))
     items.extend(_television(db, user_id))
     items.sort(

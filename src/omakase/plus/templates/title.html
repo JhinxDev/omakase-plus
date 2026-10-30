@@ -65,6 +65,7 @@
 {% endif %}
 
 <a class="detail-back-link" href="/plus/library"><span aria-hidden="true">←</span>&nbsp; Your anime</a>
+<nav class="title-section-nav" id="overview" tabindex="-1" aria-label="Title sections"><a href="#overview">Overview</a><a href="#episode-heading">Episodes</a></nav>
 <section class="title-view-hero streaming-title-hero" aria-labelledby="watch-progress-heading">
   <picture class="detail-backdrop"><img src="/plus/media/{{ title.anilist_id }}/banner" alt="" loading="eager" data-poster></picture>
   {{ artwork(title, true) }}
@@ -74,7 +75,7 @@
     <div class="detail-meta">{% if title.season_number %}<span>Season {{ title.season_number }}</span>{% endif %}<span>{{ title.release_status_label }}</span>{% if title.episode_total %}<span>{{ title.episode_total }} episodes</span>{% endif %}<a href="https://anilist.co/anime/{{ title.anilist_id }}/" target="_blank" rel="noopener noreferrer">AniList ↗</a></div>
     <span class="state-tag state-{{ title.lifecycle }}">{{ title.lifecycle_label }}</span>
     {% if title.genres %}
-    <ul class="title-genres" aria-label="Genres">{% for genre in title.genres %}<li>{{ genre }}</li>{% endfor %}</ul>
+    <ul class="title-genres" aria-label="Genres">{% for genre in title.genres %}<li data-genre="{{ genre | lower }}">{{ genre }}</li>{% endfor %}</ul>
     {% endif %}
     {% if title.description %}
     <p class="title-synopsis">{{ title.description_preview | default(title.description, true) }}</p>
@@ -173,7 +174,7 @@
   {% if episode_count %}
   <ol class="viewer-episode-grid">
     {% for episode in range(1, episode_count + 1) %}
-    <li class="viewer-episode{% if episode in title.upcoming_episodes %} is-upcoming{% endif %}{% if episode in title.usable_episodes %} is-verified{% endif %}{% if episode <= title.progress_episodes %} is-watched{% elif episode == title.next_episode %} is-next{% endif %}" data-episode="{{ episode }}">
+    <li id="episode-{{ episode }}" tabindex="-1" class="viewer-episode{% if episode in title.upcoming_episodes %} is-upcoming{% endif %}{% if episode in title.usable_episodes %} is-verified{% endif %}{% if episode <= title.progress_episodes %} is-watched{% elif episode == title.next_episode %} is-next{% endif %}" data-episode="{{ episode }}">
       <span class="episode-number">{{ "%02d" | format(episode) }}</span>
       <div class="episode-copy"><h3>Episode {{ episode }}</h3><span class="episode-readiness">{% if title.state == "archived" %}Media removed{% elif episode in title.upcoming_episodes %}Upcoming{% elif episode > title.required %}Release status unknown{% elif episode in title.usable_episodes %}<span class="episode-verification-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="none"><path d="m4 8 2.5 2.5L12 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="sr-only">Media verified</span>{% else %}Not yet verified{% endif %}</span>{% if episode in title.upcoming_episodes and episode == title.required + 1 and title.next_release_at %}<small class="episode-release-date">Expected <time datetime="{{ title.next_release_at }}" data-local-datetime="{{ title.next_release_at }}">{{ title.next_release_at[:10] }}</time></small>{% endif %}</div>
       <span class="episode-watch-state">{% if episode <= title.progress_episodes %}Watched{% elif episode == title.next_episode %}Up next{% else %}Unwatched{% endif %}</span>

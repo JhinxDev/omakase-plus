@@ -86,7 +86,7 @@ def show(**overrides):
 def test_collection_exact_identity_and_honest_catalog_state():
     html = render("tv.html", cards=[show(in_plex_episodes=0)], query="", view="all")
     assert 'href="/plus/tv/321"' in html
-    assert "Not tracked" in html
+    assert "Not watched" in html
     assert "Availability unknown" in html
     assert "Ready" not in html
     assert "Sync collection from Plex" in html
@@ -140,7 +140,7 @@ def test_partial_plex_season_offers_explicit_full_listing():
     assert "Load full season listing" in html
     assert "Showing episodes observed in Plex" in html
     assert "Arrival" in html
-    assert "Watch status not recorded" in html
+    assert "Not watched" in html
 
 
 def test_future_episode_shows_air_date_and_disabled_watched_action():

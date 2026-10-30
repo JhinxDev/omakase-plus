@@ -129,3 +129,30 @@ Retain its original completion and rating until an explicit guarded continue and
 mark-watched action. Metadata/GET rendering does not edit watch history. Counts
 alone never claim that exact new episode is in Plex. The shelf and hero retain
 actual viewing recency, with a View new episode details action when appropriate.
+
+## Clear detail pages and request feedback
+
+Detail artwork has a bounded, stable crop with a dark text fade. Expanding a
+synopsis or verification disclosure grows the content without zooming the art.
+Movie actions, availability, adjacent check details and personal rating controls
+form one compact desktop reading area and stack deliberately on phones.
+
+Movie request reports retain separate saved-record and fresh-observation dates.
+Stale activity, unknown state, queued work, reported searching, no result, provider
+restriction and connection failure have distinct text. Restrained status colors
+support those words. A native request check exposes busy feedback, prevents
+duplicates and preserves its outcome through the redirect. A request or check
+never creates viewing history. Not watched is a display label; the editor keeps
+an unset status distinct from a recorded choice.
+
+Personal title links resolve exact owned identity and season. The home episode
+action opens the next known episode; More info opens the overview. Shared titles
+without a supported episode page expose one useful overview action. Discovery
+continues to work for unowned or ambiguous titles.
+
+Autocomplete dismissal clears visible status, popup, busy state and stale
+responses together. Native scrolling keeps complete result text and posters
+legible at the viewport edges. Slim dark/iris scrollbars have no arrow buttons;
+forced colors retain system contrast and visible selection. Genre colors are
+quiet metadata, and the footer uses aligned documentation, public repository and
+Jhinx Dev links with roomy keyboard and touch targets.

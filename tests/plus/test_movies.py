@@ -394,7 +394,13 @@ def test_recognized_backend_progress_does_not_exhaust_failed_investigation_budge
     fake = ProgressMovies()
     svc = service(db, fake)
     run(svc.request(1, imdb_id=IMDB, tmdb_id=TMDB))
-    for state, code in [("Indexed", "searching"), ("Downloading", "acquiring")]:
+    for state, code in [
+        ("Indexed", "requested"),
+        ("Unknown", "backend_state_unknown"),
+        ("Scraped", "search_complete"),
+        ("Searching", "searching"),
+        ("Downloading", "acquiring"),
+    ]:
         fake.state = state
         for _ in range(5):
             assert run(svc.refresh(1, IMDB))["code"] == code

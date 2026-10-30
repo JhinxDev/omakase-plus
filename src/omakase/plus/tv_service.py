@@ -243,7 +243,7 @@ class TVService(MovieService):
             watch_status_label=(
                 card["status"].replace("_", " ").title()
                 if card.get("status_source") not in (None, "none", "")
-                else "Not tracked"
+                else "Not watched"
             ),
             watched_episodes=sum(r["watched"] for r in episodes),
             in_plex_episodes=sum(r["plex_present"] for r in episodes) if current_scope else 0,

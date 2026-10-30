@@ -104,6 +104,40 @@ def test_browsing_and_detail_never_acquire_or_probe(browser):
     assert svc.calls == ["list", "list"]
 
 
+@pytest.mark.parametrize(
+    "outcome,message",
+    [
+        ("updated", "Request checked. The reported state changed."),
+        ("unchanged", "No change reported."),
+        ("saved", "Request check skipped."),
+        ("failed", "The request check did not complete."),
+    ],
+)
+def test_html_request_check_preserves_its_outcome_through_redirect(browser, outcome, message):
+    client, svc, token = browser
+    client.templates.env.loader = FileSystemLoader(
+        Path(__file__).resolve().parents[2] / "src/omakase/plus/templates"
+    )
+
+    async def refresh(user_id, imdb_id):
+        svc.calls.append("refresh")
+        return {
+            "imdb_id": imdb_id,
+            "request_check": {"outcome": outcome, "performed": outcome != "saved"},
+        }
+
+    svc.refresh = refresh
+    before = svc.db.total_changes
+    response = client.post("/plus/movies/tt0084787/refresh", data={"csrf_token": token})
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/plus/movies/tt0084787?notice=request_{outcome}"
+    page = client.get(response.headers["location"])
+    assert page.status_code == 200 and message in page.text
+    assert "Not watched" in page.text and "Watch status not recorded" not in page.text
+    assert 'value="" selected' in page.text
+    assert svc.calls == ["refresh", "list"] and svc.db.total_changes == before
+
+
 def test_collection_get_reads_saved_import_status_without_starting_sync(browser, monkeypatch):
     from omakase.plus.movie_history import MovieHistoryService
 

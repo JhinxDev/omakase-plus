@@ -202,6 +202,7 @@ _STATIC_ASSETS = {
     "streaming.css": "text/css",
     "atmosphere.css": "text/css",
     "cinema.css": "text/css",
+    "interface.css": "text/css",
     "connections.css": "text/css",
     "refinement.css": "text/css",
     "status-clarity.css": "text/css",

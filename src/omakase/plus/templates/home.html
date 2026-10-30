@@ -22,7 +22,10 @@
     <h1 id="featured-title">{% if featured %}{{ featured.title }}{% else %}A good story starts here.{% endif %}</h1>
     {% if featured %}
       <div class="cinema-meta"><span>Anime</span>{{ ready_badge(featured) }}{% if featured.progress_episodes %}<span class="watched-count">Watched <b>{{ featured.progress_episodes }}{% if featured.episode_total %}/{{ featured.episode_total }}{% endif %}</b></span>{% else %}<span>Not started</span>{% endif %}</div>
-      <div class="cinema-actions"><a class="button button-primary" href="{{ featured.detail_url | default('/plus/library/' ~ featured.id, true) }}"><span aria-hidden="true">▶</span> {% if featured.progress_episodes %}{{ featured.resume_action_label | default('Continue series') }}{% else %}View title{% endif %}</a><a class="button button-secondary" href="{{ featured.detail_url | default('/plus/library/' ~ featured.id, true) }}"><span class="cinema-info-icon" aria-hidden="true">i</span> More info</a></div>
+      {% set featured_url = featured.detail_url | default('/plus/library/' ~ featured.id, true) %}
+      {% set shared_detail = '/plus/libraries/' in featured_url %}
+      {% set episode_anchor = '#episode-' ~ featured.next_episode if featured.next_episode and featured.episode_total and featured.next_episode <= featured.episode_total else '#episode-heading' %}
+      <div class="cinema-actions"><a class="button button-primary" href="{{ featured_url }}{{ '#overview' if shared_detail else episode_anchor }}">{{ 'View title' if shared_detail else 'View episodes' }}</a>{% if not shared_detail %}<a class="button button-secondary" href="{{ featured_url }}#overview"><span class="cinema-info-icon" aria-hidden="true">i</span> More info</a>{% endif %}</div>
     {% else %}
       <p>Discover something that fits your taste, save it to your watchlist, and let your collection take shape.</p>
       <div class="cinema-actions"><a class="button button-primary" href="/plus/discover">Find something to watch</a><a class="button button-secondary" href="/plus/library">Your anime</a></div>

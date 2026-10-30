@@ -139,7 +139,7 @@ def test_hero_uses_same_first_resume_card_even_when_partial_ready(db, has_contin
     hero = html.split('<section class="cinema-hero"', 1)[1].split("</section>", 1)[0]
     expected = newer if has_continue else older
     assert re.search(r'<h1 id="featured-title">([^<]+)</h1>', hero).group(1) == expected["title"]
-    assert f'href="/plus/library/{expected["id"]}"' in hero
+    assert f'href="/plus/library/{expected["id"]}#overview"' in hero
     if has_continue:
         hero_text = " ".join(re.sub(r"<[^>]*>", " ", hero).split())
         assert "Availability unknown" in hero_text

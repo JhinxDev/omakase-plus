@@ -48,10 +48,13 @@ _DETAILS = {
     "backend_item_missing": "The requested movie is not present in the bounded Riven inventory.",
     "submission_pending": "A submission is already being checked; no duplicate was sent.",
     "investigation_exhausted": "The bounded request checks are exhausted. A new eligible release or operator review is needed.",
-    "unknown_backend_state": "Riven returned an unrecognised state; delivery is unknown.",
+    "unknown_backend_state": "Riven has not supplied a confirmed request state.",
+    "backend_state_unknown": "Riven reported an unknown request state; activity is unconfirmed.",
     "requested": "Requested; delivery has not been verified.",
-    "searching": "Riven is searching for an eligible movie release.",
-    "acquiring": "Riven is acquiring a movie file; Plex delivery has not been verified.",
+    "searching": "Riven last reported a search in progress; delivery is unverified.",
+    "search_complete": "Riven reported a completed search; a usable copy and Plex delivery are unconfirmed.",
+    "backend_failed": "Riven reported that this request failed. No automatic resubmission was sent.",
+    "acquiring": "Riven last reported a file transfer; Plex delivery is unverified.",
     "verifying": "The movie needs current Plex identity, English audio and byte verification.",
     "no_eligible_results": "The backend has no eligible result. No automatic resubmission was sent.",
     "unreleased": "The movie is not released; a later eligible release may be checked.",
@@ -252,8 +255,11 @@ def _outcome(code: str) -> str:
         "no_eligible_results",
         "investigation_exhausted",
         "anime_movie",
+        "backend_failed",
     }:
         return "unavailable"
+    if code == "search_complete":
+        return "requested"
     if code in {"requested", "searching", "acquiring", "verifying", "ready"}:
         return code
     if code in {
@@ -276,10 +282,10 @@ def _riven_state(value: Any) -> tuple[str, str]:
     name = re.sub(r"[ _.-]", "", value).lower() if isinstance(value, str) else ""
     code = {
         "requested": "requested",
-        "indexed": "searching",
-        "unknown": "searching",
+        "indexed": "requested",
+        "unknown": "backend_state_unknown",
         "scraping": "searching",
-        "scraped": "searching",
+        "scraped": "search_complete",
         "searching": "searching",
         "downloading": "acquiring",
         "downloaded": "acquiring",
@@ -287,7 +293,7 @@ def _riven_state(value: Any) -> tuple[str, str]:
         "symlinked": "verifying",
         "completed": "verifying",
         "partiallycompleted": "verifying",
-        "failed": "no_eligible_results",
+        "failed": "backend_failed",
         "unavailable": "no_eligible_results",
         "notfound": "no_eligible_results",
         "restricted": "provider_restricted",
@@ -525,6 +531,16 @@ class MovieService:
             "genres": store.list_movie_genres(self.db, user_id, metadata["imdb_id"]),
             "edition": request["requested_edition"] if request else None,
             "requested": request is not None,
+            "request_report": {
+                "state": request["state"],
+                "code": request["code"],
+                "created_at": request["created_at"],
+                "updated_at": request["updated_at"],
+                "investigations": request["investigations"],
+            }
+            if request
+            else None,
+            "request_observation": None,
             "retry_after": request["retry_after"] if request else None,
             "retry_at": request["retry_at"] if request else None,
         }
@@ -844,15 +860,39 @@ class MovieService:
         )
         if metadata is None or request is None:
             raise MovieError("invalid_input")
+
+        def result(*, performed=False, completed=False, attempted_at=None):
+            card = self._card(user_id, metadata)
+            outcome = (
+                "saved"
+                if not performed
+                else "failed"
+                if not completed
+                else "unchanged"
+                if card["code"] == request["code"] and card["state"] == request["state"]
+                else "updated"
+            )
+            card["request_check"] = {
+                "performed": performed,
+                "completed": completed,
+                "outcome": outcome,
+                "reason": card["code"],
+                "attempted_at": attempted_at,
+            }
+            return card
+
         if request["code"] in {
             "provider_restricted",
             "no_eligible_results",
             "investigation_exhausted",
+            "backend_failed",
         } or self._waiting(request):
-            return self._card(user_id, metadata)
+            return result()
         if request["investigations"] >= self._max_investigations:
             self._save_status(user_id, imdb_id, "investigation_exhausted")
-            return self._card(user_id, metadata)
+            return result()
+        attempted_at = _iso(self._clock())
+        completed = True
         try:
             existing = await self._backend(imdb_id, metadata["tmdb_id"])
             code = existing["code"] if existing else "backend_item_missing"
@@ -864,6 +904,7 @@ class MovieService:
                 investigation=existing is None or code == "unknown_backend_state",
             )
         except MovieError as error:
+            completed = False
             self._save_status(
                 user_id,
                 imdb_id,
@@ -872,7 +913,7 @@ class MovieService:
                 retry_after=error.retry_after,
                 retry_at=error.retry_at,
             )
-        return self._card(user_id, metadata)
+        return result(performed=True, completed=completed, attempted_at=attempted_at)
 
     async def _sections(self) -> tuple[int, int | None]:
         root = await self._xml("/library/sections")
@@ -1530,7 +1571,14 @@ class MovieService:
             ):
                 native = by_imdb[imdb_id]
                 card.update(
-                    state=native["state"], code=native["code"], detail=_DETAILS[native["code"]]
+                    state=native["state"],
+                    code=native["code"],
+                    detail=_DETAILS[native["code"]],
+                    request_observation={
+                        "state": native["state"],
+                        "code": native["code"],
+                        "observed_at": _iso(self._clock()),
+                    },
                 )
             elif inventory_error is not None:
                 card = self._failure(card, inventory_error)

@@ -14,7 +14,7 @@ from email.utils import parsedate_to_datetime
 
 import httpx
 
-PRODUCT_VERSION = "2026.10.29.4"
+PRODUCT_VERSION = "2026.10.29.5"
 FEED_URL = "https://jhinx.dev/updates/omakase-plus.json"
 NOTES_URL = "https://jhinx.dev/work/omakase-plus"
 MAX_BYTES = 32 * 1024

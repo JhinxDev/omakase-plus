@@ -55,8 +55,21 @@ invent an AI fit percentage. Completed movies are excluded by default.
 
 In **Movies**, requesting a title submits its exact identity to the configured
 backend. Duplicate and uncertain submissions are protected. Acknowledgement does
-not mean the movie is available. Use **Check request** for current backend status
-and **Verify in Plex** for bounded playback access checks.
+not mean the movie is available. **Check request** checks the existing request;
+it never submits another acquisition. While that check runs, its button shows
+**Checking request…**. The result distinguishes a changed report, no change,
+a skipped check and a failed connection. A skipped check can reuse a saved result.
+
+The movie page separates a fresh **Riven checked** observation from the older
+**Status saved** request record. An old saved search is labelled **Status out of
+date**; an unknown state does not claim an active search. **Check details** keeps
+the saved report and Plex verification separate. Use **Check in Plex** for bounded
+playback access checks.
+
+Riven manages its configured movie sources. Use **Connections** and **Service
+health** to diagnose those services. **Viewing options on JustWatch** opens an
+external discovery site where you can select your region; it does not assert an
+offer, start a purchase or submit a request.
 
 Ready requires the exact IMDb GUID in the correct Movies library, a compatible
 file with selected English audio, and HTTP 206 returning exactly 65,536 requested

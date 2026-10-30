@@ -13,6 +13,7 @@ from omakase.plus.connections import movie_connections
 from omakase.plus.deps import get_db
 from omakase.plus.middleware import require_user
 from omakase.plus.movie_artwork import movie_artwork
+from omakase.plus.movie_presentation import present_movie
 from omakase.plus.movies import MovieError, MovieService
 from omakase.plus.movies_store import get_movie
 from omakase.plus.posters import PosterUnavailable
@@ -208,8 +209,16 @@ def create_movies_router(
         if "application/json" in request.headers.get("accept", ""):
             return JSONResponse(result, headers={"Cache-Control": "private, no-store"})
         imdb_id = result.get("imdb_id") if isinstance(result, dict) else None
+        outcome = (
+            (result.get("request_check") or {}).get("outcome") if isinstance(result, dict) else None
+        )
+        notice = (
+            f"request_{outcome}"
+            if outcome in {"updated", "unchanged", "saved", "failed"}
+            else "updated"
+        )
         target = (
-            f"/plus/movies/{imdb_id}?notice=updated" if imdb_id else "/plus/movies?notice=updated"
+            f"/plus/movies/{imdb_id}?notice={notice}" if imdb_id else "/plus/movies?notice=updated"
         )
         return RedirectResponse(target, status_code=303)
 
@@ -281,6 +290,7 @@ def create_movies_router(
             if card is None:
                 raise HTTPException(404, "Movie not found")
             card["history"] = MovieHistoryService(svc).get(user.id, imdb_id)
+            card = present_movie(card)
         except MovieError as exc:
             if exc.code == "invalid_input":
                 raise HTTPException(422, "Invalid movie identity") from None
@@ -293,7 +303,17 @@ def create_movies_router(
             {
                 **context(request, user),
                 "card": card,
-                "notice": notice if notice in {"saved", "updated"} else "",
+                "notice": notice
+                if notice
+                in {
+                    "saved",
+                    "updated",
+                    "request_updated",
+                    "request_unchanged",
+                    "request_saved",
+                    "request_failed",
+                }
+                else "",
                 "movies_error": "",
             },
             headers={"Cache-Control": "private, no-store"},

@@ -1,0 +1,154 @@
+/* Shared presentation: stable detail art, quiet metadata and native scrollbars. */
+:root {
+  --detail-art-height: clamp(320px, 38vw, 540px);
+  --genre-surface: #25283c;
+  --genre-ink: #ddd9ff;
+  --genre-border: #47425e;
+  --scroll-track: #10131d;
+  --scroll-thumb: #756a91;
+  --scroll-thumb-active: #b7a3e2;
+}
+
+body.product-body :is(.streaming-title-hero, .movie-detail-hero) {
+  align-items: start;
+  background-color: #090b12;
+}
+body.product-body :is(.streaming-title-hero, .movie-detail-hero) > .detail-backdrop {
+  inset: 0 0 auto;
+  height: var(--detail-art-height);
+  pointer-events: none;
+}
+body.product-body :is(.streaming-title-hero, .movie-detail-hero) > .detail-backdrop img {
+  height: 100%;
+  object-fit: cover;
+  object-position: 65% 30%;
+}
+body.product-body :is(.streaming-title-hero, .movie-detail-hero)::after {
+  inset: 0 0 auto;
+  height: var(--detail-art-height);
+  pointer-events: none;
+  background: linear-gradient(90deg, #090b12ee, #090b12b0 55%, #090b1250),
+    linear-gradient(0deg, #090b12 0%, #090b1260 38%, transparent 75%);
+}
+.title-section-nav { display: flex; flex-wrap: wrap; gap: 24px; margin-bottom: 12px; border-bottom: 1px solid #303044; }
+.title-section-nav a { display: inline-flex; align-items: center; min-height: 44px; color: #c9bcdf; text-decoration: none; text-underline-offset: 6px; }
+.title-section-nav a:hover, .title-section-nav a:focus-visible { color: #f1eaff; text-decoration: underline; }
+#overview, #episode-heading, [id^="episode-"] { scroll-margin-top: 100px; }
+.detail-anchor { display: block; height: 0; }
+
+/* Keep movie actions, availability and personal controls in one compact reading area. */
+body.product-body .movie-detail-hero { grid-template-columns: 180px minmax(0, 1fr); gap: 28px; padding: 28px 32px; margin-bottom: 24px; }
+.movie-detail-copy { display: flex; flex-direction: column; align-items: stretch; gap: 16px; min-width: 0; }
+.movie-detail-copy > :is(h1, .detail-meta, .genre-chips, .movie-overview, .movie-detail-actions, .detail-back-link) { margin: 0; }
+.movie-detail-copy > .detail-back-link { align-self: flex-start; }
+.movie-detail-copy .movie-overview { max-width: 76ch; line-height: 1.65; }
+.movie-detail-body { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(240px, 1fr); gap: 24px; align-items: start; }
+.movie-detail-body h2 { margin: 0 0 10px; font-size: 1rem; line-height: 1.4; }
+.movie-detail-body :is(.movie-availability, .movie-rating-panel) { min-width: 0; }
+.movie-detail-body .movie-detail-status { display: block; margin: 0; padding: 16px; background: #111620; border-color: #303746; }
+.movie-detail-status[data-status-tone="ready"] { --status-ink: #b3efd1; --status-surface: #17372d; --status-border: #356a56; }
+.movie-detail-status[data-status-tone="pending"] { --status-ink: #d8ceff; --status-surface: #2d2546; --status-border: #5c4d80; }
+.movie-detail-status[data-status-tone="attention"] { --status-ink: #f3d8a8; --status-surface: #392f20; --status-border: #6a5532; }
+.movie-detail-status[data-status-tone="blocked"] { --status-ink: #ffd1d9; --status-surface: #39242d; --status-border: #714655; }
+.movie-detail-status .status-pill { display: inline-block; padding: 4px 8px; border: 1px solid var(--status-border, #485065); border-radius: 5px; color: var(--status-ink, #d6dce8); background: var(--status-surface, #252c39); font-size: .8125rem; line-height: 1.45; }
+.movie-detail-status .status-timestamp { color: #a6afc1; font-size: .75rem; }
+.movie-detail-body .movie-verification-details { margin: 12px 0 0; padding: 0 12px; max-width: none; }
+.movie-verification-details > summary { display: list-item; padding-block: 10px; line-height: 1.6; cursor: pointer; }
+.movie-check-help { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 12px 0; }
+.movie-check-help a { display: inline-flex; align-items: center; min-height: 44px; font-size: .8125rem; }
+.movie-detail-body .movie-rating-panel { margin: 0; padding: 0 0 0 24px; border-left: 1px solid #303746; max-width: none; scroll-margin-top: 100px; }
+.movie-rating-panel > p { margin: 0 0 16px; color: #aeb9cc; font-size: .8125rem; line-height: 1.6; }
+.movie-detail-body .movie-rating-panel .product-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(90px, .6fr); gap: 16px; }
+.movie-rating-panel .product-form > button { justify-self: start; }
+.detail-meta .watch-state { color: #bbc5d8; }
+.detail-meta .watch-state[data-watch-state="watched"] { color: #a8ddc1; }
+@media (max-width: 1100px) {
+  .movie-detail-body { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .movie-detail-body .movie-rating-panel { padding: 20px 0 0; border-left: 0; border-top: 1px solid #303746; }
+}
+@media (max-width: 700px) {
+  body.product-body .movie-detail-hero { grid-template-columns: 88px minmax(0, 1fr); padding: 24px 16px; gap: 20px 16px; }
+  body.product-body .movie-detail-hero > .movie-poster { width: 88px; }
+  .movie-detail-copy { display: contents; }
+  .movie-detail-copy > :is(.movie-detail-body, .movie-overview, .movie-detail-actions, .detail-meta, .genre-chips, .detail-back-link) { grid-column: 1 / -1; }
+  .movie-detail-copy > h1 { grid-column: 2; grid-row: 1; align-self: center; margin: 0; font-size: 1.9rem; }
+  .movie-detail-body .movie-rating-panel .product-form { grid-template-columns: minmax(0, 1fr); }
+}
+@media (forced-colors: active) {
+  .movie-detail-status .status-pill { color: CanvasText; background: Canvas; border-color: CanvasText; }
+  .detail-meta .watch-state, .detail-meta .watch-state[data-watch-state="watched"] { color: CanvasText; }
+}
+
+/* Native scrollports show complete result copy at their edges. A clipped row's
+   fragment keeps its layout/ARIA option and becomes readable when scrolled fully
+   into view; a leftover subtitle cannot impersonate a popup heading. */
+.search-suggestions { padding: 10px 6px; scroll-padding-block: 10px; }
+.search-suggestions a { min-height: 72px; padding: 10px 12px; scroll-margin-block: 10px; }
+.search-suggestions a > span { min-width: 0; }
+.search-suggestions strong { font-size: .875rem; line-height: 1.45; }
+.search-suggestions small { font-size: .75rem; line-height: 1.5; }
+.search-suggestions a[data-clipped-edge] { opacity: 0; pointer-events: none; }
+.search-suggestions.opens-above, .search-status.opens-above { top: auto; bottom: calc(100% + .5rem); }
+.search-status { overflow-y: auto; }
+
+body.product-body :is(.genre-chips, .title-genres) > li {
+  display: inline-flex;
+  align-items: center;
+  min-height: 0;
+  padding: 5px 10px;
+  border: 1px solid var(--genre-border);
+  border-radius: 6px;
+  background: var(--genre-surface);
+  color: var(--genre-ink);
+  font-size: .8125rem;
+  line-height: 1.4;
+  font-weight: 500;
+  cursor: default;
+}
+body.product-body [data-genre="action"] { --genre-surface: #392820; --genre-ink: #ffdcc2; --genre-border: #684736; }
+body.product-body :is([data-genre="comedy"], [data-genre="adventure"]) { --genre-surface: #332e1e; --genre-ink: #f5e3b0; --genre-border: #665839; }
+body.product-body [data-genre="drama"] { --genre-surface: #202e40; --genre-ink: #cfe1ff; --genre-border: #415a7b; }
+body.product-body [data-genre="romance"] { --genre-surface: #392334; --genre-ink: #ffd5e9; --genre-border: #704560; }
+body.product-body :is([data-genre="horror"], [data-genre="thriller"]) { --genre-surface: #38232b; --genre-ink: #ffd1dc; --genre-border: #704552; }
+body.product-body :is([data-genre="mystery"], [data-genre="fantasy"]) { --genre-surface: #2e2541; --genre-ink: #e7d5ff; --genre-border: #5d497d; }
+body.product-body :is([data-genre="sci-fi"], [data-genre="science fiction"], [data-genre="slice of life"]) { --genre-surface: #1e3334; --genre-ink: #c4efeb; --genre-border: #3f6868; }
+
+.product-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px 32px; margin-top: 48px; padding: 24px var(--stream-gutter) max(24px, env(safe-area-inset-bottom)); border-top: 1px solid #2b2c3b; font-size: .8125rem; }
+.footer-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 16px; color: #a7aabd; }
+.footer-identity > span { color: #e3dff0; font-weight: 600; }
+.product-footer nav { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 16px; }
+.product-footer a { display: inline-flex; align-items: center; gap: 5px; min-height: 44px; color: #c6b9e6; text-decoration: none; text-underline-offset: 4px; }
+.product-footer a:hover { color: #f0e8ff; text-decoration: underline; }
+.product-footer a:focus-visible { outline: 2px solid #c4b5fd; outline-offset: 4px; border-radius: 3px; }
+.product-footer strong { font-weight: 550; }
+
+/* A non-auto standards value overrides WebKit pseudo styling in modern Edge.
+   Explicitly choose one branch; keep native scrolling and enhanced rail policy. */
+@supports selector(::-webkit-scrollbar) {
+  html, body.product-body, body.product-body :where(*) { scrollbar-width: auto; scrollbar-color: auto; }
+  html::-webkit-scrollbar, body.product-body::-webkit-scrollbar, body.product-body *::-webkit-scrollbar { width: 8px; height: 8px; }
+  html::-webkit-scrollbar-track, body.product-body::-webkit-scrollbar-track, body.product-body *::-webkit-scrollbar-track { background: var(--scroll-track); }
+  html::-webkit-scrollbar-thumb, body.product-body::-webkit-scrollbar-thumb, body.product-body *::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border: 2px solid var(--scroll-track); border-radius: 8px; }
+  html::-webkit-scrollbar-thumb:hover, body.product-body::-webkit-scrollbar-thumb:hover, body.product-body *::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-active); }
+  html::-webkit-scrollbar-button, body.product-body::-webkit-scrollbar-button, body.product-body *::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+  html::-webkit-scrollbar-corner, body.product-body *::-webkit-scrollbar-corner { background: var(--scroll-track); }
+  body.product-body :is(.media-rail.shelf-enhanced, .movie-tabs, .library-lifecycle-tabs, .discover-mode-switch, .segmented-filter, .settings-navigation) { scrollbar-width: none; }
+  body.product-body .watchlist-browser .library-lifecycle-tabs { scrollbar-width: auto; }
+}
+@supports not selector(::-webkit-scrollbar) {
+  html, body.product-body :where(*) { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) var(--scroll-track); }
+  body.product-body :is(.media-rail.shelf-enhanced, .movie-tabs, .library-lifecycle-tabs, .discover-mode-switch, .segmented-filter, .settings-navigation) { scrollbar-width: none; }
+  body.product-body .watchlist-browser .library-lifecycle-tabs { scrollbar-width: thin; }
+}
+@media (forced-colors: active) {
+  :root { --scroll-thumb: CanvasText; --scroll-thumb-active: Highlight; --scroll-track: Canvas; }
+  html, body.product-body, body.product-body :where(*) { scrollbar-color: auto; }
+  body.product-body :is(.genre-chips, .title-genres) > li { color: CanvasText; background: Canvas; border-color: GrayText; }
+  .product-footer a { color: LinkText; }
+  .search-suggestions a:is([aria-selected="true"], :hover, :focus-visible) { outline: 2px solid Highlight; outline-offset: -2px; }
+}
+@media (max-width: 700px) {
+  :root { --detail-art-height: 340px; }
+  .product-footer { align-items: flex-start; gap: 8px; margin-top: 32px; }
+  .footer-identity { width: 100%; }
+}

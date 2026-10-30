@@ -263,13 +263,23 @@ append scoped failure evidence through existing run/candidate history without
 inventing a provider observation. Release labels do not claim measured video
 resolution, and selected files do not prove exact Plex indexing or playback.
 
-For a paired rollback, fence the writers and disable the new capability before
-returning either side to its prior compatible source. Preserve current database
-contents and verified retained generations; resume only a compatible verified
-pair. This source capability is separate from native qualification and release
-acceptance.
+Before any v4-capable runtime starts, a paired rollback may select a verified
+prior compatible pair with writers fenced and the new capability disabled.
+Preserve current database contents and verified retained generations.
+
+The release operator must fsync the permanent `publication-v4-started.json`
+marker before the first v4-capable runtime starts. After that marker exists, or
+v4 use cannot be ruled out, disabling a flag does not make legacy runtimes safe.
+Do not resume legacy writers, restore an older database or automatically return
+to the earlier application/curator pair. Retain CURRENT data and media, keep all
+writers fenced, and use a forward fix or a separately qualified compatible pair.
+This source contract is separate from native qualification and release acceptance.
 
 ## Rollback
+
+The generation-selection example below does not override the v4 boundary above.
+After possible v4 use, keep application, curator and other writers fenced until
+the CURRENT data and selected media are qualified together.
 
 Stop the timer, then atomically select the retained prior generation:
 

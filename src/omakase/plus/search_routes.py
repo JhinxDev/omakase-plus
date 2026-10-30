@@ -427,6 +427,7 @@ def create_search_router(
     async def detail(
         request: Request, media_id: int, user=Depends(require_user), db=Depends(get_db)
     ):
+        selected = None
         if households_enabled() if callable(households_enabled) else households_enabled:
             from omakase.plus.household_views import detail_url
             from omakase.plus.households import selected_scope
@@ -448,6 +449,18 @@ def create_search_router(
                         status_code=307,
                         headers=_CACHE,
                     )
+        if selected is None or selected.kind == "personal":
+            matches = db.execute(
+                "SELECT id FROM media_monitors WHERE user_id=? AND anilist_id=? ORDER BY id LIMIT 2",
+                (user.id, media_id),
+            ).fetchall()
+            if matches:
+                target = (
+                    f"/plus/library/{matches[0]['id']}#overview"
+                    if len(matches) == 1
+                    else "/plus/library"
+                )
+                return RedirectResponse(target, status_code=307, headers=_CACHE)
         card, error, status = None, "", 200
         headers = dict(_CACHE)
         try:

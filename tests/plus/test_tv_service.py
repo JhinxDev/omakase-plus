@@ -412,7 +412,7 @@ def test_inventory_season_summary_requires_observed_seasons_not_total_counts(db)
     run(svc.detail(1, 42))
     empty = svc.card(1, svc._raw(1, 42))
     assert empty["plex_summary"] == "Availability unknown"
-    assert empty["watch_status_label"] == "Not tracked"
+    assert empty["watch_status_label"] == "Not watched"
     observed = run(svc.check(1, 42))
     assert observed["plex_summary"] == "1 season in Plex"
     assert observed["plex_season_ids"] == [1]

@@ -166,7 +166,7 @@ def test_actual_three_account_scope_detail_collection_and_get_without_dml(state)
         response = member.get(path)
         assert response.status_code == 200
         assert response.headers["cache-control"] == "private, no-store"
-        assert "Not tracked" in response.text
+        assert "Not watched" in response.text
         assert "Your rating 9" not in response.text and "Your rating 10" not in response.text
     assert db.total_changes == before
     for domain, path in [("movie", "/plus/movies/tt1234567"), ("tv", "/plus/tv/55")]:

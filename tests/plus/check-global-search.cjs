@@ -5,11 +5,11 @@ const root=path.resolve(__dirname,'../..');
 const runtime=process.env.OMAKASE_QA_NODE_MODULES||path.join(root,'node_modules');
 const {chromium}=require(require.resolve('playwright',{paths:[runtime]}));
 const output=process.env.OMAKASE_SEARCH_QA_OUTPUT||path.join(root,'.qa-artifacts','global-search');fs.mkdirSync(output,{recursive:true});
-const html=JSON.parse(execFileSync(path.join(root,'.venv/Scripts/python.exe'),['-c',"import runpy,json; f=runpy.run_path('tests/plus/test_global_search_ui.py'); print(json.dumps({p:f['render_search'](active_page=p,kind='anime',query='') for p in ['home','movies','tv','search']}))"],{cwd:root,encoding:'utf8',env:{...process.env,PYTHONIOENCODING:'utf-8'}}));
+const html=JSON.parse(execFileSync(process.env.OMAKASE_QA_PYTHON||path.join(root,'.venv/Scripts/python.exe'),['-c',"import runpy,json; f=runpy.run_path('tests/plus/test_global_search_ui.py'); print(json.dumps({p:f['render_search'](active_page=p,kind='anime',query='') for p in ['home','movies','tv','search']}))"],{cwd:root,encoding:'utf8',env:{...process.env,PYTHONIOENCODING:'utf-8'}}));
 const cards={tv:{id:1396,title:'Breaking Bad',media_type:'tv',format:'TV series',url:'/plus/tv/1396'},movie:{id:'tt0084787',title:'The Thing',media_type:'movie',format:'MOVIE',url:'/plus/movies/tt0084787'},anime:{id:21,title:'One Piece',media_type:'anime',format:'TV',url:'/plus/catalog/anime/21'}};
 const result={sourceSha256:{},checks:[],limitations:['Autocomplete provider responses are intercepted fixtures. Real mixed-server behavior is verified by the offline authenticated route tests; no provider request or mutation is sent.']};
-for(const file of ['src/omakase/plus/static/search.js','src/omakase/plus/templates/base.html','src/omakase/plus/templates/search.html','src/omakase/plus/static/cinema.css'])result.sourceSha256[file]=crypto.createHash('sha256').update(fs.readFileSync(path.join(root,file))).digest('hex');
-(async()=>{const browser=await chromium.launch({channel:'msedge',headless:true});try{
+for(const file of ['src/omakase/plus/static/search.js','src/omakase/plus/templates/base.html','src/omakase/plus/templates/search.html','src/omakase/plus/static/cinema.css','src/omakase/plus/static/interface.css'])result.sourceSha256[file]=crypto.createHash('sha256').update(fs.readFileSync(path.join(root,file))).digest('hex');
+(async()=>{const browser=await chromium.launch({channel:'msedge',headless:true,ignoreDefaultArgs:['--hide-scrollbars']});try{
  const context=await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'reduce'});const page=await context.newPage();const errors=[],requests=[],writes=[];
  page.on('pageerror',error=>errors.push(error.message));
  await page.route('**/*',async route=>{
@@ -20,11 +20,13 @@ for(const file of ['src/omakase/plus/static/search.js','src/omakase/plus/templat
    const q=url.searchParams.get('q').toLowerCase(),kind=url.searchParams.get('kind');requests.push({query:q,kind});
    let payload,status=200;
    if(q==='slow'){await new Promise(resolve=>setTimeout(resolve,600));payload={results:[],warnings:[]};}
+   else if(q==='solo'||q==='slowmatch'){if(q==='slowmatch')await new Promise(resolve=>setTimeout(resolve,600));payload={results:Array.from({length:8},(_,i)=>({...cards.anime,title:'Solo Adventurer '+(i+1)})),warnings:[]};}
    else if(q==='none')payload={results:[],warnings:[]};
    else if(q==='longtitle')payload={results:[{...cards.tv,title:'An exceptionally long show title with '+ 'UnbrokenTitle'.repeat(18)}],warnings:[]};
    else if(q==='offline'){status=503;payload={results:[],warnings:[{kind:'tv',label:'TV',detail:'TV unavailable.'}]};}
    else if(q==='limited'){status=429;payload={results:[],detail:'Too many catalog searches.',retry_after:60};}
    else if(q==='partial')payload={results:[cards.tv],warnings:[{kind:'movies',label:'Movies',detail:'Movies unavailable.',retry_after:60}]};
+   else if(q==='recover')payload=requests.filter(r=>r.query==='recover').length===1?{results:[cards.tv],warnings:[{kind:'movies',label:'Movies',detail:'Movies unavailable.'}]}:{results:[cards.tv,cards.movie],warnings:[]};
    else payload={results:[kind==='anime'?cards.anime:q.includes('thing')?cards.movie:q.includes('piece')?cards.anime:cards.tv],warnings:[]};
    return route.fulfill({status,contentType:'application/json',body:JSON.stringify(payload)});
   }
@@ -54,6 +56,53 @@ for(const file of ['src/omakase/plus/static/search.js','src/omakase/plus/templat
  await input.press('ArrowDown');await input.press('Enter');await page.waitForURL('**/plus/tv/1396');result.checks.push({keyboardSelection:'/plus/tv/1396'});
  await page.goto('http://search.test/plus/search',{waitUntil:'networkidle'});const scoped=page.locator('.catalog-search-form');assert.equal(await scoped.locator('[data-search-kind]').inputValue(),'anime');await scoped.locator('[data-search-input]').fill('one piece');await scoped.locator('[data-search-suggestions] [role=option]').waitFor({state:'visible'});assert.equal(requests.at(-1).kind,'anime');result.checks.push({explicitScope:'anime'});
  await page.screenshot({path:path.join(output,'scoped-search-desktop.png'),fullPage:false});assert.deepEqual(errors,[]);assert.deepEqual(writes,[]);result.errors=errors;result.writes=writes;result.requests=requests;
+
+ // Dismiss the complete visual popup, including a completed result-count status.
+ await page.goto('http://search.test/plus/search',{waitUntil:'networkidle'});
+ const lifeHeader=page.locator('.header-search'),lifeInput=lifeHeader.locator('[data-search-input]');
+ await lifeInput.fill('solo ');await lifeHeader.getByRole('option').nth(7).waitFor({state:'visible'});
+ assert.equal(requests.at(-1).query,'solo','Trailing space is not a different provider query');
+ const scrollbar=await lifeHeader.locator('[data-search-suggestions]').evaluate(el=>({width:getComputedStyle(el).scrollbarWidth,color:getComputedStyle(el).scrollbarColor,buttonDisplay:getComputedStyle(el,'::-webkit-scrollbar-button').display,buttonWidth:getComputedStyle(el,'::-webkit-scrollbar-button').width,buttonHeight:getComputedStyle(el,'::-webkit-scrollbar-button').height,nativeWidth:getComputedStyle(el,'::-webkit-scrollbar').width,scrollable:el.scrollHeight>el.clientHeight,rootWidth:getComputedStyle(document.documentElement).scrollbarWidth}));
+ assert.equal(scrollbar.width,'auto');assert.equal(scrollbar.color,'auto');assert.equal(scrollbar.buttonDisplay,'none');assert.equal(scrollbar.buttonWidth,'0px');assert.equal(scrollbar.buttonHeight,'0px');assert.equal(scrollbar.nativeWidth,'8px');assert.equal(scrollbar.rootWidth,'auto');assert(scrollbar.scrollable);
+ await lifeHeader.locator('[data-search-suggestions]').hover();await page.mouse.wheel(0,240);await page.waitForFunction(()=>document.querySelector('.header-search [data-search-suggestions]').scrollTop>0);
+ await page.screenshot({path:path.join(output,'search-native-scrollbar.png'),fullPage:false});
+ await page.emulateMedia({forcedColors:'active'});assert.equal(await lifeHeader.locator('[data-search-suggestions]').evaluate(el=>getComputedStyle(el,'::-webkit-scrollbar-button').display),'none');assert.equal(await lifeHeader.locator('[data-search-suggestions]').evaluate(el=>getComputedStyle(el).scrollbarColor),'auto');
+ await page.screenshot({path:path.join(output,'search-forced-colors.png'),fullPage:false});await page.emulateMedia({forcedColors:'none'});
+ result.checks.push({nativeWindowsEdgeScrollbar:scrollbar,wheel:true,forcedColors:true});
+ for(const [label,url]of [['Documentation','https://omakase-plus.jhinx.dev/docs'],['GitHub','https://github.com/JhinxDev/omakase-plus'],['Made by Jhinx Dev','https://jhinx.dev']]){const link=page.locator('.product-footer').getByRole('link',{name:label});assert.equal(await link.getAttribute('href'),url);assert.equal(await link.getAttribute('target'),'_blank');assert((await link.getAttribute('rel')).includes('noopener'));}
+ result.checks.push({footerPublicDestinations:true,authorshipCredit:true});
+ await lifeInput.press('ArrowDown');await page.getByRole('heading',{level:1}).click();
+ const dismissed={listHidden:await lifeHeader.locator('[data-search-suggestions]').isHidden(),statusHidden:await lifeHeader.locator('[data-search-status]').isHidden(),expanded:await lifeInput.getAttribute('aria-expanded'),active:await lifeInput.getAttribute('aria-activedescendant'),busy:await lifeInput.getAttribute('aria-busy')};
+ result.popupDismissal=dismissed;await page.screenshot({path:path.join(output,'outside-dismissal.png'),fullPage:false});
+ assert(dismissed.listHidden&&dismissed.statusHidden,'Outside click must dismiss results and visual status together');
+ assert.equal(dismissed.expanded,'false');assert.equal(dismissed.active,null);assert.equal(dismissed.busy,null);
+ await lifeInput.focus();await lifeHeader.getByRole('option').nth(7).waitFor({state:'visible'});
+ const liveCount=lifeHeader.locator('[data-search-announcement]');assert.equal(await liveCount.count(),1);
+ assert((await liveCount.textContent()).includes('8 matching titles'));
+ const liveBox=await liveCount.boundingBox();assert(liveBox&&liveBox.width<=1&&liveBox.height<=1,'Accessible count remains visually hidden independently of list state');
+ await lifeInput.press('Escape');assert(await lifeHeader.locator('[data-search-status]').isHidden());assert(await lifeHeader.locator('[data-search-suggestions]').isHidden());
+ await lifeInput.fill('slowmatch');await page.waitForFunction(()=>document.querySelector('.header-search [data-search-input]')?.getAttribute('aria-busy')==='true');
+ await page.getByRole('heading',{level:1}).click();await page.waitForTimeout(750); // The controlled fixture returns at600ms.
+ assert(await lifeHeader.locator('[data-search-suggestions]').isHidden(),'Late response cannot reopen a dismissed popup');
+ assert(await lifeHeader.locator('[data-search-status]').isHidden());assert.equal(await lifeInput.getAttribute('aria-busy'),null);
+ await lifeInput.fill('solo ');await lifeHeader.getByRole('option').nth(7).waitFor({state:'visible'});await lifeInput.press('Tab');
+ const focusTrace=[];
+ for(let step=0;step<12;step++){
+  const focus=await lifeHeader.evaluate(form=>({inside:form.contains(document.activeElement),tag:document.activeElement?.tagName,id:document.activeElement?.id,className:document.activeElement?.className,ancestors:[...function*(node){for(let depth=0;node&&depth<4;depth++,node=node.parentElement)yield node.tagName+'.'+node.className;}(document.activeElement)]}));
+  focusTrace.push(focus);if(!focus.inside)break;
+  await page.keyboard.press('Tab');await page.evaluate(()=>new Promise(requestAnimationFrame));
+ }
+ result.keyboardBlurFocusTrace=focusTrace;assert.equal(focusTrace.at(-1).inside,false,'Exercise actual outside keyboard blur, preserving native scroll-container focus stops');
+ await page.waitForFunction(()=>document.querySelector('.header-search [data-search-input]')?.getAttribute('aria-expanded')==='false');
+ assert(await lifeHeader.locator('[data-search-status]').isHidden(),'Keyboard blur dismisses the complete popup');
+ await lifeInput.fill('recover');await lifeHeader.getByRole('option').waitFor({state:'visible'});
+ await page.waitForFunction(()=>document.querySelector('.header-search [data-search-suggestions]')?.textContent.includes('Movies unavailable'));
+ await page.getByRole('heading',{level:1}).click();await lifeInput.focus();await lifeHeader.getByRole('option').nth(1).waitFor({state:'visible'});
+ assert.equal(requests.filter(r=>r.query==='recover').length,2,'Incomplete results must permit a same-query recovery check');
+ assert(!(await lifeHeader.locator('[data-search-suggestions]').innerText()).includes('Movies unavailable'));
+ await lifeHeader.getByRole('option').first().click();await page.waitForURL('**/plus/tv/1396');
+ result.checks.push({sameQueryRecovery:true,pointerSelection:true});
+ result.checks.push({lifecycle:true,trailingSpace:true,outsideDismissal:true,refocus:true,escape:true,keyboardBlur:true,lateResponseBlocked:true,accessibleCountSeparate:true});
 
  // Owner-reported regression: every visible popover follows its input's edges.
  const aligned=async(form,popup,width,state)=>{
