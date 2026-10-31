@@ -235,9 +235,12 @@ def library_titles(
         households._require(library_scope.viewer_id == user_id, "Library viewer mismatch.", 403)
         households.revalidate_scope(db, library_scope)
         if library_scope.kind == "household":
+            from omakase.plus.web_playback_navigation import attach_navigation
+
             cards = anime_cards(
                 db, library_scope, viewer_id=user_id, query=query, lifecycle=lifecycle
             )
+            attach_navigation(db, cards, user_id=user_id, library_scope=library_scope)
             return [
                 card
                 for card in cards
@@ -512,6 +515,7 @@ def library_titles(
         last_source_label = {
             "plex": "Plex",
             "apple_tv": "Apple TV",
+            "web_player": "Web player",
             "anilist": "AniList",
             "manual": "Manual",
             "migration": "Imported history",
@@ -612,7 +616,9 @@ def library_titles(
                 (user_id, str(item["id"]), library_scope.library_id, library_scope.library_id),
             ).fetchone()
         ]
-    return titles
+    from omakase.plus.web_playback_navigation import attach_navigation
+
+    return attach_navigation(db, titles, user_id=user_id, library_scope=library_scope)
 
 
 def title_detail(db, *, user_id: int, monitor_id: int) -> dict[str, Any] | None:
@@ -801,6 +807,7 @@ def title_detail(db, *, user_id: int, monitor_id: int) -> dict[str, Any] | None:
             "source_label": {
                 "plex": "Plex",
                 "apple_tv": "Apple TV",
+                "web_player": "Web player",
                 "anilist": "AniList",
                 "manual": "Manual",
                 "migration": "Imported history",
@@ -828,6 +835,7 @@ def title_detail(db, *, user_id: int, monitor_id: int) -> dict[str, Any] | None:
             "source_label": {
                 "plex": "Plex",
                 "apple_tv": "Apple TV",
+                "web_player": "Web player",
                 "anilist": "AniList",
                 "manual": "Manual",
                 "migration": "Imported history",
@@ -1126,6 +1134,7 @@ def activity_view(
         source_label = {
             "plex": "Plex",
             "apple_tv": "Apple TV",
+            "web_player": "Web player",
             "anilist": "AniList",
             "manual": "manually",
             "migration": "imported history",

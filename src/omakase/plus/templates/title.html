@@ -94,7 +94,8 @@
     {% if title.fallback_episodes %}<p class="title-availability-copy">{{ title.fallback_episodes | length }} episode{{ 's' if title.fallback_episodes | length != 1 else '' }} use a 720p fallback. <a href="#episode-heading">See episode quality</a>.</p>{% endif %}
     {{ progress_bar(title) }}
     <div class="title-primary-actions">
-      <a class="button button-primary" href="#episode-heading">{{ "View episode history" if title.state == "archived" else "View episodes" }}</a>
+      {% if title.play_url %}<a class="button button-primary" href="{{ title.play_url }}">{{ title.play_label }}</a>{% endif %}
+      <a class="button {{ 'button-secondary' if title.play_url else 'button-primary' }}" href="#episode-heading">{{ "View episode history" if title.state == "archived" else "View episodes" }}</a>
       <a class="button button-secondary" href="#watch-tracking" data-open-details>Update watch progress</a>
     </div>
     <div class="title-library-actions" role="group" aria-label="Library actions"><span>Library actions</span><a class="button button-secondary" href="/plus/library/{{ title.id }}/remove">{{ 'View removal status' if title.removal else 'Remove…' }}</a></div>
@@ -178,6 +179,7 @@
       <span class="episode-number">{{ "%02d" | format(episode) }}</span>
       <div class="episode-copy"><h3>Episode {{ episode }}</h3><span class="episode-readiness">{% if title.state == "archived" %}Media removed{% elif episode in title.upcoming_episodes %}Upcoming{% elif episode > title.required %}Release status unknown{% elif episode in title.usable_episodes %}<span class="episode-verification-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="none"><path d="m4 8 2.5 2.5L12 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="sr-only">Media verified</span>{% else %}Not yet verified{% endif %}</span>{% if episode in title.upcoming_episodes and episode == title.required + 1 and title.next_release_at %}<small class="episode-release-date">Expected <time datetime="{{ title.next_release_at }}" data-local-datetime="{{ title.next_release_at }}">{{ title.next_release_at[:10] }}</time></small>{% endif %}</div>
       <span class="episode-watch-state">{% if episode <= title.progress_episodes %}Watched{% elif episode == title.next_episode %}Up next{% else %}Unwatched{% endif %}</span>
+      {% if title.episode_play_urls and episode in title.episode_play_urls %}<a class="button button-primary" href="{{ title.episode_play_urls[episode] }}" aria-label="Play episode {{ episode }}">Play</a>{% endif %}
       {% if title.episode_qualities and episode in title.episode_qualities %}{% set quality = title.episode_qualities[episode] %}
       <div class="episode-quality-row"><span class="episode-quality{% if quality.quality == '720p' %} quality-fallback{% endif %}" title="{{ quality.detail }}">{{ quality.label }}</span>{% if quality.alternates %}<small class="episode-quality-alternate">{{ quality.alternates | join(' / ') }} found · publication unconfirmed</small>{% endif %}</div>
       {% endif %}

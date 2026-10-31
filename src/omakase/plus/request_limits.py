@@ -8,7 +8,7 @@ from python_multipart.exceptions import MultipartParseError
 from starlette.requests import ClientDisconnect
 
 
-def bounded_form_route(max_bytes: int, too_large: str, *, guard=None):
+def bounded_form_route(max_bytes: int, too_large: str, *, guard=None, forward_disconnect=False):
     class BoundedFormRoute(APIRoute):
         def get_route_handler(self):
             original = super().get_route_handler()
@@ -41,6 +41,8 @@ def bounded_form_route(max_bytes: int, too_large: str, *, guard=None):
                 async def receive():
                     nonlocal consumed
                     if consumed:
+                        if forward_disconnect:
+                            return await request.receive()
                         return {"type": "http.disconnect"}
                     consumed = True
                     return {"type": "http.request", "body": body, "more_body": False}

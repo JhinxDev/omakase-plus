@@ -2,6 +2,49 @@
 
 This source candidate records the maintained interface contract. Technical, creative and deployment acceptance remain separate.
 
+## Integrated player, October 31
+
+`templates/player.html`, `static/web-player.css` and `static/web-player.js` extend
+the existing shell. Geist uses the shell's local `--sans`; the supplied Shaka
+Material Icons Round face is retained for controls. Player width is 100%, min-width 0,
+max 1200px. The stage contains a 16:9 contain-fit video frame plus a reserved96px
+controls band, with260px minimum total height and14px
+corners; at 640px and below it has 280px minimum height and 8px corners. Minimum
+height is deliberate on phones so the initial/preparing controls remain usable.
+No aspect-ratio minimum-width may push the stage outside its grid column.
+
+The stage uses #020408, a #303547 keyline and a #25243c→#080d18 start-panel gradient.
+Text is #f0edf8; support copy #b8c0d1 with 1.6 line height; iris action #d4c5f7 on
+#171325, hover keyline #c8b5f1 and 3px focus #e1d2ff. Buttons have 44px minimum
+targets, 8px corners, 10×16px padding; the primary has 28px inline padding. Eyebrow
+is .75rem/650 with .15em tracking. Start heading clamps 1.4–2rem, tracking -.025em.
+Details use two equal columns/32px gap, collapsing to one/24px below 640px.
+
+Shaka settings use #171e2d, bounded stage-relative height/width and a sticky Back
+button. Range inputs explicitly reset shared form padding/borders and keep 44px
+hitboxes around the supplied 4px track. Speed and volume own their native range
+keys; seek retains Shaka's seek lifecycle. Every range has an accessible name.
+ASS canvas is layer 1; controls layer 2; initial/preparation panel layer 3. Error
+uses #2c1d28/#885461 with #ffd8e0 text. Version-note amber is #f1d3a1.
+The opaque #080d1a footer stays below the video image, including while paused;
+fullscreen subtracts the same96px band from the available video area. The ASS
+renderer measures that video image directly, preserving subtitle/sign positions
+relative to it. Never translate the whole canvas to avoid controls. The redundant
+video scrim is disabled; controls retain their opaque contrast backing. Actual
+original-caption visibility still requires its own visual acceptance.
+
+Play is explicit. Preparation exposes the exact Plex link and Cancel; it may take
+45 seconds. Retry is deliberate and bounded. Audio uses the supplied settings;
+ASS has a labeled 48px native selector with original language/forced/default words,
+plus Off. Fullscreen is the container. Styled-caption PiP/native-fullscreen limits
+are explained beside the selector. No next-episode autoplay. Reduced motion
+disables player animations/transitions; forced colors retains visible borders.
+
+Maintain the token values, native-event queue timing, range keyboard isolation,
+phone menu bounds, cancel/page-exit closure and original subtitle/font identity
+together. Synthetic browser/range/queue/preparation checks exist; actual-source,
+deployed identity and physical-device acceptance require their own receipts.
+
 ## Personal cinema
 
 Artwork leads; one primary action follows. Geist is served locally. Pale iris carries selection/action, emerald confirmed availability, amber partial/attention, slate unknown, muted red destructive/failure. Every state has meaningful words as well as color. Availability, watching, rating and media verification are independent.

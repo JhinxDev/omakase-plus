@@ -1,0 +1,48 @@
+{
+  "schema": "omakase-ass-source-offer-v1",
+  "bundle": "corresponding-source.tar.gz",
+  "sha256": "820a4a6c3b3e9f28ea5cd26c17d92079c2bd85e7319422c2b6f98071a96e1cf4",
+  "bytes": 62013876,
+  "instructions": "THIRD-PARTY/jassub-2.5.23/REBUILD.md",
+  "native_projects": {
+    "jassub": {
+      "commit": "482a2fed6c8976550f09383e90d92b6ac3360fc9",
+      "bytes": 13741135,
+      "sha256": "24da07c2429546a5edf5b2f73c00be9381fdd2e78a7362bea4bcd3677b036122",
+      "archive_name": "jassub-482a2fed6c8976550f09383e90d92b6ac3360fc9.tar.gz"
+    },
+    "brotli": {
+      "commit": "028fb5a23661f123017c060daa546b55cf4bde29",
+      "bytes": 646475,
+      "sha256": "0afe09a53c8bad9861c8dd1fc1284308d54f19d2979ba3541cfdcc9b05fe360f",
+      "archive_name": "brotli-028fb5a23661f123017c060daa546b55cf4bde29.tar.gz"
+    },
+    "freetype": {
+      "commit": "0a0221a1347e2f1e07c395263540026e9a0aa7c7",
+      "bytes": 2517889,
+      "sha256": "11cd478953fc1d382f20a233b8e2aed6c31b47cbf0568c4bdb3334bcc1550698",
+      "archive_name": "freetype-0a0221a1347e2f1e07c395263540026e9a0aa7c7.tar.gz"
+    },
+    "fribidi": {
+      "commit": "68162babff4f39c4e2dc164a5e825af93bda9983",
+      "bytes": 2144204,
+      "sha256": "fa34a057a414c85f7e1f3c0fd717bc93d74d370ed474ef2feca90868b4938f72",
+      "archive_name": "fribidi-68162babff4f39c4e2dc164a5e825af93bda9983.tar.gz"
+    },
+    "harfbuzz": {
+      "commit": "30485ee8c3d43c553afb9d78b9924cb71c8d2f19",
+      "bytes": 36331251,
+      "sha256": "815c5895fc393e9b302ae0dd9d9ad7149224c039b3044ac334de638e0d3ea98f",
+      "archive_name": "harfbuzz-30485ee8c3d43c553afb9d78b9924cb71c8d2f19.tar.gz"
+    },
+    "libass": {
+      "commit": "fbe73bf18bd98e3ba14ce6d5e4bd1ba202a25ef4",
+      "bytes": 379623,
+      "sha256": "d838c3587735f94759c5ae54507843e8142fcf34339c1eddd1239ea24f751691",
+      "archive_name": "libass-fbe73bf18bd98e3ba14ce6d5e4bd1ba202a25ef4.tar.gz"
+    }
+  },
+  "complete_build_inputs": true,
+  "native_binary_correspondence_proven": false,
+  "toolchain": "docker.io/emscripten/emsdk:6.0.12"
+}

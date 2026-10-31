@@ -5,14 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-WatchSource = Literal["plex", "apple_tv", "anilist", "manual", "migration"]
+WatchSource = Literal["plex", "apple_tv", "anilist", "manual", "migration", "web_player"]
 WatchEventKind = Literal["progress", "completed", "correction", "reopened"]
 WatchConfidence = Literal["exact", "inferred", "manual"]
 WatchStatus = Literal["unwatched", "watching", "completed"]
 WatchDisposition = Literal["accepted", "ignored", "confirmation_required"]
 TrackerAction = Literal["progress", "complete"]
 
-_WATCH_SOURCES = frozenset({"plex", "apple_tv", "anilist", "manual", "migration"})
+_WATCH_SOURCES = frozenset({"plex", "apple_tv", "anilist", "manual", "migration", "web_player"})
 _WATCH_KINDS = frozenset({"progress", "completed", "correction", "reopened"})
 _WATCH_CONFIDENCE = frozenset({"exact", "inferred", "manual"})
 _WATCH_STATUSES = frozenset({"unwatched", "watching", "completed"})

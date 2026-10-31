@@ -3,6 +3,7 @@
   {% if item.progress_episodes or item.watch_status == 'completed' %}
   <span class="watched-count">Watched <b>{{ item.progress_episodes }}{% if item.episode_total %}/{{ item.episode_total }}{% endif %}</b></span>
   <progress max="100" value="{{ item.progress_percent }}" aria-label="{{ item.title }}: {{ item.progress_episodes }}{% if item.episode_total %} of {{ item.episode_total }}{% endif %} episodes watched"></progress>
+  {% elif item.partial_playback %}<span class="not-started">Episode in progress · 0 episodes watched through</span>
   {% else %}<span class="not-started">{{ "Not started" if item.last_source_label | default("Not tracked yet") not in ["Not tracked yet", "", "Imported"] else "Not watched" }}</span>{% endif %}
 </div>
 {%- endmacro %}
@@ -42,6 +43,7 @@
       {{ source_badge(item) }}
     </div>
   </a>
+  {% if item.play_url %}<a class="button button-primary" href="{{ item.play_url }}" aria-label="{{ item.play_label }} {{ item.title }}">{{ item.play_label }}</a>{% endif %}
 </article>
 {%- endmacro %}
 

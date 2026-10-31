@@ -18,14 +18,16 @@
   <picture class="cinema-hero-art" data-hero-quality data-hero-poster="/plus/media/{{ featured.anilist_id }}/poster"><img src="/plus/media/{{ featured.anilist_id }}/banner?display=hero-v3" alt="" fetchpriority="high"></picture>
   {% endif %}
   <div class="cinema-hero-copy">
-    <div class="cinema-eyebrow"><span class="cinema-wordmark">O<span>+</span></span><span>{% if featured and featured.progress_episodes %}CONTINUE WATCHING{% elif featured %}FROM YOUR WATCHLIST{% else %}MADE FOR YOUR NEXT WATCH{% endif %}</span></div>
+    <div class="cinema-eyebrow"><span class="cinema-wordmark">O<span>+</span></span><span>{% if featured and (featured.progress_episodes or featured.partial_playback) %}CONTINUE WATCHING{% elif featured %}FROM YOUR WATCHLIST{% else %}MADE FOR YOUR NEXT WATCH{% endif %}</span></div>
     <h1 id="featured-title">{% if featured %}{{ featured.title }}{% else %}A good story starts here.{% endif %}</h1>
     {% if featured %}
-      <div class="cinema-meta"><span>Anime</span>{{ ready_badge(featured) }}{% if featured.progress_episodes %}<span class="watched-count">Watched <b>{{ featured.progress_episodes }}{% if featured.episode_total %}/{{ featured.episode_total }}{% endif %}</b></span>{% else %}<span>Not started</span>{% endif %}</div>
+      <div class="cinema-meta"><span>Anime</span>{{ ready_badge(featured) }}{% if featured.progress_episodes %}<span class="watched-count">Watched <b>{{ featured.progress_episodes }}{% if featured.episode_total %}/{{ featured.episode_total }}{% endif %}</b></span>{% elif featured.partial_playback %}<span>Episode in progress</span>{% else %}<span>Not started</span>{% endif %}</div>
       {% set featured_url = featured.detail_url | default('/plus/library/' ~ featured.id, true) %}
       {% set shared_detail = '/plus/libraries/' in featured_url %}
       {% set episode_anchor = '#episode-' ~ featured.next_episode if featured.next_episode and featured.episode_total and featured.next_episode <= featured.episode_total else '#episode-heading' %}
-      <div class="cinema-actions"><a class="button button-primary" href="{{ featured_url }}{{ '#overview' if shared_detail else episode_anchor }}">{{ 'View title' if shared_detail else 'View episodes' }}</a>{% if not shared_detail %}<a class="button button-secondary" href="{{ featured_url }}#overview"><span class="cinema-info-icon" aria-hidden="true">i</span> More info</a>{% endif %}</div>
+      <div class="cinema-actions"><a class="button button-primary" href="{{ featured.play_url if featured.play_url else featured_url ~ ('#overview' if shared_detail else episode_anchor) }}">{{ featured.play_label if featured.play_url else ('View title' if shared_detail else 'View episodes') }}</a>{% if not shared_detail or featured.play_url %}<a class="button button-secondary" href="{{ featured_url }}#overview"><span class="cinema-info-icon" aria-hidden="true">i</span> More info</a>{% endif %}</div>
+      {% if featured.partial_playback %}<p class="title-progress-source">Episode in progress · {{ featured.progress_episodes }} episodes watched through</p>{% endif %}
+      {% if featured.playback_navigation_state %}<p class="title-progress-source">{{ featured.playback_navigation_state }}</p>{% endif %}
     {% else %}
       <p>Discover something that fits your taste, save it to your watchlist, and let your collection take shape.</p>
       <div class="cinema-actions"><a class="button button-primary" href="/plus/discover">Find something to watch</a><a class="button button-secondary" href="/plus/library">Your anime</a></div>

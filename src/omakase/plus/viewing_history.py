@@ -12,7 +12,7 @@ from omakase.plus.movies_store import require_user
 _MAX_RECENT = 5000
 _ANIME_VIEWING_EVENTS = (
     "e.disposition='accepted' AND e.kind IN ('progress','completed') "
-    "AND e.source IN ('plex','apple_tv','anilist','manual') "
+    "AND e.source IN ('plex','apple_tv','anilist','manual','web_player') "
     "AND e.confidence IN ('exact','manual') AND e.reason!='completion_score_updated' "
     "AND lower(e.event_key) NOT LIKE '%bulk%' AND lower(e.event_key) NOT LIKE '%migration%'"
 )
@@ -55,7 +55,7 @@ def _anime_event_times(row):
     if not isinstance(payload, dict):
         payload = {}
     watched = None
-    if row["source"] in {"plex", "apple_tv"}:
+    if row["source"] in {"plex", "apple_tv", "web_player"}:
         # Season snapshots combine highest watched episode with latest activity
         # across the season. Their timestamp cannot date that specific episode.
         if not (row["source"] == "plex" and row["event_key"].startswith("plex:snapshot:")):
@@ -97,6 +97,14 @@ def anime_viewing_recency(db, user_id: int) -> dict[tuple[int, int], str]:
                 continue
         identity = (int(row["anilist_id"]), int(row["season_number"]))
         recency[identity] = max(recency.get(identity, ""), activity)
+    for row in db.execute(
+        "SELECT anilist_id,season_number,MAX(last_played_at) AS played FROM web_playback_watch WHERE user_id=? GROUP BY anilist_id,season_number",
+        (user_id,),
+    ):
+        activity = _stamp(row["played"])
+        if activity:
+            identity = (row["anilist_id"], row["season_number"])
+            recency[identity] = max(recency.get(identity, ""), activity)
     return recency
 
 
@@ -108,9 +116,13 @@ def _anime(row, *, personal_navigation=True):
     episode_title = _title(payload.get("episode_title") or payload.get("episode_name"), 300)
     if payload.get("episode") is not None and payload["episode"] != episode:
         episode_title = None
-    source = {"plex": "Plex", "apple_tv": "Apple TV", "anilist": "AniList", "manual": "Manual"}[
-        row["source"]
-    ]
+    source = {
+        "plex": "Plex",
+        "apple_tv": "Apple TV",
+        "anilist": "AniList",
+        "manual": "Manual",
+        "web_player": "Web player",
+    }[row["source"]]
     label = (
         "Watched" if watched else ("Marked watched" if row["source"] == "manual" else "Recorded")
     )
@@ -312,7 +324,8 @@ def viewing_history(db, user_id: int, limit: int = 24, page: int = 1) -> dict:
         "WITH ranked AS (SELECT e.*,ROW_NUMBER() OVER (PARTITION BY e.watch_entry_id,e.episode "
         "ORDER BY e.observed_at DESC,e.id DESC) AS occurrence FROM watch_events e "
         "JOIN watch_entries w ON w.id=e.watch_entry_id AND w.user_id=e.user_id "
-        f"WHERE e.user_id=? AND w.user_id=? AND {_ANIME_VIEWING_EVENTS}) "
+        f"WHERE e.user_id=? AND w.user_id=? AND {_ANIME_VIEWING_EVENTS} "
+        "AND NOT (e.source='web_player' AND EXISTS (SELECT 1 FROM web_playback_watch pw WHERE pw.user_id=e.user_id AND pw.anilist_id=w.anilist_id AND pw.season_number=w.season_number AND pw.completed_at IS NOT NULL))) "
         f"SELECT r.*,w.id AS personal_entry_id,w.anilist_id,w.season_number,w.episode_total,m.id AS owned_monitor_id,COALESCE(m.title,{retained_title}) AS title,m.expected_episodes,(SELECT score_ten FROM watch_events score WHERE score.user_id=w.user_id AND score.watch_entry_id=w.id AND score.disposition='accepted' AND score.score_ten IS NOT NULL ORDER BY score.id DESC LIMIT 1) AS current_rating "
         "FROM ranked r JOIN watch_entries w ON w.id=r.watch_entry_id AND w.user_id=? "
         "LEFT JOIN media_monitors m ON m.id=w.monitor_id AND m.user_id=w.user_id AND m.anilist_id=w.anilist_id AND m.season_number=w.season_number "
@@ -333,6 +346,7 @@ def viewing_history(db, user_id: int, limit: int = 24, page: int = 1) -> dict:
         for row in rows
         if (card := _anime(row, personal_navigation=personal_navigation)) is not None
     ]
+    items.extend(_web_anime(db, user_id, personal_navigation=personal_navigation))
     items.extend(_movies(db, user_id))
     items.extend(_television(db, user_id))
     items.sort(
@@ -350,3 +364,31 @@ def viewing_history(db, user_id: int, limit: int = 24, page: int = 1) -> dict:
         "page": page,
         "has_more": len(items) > start + limit,
     }
+
+
+def _web_anime(db, user_id, *, personal_navigation):
+    """One exact episode card at its first observed completion, never gap dates."""
+    rows = db.execute(
+        "SELECT p.id,p.anilist_id,p.season_number,p.episode_number,MIN(p.completed_at) AS completed_at,w.id AS personal_entry_id,w.episode_total,m.id AS owned_monitor_id,COALESCE(m.title,(SELECT i.title FROM watch_library_links link JOIN library_items i ON i.id=link.library_item_id WHERE link.user_id=w.user_id AND link.watch_entry_id=w.id ORDER BY i.created_at DESC,i.id LIMIT 1)) AS title,m.expected_episodes,(SELECT score_ten FROM watch_events e WHERE e.user_id=w.user_id AND e.watch_entry_id=w.id AND e.disposition='accepted' AND e.score_ten IS NOT NULL ORDER BY e.id DESC LIMIT 1) AS current_rating "
+        "FROM web_playback_watch p JOIN watch_entries w ON w.user_id=p.user_id AND w.anilist_id=p.anilist_id AND w.season_number=p.season_number "
+        "LEFT JOIN media_monitors m ON m.id=w.monitor_id AND m.user_id=p.user_id "
+        "WHERE p.user_id=? AND p.completed_at IS NOT NULL GROUP BY p.anilist_id,p.season_number,p.episode_number ORDER BY completed_at DESC LIMIT ?",
+        (user_id, _MAX_RECENT),
+    ).fetchall()
+    cards = []
+    for row in rows:
+        data = dict(row)
+        data.update(
+            source="web_player",
+            event_key="web:exact",
+            kind="progress",
+            episode=row["episode_number"],
+            observed_at=row["completed_at"],
+            payload_json=json.dumps({"watched_at": row["completed_at"]}),
+            current_rating=row["current_rating"],
+        )
+        card = _anime(data, personal_navigation=personal_navigation)
+        if card:
+            card.update(id=f"web-anime-{row['id']}", artwork_url=None)
+            cards.append(card)
+    return cards

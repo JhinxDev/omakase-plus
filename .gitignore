@@ -57,3 +57,7 @@ data/*.db-shm
 .playwright-cli/
 /output/
 .worktrees/
+
+# Integrity-locked vendor downloads are local rebuild inputs; keep source locks,
+# notices and served assets in Git, without duplicated executable archives.
+/THIRD-PARTY/jassub-2.5.23/*.tgz

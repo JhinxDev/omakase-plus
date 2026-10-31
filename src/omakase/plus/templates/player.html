@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · Watch · Omakase Plus{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="/plus/static/shaka-controls-5.3.3.css?v={{ asset_version }}">
+<link rel="stylesheet" href="/plus/static/web-player.css?v={{ asset_version }}">
+{% endblock %}
+{% block eyebrow %}Your private cinema{% endblock %}
+{% block page_title %}{{ title }}{% endblock %}
+{% block page_intro %}<p>Episode {{ episode_number }} <span aria-hidden="true">·</span> Watch in Omakase</p>{% endblock %}
+{% block page_actions %}<a class="button secondary" href="{{ overview_url }}">Back to title</a>{% endblock %}
+{% block content %}
+<section class="web-player" data-web-player aria-label="Episode player">
+  <div class="web-player-stage" data-player-container>
+    <video data-player-video playsinline preload="none" aria-label="{{ title }}, episode {{ episode_number }}"></video>
+    <div class="web-player-start" data-player-start-panel>
+      <span class="web-player-eyebrow">EPISODE {{ episode_number }}</span>
+      <h2 data-player-start-heading>Ready when you are</h2>
+      <p data-player-start-copy>Start playback to check this episode’s available streams.</p>
+      <label class="web-player-resume" data-player-resume-option><input type="checkbox" data-player-resume checked> Resume from my saved position</label>
+      <button class="web-player-primary" type="button" data-player-start disabled>Play episode</button>
+      <button type="button" data-player-cancel-preparation hidden>Cancel preparation</button>
+    </div>
+  </div>
+  <div class="web-player-state">
+    <p class="web-player-status" role="status" aria-live="polite" data-player-status>Playback starts only when you choose Play episode.</p>
+    <p class="web-player-save" role="status" data-player-save></p>
+  </div>
+  <p class="web-player-version-note" data-player-version-note hidden>Your saved position belongs to a different copy of this episode. This copy starts from the beginning.</p>
+  <div class="web-player-error" role="alert" data-player-error hidden>
+    <p data-player-error-text></p>
+    <div class="web-player-actions"><button type="button" data-player-retry hidden>Try playback once more</button><button type="button" data-player-reload hidden>Reload player</button></div>
+  </div>
+  <div class="web-player-details">
+    <div><h2>Your viewing progress</h2><p>Progress saves while you watch. Seeking alone does not mark an episode watched.</p><button type="button" data-player-restart disabled>Restart episode</button></div>
+    <div><h2>Audio and subtitles</h2><p>Choose audio in the player’s settings. Available styled ASS subtitles have their own selector below. Other formats may need Plex.</p>
+      <div class="web-player-ass-options" data-player-ass-options hidden>
+        <label for="web-player-ass-select">Styled subtitles</label>
+        <select id="web-player-ass-select" data-player-ass-select aria-describedby="web-player-ass-status" disabled><option value="off">Off</option></select>
+        <p id="web-player-ass-status" role="status" aria-live="polite" data-player-ass-status></p>
+      </div>
+      <p class="web-player-caption-mode" data-player-caption-mode-note hidden>Styled subtitles display in this page and the player’s fullscreen mode. Picture in Picture and native video fullscreen do not include these subtitles. Turn subtitles Off to use Picture in Picture, or open Plex.</p>
+      <a data-player-plex hidden target="_blank" rel="noopener noreferrer">Open this episode in Plex <span aria-hidden="true">↗</span></a><p data-player-fallback>For other formats, return to the title and use its Plex action.</p>
+      <p class="web-player-caption-mode"><a href="/plus/static/ass/LICENSES.txt" target="_blank" rel="noopener">Subtitle renderer licenses</a> · <a href="/plus/static/ass/corresponding-source.tar.gz" download>Source and rebuild instructions</a></p></div>
+  </div>
+  <a class="web-player-next" data-player-next {% if next_url %}href="{{ next_url }}"{% else %}hidden{% endif %}>Next episode <span aria-hidden="true">→</span></a>
+</section>
+<noscript><p class="web-player-error">JavaScript is required for this player. <a href="{{ overview_url }}">Return to the title</a> to open the episode in Plex.</p></noscript>
+<script id="web-player-config" type="application/json">{{ {"monitor_id": monitor_id, "episode_number": episode_number, "library_id": library_id, "next_url": next_url | default(none)} | tojson }}</script>
+{% endblock %}
+{% block end_scripts %}
+<script src="/plus/static/shaka-player-5.3.3.js?v={{ asset_version }}" defer></script>
+<script src="/plus/static/web-player.js?v={{ asset_version }}" defer></script>
+{% endblock %}

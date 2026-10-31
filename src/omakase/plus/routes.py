@@ -185,6 +185,7 @@ from omakase.plus.watch.service import (
     ingest_watch_event,
     resolve_watch_confirmation,
 )
+from omakase.plus.web_playback_routes import create_player_router
 from omakase.plus.web_security import csrf_token as _csrf_token
 from omakase.plus.web_security import require_csrf as _require_csrf
 from omakase.types import OmakaseConfig, resolve_model_preset
@@ -229,6 +230,12 @@ _STATIC_ASSETS = {
     "search.js": "application/javascript",
     "geist-variable.woff2": "font/woff2",
     "dashboard.js": "application/javascript",
+    "shaka-player-5.3.3.js": "application/javascript",
+    "shaka-controls-5.3.3.css": "text/css",
+    "web-player.css": "text/css",
+    "web-player.js": "application/javascript",
+    "web-ass.js": "application/javascript",
+    "shaka-player-5.3.3-LICENSE.txt": "text/plain",
     "omakase-seal.svg": "image/svg+xml",
     "omakase-icon.svg": "image/svg+xml",
 }
@@ -815,6 +822,31 @@ async def plus_static_asset(asset_name: str, request: Request):
     return await run_in_threadpool(static_response, asset_path, media_type, request)
 
 
+@router.get("/static/ass/{asset_name}")
+async def ass_runtime_asset(asset_name: str, request: Request):
+    types = {
+        "jassub.js": "application/javascript",
+        "worker.js": "application/javascript",
+        "jassub-worker.wasm": "application/wasm",
+        "jassub-worker-modern.wasm": "application/wasm",
+        "default.woff2": "font/woff2",
+        "LICENSES.txt": "text/plain",
+        "SOURCE.json": "application/json",
+        "corresponding-source.tar.gz": "application/gzip",
+    }
+    if asset_name not in types:
+        raise HTTPException(404)
+    path = _STATIC_DIR / "ass" / asset_name
+    if not path.is_file():
+        raise HTTPException(404)
+    from omakase.plus.static_delivery import static_response
+
+    response = await run_in_threadpool(static_response, path, types[asset_name], request)
+    if asset_name == "worker.js":
+        response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+    return response
+
+
 @router.get("/static/services/{asset_name}")
 async def service_identity_asset(asset_name: str, request: Request):
     if asset_name not in {
@@ -951,6 +983,7 @@ router.include_router(create_mal_router(templates, _product_context))
 router.include_router(create_language_router(templates, _product_context))
 router.include_router(create_history_artwork_router())
 router.include_router(create_onboarding_router(templates, _product_context))
+router.include_router(create_player_router(templates, _product_context))
 
 
 @router.get("/", include_in_schema=False)
@@ -1282,11 +1315,16 @@ async def title_page(
     monitor_id: int,
     message: str = "",
     completed: bool = False,
+    library_id: str | None = None,
     user=Depends(require_user),
     db=Depends(get_db),
 ):
-    if households.feature_enabled():
-        selected = households.selected_scope(db, viewer_id=user.id)
+    if library_id is not None or households.feature_enabled():
+        selected = (
+            households.resolve_scope(db, viewer_id=user.id, library_id=library_id)
+            if library_id is not None
+            else households.selected_scope(db, viewer_id=user.id)
+        )
         if selected.kind == "household":
             # A monitor URL is never itself an access grant to another account.
             match = db.execute(

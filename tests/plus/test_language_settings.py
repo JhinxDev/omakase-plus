@@ -33,7 +33,15 @@ def web(tmp_path, monkeypatch):
     monkeypatch.setenv("OMAKASE_PLUS_LANGUAGE_SETTINGS_ENABLED", "true")
     monkeypatch.delenv("OMAKASE_PLUS_HOUSEHOLDS_ENABLED", raising=False)
     blocked = Mock(side_effect=AssertionError("Language settings cannot call providers"))
-    monkeypatch.setattr(httpx.Client, "send", blocked)
+    original_send = httpx.Client.send
+
+    def local_only(client, request, *args, **kwargs):
+        if isinstance(client, TestClient):
+            return original_send(client, request, *args, **kwargs)
+        return blocked(client, request, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.Client, "send", local_only)
+    monkeypatch.setattr(httpx.AsyncClient, "send", blocked)
     db = database(tmp_path)
     for user in (1, 2, 3):
         db.execute(
@@ -95,6 +103,16 @@ def post(c, token, data):
         content=urlencode({"csrf_token": token, **data}, doseq=True),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
+
+
+def test_provider_guard_allows_only_the_inprocess_client(web):
+    c, _ = client(web)
+    assert c.get("/plus/settings/languages").status_code == 200
+    assert not web[3].called
+    with httpx.Client() as external:
+        with pytest.raises(AssertionError, match="cannot call providers"):
+            external.get("https://provider.invalid")
+    assert web[3].call_count == 1
 
 
 def test_get_local_only_independent_household_gate(web):

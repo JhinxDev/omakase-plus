@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import re
 import secrets
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from omakase.plus.acquisition_policy import AcquisitionPolicy, load_user_acquisition_policy
 from omakase.plus.catalog import (
@@ -2531,6 +2533,39 @@ def _selected_monitors(
     )
 
 
+def _maintain_web_playback(db):
+    """Optional bounded housekeeping under the already acquired sync lease.
+
+    Only the configured existing cache is considered. Remux cleanup validates
+    known rows and ownership markers; it never admits jobs or creates a cache.
+    This checkpoint owns no unfinished sync transaction when rolling back errors.
+    """
+    from omakase.plus import web_playback_remux as remux
+    from omakase.plus import web_playback_store as store
+    from omakase.plus.web_playback_navigation import enabled
+
+    if not enabled():
+        return
+    try:
+        store.cleanup_sessions(db)
+        db.commit()
+    except (OSError, sqlite3.Error, ValueError):
+        db.rollback()
+        logging.getLogger(__name__).warning("Player session maintenance unavailable")
+    try:
+        cache = Path(os.getenv("OMAKASE_PLAYBACK_CACHE_ROOT", "/run/omakase-playback"))
+        if not cache.is_absolute() or cache.is_symlink() or not cache.is_dir():
+            return
+        held = {row["media_version"] for row in store.active_media_holds(db)} | set(
+            remux.held_media_versions(db)
+        )
+        remux.cleanup(db, cache, held_versions=lambda: held)
+    except (OSError, sqlite3.Error, ValueError):
+        db.rollback()
+        # Unsupported/read-only caches cannot prevent ordinary media sync.
+        logging.getLogger(__name__).warning("Player cache maintenance unavailable")
+
+
 async def run_media_sync(
     db: sqlite3.Connection,
     *,
@@ -2626,6 +2661,13 @@ async def run_media_sync(
 
     results: list[SchedulerMonitorResult] = []
     try:
+        from omakase.plus.completion_cleanup import process_deferred_completion_cleanup
+
+        # Completion may precede the end of an active player. The normal sync
+        # lease also owns bounded retries after its final session expires.
+        process_deferred_completion_cleanup(db)
+        db.commit()
+        _maintain_web_playback(db)
         selected_monitors = _selected_monitors(
             db,
             now=started_at,

@@ -99,6 +99,7 @@ preference or passing unit test is not proof of working provider connections.
 | --- | --- |
 | [Households](docs/households.md) | Shared catalog/files; each member's progress, ratings, tracker accounts and stream choices |
 | [Audio and subtitles](docs/language-settings.md) | Requested languages, physically verified tracks and the viewer's current Plex selection |
+| [Optional web player](docs/web-player.md) | Exact anime playback, prepared MKV, personal resume and truthful viewing coverage |
 | [MyAnimeList ↔ AniList](docs/myanimelist-bridge.md) | Each user's verified identities; first-sync preview, conflict decisions and opt-in ongoing checks |
 
 An owner connector never grants members its credentials. Revocation stops future
@@ -125,5 +126,7 @@ surface remains available; it is distinct from the authenticated Plus app.
 
 The code retains its original [MIT license](LICENSE) and upstream attribution.
 Geist retains its [SIL Open Font License](src/omakase/plus/static/GEIST-OFL.txt).
+Bundled player dependencies retain their separate licenses, notices and source/
+relink materials under [THIRD-PARTY](THIRD-PARTY/jassub-2.5.23/README.md).
 Source tests do not establish native deployment, full playback, physical-device
 or human creative acceptance.

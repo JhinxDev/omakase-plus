@@ -34,6 +34,7 @@
   <script src="/plus/static/shelves.js?v={{ asset_version }}" defer></script>
   <script src="/plus/static/search.js?v={{ asset_version }}" defer></script>
   <script src="/plus/static/dashboard.js?v={{ asset_version }}" defer></script>
+  {% block extra_head %}{% endblock %}
 </head>
 <body class="product-body page-{{ active_page }}">
   <a class="skip-link" href="#main-content">Skip to content</a>
@@ -143,5 +144,6 @@
     <details class="mobile-browse" data-mobile-browse><summary {% if active_page in ['library','movies','tv'] %}class="is-active"{% endif %}><span class="nav-glyph" aria-hidden="true">{{ icon('library') }}</span><span>Browse</span></summary><div class="mobile-browse-panel"><strong>Your library</strong><a href="/plus/library" {% if active_page == 'library' %}aria-current="page"{% endif %}>{{ icon('library') }}<span>Anime</span></a>{% if movies_enabled %}<a href="/plus/movies" {% if active_page == 'movies' %}aria-current="page"{% endif %}>{{ icon('movies') }}<span>Movies</span></a><a href="/plus/tv" {% if active_page == 'tv' %}aria-current="page"{% endif %}>{{ icon('tv') }}<span>TV Shows</span></a>{% endif %}</div></details>
     {% for key,href,label in [('search','/plus/search','Search'),('discover','/plus/discover','For you'),('activity','/plus/activity','History')] %}<a href="{{ href }}" {% if active_page == key %}aria-current="page"{% endif %}><span class="nav-glyph" aria-hidden="true">{{ icon(key) }}</span><span>{{ label }}</span></a>{% endfor %}
   </nav>
+  {% block end_scripts %}{% endblock %}
 </body>
 </html>

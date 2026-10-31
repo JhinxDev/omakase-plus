@@ -32,7 +32,9 @@ RUN pip install --no-cache-dir --no-deps /tmp/*.whl && rm -f /tmp/*.whl
 ARG OMAKASE_REVISION=unknown
 LABEL org.opencontainers.image.source="https://github.com/JhinxDev/omakase-plus"
 LABEL org.opencontainers.image.description="Omakase private media discovery and orchestration"
-LABEL org.opencontainers.image.licenses="MIT"
+# Application and bundled player assets; retain each component's original notices.
+LABEL org.opencontainers.image.licenses="MIT AND Apache-2.0 AND LGPL-2.1-or-later AND FTL AND MIT-Modern-Variant AND ISC AND NTP AND Zlib AND BSL-1.0 AND OFL-1.1"
+LABEL dev.omakase.license-scope="Application and bundled web assets; operating-system component licenses remain in /usr/share/doc. Player notices and corresponding source are served beside the renderer."
 LABEL org.opencontainers.image.revision=$OMAKASE_REVISION
 
 USER omakase

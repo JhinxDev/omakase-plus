@@ -1,0 +1,34 @@
+{
+  "corresponding-source.tar.gz": {
+    "sha256": "820a4a6c3b3e9f28ea5cd26c17d92079c2bd85e7319422c2b6f98071a96e1cf4",
+    "bytes": 62013876
+  },
+  "default.woff2": {
+    "sha256": "886929903707c5bb28b07cd2eed69921b3d5ef5c49c73a0dd1e187ebf6546a4c",
+    "bytes": 145972
+  },
+  "jassub-worker-modern.wasm": {
+    "sha256": "e6b436efa71e03274cdb993d38553f7870f37e798d7c83ba7856651c66bb087d",
+    "bytes": 2189919
+  },
+  "jassub-worker.wasm": {
+    "sha256": "2b7e65f65ab7c84736dbcc5f2bbe3af9536db142f65ca8673b54bca21f38fbf8",
+    "bytes": 2110107
+  },
+  "jassub.js": {
+    "sha256": "244a5d4db2b004b114572aa7c0c826ca325c955164b915f53fae51d1c8eabfc1",
+    "bytes": 26078
+  },
+  "LICENSES.txt": {
+    "sha256": "44622f156af982c376ff142a92c450b7b71adc1ce43fb0ba8a6131ff4dd69ecd",
+    "bytes": 753959
+  },
+  "SOURCE.json": {
+    "sha256": "92419584cbcd8ed1a5558b40a280e2059230e6096913d5630595184ba8ab574a",
+    "bytes": 2086
+  },
+  "worker.js": {
+    "sha256": "ba32af84b968ea7ed8f56ab6ef13f8f77a2ff987806627e80223f4bf10efeee2",
+    "bytes": 193561
+  }
+}

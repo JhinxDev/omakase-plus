@@ -31,3 +31,11 @@ Dockerfile text eol=lf
 *.zip    binary
 *.gz     binary
 *.whl    binary
+
+# Integrity-locked player distributions and reviewed served assets keep exact
+# bytes, including upstream notice line endings and the recorded adapted CSS.
+/THIRD-PARTY/** -text
+/src/omakase/plus/static/ass/** -text
+/src/omakase/plus/static/shaka-* -text
+/src/omakase/plus/static/web-player.* -text
+/src/omakase/plus/static/web-ass.js -text

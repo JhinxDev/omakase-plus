@@ -1,0 +1,72 @@
+.web-player { --shaka-font-family: var(--sans, Geist, sans-serif); width: 100%; min-width: 0; max-width: 1200px; margin-inline: auto; color: var(--stream-text, #f0edf8); }
+.web-player-stage { --player-controls-band: 96px; position: relative; width: 100%; min-width: 0; box-sizing: border-box; padding-bottom: var(--player-controls-band); min-height: 260px; overflow: hidden; background: #020408; border: 1px solid #303547; border-radius: 14px; isolation: isolate; }
+.web-player-stage video { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: contain; }
+/* Keep canvas coordinates tied to the video image, including in fullscreen.
+   JASSUB measures the resized video; never translate its positioned ASS layer. */
+.web-player-stage:fullscreen video { height: 100%; aspect-ratio: auto; }
+.web-player-start { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; background: radial-gradient(ellipse at 50% 100%, #25243c, #080d18 80%); z-index: 3; }
+.web-player [hidden] { display: none !important; }
+.web-player-eyebrow { color: #c5b8eb; font-size: .75rem; font-weight: 650; letter-spacing: .15em; }
+.web-player h2 { margin: 0; font-size: 1.05rem; line-height: 1.4; }
+.web-player-start h2 { font-size: clamp(1.4rem, 3vw, 2rem); letter-spacing: -.025em; }
+.web-player p { margin: 0; color: #b8c0d1; line-height: 1.6; }
+.web-player button, .web-player a { font: inherit; }
+.web-player button, .web-player-next, .web-player-details a { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 16px; border: 1px solid #4b4c65; border-radius: 8px; background: #1c2232; color: #f0edf8; cursor: pointer; text-decoration: none; }
+.web-player button:hover, .web-player a:hover { border-color: #c8b5f1; }
+.web-player button:disabled { opacity: .5; cursor: default; }
+.web-player .web-player-primary { color: #171325; background: #d4c5f7; border-color: #d4c5f7; font-weight: 650; padding-inline: 28px; }
+.web-player-resume { display: flex; align-items: center; gap: 10px; min-height: 44px; color: #cbd1df; font-size: .875rem; }
+.web-player-resume input { width: 18px; height: 18px; accent-color: #d4c5f7; flex: none; }
+.web-player :focus-visible { outline: 3px solid #e1d2ff; outline-offset: 3px; }
+.web-player-state { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 24px; padding: 16px 0; font-size: .875rem; }
+.web-player-state .web-player-save { color: #bdc8dd; }
+.web-player-error { margin: 0 0 24px; padding: 18px; border: 1px solid #885461; border-radius: 10px; background: #2c1d28; }
+.web-player-error p { color: #ffd8e0; }
+.web-player-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+.web-player-details { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; border-top: 1px solid #303547; padding: 24px 0; }
+.web-player-details p { margin-top: 8px; font-size: .9rem; max-width: 55ch; }
+.web-player-details button, .web-player-details a { margin-top: 20px; }
+.web-player-next { margin-bottom: 16px; }
+.web-player .shaka-video-container, .web-player .shaka-controls-container, .web-player .shaka-settings-menu { font-family: var(--sans, Geist, sans-serif); }
+.web-player .shaka-controls-container button { min-width: 44px; min-height: 44px; padding: 8px; border: 0; border-radius: 4px; background: transparent; }
+.web-player .shaka-controls-container button.material-icons-round { font-family: 'Material Icons Round'; }
+.web-player :is(.shaka-settings-menu, .shaka-overflow-menu) { box-sizing: border-box; max-width: calc(100% - 24px); max-height: min(250px, calc(100% - 76px)); background: #171e2d; color: #f0edf8; }
+.web-player :is(.shaka-settings-menu, .shaka-overflow-menu, .shaka-sub-menu) > * { flex-shrink: 0; }
+.web-player :is(.shaka-settings-menu, .shaka-sub-menu) .shaka-back-to-overflow-button { position: sticky; top: -5px; z-index: 3; background: #171e2d; }
+.web-player .shaka-settings-menu button { font-family: inherit; text-align: start; }
+.web-player .shaka-settings-menu .material-icons-round { font-family: 'Material Icons Round'; }
+.web-player .shaka-spinner-container { z-index: 2; }
+/* Active overlay controls need a known backing even over white/cyan video. */
+.web-player .shaka-bottom-controls { box-sizing: border-box; padding: 8px; border-radius: 8px; background: #080d1a; }
+.web-player .shaka-scrim-container { background: none; }
+.web-player .shaka-controls-button-panel > * { opacity: 1; color: #f0edf8; }
+.web-player .shaka-controls-button-panel .shaka-spacer { min-width: 0; width: 0; padding: 0; flex: 1 1 0; }
+/* The app button display rule must not expose Shaka's empty ad placeholder. */
+.web-player .shaka-controls-container .shaka-ad-info:empty { display: none; }
+.web-player .shaka-controls-container :focus-visible { outline: 3px solid #e1d2ff; outline-offset: 2px; }
+.web-player input.shaka-range-element::-webkit-slider-thumb { box-sizing: border-box; border: 2px solid #080d1a; background: #f0edf8; box-shadow: 0 0 0 1px #f0edf8; }
+.web-player input.shaka-range-element::-moz-range-thumb { box-sizing: border-box; border: 2px solid #080d1a; background: #f0edf8; box-shadow: 0 0 0 1px #f0edf8; }
+/* Keep the supplied range track/thumb styling, overriding app form padding and
+   borders. The input remains a44px hit target centered on its4px track. */
+body.product-body .web-player input.shaka-range-element[type="range"] { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; height: 44px; min-height: 0; max-height: 44px; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; top: calc((var(--shaka-track-h, 4px) - 44px) / 2); }
+.web-player .shaka-range-container { min-width: 0; }
+.web-player .shaka-playback-rate-slider-row { min-height: 44px; }
+.web-player .shaka-playback-rate-slider-section { padding-bottom: 12px; }
+.web-player .omakase-ass-overlay { z-index: 1; }
+.web-player .shaka-controls-container { z-index: 2; }
+.web-player .web-player-version-note { padding: 0 0 20px; color: #f1d3a1; }
+.web-player-ass-options { margin-top: 20px; display: grid; gap: 8px; min-width: 0; }
+.web-player-ass-options label { color: #e1d9ef; font-size: .9rem; font-weight: 600; }
+.web-player-ass-options select { box-sizing: border-box; min-width: 0; width: 100%; max-width: 100%; min-height: 48px; padding: 10px 12px; border: 1px solid #616078; border-radius: 8px; background: #1c2232; color: #f0edf8; font: inherit; }
+.web-player .web-player-caption-mode { padding: 12px; border-left: 2px solid #ab98d1; background: #1b1e2d; }
+@media (max-width: 640px) {
+  .web-player { --shaka-icon-size: 44px; }
+  .web-player-stage { border-radius: 8px; min-height: 280px; }
+  .web-player-start { gap: 10px; padding: 16px; }
+  .web-player-start p { font-size: .875rem; }
+  .web-player-details { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .web-player .shaka-volume-bar-container { display: none; }
+  .web-player .shaka-time-and-duration { font-size: .75rem; padding-inline: 2px; }
+}
+@media (prefers-reduced-motion: reduce) { .web-player *, .web-player *::before, .web-player *::after { animation: none !important; transition: none !important; } }
+@media (forced-colors: active) { .web-player button, .web-player-stage, .web-player-error { border: 1px solid ButtonText; } }
