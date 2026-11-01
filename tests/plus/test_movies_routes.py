@@ -133,7 +133,7 @@ def test_html_request_check_preserves_its_outcome_through_redirect(browser, outc
     assert response.headers["location"] == f"/plus/movies/tt0084787?notice=request_{outcome}"
     page = client.get(response.headers["location"])
     assert page.status_code == 200 and message in page.text
-    assert "Not watched" in page.text and "Watch status not recorded" not in page.text
+    assert ">No viewing record</span>" in page.text
     assert 'value="" selected' in page.text
     assert svc.calls == ["refresh", "list"] and svc.db.total_changes == before
 

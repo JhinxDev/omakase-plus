@@ -8,6 +8,28 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from omakase.plus.movie_presentation import present_movie
 
 
+@pytest.mark.parametrize(
+    "history,label",
+    [
+        (None, "No viewing record"),
+        ({"status": "unwatched", "status_source": "none"}, "No viewing record"),
+        ({"status": "unwatched", "status_source": "manual"}, "Not watched"),
+        ({"status": "completed", "status_source": "manual", "rating": 8}, "Watched"),
+    ],
+)
+def test_missing_viewing_evidence_is_distinct_from_explicit_unwatched(history, label):
+    card = {"imdb_id": "tt0084787", "title": "The Thing", "history": history}
+    displayed = present_movie(card)
+    assert displayed["display"]["watch_label"] == label
+    assert displayed["history"] == history
+    templates = Path(__file__).resolve().parents[2] / "src/omakase/plus/templates"
+    env = Environment(loader=FileSystemLoader(templates), autoescape=True)
+    html = str(env.get_template("_movie_components.html").module.movie_card(displayed))
+    assert label in html
+    if history and history.get("rating"):
+        assert "Your rating 8/10" in html
+
+
 @pytest.mark.parametrize("expired", [False, True])
 def test_idle_availability_never_claims_an_active_check_or_changes_history(expired):
     env = Environment(

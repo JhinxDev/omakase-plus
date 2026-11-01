@@ -4,14 +4,16 @@
 {%- endmacro %}
 
 {% macro movie_poster(card, eager=false, status=true) -%}
+{% set display = card.display | default({}, true) %}
 <div class="movie-poster">
   {% if card.artwork_url %}<img src="{{ card.artwork_url }}" alt="" width="300" height="450" {% if not eager %}loading="lazy"{% endif %} data-poster>{% elif card.imdb_id and card.poster_url %}<img src="/plus/movies/{{ card.imdb_id }}/artwork" alt="" width="300" height="450" {% if not eager %}loading="lazy"{% endif %} data-poster>{% else %}<span class="movie-poster-fallback" aria-hidden="true">{{ card.title }}</span>{% endif %}
   {% if card.rank %}<span class="movie-pick-number" aria-label="Pick {{ card.rank }}">{{ "%02d" | format(card.rank) }}</span>{% endif %}
-  {% if status %}<span class="movie-state state-{{ card.display.status_tone | default('neutral') }}">{{ card.display.status_label if card.display else 'Availability not checked' }}</span>{% endif %}
+  {% if status %}<span class="movie-state state-{{ display.status_tone | default('neutral') }}">{{ display.status_label if display else 'Availability not checked' }}</span>{% endif %}
 </div>
 {%- endmacro %}
 
 {% macro movie_card(card) -%}
+{% set display = card.display | default({}, true) %}
 {% set history = card.history or {} %}
 {% set status_known = history.status_source and history.status_source != 'none' %}
 <article class="movie-card">
@@ -21,9 +23,9 @@
     <h2 title="{{ card.title }}">{{ card.title }}</h2>
     <div class="movie-meta">{% if card.year %}<span>{{ card.year }}</span>{% endif %}<span>Movie</span></div>
     {% if card.recommendation_reason %}<p class="movie-ranking-label">{% if card.ranking_basis == 'saved_ratings' %}Your local taste{% elif card.ranking_basis == 'public_rating' %}Public TMDB ratings{% elif card.ranking_basis == 'release_date' %}Release year{% else %}Public discovery{% endif %}</p><p class="movie-card-reason">{{ card.recommendation_reason }}</p>{% endif %}
-    {% if status_known or history.rating or not card.recommendation_reason %}<p class="collection-card-progress">{% if status_known %}{{ card.display.watch_label }}{% else %}Not watched{% endif %}{% if history.rating %} · Your rating {{ history.rating }}/10{% endif %}</p>{% endif %}
-    <p class="collection-card-availability" data-status-tone="{{ card.display.status_tone | default('neutral') }}">{% if not card.imdb_id %}Catalog preview · identity unconfirmed{% elif card.display %}{{ card.display.status_label }}{% else %}Availability not checked{% endif %}</p>
-    {% if card.display.request_recorded_at or card.display.request_observed_at %}<p class="movie-card-timestamp">{% set stamp = card.display.request_observed_at or card.display.request_recorded_at %}{{ 'Checked' if card.display.request_observed_at else 'Saved report' }} <time datetime="{{ stamp }}" data-local-datetime="{{ stamp }}">{{ stamp }}</time></p>{% endif %}
+    {% if status_known or history.rating or not card.recommendation_reason %}<p class="collection-card-progress">{% if status_known %}{{ display.watch_label | default('Viewing status unavailable') }}{% else %}No viewing record{% endif %}{% if history.rating %} · Your rating {{ history.rating }}/10{% endif %}</p>{% endif %}
+    <p class="collection-card-availability" data-status-tone="{{ display.status_tone | default('neutral') }}">{% if not card.imdb_id %}Catalog preview · identity unconfirmed{% elif display %}{{ display.status_label }}{% else %}Availability not checked{% endif %}</p>
+    {% if display.request_recorded_at or display.request_observed_at %}<p class="movie-card-timestamp">{% set stamp = display.request_observed_at or display.request_recorded_at %}{{ 'Checked' if display.request_observed_at else 'Saved report' }} <time datetime="{{ stamp }}" data-local-datetime="{{ stamp }}">{{ stamp }}</time></p>{% endif %}
     <div class="collection-card-quality">{{ movie_quality(card) }}</div>
   </div>
   {% if card.imdb_id %}</a>{% else %}<p class="movie-card-note">Preview only. Exact identity is still being checked.</p>{% endif %}

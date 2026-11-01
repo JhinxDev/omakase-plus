@@ -162,7 +162,7 @@ def test_old_request_report_is_stale_and_missing_viewing_uses_concise_display_on
     changes = db.total_changes
     displayed = present_movie(card, now=NOW + timedelta(hours=2))
     assert displayed["display"]["status_label"] == "Status out of date"
-    assert displayed["display"]["watch_label"] == "Not watched"
+    assert displayed["display"]["watch_label"] == "No viewing record"
     assert displayed["display"]["request_label"] == "Searching"
     assert displayed["display"]["request_recorded_at"] == "2026-10-27T15:00:00Z"
     assert "is searching" not in displayed["display"]["summary"]
