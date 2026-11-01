@@ -109,10 +109,11 @@
     const selectedAudio = player?.getAudioTracks().find(track => track.active);
     // Shaka 5 reports Off through no active text track. Its removed
     // isTextTrackVisible API must not be called during the first progress save.
-    const selectedText = player?.getTextTracks().find(track => track.active);
+    const textTracks = player?.getTextTracks() || [];
+    const selectedText = textTracks.find(track => track.active);
     const variant = player?.getVariantTracks?.().find(track => track.active);
     const audioId = selectedAudio?.id ?? variant?.audioId;
-    return { audio_id: audioId != null ? String(audioId) : null, text_id: selectedText ? String(selectedText.id) : null };
+    return { audio_id: audioId != null ? String(audioId) : null, text_id: selectedText ? String(selectedText.id) : textTracks.length ? 'off' : null };
   }
   function browserCapabilities(scope, video) {
     const engines = [scope.MediaSource, scope.ManagedMediaSource].filter(engine => typeof engine?.isTypeSupported === 'function');
@@ -136,6 +137,62 @@
     const preferred = subtitles.find(track => track.selected) || subtitles.find(track => track.forced)
       || subtitles.find(track => track.default) || subtitles.find(track => /^(en|eng)(-|$)/i.test(track.language || '')) || subtitles[0];
     return preferred ? `ass:${preferred.plex_stream_id}` : 'off';
+  }
+  function nextEpisodeUrl(value, config, origin) {
+    if (typeof value !== 'string' || !Number.isSafeInteger(config.monitor_id) || config.monitor_id <= 0
+      || !Number.isSafeInteger(config.episode_number) || config.episode_number <= 0 || typeof config.library_id !== 'string') return null;
+    const path = `/plus/watch/${config.monitor_id}/${config.episode_number + 1}`;
+    if (value.split('?')[0] !== path || value.includes('#')) return null;
+    try {
+      const url = new URL(value, origin);
+      return url.origin === origin && [...url.searchParams.keys()].length === 1
+        && url.searchParams.get('library_id') === config.library_id ? url.href : null;
+    } catch { return null; }
+  }
+  function subtitleChoices(nativeTracks, styledTracks) {
+    const language = track => track.language && track.language !== 'und' ? track.language : 'Language unknown';
+    const flags = track => [...(track.forced ? ['Forced'] : []), ...(track.default ? ['Default'] : [])];
+    return [{ value: 'off', label: 'Off', kind: 'off' },
+      ...nativeTracks.filter(track => track.id != null).map((track, index) => ({ value: `native:${track.id}`, kind: 'native',
+        label: [language(track), track.label, 'Browser subtitles', ...flags(track)].filter(Boolean).join(' · ') + ` (${index + 1})` })),
+      ...styledTracks.map((track, index) => ({ value: `ass:${track.plex_stream_id}`, kind: 'ass',
+        label: [language(track), 'Styled ASS', ...flags(track)].join(' · ') + ` (${index + 1})` }))];
+  }
+  function initialSubtitleValue(nativeTracks, styledTracks, savedId, versionChanged = false) {
+    const choices = subtitleChoices(nativeTracks, styledTracks);
+    if (!versionChanged && savedId === 'off') return 'off';
+    if (!versionChanged && savedId != null) {
+      if (choices.some(choice => choice.value === savedId)) return savedId;
+      if (choices.some(choice => choice.value === `native:${savedId}`)) return `native:${savedId}`;
+    }
+    const styled = styledTracks.find(track => track.selected);
+    if (styled) return `ass:${styled.plex_stream_id}`;
+    const active = nativeTracks.find(track => track.active && track.id != null);
+    if (active) return `native:${active.id}`;
+    return styledTracks.length ? subtitlePreference(styledTracks, null, true) : 'off';
+  }
+  async function switchSubtitleRenderer(value, options) {
+    if (value.startsWith('ass:')) {
+      const track = options.styledTracks.find(track => `ass:${track.plex_stream_id}` === value);
+      if (!track) throw new Error('Subtitle track unavailable');
+      options.setCustom('off'); options.selectNative(null);
+      if (!await options.loadStyled(track) || !options.current()) return false;
+      options.setCustom(value);
+    } else {
+      await options.clearStyled();
+      if (!options.current()) return false;
+      const track = value.startsWith('native:') ? options.nativeTracks.find(track => track.id != null && `native:${track.id}` === value) : null;
+      if (value !== 'off' && !track) throw new Error('Subtitle track unavailable');
+      options.setCustom(value === 'off' ? 'off' : null); options.selectNative(track);
+    }
+    return true;
+  }
+  function subtitleMenuKey(event, close) {
+    // Shaka tracks pressed keys at window level. Always let releases and focus
+    // navigation reach it, including keys pressed before entering this select.
+    if (event.type === 'keyup') return;
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
+    else if (event.target?.tagName === 'SELECT' && !['Tab', 'Shift', 'Control', 'Alt', 'Meta'].includes(event.key)) event.stopPropagation();
   }
   function audioPreference(player, state) {
     const audio = player.getAudioTracks();
@@ -295,11 +352,13 @@
     const steps = container.querySelectorAll('.shaka-playback-rate-step-btn');
     steps.forEach(button => button.setAttribute('aria-label', button.textContent.trim() === '+' ? 'Increase playback speed' : 'Decrease playback speed'));
   }
-  if (typeof module !== 'undefined' && module.exports) module.exports = { EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay };
+  if (typeof module !== 'undefined' && module.exports) module.exports = { EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
   if (typeof document === 'undefined') return;
   const root = document.querySelector('[data-web-player]');
   if (!root) return;
-  const find = name => root.querySelector(`[data-player-${name}]`);
+  const movedNodes = new Map();
+  const find = name => root.querySelector(`[data-player-${name}]`) || movedNodes.get(name) || null;
+  for (const name of ['ass-options', 'ass-select', 'ass-status', 'caption-mode-note', 'subtitle-unavailable', 'next']) movedNodes.set(name, find(name));
   const config = JSON.parse(document.getElementById('web-player-config').textContent);
   const video = find('video');
   const container = find('container');
@@ -330,6 +389,9 @@
   let preparation = null;
   let attempt = 0;
   let priorExitUnconfirmed = false;
+  let controlsRegistered = false;
+  const barItems = new Set();
+  let nextCandidate = config.next_url;
   let tabStorage = null;
   try { tabStorage = window.sessionStorage; } catch { /* Exit saving remains best effort without tab storage. */ }
   const terminalCheckpoint = new TerminalCheckpoint(tabStorage);
@@ -368,6 +430,8 @@
     failed = true;
     // Stop event capture before pause, so a failing save cannot enqueue another write.
     ready = false;
+    find('ass-select').disabled = true;
+    refreshBarControls();
     video.pause();
     void stopCaptions().catch(() => {});
     window.clearInterval(periodic);
@@ -390,7 +454,7 @@
   }
   function tracks() {
     // These are Shaka track IDs for this media version, never Plex stream IDs.
-    return { ...selectedTracks(player), ...(assTracks.length ? { text_id: customTextId || 'off' } : {}) };
+    return { ...selectedTracks(player), ...(customTextId != null ? { text_id: customTextId } : {}) };
   }
   function playbackSnapshot(event) {
     const position = eventPosition(video.currentTime, session?.duration_seconds);
@@ -427,16 +491,78 @@
   }
   function configureControls() {
     if (!overlay) return;
-    const styledActive = assTracks.length > 0 && customTextId !== 'off';
+    const styledActive = typeof customTextId === 'string' && customTextId.startsWith('ass:');
     video.disablePictureInPicture = styledActive;
     overlay.configure({
       ...playbackRateConfiguration(),
-      controlPanelElements: ['play_pause', 'time_and_duration', 'spacer', 'mute', 'volume', 'fullscreen', 'overflow_menu'],
-      overflowMenuButtons: ['quality', 'language', ...(!assTracks.length ? ['captions'] : []), 'playback_rate', ...(!styledActive ? ['picture_in_picture'] : [])],
+      controlPanelElements: ['play_pause', 'time_and_duration', 'spacer', 'mute', 'volume', 'fullscreen', 'overflow_menu', 'omakase_bar_break', 'omakase_audio', 'omakase_subtitles', 'omakase_next'],
+      overflowMenuButtons: ['quality', 'playback_rate', ...(!styledActive ? ['picture_in_picture'] : [])],
       seekBarColors: { base: '#626577', buffered: '#a6a3b3', played: '#d4c5f7' },
     });
     enhanceRangeControls(container);
     find('caption-mode-note').hidden = !styledActive;
+    refreshBarControls();
+  }
+  function refreshBarControls() {
+    for (const item of barItems) { item.checkAvailability(); if ((!ready || failed) && item.menu) { item.menu.classList.add('shaka-hidden'); item.button.setAttribute('aria-expanded', 'false'); } }
+  }
+  function directLabel(button, text) {
+    button.classList.add('omakase-direct-control', 'shaka-no-propagation');
+    const label = document.createElement('span'); label.className = 'omakase-control-label'; label.textContent = text;
+    button.appendChild(label);
+  }
+  function registerBarControls() {
+    if (controlsRegistered) return;
+    controlsRegistered = true;
+    class AudioMenu extends shaka.ui.AudioLanguageSelection {
+      constructor(parent, controls) {
+        super(parent, controls); directLabel(this.button, 'Audio'); this.button.classList.add('omakase-audio-button');
+        this.refresh = () => this.checkAvailability(); this.player.addEventListener('audiotrackschanged', this.refresh);
+        barItems.add(this); this.checkAvailability();
+      }
+      updateLocalizedStrings() { super.updateLocalizedStrings(); this.button.setAttribute('aria-label', 'Audio language'); this.backSpan.textContent = 'Audio language'; }
+      checkAvailability() {
+        super.checkAvailability(); this.button.classList.remove('shaka-hidden');
+        this.button.disabled = !ready || failed || !this.player.getAudioTracks().length;
+        this.button.title = this.player.getAudioTracks().length ? 'Choose audio language' : 'Audio is unavailable for this stream';
+      }
+      release() { this.player.removeEventListener('audiotrackschanged', this.refresh); barItems.delete(this); super.release(); }
+    }
+    class SubtitlesMenu extends shaka.ui.SettingsMenu {
+      constructor(parent, controls) {
+        super(parent, controls, ''); directLabel(this.button, 'Subtitles'); this.button.classList.add('omakase-subtitles-button');
+        this.button.querySelector('.shaka-ui-icon')?.remove(); const badge = document.createElement('span'); badge.className = 'omakase-caption-icon'; badge.textContent = 'CC'; badge.setAttribute('aria-hidden', 'true'); this.button.prepend(badge);
+        this.button.setAttribute('aria-label', 'Subtitles'); this.button.setAttribute('aria-haspopup', 'dialog');
+        this.nameSpan.textContent = 'Subtitles'; this.backSpan.textContent = 'Subtitles'; this.backButton.setAttribute('aria-label', 'Close subtitles');
+        this.menu.classList.add('omakase-subtitles-menu'); this.menu.setAttribute('role', 'dialog'); this.menu.setAttribute('aria-label', 'Subtitles'); this.menu.id = 'web-player-subtitles-menu'; this.button.setAttribute('aria-controls', this.menu.id);
+        const options = find('ass-options'); options.hidden = false; this.menu.appendChild(options);
+        this.menu.addEventListener('keydown', event => subtitleMenuKey(event, () => {
+          this.menu.classList.add('shaka-hidden'); this.button.setAttribute('aria-expanded', 'false'); this.button.focus();
+        }));
+        barItems.add(this); this.checkAvailability();
+      }
+      checkAvailability() { this.button.disabled = !ready || failed || captionLoading; }
+      release() { barItems.delete(this); super.release(); }
+    }
+    class BarBreak extends shaka.ui.Element {
+      constructor(parent, controls) { super(parent, controls); const node = document.createElement('div'); node.className = 'omakase-bar-break'; node.setAttribute('aria-hidden', 'true'); parent.appendChild(node); }
+    }
+    class NextEpisode extends shaka.ui.Element {
+      constructor(parent, controls) { super(parent, controls); this.link = find('next'); parent.appendChild(this.link); this.link.hidden = false; barItems.add(this); this.checkAvailability(); }
+      checkAvailability() {
+        const candidate = nextEpisodeUrl(nextCandidate, config, window.location.origin);
+        const enabled = !!candidate && ready && !failed;
+        this.link.removeAttribute('href'); if (enabled) this.link.href = candidate;
+        this.link.setAttribute('aria-disabled', String(!enabled)); this.link.setAttribute('aria-label', candidate ? 'Next episode' : 'Next episode unavailable');
+        this.link.querySelector('[data-next-label]').textContent = candidate ? 'Next episode' : 'No next episode';
+        this.link.querySelector('[data-next-compact]').textContent = candidate ? 'Next' : 'No next';
+        this.link.title = candidate ? 'Open the next episode in this series and library' : 'No next episode is available in this library';
+      }
+      release() { barItems.delete(this); super.release(); }
+    }
+    for (const [name, Type] of [['omakase_audio', AudioMenu], ['omakase_subtitles', SubtitlesMenu], ['omakase_bar_break', BarBreak], ['omakase_next', NextEpisode]]) {
+      shaka.ui.Controls.registerElement(name, { create: (parent, controls) => new Type(parent, controls) });
+    }
   }
   async function stopCaptions() {
     captionIntent++;
@@ -451,15 +577,20 @@
     const source = session;
     video.pause();
     captionLoading = true;
-    find('ass-status').textContent = id === 'off' ? 'Turning styled subtitles off…' : 'Preparing styled subtitles…';
+    find('ass-status').textContent = id === 'off' ? 'Turning subtitles off…' : id.startsWith('native:') ? 'Preparing browser subtitles…' : 'Preparing styled subtitles…';
+    find('ass-select').disabled = true;
+    if (id.startsWith('ass:')) video.disablePictureInPicture = true;
+    refreshBarControls();
     const task = captionTasks.catch(() => {}).then(async () => {
       if (intent !== captionIntent || source !== session || leaving) return;
       try {
-        if (id === 'off') {
-          if (captions) await captions.clear();
-        } else {
-          const track = assTracks.find(item => `ass:${item.plex_stream_id}` === id);
-          if (!track || !browserCapabilities(window, video).ass_supported) throw Object.assign(new Error('Styled subtitles unavailable'), { code: 'ass_display' });
+        const applied = await switchSubtitleRenderer(id, {
+          nativeTracks: player.getTextTracks(), styledTracks: assTracks,
+          clearStyled: async () => { if (captions) await captions.clear(); },
+          selectNative: track => player.selectTextTrack(track), setCustom: value => { customTextId = value; },
+          current: () => intent === captionIntent && source === session && !leaving,
+          loadStyled: async track => {
+          if (!browserCapabilities(window, video).ass_supported) throw Object.assign(new Error('Styled subtitles unavailable'), { code: 'ass_display' });
           if (!captions) {
             const { OmakaseASS } = await import('/plus/static/web-ass.js');
             if (intent !== captionIntent || source !== session || leaving) return;
@@ -469,12 +600,14 @@
             captions = controller;
           }
           const success = await captions.setTrack({ url: track.url, fonts: source.fonts || [], timeOffset: 0 });
-          if (!success) return;
-        }
+          return success;
+          },
+        });
+        if (!applied) return;
         if (intent !== captionIntent || source !== session || leaving) return;
-        customTextId = id;
+        if (id.startsWith('ass:')) customTextId = id;
         find('ass-select').value = id;
-        find('ass-status').textContent = id === 'off' ? 'Styled subtitles are off.' : 'Styled subtitles ready.';
+        find('ass-status').textContent = id === 'off' ? (assTracks.length ? 'Styled subtitles are off.' : 'Subtitles are off.') : id.startsWith('native:') ? 'Browser subtitle track selected.' : 'Styled subtitles ready.';
         captionLoading = false;
         configureControls();
         capture('progress');
@@ -484,7 +617,7 @@
       } catch (error) {
         if (intent === captionIntent && source === session && !leaving) showError(Object.assign(error, { code: 'ass_display' }));
         throw error;
-      } finally { if (intent === captionIntent) captionLoading = false; }
+      } finally { if (intent === captionIntent) { captionLoading = false; find('ass-select').disabled = !ready || failed; refreshBarControls(); } }
     });
     captionTasks = task;
     return task;
@@ -492,34 +625,25 @@
   async function prepareTracks() {
     assTracks = styledSubtitleTracks(session.subtitles || []);
     customTextId = null;
-    find('ass-options').hidden = !assTracks.length;
     const selector = find('ass-select');
     selector.disabled = true;
+    const nativeTracks = player.getTextTracks();
     selector.replaceChildren(new Option('Off', 'off'));
-    assTracks.forEach((track, index) => {
-      const language = track.language && track.language !== 'und' ? track.language : 'Language unknown';
-      const labels = [language, 'Styled ASS', ...(track.forced ? ['Forced'] : []), ...(track.default ? ['Default'] : [])];
-      selector.add(new Option(`${labels.join(' · ')} (${index + 1})`, `ass:${track.plex_stream_id}`));
-    });
+    for (const [kind, label] of [['native', 'Browser subtitles'], ['ass', 'Styled ASS']]) {
+      const options = subtitleChoices(nativeTracks, assTracks).filter(choice => choice.kind === kind);
+      if (options.length) { const group = document.createElement('optgroup'); group.label = label; for (const option of options) group.appendChild(new Option(option.label, option.value)); selector.appendChild(group); }
+    }
+    find('subtitle-unavailable').hidden = !!(nativeTracks.length || assTracks.length);
     const audio = audioPreference(player, session);
     if (audio?.native) player.selectAudioTrack(audio.native);
     else if (audio?.variant) player.selectVariantTrack(audio.variant, true);
-    if (assTracks.length) {
-      player.selectTextTrack(null);
-      const initial = subtitlePreference(assTracks, session.text_id, session.resume_version_changed);
-      customTextId = initial;
-      configureControls();
-      await changeCaption(initial);
-    } else {
-      const text = !session.resume_version_changed && session.text_id != null
-        ? player.getTextTracks().find(track => String(track.id) === session.text_id) : null;
-      if (session.text_id === 'off') player.selectTextTrack(null);
-      else if (text) player.selectTextTrack(text);
-      configureControls();
-    }
+    const initial = initialSubtitleValue(nativeTracks, assTracks, session.text_id, session.resume_version_changed);
+    configureControls();
+    await changeCaption(initial);
   }
   async function dispose() {
     ready = false;
+    refreshBarControls();
     window.clearInterval(periodic);
     video.pause();
     if (preparation) {
@@ -599,11 +723,12 @@
         if (safeLink(find('plex'), session.source?.plex_url)) find('fallback').hidden = true;
       }
       if (currentAttempt !== attempt || leaving) return;
-      safeLink(find('next'), session.next_url, true);
+      nextCandidate = session.next_url;
       const media = new URL(session.media_url, window.location.origin);
       if (media.origin !== window.location.origin || !['http:', 'https:'].includes(media.protocol)) throw new Error('Invalid media source');
       player = new shaka.Player();
       await player.attach(video);
+      registerBarControls();
       overlay = new shaka.ui.Overlay(player, container, video);
       configureControls();
       // A manifest cannot make the browser contact an unrelated origin.
@@ -626,8 +751,12 @@
       );
       ready = true;
       find('ass-select').disabled = false;
+      refreshBarControls();
       player.addEventListener('variantchanged', () => capture('progress'));
-      player.addEventListener('textchanged', () => capture('progress'));
+      player.addEventListener('textchanged', () => {
+        if (!captionLoading && customTextId == null) { const active = player.getTextTracks().find(track => track.active); find('ass-select').value = active ? 'native:' + active.id : 'off'; }
+        capture('progress');
+      });
       restart.disabled = false;
       find('start-panel').hidden = true;
       status.textContent = session.source?.mode === 'direct' ? 'Ready to play · Direct stream' : 'Ready to play';
@@ -685,9 +814,15 @@
   retry.addEventListener('click', () => { if (!triedAgain) { triedAgain = true; void begin(); } });
   reload.addEventListener('click', () => window.location.reload());
   find('ass-select').addEventListener('change', event => {
+    if (!ready || failed || leaving) return;
     const wasPlaying = !video.paused;
-    void changeCaption(event.target.value, wasPlaying).catch(() => {});
+    const fromBar = !!event.target.closest('.omakase-subtitles-menu');
+    void changeCaption(event.target.value, wasPlaying).then(() => {
+      if (fromBar && (document.activeElement === document.body || document.activeElement === event.target || !document.activeElement?.isConnected)) container.querySelector('.omakase-subtitles-button')?.focus();
+    }).catch(() => {});
   });
+  find('next').addEventListener('click', event => { if (find('next').getAttribute('aria-disabled') === 'true' || !find('next').hasAttribute('href')) event.preventDefault(); event.stopPropagation(); });
+  find('next').addEventListener('keydown', event => { if (['Enter', ' '].includes(event.key)) event.stopPropagation(); });
   restart.addEventListener('click', () => { if (ready) { video.currentTime = 0; status.textContent = 'Restarted from the beginning.'; } });
   video.addEventListener('playing', () => {
     if (!enforcePlayback(video, playbackState())) return;
@@ -695,11 +830,11 @@
   });
   video.addEventListener('play', () => { enforcePlayback(video, playbackState()); });
   function unsupportedCaptionMode() {
-    if (assTracks.length && customTextId !== 'off') showError(Object.assign(new Error('Canvas subtitles unavailable in native video mode'), { code: 'ass_display' }));
+    if (typeof customTextId === 'string' && customTextId.startsWith('ass:')) showError(Object.assign(new Error('Canvas subtitles unavailable in native video mode'), { code: 'ass_display' }));
   }
   video.addEventListener('webkitbeginfullscreen', unsupportedCaptionMode);
   video.addEventListener('enterpictureinpicture', () => {
-    if (assTracks.length && customTextId !== 'off') {
+    if (typeof customTextId === 'string' && customTextId.startsWith('ass:')) {
       if (document.pictureInPictureElement) void document.exitPictureInPicture().catch(() => {});
       unsupportedCaptionMode();
     }

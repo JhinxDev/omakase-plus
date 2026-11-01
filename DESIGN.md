@@ -7,8 +7,8 @@ This source candidate records the maintained interface contract. Technical, crea
 `templates/player.html`, `static/web-player.css` and `static/web-player.js` extend
 the existing shell. Geist uses the shell's local `--sans`; the supplied Shaka
 Material Icons Round face is retained for controls. Player width is 100%, min-width 0,
-max 1200px. The stage contains a 16:9 contain-fit video frame plus a reserved96px
-controls band, with260px minimum total height and14px
+max 1200px. The stage contains a 16:9 contain-fit video frame plus a reserved160px
+controls band at16px root text (64px + 6rem, expanding with text size), with260px minimum total height and14px
 corners; at 640px and below it has 280px minimum height and 8px corners. Minimum
 height is deliberate on phones so the initial/preparing controls remain usable.
 No aspect-ratio minimum-width may push the stage outside its grid column.
@@ -27,16 +27,23 @@ keys; seek retains Shaka's seek lifecycle. Every range has an accessible name.
 ASS canvas is layer 1; controls layer 2; initial/preparation panel layer 3. Error
 uses #2c1d28/#885461 with #ffd8e0 text. Version-note amber is #f1d3a1.
 The opaque #080d1a footer stays below the video image, including while paused;
-fullscreen subtracts the same96px band from the available video area. The ASS
+fullscreen subtracts the same160px band from the available video area. The ASS
 renderer measures that video image directly, preserving subtitle/sign positions
 relative to it. Never translate the whole canvas to avoid controls. The redundant
 video scrim is disabled; controls retain their opaque contrast backing. Actual
 original-caption visibility still requires its own visual acceptance.
 
 Play is explicit. Preparation exposes the exact Plex link and Cancel; it may take
-45 seconds. Retry is deliberate and bounded. Audio uses the supplied settings;
-ASS has a labeled 48px native selector with original language/forced/default words,
-plus Off. Fullscreen is the container. Styled-caption PiP/native-fullscreen limits
+45 seconds. Retry is deliberate and bounded. The opaque Shaka bar has two rows:
+standard playback controls, then direct Audio, Subtitles and Next episode actions.
+Audio keeps the supplied checked language menu. One Subtitles dialog contains a
+48px native selector grouped into available browser tracks and styled ASS, plus
+Off, preserving actual language/forced/default labels. Native and styled rendering
+are mutually exclusive; selected tracks and explicit Off restore within the same
+media version. Escape closes the dialog and returns focus. Next is an explicit
+same-series episode+1/library link; unavailable state stays visible without a URL.
+The compact row keeps three44px targets at320/390px; original video/canvas
+coordinates are unchanged by the extra reserved control row. Fullscreen is the container. Styled-caption PiP/native-fullscreen limits
 are explained beside the selector. No next-episode autoplay. Reduced motion
 disables player animations/transitions; forced colors retains visible borders.
 

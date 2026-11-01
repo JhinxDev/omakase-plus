@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay } = require('../../src/omakase/plus/static/web-player.js');
+const { EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer } = require('../../src/omakase/plus/static/web-player.js');
 
 test('supplied and native playback remain stopped after failure until a qualified explicit recovery', async () => {
   let pauses=0, plays=0;
@@ -196,7 +196,7 @@ test('DASH audio restoration bridges exact original representation IDs without l
 
 test('Shaka 5 track selection uses supported public APIs and preserves subtitle Off', () => {
   const player = {getAudioTracks: () => [{id: 17, active: true}], getTextTracks: () => [{id: 23, active: false}]};
-  assert.deepEqual(selectedTracks(player), {audio_id: '17', text_id: null});
+  assert.deepEqual(selectedTracks(player), {audio_id: '17', text_id: 'off'});
   player.getTextTracks = () => [{id: 23, active: true}];
   assert.deepEqual(selectedTracks(player), {audio_id: '17', text_id: '23'});
 });
@@ -351,4 +351,36 @@ test('terminal snapshots never credit a pending seek as an ended or pause interv
   assert.equal(exitSnapshot({position_seconds:3},queue).event,'pause');
   assert.equal(exitSnapshot({position_seconds:30},queue,false,true).event,'ended');
   assert.equal(exitSnapshot({position_seconds:3},queue,true).event,'seek');
+});
+
+
+test('direct Next accepts only the following episode in the same series and library', () => {
+ const c={monitor_id:7,episode_number:2,library_id:'a'},o='https://app.example';
+ assert.equal(nextEpisodeUrl('/plus/watch/7/3?library_id=a',c,o),o+'/plus/watch/7/3?library_id=a');
+ for(const p of ['/plus/watch/8/3?library_id=a','/plus/watch/7/4?library_id=a','/plus/watch/7/3?library_id=b','/plus/watch/7/3?library_id=a&library_id=a','/plus/watch/7/3?library_id=a&x=1','/plus/watch/7/3?library_id=a#x','https://app.example/plus/watch/7/3?library_id=a','/plus/watch/7/2/../3?library_id=a',null]) assert.equal(nextEpisodeUrl(p,c,o),null,p);
+});
+test('one subtitle menu restores native ID zero, ASS and Off without cross-version saved choices', () => {
+ const n=[{id:0,language:'en',active:true},{id:8,language:'ja',forced:true}],a=[{plex_stream_id:12,language:'ja',selected:true,default:true}];
+ const choices=subtitleChoices(n,a);assert.deepEqual(choices.map(c=>c.value),['off','native:0','native:8','ass:12']);assert.match(choices[2].label,/Forced/);assert.match(choices[3].label,/Styled ASS.*Default/);
+ assert.equal(initialSubtitleValue(n,a,'off'),'off');assert.equal(initialSubtitleValue(n,a,'0'),'native:0');assert.equal(initialSubtitleValue(n,a,'ass:12'),'ass:12');assert.equal(initialSubtitleValue(n,a,'off',true),'ass:12');assert.equal(initialSubtitleValue(n,[],null),'native:0');assert.equal(initialSubtitleValue([],[],null),'off');
+});
+test('subtitle handoff clears styled before native and disables native before styled loading',async()=>{
+ const log=[];let release;const gate=new Promise(r=>release=r);
+ const o={nativeTracks:[{id:0}],styledTracks:[{plex_stream_id:12}],current:()=>true,clearStyled:async()=>{log.push('clear');await gate;},selectNative:t=>log.push(['native',t?.id??null]),setCustom:v=>log.push(['custom',v]),loadStyled:async()=>{log.push('load');return true;}};
+ const pending=switchSubtitleRenderer('native:0',o);await Promise.resolve();assert.deepEqual(log,['clear']);release();assert.equal(await pending,true);assert.deepEqual(log,['clear',['custom',null],['native',0]]);
+ log.length=0;assert.equal(await switchSubtitleRenderer('ass:12',o),true);assert.deepEqual(log,[['custom','off'],['native',null],'load',['custom','ass:12']]);
+ log.length=0;assert.equal(await switchSubtitleRenderer('off',o),true);assert.deepEqual(log,['clear',['custom','off'],['native',null]]);await assert.rejects(switchSubtitleRenderer('native:99',o),/unavailable/);
+});
+test('stale asynchronous subtitle intent cannot activate its track',async()=>{
+ const calls=[];let current=true,release;const o={nativeTracks:[{id:3}],styledTracks:[],current:()=>current,clearStyled:()=>new Promise(r=>release=r),selectNative:t=>calls.push(t),setCustom:v=>calls.push(v)};
+ const p=switchSubtitleRenderer('native:3',o);current=false;release();assert.equal(await p,false);assert.deepEqual(calls,[]);
+});
+test('subtitle native select retains arrow defaults and Escape closes with focus return',()=>{
+ let closed=0;const event=key=>({key,target:{tagName:'SELECT'},preventDefault(){this.prevented=true;},stopPropagation(){this.stopped=true;}});
+ const arrow=event('ArrowDown');subtitleMenuKey(arrow,()=>closed++);assert.equal(arrow.stopped,true);assert.equal(arrow.prevented,undefined);assert.equal(closed,0);
+ const escape=event('Escape');subtitleMenuKey(escape,()=>closed++);assert.equal(escape.prevented,true);assert.equal(escape.stopped,true);assert.equal(closed,1);
+ const other=event('ArrowRight');other.target.tagName='BUTTON';subtitleMenuKey(other,()=>closed++);assert.equal(other.stopped,undefined);
+ for(const shiftKey of [false,true]) { const tab=event('Tab');tab.shiftKey=shiftKey;subtitleMenuKey(tab,()=>closed++);assert.equal(tab.stopped,undefined,'Tab reaches supplied Shaka focus containment');assert.equal(tab.prevented,undefined); }
+ for(const key of ['Shift','Control','Alt','Meta']) { const modifier=event(key);subtitleMenuKey(modifier,()=>closed++);assert.equal(modifier.stopped,undefined,'Modifier transition reaches supplied Shaka pressed-key state'); }
+ for(const key of ['Tab','Shift','k','ArrowDown','Escape']) { const release=event(key);release.type='keyup';subtitleMenuKey(release,()=>closed++);assert.equal(release.stopped,undefined,'Every key release can clear supplied Shaka pressed-key state');assert.equal(release.prevented,undefined); }
 });

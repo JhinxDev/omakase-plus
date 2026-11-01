@@ -12,6 +12,16 @@
 <section class="web-player" data-web-player aria-label="Episode player">
   <div class="web-player-stage" data-player-container>
     <video data-player-video playsinline preload="none" aria-label="{{ title }}, episode {{ episode_number }}"></video>
+    <div data-player-bar-storage hidden>
+      <div class="web-player-ass-options" data-player-ass-options>
+        <label for="web-player-ass-select">Subtitle track</label>
+        <select id="web-player-ass-select" data-player-ass-select aria-describedby="web-player-ass-status" disabled><option value="off">Off</option></select>
+        <p id="web-player-ass-status" role="status" aria-live="polite" data-player-ass-status></p>
+        <p data-player-subtitle-unavailable hidden>No subtitles are available for this stream. Open this episode in Plex for other formats.</p>
+        <p class="web-player-caption-mode" data-player-caption-mode-note hidden>Styled subtitles display in this page and the player’s fullscreen mode. Picture in Picture and native video fullscreen do not include them. Turn subtitles Off to use Picture in Picture, or open Plex.</p>
+      </div>
+      <a class="web-player-next omakase-direct-control omakase-next-control shaka-no-propagation" data-player-next role="link" tabindex="0" aria-disabled="true" aria-label="Next episode unavailable"><span class="omakase-next-icon" aria-hidden="true">→</span><span data-next-label>Next episode</span><span data-next-compact aria-hidden="true">Next</span></a>
+    </div>
     <div class="web-player-start" data-player-start-panel>
       <span class="web-player-eyebrow">EPISODE {{ episode_number }}</span>
       <h2 data-player-start-heading>Ready when you are</h2>
@@ -32,17 +42,10 @@
   </div>
   <div class="web-player-details">
     <div><h2>Your viewing progress</h2><p>Progress saves while you watch. Seeking alone does not mark an episode watched.</p><button type="button" data-player-restart disabled>Restart episode</button></div>
-    <div><h2>Audio and subtitles</h2><p>Choose audio in the player’s settings. Available styled ASS subtitles have their own selector below. Other formats may need Plex.</p>
-      <div class="web-player-ass-options" data-player-ass-options hidden>
-        <label for="web-player-ass-select">Styled subtitles</label>
-        <select id="web-player-ass-select" data-player-ass-select aria-describedby="web-player-ass-status" disabled><option value="off">Off</option></select>
-        <p id="web-player-ass-status" role="status" aria-live="polite" data-player-ass-status></p>
-      </div>
-      <p class="web-player-caption-mode" data-player-caption-mode-note hidden>Styled subtitles display in this page and the player’s fullscreen mode. Picture in Picture and native video fullscreen do not include these subtitles. Turn subtitles Off to use Picture in Picture, or open Plex.</p>
+    <div><h2>Audio and subtitles</h2><p>Use Audio and Subtitles in the player bar. Subtitles includes available browser tracks, styled ASS and Off. Other formats may need Plex.</p>
       <a data-player-plex hidden target="_blank" rel="noopener noreferrer">Open this episode in Plex <span aria-hidden="true">↗</span></a><p data-player-fallback>For other formats, return to the title and use its Plex action.</p>
       <p class="web-player-caption-mode"><a href="/plus/static/ass/LICENSES.txt" target="_blank" rel="noopener">Subtitle renderer licenses</a> · <a href="/plus/static/ass/corresponding-source.tar.gz" download>Source and rebuild instructions</a></p></div>
   </div>
-  <a class="web-player-next" data-player-next {% if next_url %}href="{{ next_url }}"{% else %}hidden{% endif %}>Next episode <span aria-hidden="true">→</span></a>
 </section>
 <noscript><p class="web-player-error">JavaScript is required for this player. <a href="{{ overview_url }}">Return to the title</a> to open the episode in Plex.</p></noscript>
 <script id="web-player-config" type="application/json">{{ {"monitor_id": monitor_id, "episode_number": episode_number, "library_id": library_id, "next_url": next_url | default(none)} | tojson }}</script>
