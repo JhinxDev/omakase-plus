@@ -30,6 +30,7 @@ test('serial derived ASS renders, seeks, clears and tears down without remote re
   assert(baseline && fs.existsSync(baseline), 'Set OMAKASE_ASS_BASELINE to the private qualification baseline');
   const out = qaOutput('web-ass');
   fs.mkdirSync(out, {recursive: true});
+  let initialAssRequests = 0;
   const server = http.createServer((request, response) => {
     response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     response.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
@@ -39,7 +40,13 @@ test('serial derived ASS renders, seeks, clears and tears down without remote re
       response.end('<!doctype html><body style="margin:0;background:#111"><div id="frame" style="width:640px;height:360px;position:relative"><video muted playsinline preload="auto" style="width:100%;height:100%" src="/baseline.mp4"></video></div><script type="module">import {OmakaseASS} from "/static/web-ass.js"; window.errors=[]; window.ass=new OmakaseASS({video:document.querySelector("video"),container:document.querySelector("#frame"),onError:e=>errors.push(e.message)}); window.moduleReady=true;</script>');
       return;
     }
-    if (pathname === '/test.ass') { response.setHeader('Content-Type', 'text/plain'); response.end(ass); return; }
+    if (pathname === '/test.ass') {
+      response.setHeader('Content-Type', 'text/plain');
+      if (++initialAssRequests === 1) {
+        response.statusCode = 429; response.setHeader('Retry-After', '1'); response.end('read slots busy'); return;
+      }
+      response.end(ass); return;
+    }
     if (pathname === '/slow.ass') {
       response.setHeader('Content-Type', 'text/plain');
       const timer=setTimeout(()=>response.end(ass),9000);
@@ -81,6 +88,7 @@ test('serial derived ASS renders, seeks, clears and tears down without remote re
     await page.evaluate(async () => { const v=document.querySelector('video'); v.currentTime=2; await new Promise(r=>v.addEventListener('seeked',r,{once:true})); });
     await page.screenshot({path:path.join(out,'off.png')});
     assert.equal(await page.evaluate(() => ass.setTrack({url:'/test.ass'})), true);
+    assert.equal(initialAssRequests, 2, 'initial ASS recovers from exactly one concurrency rejection');
     await page.waitForTimeout(400);
     await page.screenshot({path:path.join(out,'rendered.png')});
     assert.notDeepEqual(fs.readFileSync(path.join(out,'off.png')),fs.readFileSync(path.join(out,'rendered.png')));

@@ -182,7 +182,9 @@ def create_player_router(
         try:
             return admission.acquire(kind, user_id, sid)
         except Busy as error:
-            raise HTTPException(429, str(error), headers={"Retry-After": "10"}) from None
+            raise HTTPException(
+                429, str(error), headers={"Retry-After": str(error.retry_after)}
+            ) from None
 
     def held_versions(db):
         return {row["media_version"] for row in store.active_media_holds(db)} | set(

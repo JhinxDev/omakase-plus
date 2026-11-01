@@ -145,7 +145,7 @@ def setup(monkeypatch, tmp_path):
         return {
             "job_id": "c" * 32,
             "media_version": "a" * 64,
-            "resources": ["manifest.mpd"],
+            "resources": getattr(app.state, "remux_resources", ["manifest.mpd"]),
             "track_map": [],
             "subtitles": [],
             "fonts": [],
@@ -163,7 +163,7 @@ def setup(monkeypatch, tmp_path):
             remote_guard=lambda *a, **kw: None,
             transport=httpx.MockTransport(serve),
             remux_prepare=prepare,
-            resource_getter=lambda *a, **kw: resource,
+            resource_getter=lambda *a, **kw: getattr(app.state, "resource_override", resource),
         ),
         prefix="/plus",
     )
@@ -373,6 +373,76 @@ async def test_stalled_media_reads_are_bounded_and_release_on_completion(setup):
         assert (
             await http.get(created["media_url"], headers={"range": "bytes=0-9"})
         ).status_code == 206
+
+
+@run_async
+async def test_ass_read_collision_retries_after_one_slot_releases_without_raising_cap(
+    setup, tmp_path
+):
+    app, _, sessions, _, _ = setup
+    app.state.source_container = "mkv"
+    app.state.remux_resources = ["manifest.mpd", "subtitle-5.ass"]
+    owner = client(app, sessions[1])
+    created = owner.post(
+        "/plus/api/playback/sessions",
+        json={
+            "monitor_id": 1,
+            "episode_number": 1,
+            "codecs": ["h264", "aac"],
+            "ass_supported": True,
+        },
+    ).json()
+    resource = created["media_url"].replace("manifest.mpd", "subtitle-5.ass")
+    app.state.resource_override = tmp_path / "subtitle-5.ass"
+    app.state.resource_override.write_bytes(b"[Script Info]\n[Events]\n")
+    entered, release_body = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def stalled_app(scope, receive, send):
+        accepted = False
+
+        async def stalled_send(message):
+            nonlocal accepted
+            if message["type"] == "http.response.start":
+                accepted = message["status"] == 200
+            if accepted and message["type"] == "http.response.body" and message.get("body"):
+                calls.append(1)
+                if len(calls) <= 4:
+                    if len(calls) == 4:
+                        entered.set()
+                    await release_body.wait()
+            await send(message)
+
+        await app(scope, receive, stalled_send)
+
+    # Actual authenticated local bodies remain open at the ASGI send boundary.
+    # Cancellation must release one permit before a fifth ASS GET can enter.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=stalled_app),
+        base_url="https://testserver",
+        cookies={"omakase_session": sessions[1]},
+    ) as http:
+        held = [asyncio.create_task(http.get(resource)) for _ in range(4)]
+        await asyncio.wait_for(entered.wait(), 2)
+        rejected = await http.get(resource)
+        assert rejected.status_code == 429 and rejected.headers["retry-after"] == "1"
+        assert len(calls) == 4
+        held[0].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await held[0]
+        await asyncio.sleep(int(rejected.headers["retry-after"]))
+        retry = asyncio.create_task(http.get(resource))
+        for _ in range(50):
+            if len(calls) == 5:
+                break
+            await asyncio.sleep(0.005)
+        assert len(calls) == 5
+        release_body.set()
+        results = await asyncio.gather(*held[1:], retry)
+        assert all(response.status_code == 200 for response in results)
+        assert all(
+            response.headers["content-type"].startswith("text/x-ssa") for response in results
+        )
 
 
 def test_authenticated_copy_inventory_range_head_and_current_revocation(setup):

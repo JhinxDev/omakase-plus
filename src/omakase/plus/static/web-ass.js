@@ -15,9 +15,34 @@ function localURL(value) {
   return url.href;
 }
 
-async function readBounded(url, maximum, kind, signal) {
-  const response = await fetch(localURL(url), {credentials: 'same-origin', mode: 'same-origin', redirect: 'error', cache: 'no-store', signal});
-  if (!response.ok) throw new Error('ASS asset access failed (' + response.status + ').');
+function retryDelay(milliseconds, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(signal.reason); return; }
+    const aborted = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener('abort', aborted); resolve(); }, milliseconds);
+    signal.addEventListener('abort', aborted, {once: true});
+  });
+}
+
+async function readBounded(url, maximum, kind, signal, deadline) {
+  const target = localURL(url);
+  let response;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    signal.throwIfAborted();
+    response = await fetch(target, {credentials: 'same-origin', mode: 'same-origin', redirect: 'error', cache: 'no-store', signal});
+    if (response.ok) break;
+    if (response.status === 429) {
+      await response.body?.cancel().catch(() => {});
+      const header = (response.headers.get('retry-after') || '').trim();
+      const delay = /^[1-9][0-9]*$/.test(header) ? Number(header) * 1000 : NaN;
+      // Only cached asset GETs retry; every attempt shares the track's 8s budget.
+      if (attempt < 2 && Number.isSafeInteger(delay) && delay < deadline - performance.now()) {
+        await retryDelay(delay, signal);
+        continue;
+      }
+    }
+    throw new Error('ASS asset access failed (' + response.status + ').');
+  }
   const type = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
   const allowed = kind === 'ass' ? ['text/plain', 'text/x-ass', 'text/x-ssa', 'application/x-ass', 'application/octet-stream']
     : ['font/ttf', 'font/otf', 'font/woff', 'font/woff2', 'application/font-sfnt', 'application/octet-stream'];
@@ -93,6 +118,7 @@ export class OmakaseASS {
       if (generation !== this.generation || this.destroyed) return false;
       const abort = new AbortController();
       this.abort = abort;
+      const deadline = performance.now() + 8000;
       const timer = setTimeout(() => abort.abort(new Error('ASS load exceeded 8 seconds.')), 8000);
       try {
         if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') throw new Error('Faithful ASS requires the isolated player page.');
@@ -100,15 +126,15 @@ export class OmakaseASS {
         if (!Array.isArray(fonts) || fonts.length > 16 || !Number.isFinite(timeOffset)) throw new Error('Invalid ASS track configuration.');
         localURL(url);
         fonts.forEach(localURL);
-        const script = new TextDecoder('utf-8', {fatal: true}).decode(await readBounded(url, 8 * MiB, 'ass', abort.signal));
+        const script = new TextDecoder('utf-8', {fatal: true}).decode(await readBounded(url, 8 * MiB, 'ass', abort.signal, deadline));
         if (!/^\s*\[Script Info\]/im.test(script) || !/^\s*\[Events\]/im.test(script)) throw new Error('Invalid ASS script.');
         // JASSUB lazy availableFonts loading can leave a paused first frame blank.
         // Admit the bundled fallback in the awaited initial-font set as well.
-        const fallback = await readBounded(new URL('default.woff2', assets), MiB, 'font', abort.signal);
+        const fallback = await readBounded(new URL('default.woff2', assets), MiB, 'font', abort.signal, deadline);
         const fontBytes = [fallback];
         let fontTotal = fallback.byteLength;
         for (const font of fonts) {
-          const bytes = await readBounded(font, Math.min(8 * MiB, 32 * MiB - fontTotal), 'font', abort.signal);
+          const bytes = await readBounded(font, Math.min(8 * MiB, 32 * MiB - fontTotal), 'font', abort.signal, deadline);
           fontTotal += bytes.byteLength;
           fontBytes.push(bytes);
         }

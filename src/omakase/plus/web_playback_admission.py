@@ -7,7 +7,9 @@ from collections import Counter, deque
 
 
 class Busy(ValueError):
-    pass
+    def __init__(self, message, *, retry_after=10):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class Admission:
@@ -46,12 +48,15 @@ class Admission:
             )
         else:
             raise ValueError("Unknown player admission kind")
-        if (
-            any(self.active[key] >= limit for key, limit in limits)
-            or len(self.rates.get(rate_key, ())) >= rate_limit
-            or (rate_key not in self.rates and len(self.rates) >= 1024)
+        if len(self.rates.get(rate_key, ())) >= rate_limit or (
+            rate_key not in self.rates and len(self.rates) >= 1024
         ):
             raise Busy("Player request limit reached. Try again shortly.")
+        if any(self.active[key] >= limit for key, limit in limits):
+            raise Busy(
+                "Player request limit reached. Try again shortly.",
+                retry_after=1 if kind == "read" else 10,
+            )
         self.rates.setdefault(rate_key, deque()).append(now)
         for key, _ in limits:
             self.active[key] += 1
