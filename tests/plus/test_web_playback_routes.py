@@ -361,15 +361,15 @@ async def test_stalled_media_reads_are_bounded_and_release_on_completion(setup):
     ) as http:
         tasks = [asyncio.create_task(http.get(created["media_url"])) for _ in range(20)]
         for _ in range(100):
-            if sum(t.done() for t in tasks) == 16:
+            if sum(t.done() for t in tasks) == 12:
                 break
             await asyncio.sleep(0.005)
-        assert app.state.reads_opened == 4
-        assert sum(t.done() for t in tasks) == 16
+        assert app.state.reads_opened == 8
+        assert sum(t.done() for t in tasks) == 12
         assert all(t.result().status_code == 429 for t in tasks if t.done())
         app.state.read_wait.set()
         results = await asyncio.gather(*tasks)
-        assert sum(r.status_code == 200 for r in results) == 4
+        assert sum(r.status_code == 200 for r in results) == 8
         assert (
             await http.get(created["media_url"], headers={"range": "bytes=0-9"})
         ).status_code == 206
@@ -407,8 +407,8 @@ async def test_ass_read_collision_retries_after_one_slot_releases_without_raisin
                 accepted = message["status"] == 200
             if accepted and message["type"] == "http.response.body" and message.get("body"):
                 calls.append(1)
-                if len(calls) <= 4:
-                    if len(calls) == 4:
+                if len(calls) <= 8:
+                    if len(calls) == 8:
                         entered.set()
                     await release_body.wait()
             await send(message)
@@ -416,27 +416,27 @@ async def test_ass_read_collision_retries_after_one_slot_releases_without_raisin
         await app(scope, receive, stalled_send)
 
     # Actual authenticated local bodies remain open at the ASGI send boundary.
-    # Cancellation must release one permit before a fifth ASS GET can enter.
+    # Cancellation must release one permit before a ninth ASS GET can enter.
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=stalled_app),
         base_url="https://testserver",
         cookies={"omakase_session": sessions[1]},
     ) as http:
-        held = [asyncio.create_task(http.get(resource)) for _ in range(4)]
+        held = [asyncio.create_task(http.get(resource)) for _ in range(8)]
         await asyncio.wait_for(entered.wait(), 2)
         rejected = await http.get(resource)
         assert rejected.status_code == 429 and rejected.headers["retry-after"] == "1"
-        assert len(calls) == 4
+        assert len(calls) == 8
         held[0].cancel()
         with pytest.raises(asyncio.CancelledError):
             await held[0]
         await asyncio.sleep(int(rejected.headers["retry-after"]))
         retry = asyncio.create_task(http.get(resource))
         for _ in range(50):
-            if len(calls) == 5:
+            if len(calls) == 9:
                 break
             await asyncio.sleep(0.005)
-        assert len(calls) == 5
+        assert len(calls) == 9
         release_body.set()
         results = await asyncio.gather(*held[1:], retry)
         assert all(response.status_code == 200 for response in results)

@@ -16,7 +16,9 @@ class Admission:
     """No waiting queue; count preparation before its first asynchronous await.
 
     Starts: four globally, one per viewer, six per viewer/minute.
-    Reads: sixteen globally, eight per viewer, four per session, 180/minute.
+    Reads: sixteen globally, eight per viewer and session, 180/minute.
+    A seek overlaps old audio/video bodies, new init/segment pairs and ASS fonts;
+    one session may use the viewer's existing allowance without increasing it.
     Rate records expire after a minute and are capped at 1024 viewer/kind pairs.
     Deployment uses one ASGI worker; the expensive copy lease is also durable.
     """
@@ -43,7 +45,7 @@ class Admission:
             )
         elif kind == "read":
             limits, rate_limit = (
-                [((kind,), 16), ((kind, viewer), 8), ((kind, viewer, session), 4)],
+                [((kind,), 16), ((kind, viewer), 8), ((kind, viewer, session), 8)],
                 180,
             )
         else:

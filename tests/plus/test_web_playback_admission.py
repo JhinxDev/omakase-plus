@@ -22,14 +22,14 @@ def test_viewer_global_session_limits_and_idempotent_release():
     assert not limits.active
 
 
-def test_read_concurrency_has_short_typed_backoff_without_admitting_a_fifth():
+def test_read_concurrency_has_short_typed_backoff_without_admitting_a_ninth():
     limits = Admission()
-    releases = [limits.acquire("read", 1, "same") for _ in range(4)]
+    releases = [limits.acquire("read", 1, "same") for _ in range(8)]
     with pytest.raises(Busy) as error:
         limits.acquire("read", 1, "same")
     assert error.value.retry_after == 1
-    assert limits.active[("read", 1, "same")] == 4
-    assert len(limits.rates[("read", 1)]) == 4
+    assert limits.active[("read", 1, "same")] == 8
+    assert len(limits.rates[("read", 1)]) == 8
     for release in releases:
         release()
     assert not limits.active
@@ -71,6 +71,35 @@ def test_rate_window_expires_without_retaining_unbounded_viewers():
     now[0] = 61
     limits.acquire("start", 1)()
     assert len(limits.rates) == 1
+
+
+def test_seek_overlap_and_subtitle_font_share_existing_viewer_budget():
+    limits = Admission()
+    # Old audio/video bodies may still be closing when the next seek starts its
+    # audio/video init+segment requests and one authenticated subtitle/font read.
+    purposes = (
+        "old-video",
+        "old-audio",
+        "new-video-init",
+        "new-audio-init",
+        "new-video",
+        "new-audio",
+        "subtitle-font",
+        "manifest",
+    )
+    releases = [limits.acquire("read", 1, "playing") for _ in purposes]
+    assert limits.active[("read", 1, "playing")] == 8
+    with pytest.raises(Busy) as error:
+        limits.acquire("read", 1, "other-session")
+    assert error.value.retry_after == 1
+    # The aggregate server allowance stays sixteen; another viewer can still
+    # use its eight slots, and the next viewer is then rejected.
+    others = [limits.acquire("read", 2, "other") for _ in range(8)]
+    with pytest.raises(Busy):
+        limits.acquire("read", 3, "third")
+    for release in releases + others:
+        release()
+    assert not limits.active
 
 
 @pytest.mark.parametrize("kind", ["close", "close_replay"])
