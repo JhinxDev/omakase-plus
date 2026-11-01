@@ -332,9 +332,11 @@ def test_discovery_native_get_form_empty_or_selected_genre_is_html(
     class Discovery:
         def __init__(self, service):
             assert service is svc
+            self.last_options = {"genres": [{"id": 27, "name": "Horror"}]}
+            self.notice = ""
 
         async def options(self, user_id):
-            return {"genres": [{"id": 27, "name": "Horror"}]}
+            pytest.fail("The route must reuse options from the shared discovery deadline")
 
         async def discover(self, user_id, **filters):
             calls.append(filters)
@@ -383,7 +385,8 @@ def test_invalid_discovery_genre_returns_a_useful_html_state(browser, monkeypatc
 
     class Discovery:
         def __init__(self, service):
-            pass
+            self.notice = ""
+            self.last_options = {}
 
         async def options(self, user_id):
             return {"genres": []}
@@ -396,3 +399,17 @@ def test_invalid_discovery_genre_returns_a_useful_html_state(browser, monkeypatc
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert "Choose a valid discovery filter." in response.text
+
+
+def test_movie_collection_requests_have_truthful_heading_and_secondary_manual_tools(browser):
+    client, svc, _ = browser
+    client.templates.env.loader = FileSystemLoader(
+        Path(__file__).resolve().parents[2] / "src/omakase/plus/templates"
+    )
+    response = client.get("/plus/movies?view=requests")
+    assert response.status_code == 200
+    assert "Your requests" in response.text
+    assert "On the way" not in response.text
+    assert '<details class="movie-history-tools">' in response.text
+    assert "does not use an AI recommendation model" in response.text
+    assert svc.calls == ["list"]

@@ -773,3 +773,54 @@ def test_player_return_keeps_explicit_personal_scope_without_changing_selection(
     assert owner.get(expected).status_code == 200
     assert households.selected_scope(db, viewer_id=1).library_id == shared
     assert db.execute("SELECT COUNT(*) FROM watch_events").fetchone()[0] == 0
+
+
+def test_watch_page_uses_only_scoped_cached_context_and_omits_missing_scores(setup):
+    app, db, sessions, calls, _ = setup
+    db.execute(
+        "INSERT INTO anime_synopses(anilist_id,description,retry_at) VALUES(100,?,0)",
+        ("A cached story. <script>unsafe</script>",),
+    )
+    db.commit()
+    before = db.total_changes
+    response = client(app, sessions[1]).get("/plus/watch/1/1")
+    assert response.status_code == 200
+    assert "A cached story." in response.text
+    assert "&lt;script&gt;unsafe&lt;/script&gt;" in response.text
+    assert "Your viewing progress" not in response.text
+    assert "data-player-timeline" in response.text
+    assert "data-player-skip hidden" in response.text
+    assert "See episodes" in response.text
+    assert "Public score" not in response.text
+    assert calls == []
+    assert db.total_changes == before
+
+
+def test_skip_marker_contract_requires_matching_identity_and_finite_nonoverlap():
+    from omakase.plus.web_playback_context import normalize_skip_segments
+
+    source = type(
+        "Source", (), {"media_version": "a" * 64, "episode_number": 3, "duration_ms": 100000}
+    )()
+    valid = {
+        "media_version": source.media_version,
+        "episode_number": 3,
+        "segments": [
+            {"kind": "intro", "start_seconds": 2, "end_seconds": 12},
+            {"kind": "credits", "start_seconds": 80, "end_seconds": 90},
+        ],
+    }
+    assert len(normalize_skip_segments(source, valid)["segments"]) == 2
+    for bad in [
+        None,
+        {**valid, "episode_number": 2},
+        {**valid, "media_version": "b" * 64},
+        {**valid, "segments": [{"kind": "credits", "start_seconds": 90, "end_seconds": 101}]},
+        {
+            **valid,
+            "segments": [{"kind": "intro", "start_seconds": float("nan"), "end_seconds": 10}],
+        },
+        {**valid, "segments": [{"kind": "intro", "start_seconds": False, "end_seconds": 10}]},
+        {**valid, "segments": list(reversed(valid["segments"]))},
+    ]:
+        assert normalize_skip_segments(source, bad)["segments"] == []

@@ -50,7 +50,7 @@
       {% if card.imdb_id and card.tmdb_id %}
       <section id="movie-rating" class="movie-rating-panel" aria-labelledby="movie-rating-heading" tabindex="-1">
         <h2 id="movie-rating-heading">Your experience</h2>
-        <p>Your watched status and rating are saved separately.</p>
+        <p>Your watched status and rating are saved separately.</p><p class="movie-history-help">Saved to your Omakase account. Ratings guide local genre-based movie picks; they are not posted to TMDB or Plex.</p>
         <form class="product-form" method="post" action="/plus/movies/history" data-busy-form data-single-flight>
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="imdb_id" value="{{ card.imdb_id }}"><input type="hidden" name="tmdb_id" value="{{ card.tmdb_id }}">
           <label><span>Watched status</span><select name="status"><option value="" {% if not status_known %}selected{% endif %}>Not recorded</option>{% for value,label in [('unwatched','Not watched'),('watching','Watching'),('completed','Watched'),('dropped','Stopped watching')] %}<option value="{{ value }}" {% if status_known and history.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>

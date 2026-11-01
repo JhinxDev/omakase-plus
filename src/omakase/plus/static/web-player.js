@@ -352,7 +352,215 @@
     const steps = container.querySelectorAll('.shaka-playback-rate-step-btn');
     steps.forEach(button => button.setAttribute('aria-label', button.textContent.trim() === '+' ? 'Increase playback speed' : 'Decrease playback speed'));
   }
-  if (typeof module !== 'undefined' && module.exports) module.exports = { EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
+  function playerControlsConfiguration() {
+    return {
+      ...playbackRateConfiguration(), addSeekBar: false, customContextMenu: false,
+      contextMenuElements: [], enableKeyboardPlaybackControls: true,
+      shortcuts: { picture_in_picture: '' },
+      mediaSession: { allowAutoPiP: false, supportedActions: ['play', 'pause', 'seekbackward', 'seekforward', 'seekto'] },
+      documentPictureInPicture: { enabled: false },
+      controlPanelElements: ['play_pause', 'omakase_next', 'time_and_duration', 'spacer', 'mute', 'volume', 'fullscreen', 'overflow_menu'],
+      overflowMenuButtons: ['omakase_quality', 'omakase_audio', 'omakase_subtitles', 'playback_rate'],
+    };
+  }
+  function qualityChoices(tracks) {
+    const choices = new Map();
+    for (const track of tracks) {
+      const key = `${track.videoId ?? ''}:${track.width ?? ''}:${track.height ?? ''}`;
+      if (!choices.has(key)) choices.set(key, { key, width: track.width, height: track.height, active: false, tracks: [] });
+      const item = choices.get(key); item.tracks.push(track); item.active ||= !!track.active;
+    }
+    return [...choices.values()].sort((a, b) => (b.height || 0) - (a.height || 0)).map(item => ({ ...item,
+      label: `${choices.size === 1 ? 'Original · ' : ''}${Number.isFinite(item.width) && Number.isFinite(item.height) && item.width > 0 && item.height > 0 ? `${item.width} × ${item.height}` : 'resolution unavailable'}`,
+    }));
+  }
+  // This is a rendering clock only. Watch evidence continues through the existing
+  // semantic video events and five-second sampler, never animation frames.
+  class SmoothTimeline {
+    constructor(video, range, clock, onRender = () => {}) {
+      this.video = video; this.range = range; this.clock = clock; this.onRender = onRender;
+      this.frame = null; this.dragging = false; this.pendingValue = null; this.pointerId = null; this.listeners = [];
+      this.listen = (node, name, fn) => { node.addEventListener(name, fn); this.listeners.push([node, name, fn]); };
+      const update = () => { this.render(); this.schedule(); };
+      for (const name of ['playing', 'pause', 'ended', 'timeupdate', 'durationchange', 'loadedmetadata', 'seeked', 'progress']) this.listen(video, name, update);
+      this.listen(clock.document, 'visibilitychange', update);
+      // This input is a sibling of Shaka's controls. Native range activation
+      // must not reach the stage's play/pause or fullscreen click handlers.
+      for (const name of ['click', 'dblclick']) this.listen(range, name, event => event.stopPropagation());
+      const finishGesture = (event, commitSelection) => {
+        if (!this.dragging || (this.pointerId !== null && event.pointerId !== undefined && event.pointerId !== this.pointerId)) return;
+        const selected = this.pendingValue;
+        this.pendingValue = null; this.pointerId = null; this.dragging = false;
+        if (commitSelection && selected !== null) this.commit(selected);
+        update();
+      };
+      this.listen(range, 'pointerdown', event => { if (this.dragging) return; this.pointerId = event.pointerId ?? null; this.pendingValue = null; this.dragging = true; this.schedule(); });
+      this.listen(range, 'input', () => { this.pendingValue = Number(range.value); this.dragging = true; this.render(); });
+      this.listen(range, 'change', () => { const selected = this.pendingValue ?? Number(range.value); this.pendingValue = null; this.pointerId = null; this.dragging = false; this.commit(selected); update(); });
+      this.listen(range, 'pointerup', event => finishGesture(event, true));
+      this.listen(clock.document, 'pointerup', event => finishGesture(event, true));
+      this.listen(range, 'lostpointercapture', event => finishGesture(event, true));
+      this.listen(range, 'pointercancel', event => finishGesture(event, false));
+      this.listen(clock.document, 'pointercancel', event => finishGesture(event, false));
+      this.listen(range, 'blur', event => finishGesture(event, false));
+      this.listen(range, 'keydown', event => {
+        if (event.altKey || event.ctrlKey || event.metaKey) return;
+        if (event.key === ' ') { event.stopPropagation(); return; }
+        const offsets = { ArrowLeft: -5, ArrowDown: -5, ArrowRight: 5, ArrowUp: 5, PageDown: -30, PageUp: 30 };
+        if (!(event.key in offsets) && !['Home', 'End'].includes(event.key)) return;
+        event.preventDefault(); event.stopPropagation();
+        this.commit(event.key === 'Home' ? 0 : event.key === 'End' ? video.duration : video.currentTime + offsets[event.key]);
+        this.dragging = false; this.pendingValue = null; this.pointerId = null; update();
+      });
+      // Keyup still reaches the supplied controls so their pressed-key state clears.
+      update();
+    }
+    commit(value) {
+      if (!this.range.disabled && Number.isFinite(value) && Number.isFinite(this.video.duration)) {
+        const target = Math.max(0, Math.min(this.video.duration, value));
+        if (Math.abs(this.video.currentTime - target) > .000001) this.video.currentTime = target;
+      }
+    }
+    render() {
+      const duration = Number.isFinite(this.video.duration) && this.video.duration > 0 ? this.video.duration : 0;
+      const value = Math.max(0, Math.min(duration, Number(this.dragging ? this.range.value : this.video.currentTime) || 0));
+      this.range.max = String(duration || 1); if (!this.dragging) this.range.value = String(value);
+      this.range.style.setProperty('--played', `${duration ? value / duration * 100 : 0}%`);
+      let buffered = value;
+      for (let i = 0; i < this.video.buffered.length; i++) if (this.video.buffered.start(i) <= value + .1 && this.video.buffered.end(i) >= value) buffered = this.video.buffered.end(i);
+      this.range.style.setProperty('--buffered', `${duration ? Math.min(100, buffered / duration * 100) : 0}%`);
+      const time = seconds => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+      this.range.setAttribute('aria-valuetext', `${time(value)} of ${time(duration)}`);
+      this.onRender(value); // Also drives validated segment visibility, without writes.
+    }
+    schedule() {
+      if (this.frame !== null) { this.clock.cancel(this.frame); this.frame = null; }
+      if (this.dragging || this.video.paused || this.video.ended || this.clock.document.hidden || this.clock.reducedMotion()) return;
+      this.frame = this.clock.request(() => { this.frame = null; this.render(); this.schedule(); });
+    }
+    destroy() {
+      if (this.frame !== null) this.clock.cancel(this.frame); this.frame = null;
+      for (const [node, name, fn] of this.listeners) node.removeEventListener(name, fn);
+      this.listeners = [];
+    }
+  }
+  function validatedSkipSegments(session) {
+    const data = session?.skip_segments, source = session?.source;
+    if (!data || !source || data.media_version !== source.media_version || data.episode_number !== source.episode_number || !Array.isArray(data.segments) || data.segments.length > 4) return [];
+    const duration = source.duration_ms / 1000;
+    if (!Number.isFinite(duration) || duration <= 0) return [];
+    let end = 0;
+    const items = [];
+    for (const item of data.segments) {
+      if (!item || typeof item !== 'object' || Array.isArray(item) || !['intro', 'credits'].includes(item.kind) || !Number.isFinite(item.start_seconds) || !Number.isFinite(item.end_seconds) || item.start_seconds < end || item.end_seconds <= item.start_seconds || item.end_seconds > duration) return [];
+      end = item.end_seconds; items.push({ kind: item.kind, start_seconds: item.start_seconds, end_seconds: end });
+    }
+    return items;
+  }
+  function activeSkipSegment(segments, time) { return segments.find(item => time >= item.start_seconds && time < item.end_seconds) || null; }
+  // Public SettingsMenu lifecycle owns sibling visibility and Back focus. Keep
+  // these production types separately constructible for lifecycle regressions.
+  function settingsMenuTypes(shaka, hooks) {
+    const { document, find } = hooks;
+    class QualityMenu extends shaka.ui.SettingsMenu {
+      constructor(parent, controls) {
+        super(parent, controls, '');
+        this.button.querySelector('.shaka-ui-icon')?.remove();
+        const badge = document.createElement('span'); badge.className = 'omakase-caption-icon'; badge.textContent = 'Q'; badge.setAttribute('aria-hidden', 'true'); this.button.prepend(badge);
+        this.nameSpan.textContent = 'Quality'; this.backSpan.textContent = 'Quality';
+        this.button.setAttribute('aria-label', 'Quality'); this.menu.classList.add('omakase-quality-menu');
+        this.refresh = () => this.checkAvailability();
+        for (const event of ['trackschanged', 'variantchanged', 'adaptation']) this.player.addEventListener(event, this.refresh);
+        hooks.register(this); this.checkAvailability();
+      }
+      checkAvailability() {
+        super.checkAvailability();
+        const { ready, failed } = hooks.state();
+        const choices = qualityChoices(this.player.getVariantTracks());
+        this.button.disabled = !ready || failed || !choices.length;
+        this.currentSelection.textContent = choices.find(item => item.active)?.label || 'Original';
+        for (const node of this.menu.querySelectorAll('[data-quality-choice]')) node.remove();
+        for (const choice of choices) {
+          const button = document.createElement('button'); button.type = 'button'; button.dataset.qualityChoice = choice.key;
+          button.textContent = choice.label; button.setAttribute('aria-pressed', String(choice.active));
+          button.disabled = choices.length === 1;
+          button.addEventListener('click', () => {
+            const active = this.player.getVariantTracks().find(track => track.active);
+            const selected = choice.tracks.find(track => track.audioId === active?.audioId) || choice.tracks[0];
+            this.player.configure({ abr: { enabled: false } }); this.player.selectVariantTrack(selected, true);
+          });
+          this.menu.appendChild(button);
+        }
+      }
+      release() { for (const event of ['trackschanged', 'variantchanged', 'adaptation']) this.player.removeEventListener(event, this.refresh); hooks.unregister(this); super.release(); }
+    }
+    class AudioMenu extends shaka.ui.AudioLanguageSelection {
+      constructor(parent, controls) {
+        super(parent, controls); this.button.classList.add('omakase-audio-button'); this.nameSpan.textContent = 'Audio';
+        this.refresh = () => this.checkAvailability(); this.player.addEventListener('audiotrackschanged', this.refresh);
+        hooks.register(this); this.checkAvailability();
+      }
+      updateLocalizedStrings() { super.updateLocalizedStrings(); this.button.setAttribute('aria-label', 'Audio language'); this.backSpan.textContent = 'Audio language'; }
+      checkAvailability() {
+        super.checkAvailability();
+        const { ready, failed } = hooks.state();
+        this.button.disabled = !ready || failed || !this.player.getAudioTracks().length;
+        this.button.title = this.player.getAudioTracks().length ? 'Choose audio language' : 'Audio is unavailable for this stream';
+      }
+      release() { this.player.removeEventListener('audiotrackschanged', this.refresh); hooks.unregister(this); super.release(); }
+    }
+    class SubtitlesMenu extends shaka.ui.SettingsMenu {
+      constructor(parent, controls) {
+        super(parent, controls, ''); this.button.classList.add('omakase-subtitles-button');
+        this.button.querySelector('.shaka-ui-icon')?.remove(); const badge = document.createElement('span'); badge.className = 'omakase-caption-icon'; badge.textContent = 'CC'; badge.setAttribute('aria-hidden', 'true'); this.button.prepend(badge);
+        this.button.setAttribute('aria-label', 'Subtitles'); this.button.setAttribute('aria-haspopup', 'menu');
+        this.nameSpan.textContent = 'Subtitles'; this.backSpan.textContent = 'Subtitles'; this.backButton.setAttribute('aria-label', 'Close subtitles');
+        this.menu.classList.add('omakase-subtitles-menu'); this.menu.setAttribute('role', 'menu'); this.menu.setAttribute('aria-label', 'Subtitles'); this.menu.id = 'web-player-subtitles-menu'; this.button.setAttribute('aria-controls', this.menu.id);
+        this.choiceRows = [];
+        this.choiceKey = null;
+        this.menu.addEventListener('keydown', event => {
+          if (event.key === 'Escape') {
+            event.preventDefault(); event.stopPropagation(); this.backButton.click();
+          }
+        });
+        hooks.register(this); this.checkAvailability();
+      }
+      checkAvailability() {
+        super.checkAvailability();
+        const { ready, failed, captionLoading } = hooks.state();
+        const selector = find('ass-select');
+        const choices = Array.from(selector.options, option => ({ value: option.value, label: option.textContent }));
+        const key = JSON.stringify(choices);
+        this.button.disabled = !ready || failed;
+        this.menu.setAttribute('aria-busy', String(captionLoading));
+        this.currentSelection.textContent = choices.length === 1 ? 'No tracks · Off' : choices.find(choice => choice.value === selector.value)?.label || 'Off';
+        if (key !== this.choiceKey) {
+          for (const row of this.choiceRows) row.remove();
+          this.choiceRows = choices.map(choice => {
+            const row = document.createElement('button'); row.type = 'button'; row.dataset.subtitleChoice = choice.value;
+            row.setAttribute('role', 'menuitemradio'); row.textContent = choice.label;
+            row.addEventListener('click', event => {
+              event.stopPropagation();
+              if (!row.disabled) void hooks.selectSubtitle(choice.value).then(() => {
+                if (this.isSubMenuOpened && !this.menu.classList.contains('shaka-hidden') &&
+                    (document.activeElement === row || document.activeElement === document.body || !document.activeElement?.isConnected)) row.focus();
+              }).catch(() => {});
+            });
+            this.menu.appendChild(row); return row;
+          });
+          this.choiceKey = key;
+        }
+        for (const row of this.choiceRows) {
+          const selected = row.dataset.subtitleChoice === selector.value;
+          row.disabled = this.button.disabled || captionLoading; row.setAttribute('aria-checked', String(selected));
+          row.classList.toggle('shaka-chosen-item', selected);
+        }
+      }
+      release() { hooks.unregister(this); super.release(); }
+    }
+    return { QualityMenu, AudioMenu, SubtitlesMenu };
+  }
+  if (typeof module !== 'undefined' && module.exports) module.exports = { settingsMenuTypes, playerControlsConfiguration, qualityChoices, SmoothTimeline, validatedSkipSegments, activeSkipSegment, EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
   if (typeof document === 'undefined') return;
   const root = document.querySelector('[data-web-player]');
   if (!root) return;
@@ -371,6 +579,7 @@
   const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
   let session = null;
   let player = null;
+  let timeline = null;
   let overlay = null;
   let queue = null;
   let ready = false;
@@ -430,6 +639,7 @@
     failed = true;
     // Stop event capture before pause, so a failing save cannot enqueue another write.
     ready = false;
+    find('timeline').disabled = true; find('skip').hidden = true;
     find('ass-select').disabled = true;
     refreshBarControls();
     video.pause();
@@ -492,13 +702,8 @@
   function configureControls() {
     if (!overlay) return;
     const styledActive = typeof customTextId === 'string' && customTextId.startsWith('ass:');
-    video.disablePictureInPicture = styledActive;
-    overlay.configure({
-      ...playbackRateConfiguration(),
-      controlPanelElements: ['play_pause', 'time_and_duration', 'spacer', 'mute', 'volume', 'fullscreen', 'overflow_menu', 'omakase_bar_break', 'omakase_audio', 'omakase_subtitles', 'omakase_next'],
-      overflowMenuButtons: ['quality', 'playback_rate', ...(!styledActive ? ['picture_in_picture'] : [])],
-      seekBarColors: { base: '#626577', buffered: '#a6a3b3', played: '#d4c5f7' },
-    });
+    video.disablePictureInPicture = true;
+    overlay.configure(playerControlsConfiguration());
     enhanceRangeControls(container);
     find('caption-mode-note').hidden = !styledActive;
     refreshBarControls();
@@ -506,47 +711,14 @@
   function refreshBarControls() {
     for (const item of barItems) { item.checkAvailability(); if ((!ready || failed) && item.menu) { item.menu.classList.add('shaka-hidden'); item.button.setAttribute('aria-expanded', 'false'); } }
   }
-  function directLabel(button, text) {
-    button.classList.add('omakase-direct-control', 'shaka-no-propagation');
-    const label = document.createElement('span'); label.className = 'omakase-control-label'; label.textContent = text;
-    button.appendChild(label);
-  }
   function registerBarControls() {
     if (controlsRegistered) return;
     controlsRegistered = true;
-    class AudioMenu extends shaka.ui.AudioLanguageSelection {
-      constructor(parent, controls) {
-        super(parent, controls); directLabel(this.button, 'Audio'); this.button.classList.add('omakase-audio-button');
-        this.refresh = () => this.checkAvailability(); this.player.addEventListener('audiotrackschanged', this.refresh);
-        barItems.add(this); this.checkAvailability();
-      }
-      updateLocalizedStrings() { super.updateLocalizedStrings(); this.button.setAttribute('aria-label', 'Audio language'); this.backSpan.textContent = 'Audio language'; }
-      checkAvailability() {
-        super.checkAvailability(); this.button.classList.remove('shaka-hidden');
-        this.button.disabled = !ready || failed || !this.player.getAudioTracks().length;
-        this.button.title = this.player.getAudioTracks().length ? 'Choose audio language' : 'Audio is unavailable for this stream';
-      }
-      release() { this.player.removeEventListener('audiotrackschanged', this.refresh); barItems.delete(this); super.release(); }
-    }
-    class SubtitlesMenu extends shaka.ui.SettingsMenu {
-      constructor(parent, controls) {
-        super(parent, controls, ''); directLabel(this.button, 'Subtitles'); this.button.classList.add('omakase-subtitles-button');
-        this.button.querySelector('.shaka-ui-icon')?.remove(); const badge = document.createElement('span'); badge.className = 'omakase-caption-icon'; badge.textContent = 'CC'; badge.setAttribute('aria-hidden', 'true'); this.button.prepend(badge);
-        this.button.setAttribute('aria-label', 'Subtitles'); this.button.setAttribute('aria-haspopup', 'dialog');
-        this.nameSpan.textContent = 'Subtitles'; this.backSpan.textContent = 'Subtitles'; this.backButton.setAttribute('aria-label', 'Close subtitles');
-        this.menu.classList.add('omakase-subtitles-menu'); this.menu.setAttribute('role', 'dialog'); this.menu.setAttribute('aria-label', 'Subtitles'); this.menu.id = 'web-player-subtitles-menu'; this.button.setAttribute('aria-controls', this.menu.id);
-        const options = find('ass-options'); options.hidden = false; this.menu.appendChild(options);
-        this.menu.addEventListener('keydown', event => subtitleMenuKey(event, () => {
-          this.menu.classList.add('shaka-hidden'); this.button.setAttribute('aria-expanded', 'false'); this.button.focus();
-        }));
-        barItems.add(this); this.checkAvailability();
-      }
-      checkAvailability() { this.button.disabled = !ready || failed || captionLoading; }
-      release() { barItems.delete(this); super.release(); }
-    }
-    class BarBreak extends shaka.ui.Element {
-      constructor(parent, controls) { super(parent, controls); const node = document.createElement('div'); node.className = 'omakase-bar-break'; node.setAttribute('aria-hidden', 'true'); parent.appendChild(node); }
-    }
+    const { QualityMenu, AudioMenu, SubtitlesMenu } = settingsMenuTypes(shaka, {
+      document, find, state: () => ({ ready, failed, captionLoading }),
+      register: item => barItems.add(item), unregister: item => barItems.delete(item),
+      selectSubtitle: id => changeCaption(id, !video.paused),
+    });
     class NextEpisode extends shaka.ui.Element {
       constructor(parent, controls) { super(parent, controls); this.link = find('next'); parent.appendChild(this.link); this.link.hidden = false; barItems.add(this); this.checkAvailability(); }
       checkAvailability() {
@@ -557,12 +729,14 @@
         this.link.querySelector('[data-next-label]').textContent = candidate ? 'Next episode' : 'No next episode';
         this.link.querySelector('[data-next-compact]').textContent = candidate ? 'Next' : 'No next';
         this.link.title = candidate ? 'Open the next episode in this series and library' : 'No next episode is available in this library';
+        const sidebar = find('sidebar-next'); sidebar.hidden = !candidate;
+        sidebar.removeAttribute('href'); if (enabled) sidebar.href = candidate;
+        sidebar.setAttribute('aria-disabled', String(!enabled));
       }
       release() { barItems.delete(this); super.release(); }
     }
-    for (const [name, Type] of [['omakase_audio', AudioMenu], ['omakase_subtitles', SubtitlesMenu], ['omakase_bar_break', BarBreak], ['omakase_next', NextEpisode]]) {
-      shaka.ui.Controls.registerElement(name, { create: (parent, controls) => new Type(parent, controls) });
-    }
+    for (const [name, Type] of [['omakase_quality', QualityMenu], ['omakase_audio', AudioMenu], ['omakase_subtitles', SubtitlesMenu]]) shaka.ui.OverflowMenu.registerElement(name, { create: (parent, controls) => new Type(parent, controls) });
+    shaka.ui.Controls.registerElement('omakase_next', { create: (parent, controls) => new NextEpisode(parent, controls) });
   }
   async function stopCaptions() {
     captionIntent++;
@@ -609,7 +783,7 @@
         find('ass-select').value = id;
         find('ass-status').textContent = id === 'off' ? (assTracks.length ? 'Styled subtitles are off.' : 'Subtitles are off.') : id.startsWith('native:') ? 'Browser subtitle track selected.' : 'Styled subtitles ready.';
         captionLoading = false;
-        configureControls();
+        refreshBarControls();
         capture('progress');
         if (resumePlayback && ready && !failed) {
           try { await video.play(); } catch { status.textContent = 'Subtitles ready. Press Play to continue.'; }
@@ -638,11 +812,13 @@
     if (audio?.native) player.selectAudioTrack(audio.native);
     else if (audio?.variant) player.selectVariantTrack(audio.variant, true);
     const initial = initialSubtitleValue(nativeTracks, assTracks, session.text_id, session.resume_version_changed);
-    configureControls();
+    refreshBarControls();
     await changeCaption(initial);
   }
   async function dispose() {
     ready = false;
+    if (timeline) timeline.destroy(); timeline = null;
+    find('timeline').disabled = true; find('skip').hidden = true;
     refreshBarControls();
     window.clearInterval(periodic);
     video.pause();
@@ -660,7 +836,7 @@
     session = null;
     assTracks = [];
     customTextId = null;
-    video.disablePictureInPicture = false;
+    video.disablePictureInPicture = true;
     if (overlay) await overlay.destroy();
     if (player) await player.destroy();
     overlay = null;
@@ -750,6 +926,15 @@
         275,
       );
       ready = true;
+      find('timeline').disabled = false;
+      timeline = new SmoothTimeline(video, find('timeline'), {
+        request: callback => window.requestAnimationFrame(callback), cancel: id => window.cancelAnimationFrame(id),
+        document, reducedMotion: () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+      }, () => {
+        const marker = ready && !failed && !video.seeking ? activeSkipSegment(validatedSkipSegments(session), video.currentTime) : null;
+        find('skip').hidden = !marker;
+        if (marker) find('skip').textContent = marker.kind === 'intro' ? 'Skip Intro' : 'Skip Credits';
+      });
       find('ass-select').disabled = false;
       refreshBarControls();
       player.addEventListener('variantchanged', () => capture('progress'));
@@ -824,6 +1009,11 @@
   find('next').addEventListener('click', event => { if (find('next').getAttribute('aria-disabled') === 'true' || !find('next').hasAttribute('href')) event.preventDefault(); event.stopPropagation(); });
   find('next').addEventListener('keydown', event => { if (['Enter', ' '].includes(event.key)) event.stopPropagation(); });
   restart.addEventListener('click', () => { if (ready) { video.currentTime = 0; status.textContent = 'Restarted from the beginning.'; } });
+  find('skip').addEventListener('click', event => {
+    event.stopPropagation();
+    const marker = ready && !failed && !video.seeking ? activeSkipSegment(validatedSkipSegments(session), video.currentTime) : null;
+    if (marker) { video.currentTime = marker.end_seconds; find('skip').hidden = true; }
+  });
   video.addEventListener('playing', () => {
     if (!enforcePlayback(video, playbackState())) return;
     status.textContent = 'Playing'; capture('play');
@@ -834,10 +1024,7 @@
   }
   video.addEventListener('webkitbeginfullscreen', unsupportedCaptionMode);
   video.addEventListener('enterpictureinpicture', () => {
-    if (typeof customTextId === 'string' && customTextId.startsWith('ass:')) {
-      if (document.pictureInPictureElement) void document.exitPictureInPicture().catch(() => {});
-      unsupportedCaptionMode();
-    }
+    if (document.pictureInPictureElement) void document.exitPictureInPicture().catch(() => {});
   });
   video.addEventListener('pause', () => { if (ready && !leaving && !video.ended) { status.textContent = 'Paused'; capture('pause'); } });
   video.addEventListener('waiting', () => { if (ready) { status.textContent = 'Buffering…'; capture('pause'); } });

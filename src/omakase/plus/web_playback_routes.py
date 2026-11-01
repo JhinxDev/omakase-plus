@@ -24,6 +24,7 @@ from omakase.plus.middleware import require_user
 from omakase.plus.playback_proof import _insert_binding
 from omakase.plus.request_limits import bounded_form_route
 from omakase.plus.web_playback_admission import Admission, Busy
+from omakase.plus.web_playback_context import normalize_skip_segments, watch_context
 from omakase.plus.web_playback_delivery import HEADERS, DeliveryError, open_local, open_part
 from omakase.plus.web_playback_navigation import enabled, exact_next_url
 from omakase.plus.web_playback_source import (
@@ -279,6 +280,8 @@ def create_player_router(
             | {
                 "source": public_projection(source)
                 | {"mode": "copy-remux" if copied else "direct"},
+                # Existing exact-source Plex reads supply optional trusted markers.
+                "skip_segments": normalize_skip_segments(source),
                 "media_url": None
                 if pending
                 else resource_prefix + "manifest.mpd"
@@ -320,6 +323,7 @@ def create_player_router(
             "player.html",
             {
                 **product_context(request, user, active_page="library"),
+                **watch_context(db, monitor, scope, episode_number),
                 "title": monitor["title"],
                 "monitor_id": monitor_id,
                 "episode_number": episode_number,

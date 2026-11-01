@@ -107,6 +107,7 @@ class ResolvedAnimeSource:
     _scope: object = field(repr=False)
     _section_id: str = field(default="", repr=False)
     _publication_cache: dict = field(default_factory=dict, repr=False, compare=False)
+    _skip_evidence: dict = field(default_factory=dict, repr=False, compare=False)
 
 
 def _physical_version(identity, server, section, metadata, media, part):
@@ -124,6 +125,72 @@ def _physical_version(identity, server, section, metadata, media, part):
             [physical_attributes(stream) for stream in part.findall("Stream")],
         ]
     )
+
+
+def _trusted_skip_evidence(source, video):
+    """Optional episode markers only when its sole physical cut is this source.
+
+    Plex's legacy XML offsets are milliseconds. No marker analysis is requested;
+    missing/unsupported/ambiguous data cannot change playback authorization.
+    """
+    from omakase.plus.web_playback_context import normalize_skip_segments
+
+    medias = video.findall("Media")
+    if (
+        len(medias) != 1
+        or video.get("type") != "episode"
+        or video.get("ratingKey") != source.metadata_key
+        or video.get("parentIndex") != str(source.season_number)
+        or video.get("index") != str(source.episode_number)
+        or video.get("duration") != str(source.duration_ms)
+    ):
+        return {}
+    media = medias[0]
+    parts = media.findall("Part")
+    if len(parts) != 1 or parts[0].get("key") != source.part_key:
+        return {}
+    if (
+        _physical_version(
+            source.source_identity,
+            source.server_id,
+            source._section_id,
+            source.metadata_key,
+            media,
+            parts[0],
+        )
+        != source.media_version
+    ):
+        return {}
+    markers = video.findall("Marker")
+    if len(markers) > 32:
+        return {}
+    rows = []
+    for marker in markers:
+        kind = marker.get("type")
+        if kind not in {"intro", "credits"}:
+            continue
+        offsets = [marker.get(key, "") for key in ("startTimeOffset", "endTimeOffset")]
+        if not all(re.fullmatch(r"[0-9]{1,9}", value) for value in offsets):
+            return {}
+        rows.append(
+            {
+                "kind": kind,
+                "start_seconds": int(offsets[0]) / 1000,
+                "end_seconds": int(offsets[1]) / 1000,
+            }
+        )
+    evidence = {
+        key: getattr(source, key)
+        for key in (
+            "source_identity",
+            "metadata_key",
+            "season_number",
+            "episode_number",
+            "media_version",
+        )
+    }
+    evidence["segments"] = rows
+    return evidence | {"segments": normalize_skip_segments(source, evidence)["segments"]}
 
 
 def _publication(db, scope, anilist_id, season_number, episode_number):
@@ -455,7 +522,7 @@ async def resolve_anime_source(
         hydrated = []
         for listed_video, listed_media, listed_part in candidates:
             metadata = _numeric(listed_video.get("ratingKey", ""))
-            detail = await xml("/library/metadata/" + metadata)
+            detail = await xml("/library/metadata/" + metadata + "?includeMarkers=1")
             videos = detail.findall("Video")
             _require(len(videos) == 1 and detail.get("librarySectionID") in {None, section})
             video = videos[0]
@@ -546,6 +613,7 @@ async def resolve_anime_source(
                     section,
                 )
             )
+            resolved[-1]._skip_evidence.update(_trusted_skip_evidence(resolved[-1], video))
         choices = [r for r in resolved if media_version is None or r.media_version == media_version]
         _require(len(choices) == 1, "Choose one exact qualified media version.")
         result = choices[0]
@@ -562,6 +630,7 @@ async def revalidate_remote_source(db, source, transport=None):
     Exactly two bounded read-only LAN metadata requests; no plex.tv account
     lookup, watch updates, preference changes or media jobs are performed.
     """
+    source._skip_evidence.clear()
     try:
         revalidate_source(db, source)
         section = _numeric(source._section_id)
@@ -575,7 +644,7 @@ async def revalidate_remote_source(db, source, transport=None):
 
         identity = await xml("/identity")
         _require(identity.get("machineIdentifier") == source.server_id)
-        detail = await xml("/library/metadata/" + metadata)
+        detail = await xml("/library/metadata/" + metadata + "?includeMarkers=1")
         videos = detail.findall("Video")
         _require(len(videos) == 1 and detail.get("librarySectionID") in {None, section})
         video = videos[0]
@@ -608,7 +677,9 @@ async def revalidate_remote_source(db, source, transport=None):
             matches == [source.media_version],
             "Personal Plex access or the exact physical source changed.",
         )
-        return revalidate_source(db, source)
+        revalidate_source(db, source)
+        source._skip_evidence.update(_trusted_skip_evidence(source, video))
+        return source
     except (PlaybackProofError, ValueError, KeyError, TypeError, IndexError):
         raise PlaybackSourceError(
             "Current personal Plex playback access could not be confirmed."

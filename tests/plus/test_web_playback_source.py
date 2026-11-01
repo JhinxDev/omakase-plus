@@ -101,6 +101,8 @@ def transport(
     stream_codec="aac",
     metadata_status=None,
     metadata_missing_part=False,
+    markers="",
+    alternate_cut=False,
 ):
     def handle(req):
         if callback:
@@ -130,6 +132,15 @@ def transport(
             body = body.replace(' container="mkv" videoCodec="h264" audioCodec="aac"', "")
             body = re.sub(r"<Stream [^>]*/>", "", body)
         if req.url.path == "/library/metadata/20":
+            if markers:
+                assert req.url.params.get("includeMarkers") == "1"
+                body = body.replace("</Video>", markers + "</Video>")
+            if alternate_cut:
+                body = body.replace(
+                    "</Video>",
+                    '<Media id="31"><Part id="41" key="/library/parts/41/file.mkv" '
+                    'file="/other-cut.mkv" size="999" duration="70000"/></Media></Video>',
+                )
             if detail_extra:
                 body = body.replace(
                     "</Video>", '<Guid id="synthetic://123"/><Role tag="Synthetic"/></Video>'
@@ -751,3 +762,101 @@ def test_remote_exact_metadata_revocation_or_missing_part_fails_closed(fixture, 
     resolved = run(fixture)
     with pytest.raises(source.PlaybackSourceError):
         remote(fixture, resolved, **kwargs)
+
+
+MARKERS = (
+    '<Marker type="intro" startTimeOffset="1250" endTimeOffset="12000"/>'
+    '<Marker type="credits" startTimeOffset="45000" endTimeOffset="55000" final="0"/>'
+)
+
+
+def test_trusted_markers_from_existing_resolution_and_two_read_revalidation(fixture):
+    from omakase.plus.web_playback_context import normalize_skip_segments
+
+    seen = []
+    resolved = run(fixture, markers=MARKERS, callback=lambda req: seen.append(req.url))
+    assert len([url for url in seen if url.path == "/library/metadata/20"]) == 1
+    before_version = resolved.media_version
+    expected = [
+        {"kind": "intro", "start_seconds": 1.25, "end_seconds": 12},
+        {"kind": "credits", "start_seconds": 45, "end_seconds": 55},
+    ]
+    assert normalize_skip_segments(resolved)["segments"] == expected
+    seen.clear()
+    assert (
+        remote(fixture, resolved, markers=MARKERS, callback=lambda req: seen.append(req))
+        is resolved
+    )
+    assert len(seen) == 2 and all(req.method == "GET" for req in seen)
+    assert seen[1].url.params.get("includeMarkers") == "1"
+    assert normalize_skip_segments(resolved)["segments"] == expected
+    assert resolved.media_version == before_version
+    assert expected[-1]["end_seconds"] < resolved.duration_ms / 1000
+    assert "segments" not in source.public_projection(resolved)
+
+
+@pytest.mark.parametrize(
+    "markers",
+    [
+        "",
+        '<Marker type="commercial" startTimeOffset="bad"/>',
+        '<Marker type="intro" startTimeOffset="NaN" endTimeOffset="12000"/>',
+        '<Marker type="intro" startTimeOffset="-1" endTimeOffset="12000"/>',
+        '<Marker type="intro" startTimeOffset="1.5" endTimeOffset="12000"/>',
+        '<Marker type="intro" startTimeOffset="1"/>',
+        '<Marker type="intro" startTimeOffset="10000" endTimeOffset="10000"/>',
+        '<Marker type="credits" startTimeOffset="45000" endTimeOffset="60001"/>',
+        '<Marker type="credits" startTimeOffset="45000" endTimeOffset="55000"/>'
+        '<Marker type="intro" startTimeOffset="1000" endTimeOffset="12000"/>',
+        '<Marker type="intro" startTimeOffset="1000" endTimeOffset="12000"/>'
+        '<Marker type="credits" startTimeOffset="11000" endTimeOffset="15000"/>',
+        '<Marker type="intro" startTimeOffset="0" endTimeOffset="1000"/>' * 5,
+        '<Marker type="other"/>' * 33,
+    ],
+)
+def test_optional_missing_or_invalid_markers_clear_without_blocking_playback(fixture, markers):
+    from omakase.plus.web_playback_context import normalize_skip_segments
+
+    resolved = run(fixture, markers=MARKERS)
+    assert normalize_skip_segments(resolved)["segments"]
+    assert remote(fixture, resolved, markers=markers) is resolved
+    assert normalize_skip_segments(resolved)["segments"] == []
+
+
+def test_unsupported_marker_types_ignored_without_discarding_valid_ranges(fixture):
+    from omakase.plus.web_playback_context import normalize_skip_segments
+
+    resolved = run(fixture, markers='<Marker type="commercial"/>' + MARKERS)
+    assert len(normalize_skip_segments(resolved)["segments"]) == 2
+
+
+def test_episode_markers_reject_alternate_cut_but_exact_playback_still_authorized(fixture):
+    from omakase.plus.web_playback_context import normalize_skip_segments
+
+    resolved = run(fixture, markers=MARKERS, alternate_cut=True)
+    assert normalize_skip_segments(resolved)["segments"] == []
+    assert remote(fixture, resolved, markers=MARKERS, alternate_cut=True) is resolved
+    assert normalize_skip_segments(resolved)["segments"] == []
+
+
+def test_source_change_revokes_old_markers_and_playback(fixture):
+    from omakase.plus.web_playback_context import normalize_skip_segments
+
+    resolved = run(fixture, markers=MARKERS)
+    with pytest.raises(source.PlaybackSourceError):
+        remote(fixture, resolved, markers=MARKERS, stream_codec="opus")
+    assert normalize_skip_segments(resolved)["segments"] == []
+
+
+def test_scope_revocation_during_marked_response_never_publishes_markers(fixture):
+    from omakase.plus.web_playback_context import normalize_skip_segments
+
+    resolved = run(fixture, markers=MARKERS)
+
+    def revoke(req):
+        if req.url.path == "/library/metadata/20":
+            fixture[0].execute("UPDATE household_memberships SET state='removed'")
+
+    with pytest.raises(source.PlaybackSourceError):
+        remote(fixture, resolved, markers=MARKERS, callback=revoke)
+    assert normalize_skip_segments(resolved)["segments"] == []

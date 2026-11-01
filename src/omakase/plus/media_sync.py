@@ -137,6 +137,12 @@ def _legacy_language_monitor(db, monitor_id):
 
 
 def _monitor_withdrawn(db: sqlite3.Connection, monitor_id: int) -> bool:
+    from omakase.plus.local_list import monitoring_excluded
+
+    return monitoring_excluded(db, monitor_id) or _publication_withdrawn(db, monitor_id)
+
+
+def _publication_withdrawn(db: sqlite3.Connection, monitor_id: int) -> bool:
     return (
         db.execute(
             """SELECT 1 FROM media_title_removals WHERE monitor_id = ?
@@ -175,12 +181,17 @@ def _withdrawal_heartbeat(db, monitor_id, heartbeat):
 
 
 def _keep_withdrawn_inactive(db: sqlite3.Connection, monitor_id: int) -> bool:
-    if not _monitor_withdrawn(db, monitor_id):
-        return False
-    db.execute(
-        "UPDATE media_monitors SET active = 0, next_check_at = NULL WHERE id = ?", (monitor_id,)
-    )
-    return True
+    from omakase.plus.local_list import monitoring_excluded
+
+    if _publication_withdrawn(db, monitor_id):
+        # Physical/completion withdrawal keeps its existing persistent stop.
+        db.execute(
+            "UPDATE media_monitors SET active = 0, next_check_at = NULL WHERE id = ?", (monitor_id,)
+        )
+        return True
+    # A reversible list exclusion skips this work without destroying the original
+    # active flag or schedule. Restore must resume exactly that eligibility.
+    return monitoring_excluded(db, monitor_id)
 
 
 async def _download_access_error(provider, external_id: str) -> str:
@@ -2522,9 +2533,12 @@ def _selected_monitors(
     if not normalized:
         return []
     placeholders = ",".join("?" for _ in normalized)
+    from omakase.plus.local_list import MONITOR_EXCLUDED_SQL
+
     return list(
         db.execute(
             f"""SELECT * FROM media_monitors WHERE (active = 1 OR (? = 1 AND release_status = 'FINISHED')) AND id IN ({placeholders})
+                AND NOT ({MONITOR_EXCLUDED_SQL})
                 AND NOT EXISTS (SELECT 1 FROM media_title_removals r WHERE r.monitor_id = media_monitors.id)
                 AND NOT EXISTS (SELECT 1 FROM completion_plex_cleanup_blocks b WHERE b.monitor_id = media_monitors.id)
                 ORDER BY id""",

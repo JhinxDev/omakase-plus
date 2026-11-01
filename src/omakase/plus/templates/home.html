@@ -88,13 +88,15 @@
 {% if watch_history %}
 <section class="home-section" aria-labelledby="recent-watching-heading"><header class="stream-section-heading"><div><h2 id="recent-watching-heading">Recently watched</h2></div><a href="/plus/activity?view=watch">View history</a></header><div class="media-rail history-shelf" role="group" aria-label="Recent viewing history">{% for item in watch_history[:8] %}<div>{{ history_card(item) }}</div>{% endfor %}</div></section>
 {% endif %}
-<details class="home-system-updates"><summary>Library updates</summary>
+<details class="home-system-updates"><summary><span>Library updates</span><span class="home-updates-chevron" aria-hidden="true">⌄</span></summary>
 <section class="home-section recent-section" aria-labelledby="recent-heading">
   <header class="stream-section-heading"><div><span>Your latest updates</span><h2 id="recent-heading">Recent activity</h2></div><a href="/plus/activity?view=system">Library &amp; services</a></header>
   {% if recent_activity %}
   <ol class="viewer-activity-list">
     {% for event in recent_activity %}
-    <li><span class="event-dot event-{{ event.category }}" aria-hidden="true"></span><div><strong>{% if event.monitor_id %}<a href="/plus/library/{{ event.monitor_id }}">{{ event.title }}</a>{% else %}{{ event.title }}{% endif %}</strong><small>{{ event.detail or event.outcome }}</small></div><time data-local-datetime="{{ event.created_at }}" datetime="{{ event.created_at }}">{{ event.created_at }} UTC</time></li>
+    <li><span class="event-dot event-{{ event.category }}" aria-hidden="true"></span><div class="home-event-copy"><strong>{{ event.title }}</strong><p class="home-event-outcome">{{ event.outcome }}{% if event.repeat_count > 1 %} <span>· {{ event.repeat_count }} matching updates</span>{% endif %}</p><small>{{ event.detail or event.outcome }}</small>
+      <details class="home-event-context"><summary>About this update</summary><p>These are saved checks, not a new action. {% if event.repeat_count > 1 %}Matching results are grouped here; every check remains in library activity.{% endif %}</p><ol>{% for attempt in event.attempts %}<li><span>{{ attempt.outcome }} · {{ attempt.detail }}</span><time datetime="{{ attempt.created_at }}" data-local-datetime="{{ attempt.created_at }}">{{ attempt.created_at }}</time></li>{% endfor %}</ol><a href="/plus/activity?view=system">View library activity</a></details>
+      {% if event.monitor_id %}<a class="home-event-anime" href="/plus/library/{{ event.monitor_id }}">View anime <span aria-hidden="true">↗</span></a>{% endif %}</div><time data-local-datetime="{{ event.created_at }}" datetime="{{ event.created_at }}">{{ event.created_at }} UTC</time></li>
     {% endfor %}
   </ol>
   {% else %}

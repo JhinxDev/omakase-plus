@@ -118,7 +118,11 @@ body.product-body :is([data-genre="sci-fi"], [data-genre="science fiction"], [da
 .footer-identity > span { color: #e3dff0; font-weight: 600; }
 .product-footer nav { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 16px; }
 .product-footer a { display: inline-flex; align-items: center; gap: 5px; min-height: 44px; color: #c6b9e6; text-decoration: none; text-underline-offset: 4px; }
-.product-footer a:hover { color: #f0e8ff; text-decoration: underline; }
+.product-footer a:hover { color: #f0e8ff; text-decoration: none; }
+.product-footer a::after { content: ""; position: absolute; inset-inline: 0; bottom: 9px; height: 1px; background: currentColor; opacity: 0; }
+.product-footer a { position: relative; }
+.product-footer a:is(:hover,:focus-visible)::after { opacity: 1; }
+.product-footer a * { text-decoration: none; }
 .product-footer a:focus-visible { outline: 2px solid #c4b5fd; outline-offset: 4px; border-radius: 3px; }
 .product-footer strong { font-weight: 550; }
 
@@ -151,4 +155,30 @@ body.product-body :is([data-genre="sci-fi"], [data-genre="science fiction"], [da
   :root { --detail-art-height: 340px; }
   .product-footer { align-items: flex-start; gap: 8px; margin-top: 32px; }
   .footer-identity { width: 100%; }
+}
+
+/* Mobile chrome keeps its real text size. Dock rows reserve two readable label
+   lines at200% root text; header wordmark wraps inside its own grid column. */
+@media (max-width: 1100px) {
+  body.product-body { --mobile-dock-height: calc(44px + 2.5rem + env(safe-area-inset-bottom)); padding-bottom: calc(var(--mobile-dock-height) + 16px); }
+  .mobile-primary-nav { box-sizing: border-box; grid-template-columns: repeat(5, minmax(44px, 1fr)); grid-auto-flow: row; grid-auto-columns: auto; align-items: stretch; gap: 4px; min-height: var(--mobile-dock-height); padding: 8px max(12px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+  .mobile-primary-nav > a, .mobile-primary-nav > .mobile-browse > summary { box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; width: 100%; min-width: 44px; min-height: 44px; height: 100%; margin: 0; padding: 4px 2px; font-size: .8125rem; line-height: 1.25; text-align: center; }
+  .mobile-primary-nav > a > span:not(.nav-glyph), .mobile-browse > summary > span:not(.nav-glyph) { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+  .mobile-primary-nav .nav-glyph { flex: none; width: 22px; height: 22px; line-height: 1; }
+  .mobile-primary-nav .nav-glyph svg { width: 22px; height: 22px; }
+  .mobile-browse-panel { box-sizing: border-box; bottom: calc(var(--mobile-dock-height) + 8px); max-height: calc(100dvh - var(--mobile-dock-height) - 32px); overflow-y: auto; }
+  .mobile-browse-panel a { min-height: 44px; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
+}
+@media (max-width: 700px) {
+  .stream-header { grid-template-columns: minmax(0, 1fr) 92px; gap: 8px; padding: 8px 16px; min-height: 66px; box-sizing: border-box; }
+  .stream-header .stream-brand { display: flex; width: auto; min-width: 0; max-width: 100%; min-height: 44px; gap: 8px; }
+  .stream-header .stream-brand img { flex: none; width: 25px; height: 25px; }
+  .stream-header .stream-brand > span { min-width: 0; padding-block: 3px; white-space: normal; overflow-wrap: anywhere; line-height: 1.2; }
+  .stream-header .header-search-mobile { display: none; }
+  .stream-header .header-utilities { width: 92px; min-width: 92px; gap: 4px; }
+  .stream-header .notification-bell, .stream-header .account-menu > summary { flex: none; width: 44px; min-width: 44px; height: 44px; min-height: 44px; padding: 0; box-sizing: border-box; }
+  .stream-header .notification-center, .stream-header .account-menu { position: static; }
+  .stream-header .notification-panel, .stream-header .account-popover { box-sizing: border-box; position: absolute; top: calc(100% + 8px); right: 16px; width: min(280px, calc(100vw - 32px)); max-width: calc(100vw - 32px); max-height: calc(100dvh - 8rem - var(--mobile-dock-height)); overflow-y: auto; }
+  .stream-header .notification-panel { left: 16px; width: auto; }
+  .stream-header .account-popover .account-email { white-space: normal; overflow-wrap: anywhere; }
 }

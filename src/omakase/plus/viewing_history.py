@@ -10,6 +10,11 @@ from omakase.plus.households import feature_enabled
 from omakase.plus.movies_store import require_user
 
 _MAX_RECENT = 5000
+_HOME_ANIME_VISIBLE = """NOT EXISTS (
+ SELECT 1 FROM library_items own JOIN personal_libraries p ON p.library_id=own.library_id
+ WHERE p.user_id=w.user_id AND own.domain='anime' AND own.state='removed'
+ AND own.canonical_id=CAST(w.anilist_id AS TEXT) AND own.season_number=w.season_number
+)"""
 _ANIME_VIEWING_EVENTS = (
     "e.disposition='accepted' AND e.kind IN ('progress','completed') "
     "AND e.source IN ('plex','apple_tv','anilist','manual','web_player') "
@@ -299,11 +304,15 @@ def _television(db, user_id):
     return result
 
 
-def viewing_history(db, user_id: int, limit: int = 24, page: int = 1) -> dict:
+def viewing_history(
+    db, user_id: int, limit: int = 24, page: int = 1, *, exclude_local_anime: bool = False
+) -> dict:
     """Return a bounded recent feed. No metadata request or state write occurs.
 
     AniList checkpoints stay one Recorded card; missing episode names stay None.
     Plex snapshot import time is never substituted for its last-viewed time.
+    Personal Home opts into list exclusions before source and shelf limits; the
+    full History feed and other selected library scopes retain their observations.
     """
     require_user(db, user_id)
     if (
@@ -315,6 +324,7 @@ def viewing_history(db, user_id: int, limit: int = 24, page: int = 1) -> dict:
     ):
         raise ValueError("Choose a valid viewing-history page and limit")
 
+    home_filter = f"AND {_HOME_ANIME_VISIBLE}" if exclude_local_anime else ""
     retained_title = (
         "(SELECT i.title FROM watch_library_links link JOIN library_items i ON i.id=link.library_item_id WHERE link.user_id=w.user_id AND link.watch_entry_id=w.id ORDER BY i.created_at DESC,i.id LIMIT 1)"
         if feature_enabled()
@@ -324,7 +334,7 @@ def viewing_history(db, user_id: int, limit: int = 24, page: int = 1) -> dict:
         "WITH ranked AS (SELECT e.*,ROW_NUMBER() OVER (PARTITION BY e.watch_entry_id,e.episode "
         "ORDER BY e.observed_at DESC,e.id DESC) AS occurrence FROM watch_events e "
         "JOIN watch_entries w ON w.id=e.watch_entry_id AND w.user_id=e.user_id "
-        f"WHERE e.user_id=? AND w.user_id=? AND {_ANIME_VIEWING_EVENTS} "
+        f"WHERE e.user_id=? AND w.user_id=? AND {_ANIME_VIEWING_EVENTS} {home_filter} "
         "AND NOT (e.source='web_player' AND EXISTS (SELECT 1 FROM web_playback_watch pw WHERE pw.user_id=e.user_id AND pw.anilist_id=w.anilist_id AND pw.season_number=w.season_number AND pw.completed_at IS NOT NULL))) "
         f"SELECT r.*,w.id AS personal_entry_id,w.anilist_id,w.season_number,w.episode_total,m.id AS owned_monitor_id,COALESCE(m.title,{retained_title}) AS title,m.expected_episodes,(SELECT score_ten FROM watch_events score WHERE score.user_id=w.user_id AND score.watch_entry_id=w.id AND score.disposition='accepted' AND score.score_ten IS NOT NULL ORDER BY score.id DESC LIMIT 1) AS current_rating "
         "FROM ranked r JOIN watch_entries w ON w.id=r.watch_entry_id AND w.user_id=? "
@@ -346,7 +356,14 @@ def viewing_history(db, user_id: int, limit: int = 24, page: int = 1) -> dict:
         for row in rows
         if (card := _anime(row, personal_navigation=personal_navigation)) is not None
     ]
-    items.extend(_web_anime(db, user_id, personal_navigation=personal_navigation))
+    items.extend(
+        _web_anime(
+            db,
+            user_id,
+            personal_navigation=personal_navigation,
+            exclude_local_anime=exclude_local_anime,
+        )
+    )
     items.extend(_movies(db, user_id))
     items.extend(_television(db, user_id))
     items.sort(
@@ -366,13 +383,13 @@ def viewing_history(db, user_id: int, limit: int = 24, page: int = 1) -> dict:
     }
 
 
-def _web_anime(db, user_id, *, personal_navigation):
+def _web_anime(db, user_id, *, personal_navigation, exclude_local_anime=False):
     """One exact episode card at its first observed completion, never gap dates."""
     rows = db.execute(
         "SELECT p.id,p.anilist_id,p.season_number,p.episode_number,MIN(p.completed_at) AS completed_at,w.id AS personal_entry_id,w.episode_total,m.id AS owned_monitor_id,COALESCE(m.title,(SELECT i.title FROM watch_library_links link JOIN library_items i ON i.id=link.library_item_id WHERE link.user_id=w.user_id AND link.watch_entry_id=w.id ORDER BY i.created_at DESC,i.id LIMIT 1)) AS title,m.expected_episodes,(SELECT score_ten FROM watch_events e WHERE e.user_id=w.user_id AND e.watch_entry_id=w.id AND e.disposition='accepted' AND e.score_ten IS NOT NULL ORDER BY e.id DESC LIMIT 1) AS current_rating "
         "FROM web_playback_watch p JOIN watch_entries w ON w.user_id=p.user_id AND w.anilist_id=p.anilist_id AND w.season_number=p.season_number "
         "LEFT JOIN media_monitors m ON m.id=w.monitor_id AND m.user_id=p.user_id "
-        "WHERE p.user_id=? AND p.completed_at IS NOT NULL GROUP BY p.anilist_id,p.season_number,p.episode_number ORDER BY completed_at DESC LIMIT ?",
+        f"WHERE p.user_id=? AND p.completed_at IS NOT NULL {'AND ' + _HOME_ANIME_VISIBLE if exclude_local_anime else ''} GROUP BY p.anilist_id,p.season_number,p.episode_number ORDER BY completed_at DESC LIMIT ?",
         (user_id, _MAX_RECENT),
     ).fetchall()
     cards = []

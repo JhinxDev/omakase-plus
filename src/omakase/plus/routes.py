@@ -104,6 +104,7 @@ from omakase.plus.posters import PosterUnavailable, banner_bytes, poster_bytes
 from omakase.plus.product_views import (
     ProductViewError,
     activity_view,
+    cached_title_languages,
     dashboard_view,
     discover_view,
     health_view,
@@ -999,6 +1000,9 @@ async def home_page(
     user=Depends(require_user),
     db=Depends(get_db),
 ):
+    selected = (
+        households.selected_scope(db, viewer_id=user.id) if households.feature_enabled() else None
+    )
     return templates.TemplateResponse(
         request,
         "home.html",
@@ -1007,11 +1011,14 @@ async def home_page(
             **home_view(
                 db,
                 user_id=user.id,
-                library_scope=households.selected_scope(db, viewer_id=user.id)
-                if households.feature_enabled()
-                else None,
+                library_scope=selected,
             ),
-            "watch_history": viewing_history(db, user_id=user.id, limit=6)["items"],
+            "watch_history": viewing_history(
+                db,
+                user_id=user.id,
+                limit=6,
+                exclude_local_anime=selected is None or selected.kind == "personal",
+            )["items"],
             "message": message,
         },
         headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
@@ -1341,6 +1348,16 @@ async def title_page(
     title = title_detail(db, user_id=user.id, monitor_id=monitor_id)
     if title is None:
         raise HTTPException(status_code=404, detail="Media title not found")
+    from omakase.plus.local_list import local_removed
+
+    title["local_list_removed"] = local_removed(
+        db, user_id=user.id, anilist_id=title["anilist_id"], season=title["season_number"]
+    )
+    title.update(cached_title_languages(title))
+    if title["local_list_removed"]:
+        title["active"] = False
+        title["can_recheck"] = False
+        title["play_url"] = None
     title.update(await ensure_anime_synopsis(db, user_id=user.id, anilist_id=title["anilist_id"]))
     tracker = db.execute(
         """SELECT o.sync_state FROM tracker_sync_outbox o
@@ -1781,7 +1798,48 @@ async def title_removal_page(
         )
     except TitleRemovalError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    from omakase.plus.local_list import local_removed
+
+    preview["local_list_removed"] = local_removed(
+        db, user_id=user.id, anilist_id=preview["anilist_id"], season=preview["season_number"]
+    )
     return _render_title_removal(request, user, preview)
+
+
+@router.post("/library/{monitor_id}/local-list/{action}")
+async def update_local_list(
+    request: Request,
+    monitor_id: int,
+    action: str,
+    csrf_token: str = Form(""),
+    library_id: str = Form(""),
+    user=Depends(require_user),
+    db=Depends(get_db),
+):
+    _require_csrf(request, csrf_token)
+    if action not in {"remove", "restore"}:
+        raise HTTPException(404, "Local list action unavailable")
+    from omakase.plus.local_list import set_local_removed
+
+    try:
+        selected = set_local_removed(
+            db,
+            user_id=user.id,
+            monitor_id=monitor_id,
+            library_id=library_id or None,
+            removed=action == "remove",
+        )
+    except households.HouseholdError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    message = (
+        "Removed from your Omakase list. AniList and media files are unchanged."
+        if action == "remove"
+        else "Restored to your Omakase list."
+    )
+    return RedirectResponse(
+        f"/plus/library/{monitor_id}?library_id={selected}&message={quote(message, safe='')}",
+        status_code=303,
+    )
 
 
 @router.post("/library/{monitor_id}/remove")

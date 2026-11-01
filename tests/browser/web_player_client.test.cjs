@@ -384,3 +384,113 @@ test('subtitle native select retains arrow defaults and Escape closes with focus
  for(const key of ['Shift','Control','Alt','Meta']) { const modifier=event(key);subtitleMenuKey(modifier,()=>closed++);assert.equal(modifier.stopped,undefined,'Modifier transition reaches supplied Shaka pressed-key state'); }
  for(const key of ['Tab','Shift','k','ArrowDown','Escape']) { const release=event(key);release.type='keyup';subtitleMenuKey(release,()=>closed++);assert.equal(release.stopped,undefined,'Every key release can clear supplied Shaka pressed-key state');assert.equal(release.prevented,undefined); }
 });
+const { playerControlsConfiguration, qualityChoices, SmoothTimeline, validatedSkipSegments, activeSkipSegment } = require('../../src/omakase/plus/static/web-player.js');
+
+test('compact single row and gear priorities expose no app PiP paths', () => {
+  const config=playerControlsConfiguration();
+  assert.deepEqual(config.controlPanelElements,['play_pause','omakase_next','time_and_duration','spacer','mute','volume','fullscreen','overflow_menu']);
+  assert.deepEqual(config.overflowMenuButtons,['omakase_quality','omakase_audio','omakase_subtitles','playback_rate']);
+  assert.equal(config.addSeekBar,false); assert.equal(config.customContextMenu,false);
+  assert.deepEqual(config.contextMenuElements,[]); assert.equal(config.enableKeyboardPlaybackControls,true);
+});
+
+test('quality lists only actual distinct video variants and labels a sole original truthfully', () => {
+  const tracks=[{id:1,videoId:5,width:1920,height:1080,active:true,audioId:2},{id:2,videoId:5,width:1920,height:1080,audioId:3}];
+  assert.deepEqual(qualityChoices(tracks).map(x=>x.label),['Original · 1920 × 1080']);
+  assert.equal(qualityChoices([]).length,0);
+  assert.equal(qualityChoices([{id:1,active:true}])[0].label,'Original · resolution unavailable');
+});
+
+function timelineFixture(reduced=false) {
+  const listeners=new Map(), frames=new Map(); let next=0;
+  function target(extra={}) { return Object.assign({addEventListener(n,f){const a=listeners.get(this)||new Map();a.set(n,f);listeners.set(this,a);},removeEventListener(n){listeners.get(this)?.delete(n);}},extra); }
+  const video=target({currentTime:5,duration:100,paused:true,ended:false,buffered:{length:1,start:()=>0,end:()=>40}});
+  const range=target({value:'0',style:{setProperty(n,v){this[n]=v;}},setAttribute(n,v){this[n]=v;}});
+  const doc=target({hidden:false});
+  const clock={request:f=>{frames.set(++next,f);return next;},cancel:id=>frames.delete(id),document:doc,reducedMotion:()=>reduced};
+  const timeline=new SmoothTimeline(video,range,clock);
+  const emit=(node,type,event={})=>listeners.get(node)?.get(type)?.(event);
+  const tick=()=>{const entries=[...frames.values()];frames.clear();entries.forEach(f=>f());};
+  return {video,range,doc,timeline,emit,tick,frames};
+}
+
+test('owned timeline follows actual playback frames without seeking or generating watch events', () => {
+  const f=timelineFixture(); assert.equal(f.range.value,'5');assert.equal(f.frames.size,0);
+  f.video.paused=false;f.emit(f.video,'playing');f.video.currentTime=5.041;f.tick();assert.equal(f.range.value,'5.041');assert.equal(f.frames.size,1);
+  f.video.currentTime=5.083;f.tick();assert.equal(f.range.value,'5.083');assert.equal(f.video.currentTime,5.083);
+  f.video.paused=true;f.emit(f.video,'pause');assert.equal(f.frames.size,0);assert.equal(f.range.style['--buffered'],'40%');
+  f.timeline.destroy();assert.equal(f.frames.size,0);
+});
+
+test('timeline drag previews then commits exactly once without resuming paused media; keyboard clamps', () => {
+  const f=timelineFixture();f.emit(f.range,'pointerdown');f.range.value='37.25';f.emit(f.range,'input');assert.equal(f.video.currentTime,5);
+  f.emit(f.range,'change');assert.equal(f.video.currentTime,37.25);assert.equal(f.video.paused,true);
+  let stopped=0;f.emit(f.range,'keydown',{key:'End',preventDefault(){stopped++;},stopPropagation(){stopped++;}});
+  assert.equal(f.video.currentTime,100);assert.equal(stopped,2);
+  f.emit(f.range,'keydown',{key:'ArrowRight',preventDefault(){},stopPropagation(){}});assert.equal(f.video.currentTime,100);
+});
+
+test('reduced-motion and hidden/paused timeline have no continuous animation; cancellation removes listeners', () => {
+  const f=timelineFixture(true);f.video.paused=false;f.emit(f.video,'playing');assert.equal(f.frames.size,0);
+  f.video.currentTime=6;f.emit(f.video,'timeupdate');assert.equal(f.range.value,'6');f.timeline.destroy();f.video.currentTime=7;f.emit(f.video,'timeupdate');assert.equal(f.range.value,'6');
+  const g=timelineFixture();g.video.paused=false;g.emit(g.video,'playing');g.doc.hidden=true;g.emit(g.doc,'visibilitychange');assert.equal(g.frames.size,0);
+});
+
+test('skip controls require exact version/episode and bounded genuine non-overlapping segments', () => {
+  const session={source:{media_version:'a'.repeat(64),episode_number:3,duration_ms:100000},skip_segments:{media_version:'a'.repeat(64),episode_number:3,segments:[{kind:'intro',start_seconds:4,end_seconds:14},{kind:'credits',start_seconds:80,end_seconds:90}]}};
+  const segments=validatedSkipSegments(session);assert.equal(segments.length,2);assert.equal(activeSkipSegment(segments,14),null);assert.equal(activeSkipSegment(segments,85).end_seconds,90);
+  assert.deepEqual(validatedSkipSegments({...session,skip_segments:{...session.skip_segments,episode_number:4}}),[]);
+  assert.deepEqual(validatedSkipSegments({...session,skip_segments:{...session.skip_segments,segments:[{kind:'intro',start_seconds:20,end_seconds:101}]}}),[]);
+  assert.deepEqual(validatedSkipSegments({source:session.source}),[]);
+});
+
+test('timeline paints sixty actual clock changes per second without changing the sampler or fitting elapsed time', () => {
+  const f=timelineFixture();f.video.paused=false;f.emit(f.video,'playing');const values=[];
+  for(let i=1;i<=60;i++){f.video.currentTime=5+i/60;f.tick();values.push(f.range.value);}
+  assert.equal(new Set(values).size,60);assert.equal(f.video.currentTime,6);assert.equal(f.range.value,'6');
+  f.tick();assert.equal(f.range.value,'6','A stalled media clock never advances by wall time');f.timeline.destroy();
+});
+
+test('timeline resumes after unchanged pointer release and outside release without seeking', () => {
+  for (const target of ['range', 'doc']) {
+    const f=timelineFixture();f.video.paused=false;f.emit(f.video,'playing');f.emit(f.range,'pointerdown',{pointerId:1});
+    f.video.currentTime=6;f.emit(f[target],'pointerup',{pointerId:1});f.tick();
+    assert.equal(f.timeline.dragging,false);assert.equal(f.range.value,'6');assert.equal(f.frames.size,1);f.timeline.destroy();
+  }
+});
+
+test('timeline release preserves the chosen value and late native change does not seek twice', () => {
+  const f=timelineFixture();let position=5,writes=0;
+  Object.defineProperty(f.video,'currentTime',{get:()=>position,set:value=>{position=value;writes++;}});
+  f.emit(f.range,'pointerdown',{pointerId:7});f.range.value='37.25';f.emit(f.range,'input');
+  f.emit(f.doc,'pointerup',{pointerId:8});assert.equal(f.timeline.dragging,true,'another pointer cannot finish this gesture');
+  f.emit(f.doc,'pointerup',{pointerId:7});assert.equal(f.video.currentTime,37.25);f.emit(f.range,'change');
+  assert.equal(f.video.currentTime,37.25);assert.equal(writes,1);assert.equal(f.video.paused,true);f.timeline.destroy();
+});
+
+test('cancelled pointer gestures discard the preview and resume the actual clock', () => {
+  for (const event of ['pointercancel','blur']) {
+    const f=timelineFixture();f.video.paused=false;f.emit(f.video,'playing');f.emit(f.range,'pointerdown',{pointerId:1});
+    f.range.value='70';f.emit(f.range,'input');f.video.currentTime=6;f.emit(f.range,event,{pointerId:1});f.tick();
+    assert.equal(f.video.currentTime,6);assert.equal(f.range.value,'6');assert.equal(f.timeline.dragging,false);assert.equal(f.frames.size,1);f.timeline.destroy();
+  }
+});
+
+test('malformed optional skip segments refuse without throwing', () => {
+  for (const item of [null,undefined,[],true,4,'intro']) {
+    const source={media_version:'a'.repeat(64),episode_number:1,duration_ms:100000};
+    assert.deepEqual(validatedSkipSegments({source,skip_segments:{media_version:source.media_version,episode_number:1,segments:[item]}}),[]);
+  }
+});
+
+test('timeline key release reaches supplied player key-state cleanup', () => {
+  const f=timelineFixture();let stopped=false;
+  f.emit(f.range,'keyup',{key:'ArrowRight',stopPropagation(){stopped=true;}});
+  assert.equal(stopped,false);f.timeline.destroy();
+});
+
+test('owned seek input consumes click/doubleclick without toggling the surrounding supplied video control',()=>{
+  const f=timelineFixture();let stopped=0;
+  for(const type of ['click','dblclick'])f.emit(f.range,type,{stopPropagation(){stopped++;}});
+  assert.equal(stopped,2);assert.equal(f.video.paused,true);f.timeline.destroy();
+});

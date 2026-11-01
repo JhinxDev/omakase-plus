@@ -2,55 +2,55 @@
 
 This source candidate records the maintained interface contract. Technical, creative and deployment acceptance remain separate.
 
-## Integrated player, October 31
+## Integrated player, November 1
 
-`templates/player.html`, `static/web-player.css` and `static/web-player.js` extend
-the existing shell. Geist uses the shell's local `--sans`; the supplied Shaka
-Material Icons Round face is retained for controls. Player width is 100%, min-width 0,
-max 1200px. The stage contains a 16:9 contain-fit video frame plus a reserved160px
-controls band at16px root text (64px + 6rem, expanding with text size), with260px minimum total height and14px
-corners; at 640px and below it has 280px minimum height and 8px corners. Minimum
-height is deliberate on phones so the initial/preparing controls remain usable.
-No aspect-ratio minimum-width may push the stage outside its grid column.
+The watch page follows the Geist/midnight/iris shell. A contain-fit 16:9 image
+sits above one compact transport row: Play, explicit Next, time, volume,
+fullscreen and gear. The reserved controls band is `52px + 3rem` (100px at the
+normal root size), independent of the original ASS canvas coordinates. Fullscreen
+uses the same band and container fullscreen. Controls retain 44px touch targets,
+an opaque midnight backing, visible keyboard focus and phone-safe widths. The
+actual video image, never a translated canvas, defines subtitle positioning.
 
-The stage uses #020408, a #303547 keyline and a #25243c→#080d18 start-panel gradient.
-Text is #f0edf8; support copy #b8c0d1 with 1.6 line height; iris action #d4c5f7 on
-#171325, hover keyline #c8b5f1 and 3px focus #e1d2ff. Buttons have 44px minimum
-targets, 8px corners, 10×16px padding; the primary has 28px inline padding. Eyebrow
-is .75rem/650 with .15em tracking. Start heading clamps 1.4–2rem, tracking -.025em.
-Details use two equal columns/32px gap, collapsing to one/24px below 640px.
+The gear orders Quality, Audio, unified Subtitles and then Playback speed. Quality
+lists actual video variants and labels a sole copy Original with its measured
+resolution, or honestly says resolution unavailable. Audio remains Shaka's real
+checked language/role selection. Subtitles combines native, original ASS and Off,
+preserving exact-source restoration, font handling and exclusive renderer state.
+Escape returns to the settings button. App PiP menus, context menu, shortcut,
+document PiP and auto-PiP actions are disabled without changing browser settings.
 
-Shaka settings use #171e2d, bounded stage-relative height/width and a sticky Back
-button. Range inputs explicitly reset shared form padding/borders and keep 44px
-hitboxes around the supplied 4px track. Speed and volume own their native range
-keys; seek retains Shaka's seek lifecycle. Every range has an accessible name.
-ASS canvas is layer 1; controls layer 2; initial/preparation panel layer 3. Error
-uses #2c1d28/#885461 with #ffd8e0 text. Version-note amber is #f1d3a1.
-The opaque #080d1a footer stays below the video image, including while paused;
-fullscreen subtracts the same160px band from the available video area. The ASS
-renderer measures that video image directly, preserving subtitle/sign positions
-relative to it. Never translate the whole canvas to avoid controls. The redundant
-video scrim is disabled; controls retain their opaque contrast backing. Actual
-original-caption visibility still requires its own visual acceptance.
+The seek input is app-owned through public video events and requestAnimationFrame.
+It paints the actual video clock, without interpolated watched time or a Shaka
+private timer/configuration workaround. Drag previews commit an exact seek;
+paused playback stays paused. Arrow/Page/Home/End range keys are isolated from
+video shortcuts. Hidden, paused and reduced-motion playback use event updates
+without continuous animation. The existing semantic watch events and five-second
+progress sampler remain unchanged. `--stream-accent` supplies played range,
+thumb, focus, selected settings and skip action; buffered/unplayed tracks remain
+distinct on bright footage. Actual browser cadence and normal/fullscreen/phone
+visual acceptance require separate measured receipts.
 
-Play is explicit. Preparation exposes the exact Plex link and Cancel; it may take
-45 seconds. Retry is deliberate and bounded. The opaque Shaka bar has two rows:
-standard playback controls, then direct Audio, Subtitles and Next episode actions.
-Audio keeps the supplied checked language menu. One Subtitles dialog contains a
-48px native selector grouped into available browser tracks and styled ASS, plus
-Off, preserving actual language/forced/default labels. Native and styled rendering
-are mutually exclusive; selected tracks and explicit Off restore within the same
-media version. Escape closes the dialog and returns focus. Next is an explicit
-same-series episode+1/library link; unavailable state stays visible without a URL.
-The compact row keeps three44px targets at320/390px; original video/canvas
-coordinates are unchanged by the extra reserved control row. Fullscreen is the container. Styled-caption PiP/native-fullscreen limits
-are explained beside the selector. No next-episode autoplay. Reduced motion
-disables player animations/transitions; forced colors retains visible borders.
+An optional trusted `skip_segments` envelope binds the exact media_version and
+episode to at most four ordered, finite, non-overlapping intro/credits intervals
+within the source duration. Both server and client validate it. The button appears
+only inside an interval and seeks to its end, preserving post-credit content and
+ordinary seek accounting. No trusted marker producer exists in the current
+source contract; production responses are empty and no skip button is claimed
+live. Synthetic intervals only qualify the bounded UI behavior.
 
-Maintain the token values, native-event queue timing, range keyboard isolation,
-phone menu bounds, cancel/page-exit closure and original subtitle/font identity
-together. Synthetic browser/range/queue/preparation checks exist; actual-source,
-deployed identity and physical-device acceptance require their own receipts.
+Below the player: series link, episode heading and matching cached synopsis.
+The desktop sidebar contains scoped navigation, season and cached genres, then
+stacks on phones. Previous is shown only for a current published episode;
+Next retains its exact session-qualified URL. No provider is fetched on page
+open. Public scores and episode names are omitted when matching cached evidence
+is unavailable. Restart, exact Plex fallback and subtitle license/source access
+remain in a compact playback-options disclosure. Save feedback stays discreet;
+actual failures remain an alert and stop buffered playback.
+
+Play, preparation/cancel, deliberate bounded retry, session exit closure and
+authorization retain their existing contracts. No next-episode autoplay. Reduced
+motion disables decorative transitions; forced colors keeps visible boundaries.
 
 ## Personal cinema
 
@@ -206,3 +206,95 @@ legible at the viewport edges. Slim dark/iris scrollbars have no arrow buttons;
 forced colors retain system contrast and visible selection. Genre colors are
 quiet metadata, and the footer uses aligned documentation, public repository and
 Jhinx Dev links with roomy keyboard and touch targets.
+
+## Movie discovery and library updates, November 1
+
+Anime and movie For You share a poster-first hierarchy, iris metadata and clear
+reasons beside each title. Movie filters live in a compact Customize disclosure.
+Movie reasons describe the actual local genre ranking from saved ratings, or
+public TMDB popularity/rating/release order; no movie AI fit score is invented.
+Explore shares an eight-second deadline across genres, candidate metadata and
+at most twenty detail lookups, with three concurrent details. Cached metadata
+survives an upstream failure; available cards and honest partial/error feedback
+return without starting acquisition, history import or another request.
+
+Movie collection and discovery use the same freshness-aware status mapping as
+details. Request failures, old reports, unknown activity, file readiness and
+personal watched/rating records remain distinct. Public catalog candidates do
+not imply ownership. A secondary History, ratings & import tools disclosure
+explains local tracking, explicit Plex history import and protected manual values.
+Opening the collection never imports history; last checked time remains visible
+inside the tools.
+
+Footer links use one continuous accent line across their complete text/icon box,
+with an independent visible focus outline. Library updates retains native details
+semantics, a visible open/closed chevron, a compact 44px summary hit area and
+hover/focus state. Home groups identical visible activity results only, retains
+each original attempt in event context and labels the separate View anime action.
+Specific publication causes come from the exact run/monitor saved candidate code.
+The historical generic SELECTION_DEFERRED record does not contain a specific
+selection reason; the UI says so instead of inferring one from another receipt.
+No source audit rows are changed or removed by grouping.
+
+## Reversible personal list removal, November 1
+
+Fullscreen entry uses a restrained 180ms opacity ease from .92 to 1 with
+cubic-bezier(.2,.8,.2,1). Native requestFullscreen remains synchronous with the
+trusted click; no size/position transform separates video, ASS or controls.
+The existing reduced-motion rule disables this animation. Native entering,
+exiting, rapid toggles and rendered frame timing remain browser acceptance gates.
+
+Remove from Omakase list is a personal-library membership exclusion, with an
+explicit Restore action on the retained title page. It works before airing and
+with zero assets, without title typing. AniList membership/status, personal watch
+history and ratings, Plex publication, provider files and other libraries remain
+unchanged. Physical Plex/provider removal is a separate, labeled workflow; its
+unusable confirmation form is omitted when no managed media exists.
+
+Existing library_items removed rows hold the exclusion, without a migration or
+enabling Households. Implicit personal anime binding/import cannot reactivate a
+tombstone. Collection/Home omit it; due, explicit and in-flight monitor checks
+exclude it unless another active library still references the same managed
+resource. Original monitor scheduling flags remain intact, so Restore does not
+guess an earlier active state. Only the selected personal membership's queued
+local request events are cancelled; dispatched/provider work is not cancelled.
+Household membership controls retain their separate existing scope and feature
+gate; the new legacy-title action refuses a household library ID.
+
+Saved file-check audio/subtitle languages are visible on the title. Missing or
+undetermined evidence says Unknown; release titles never substitute for track
+proof. Saved checks do not prove a changed source still has those tracks.
+Rescan copy explicitly says it cannot create a Japanese audio track. Actual Plex
+target links require their existing exact source metadata, never a guessed URL.
+
+
+At360px and below, the compact transport omits only its mute button, retaining
+Play, Next, readable wrapped time, fullscreen and gear as44px border-box targets.
+Keyboard/hardware volume and mute remain available. This reserves time width
+even when200% root text also doubles the page gutters. The owned seek input sits
+above the supplied transparent controls for real pointer/touch hit testing and
+yields below visible settings. Its click/double-click events stay local, so seeking
+does not toggle surrounding playback/fullscreen. Rendered qualification is tied
+to the subsequent exact-source browser receipt, not the earlier failed frames.
+
+
+Mobile chrome keeps actual200% root text readable. Below700px the header uses a
+wordmark column and a separate92px utilities column with fixed16px gutters. The
+wordmark may wrap; bell/account retain44px targets. Redundant header Search is
+omitted while the labeled dock Search stays available. Account/notification
+panels anchor below the grown header rather than a fixed assumed header height.
+
+The five dock destinations use icon-over-label columns with full wrapping labels,
+not a horizontal icon/text pair. A44px +2.5rem dock reserve grows with root text,
+with natural content height and safe-area padding. Body spacing and Browse's
+popover offset use the same reserve, keeping content and the popover above the
+dock. No nav label is clipped, ellipsized or scaled down to cancel text zoom.
+This page-chrome qualification is separate from the unchanged player composite.
+
+
+The initial Ready/preparation panel participates in page flow while visible.
+Its real text, resume choice and Play/Cancel targets determine stage height,
+including at200% root text. The video remains absolutely sized underneath during
+setup, and initial timeline/transport layers stay hidden. Hiding the panel removes
+these conditional rules and restores the already-qualified video/controls layout;
+no renderer, watch sampling or playback JavaScript changes are involved.

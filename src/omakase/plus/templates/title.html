@@ -98,7 +98,11 @@
       <a class="button {{ 'button-secondary' if title.play_url else 'button-primary' }}" href="#episode-heading">{{ "View episode history" if title.state == "archived" else "View episodes" }}</a>
       <a class="button button-secondary" href="#watch-tracking" data-open-details>Update watch progress</a>
     </div>
-    <div class="title-library-actions" role="group" aria-label="Library actions"><span>Library actions</span><a class="button button-secondary" href="/plus/library/{{ title.id }}/remove">{{ 'View removal status' if title.removal else 'Remove…' }}</a></div>
+    <div class="title-library-actions" role="group" aria-label="Library actions"><span>Library actions</span>
+      {% if title.local_list_removed %}<form method="post" action="/plus/library/{{ title.id }}/local-list/restore" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit" data-busy-label="Restoring…">Restore to Omakase list</button></form>
+      {% else %}<a class="button button-secondary" href="/plus/library/{{ title.id }}/remove">Remove from Omakase list…</a>{% endif %}</div>
+    {% if title.local_list_removed %}<p class="product-notice" role="status">Removed from your Omakase list. AniList, watch history and media files are unchanged. You can restore this title here.</p>{% endif %}
+    <p class="title-progress-source" aria-label="Languages from saved file checks"><strong>Audio:</strong> {{ title.audio_languages | default(['Unknown']) | join(', ') }} <span aria-hidden="true">·</span> <strong>Subtitles:</strong> {{ title.subtitle_languages | default(['Unknown']) | join(', ') }} <small>Last saved file checks</small></p>
     {% if title.next_episode %}<p class="title-progress-source">Up next: episode {{ title.next_episode }}</p>{% endif %}
     {% if title.resurfaced %}<p class="title-progress-source">New episode found. Plex availability is unconfirmed.</p>{% endif %}
     <p class="title-progress-source">Progress updated by {{ title.last_source_label }}.</p>
@@ -233,6 +237,8 @@
           <span class="mono-data">{{ asset.progress | round | int }}%</span>
         </header>
         <div class="asset-coverage"><span>Verified episodes in this release</span><strong>{{ asset.usable_coverage | length }}</strong></div>
+        <p class="asset-language-summary"><strong>Audio:</strong> {% if asset.probe and asset.probe.audio %}{% for track in asset.probe.audio %}{{ track.language | upper if track.language and track.language != 'und' else 'Unknown' }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}Unknown{% endif %} · <strong>Subtitles:</strong> {% if asset.subtitles %}{% for track in asset.subtitles %}{{ track.language | upper if track.language and track.language != 'und' else 'Unknown' }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}Unknown{% endif %}</p>
+        {% if asset.probe %}<p class="asset-action-help">Languages from the last saved file check, {{ asset.probe.verified_at }}. Source changes need a new check.</p>{% endif %}
         <div class="subtitle-summary subtitle-{{ asset.subtitle_state }}">
           <strong>{{ asset.subtitle_label }}</strong>
           <small>{{ asset.subtitle_detail }}</small>
@@ -298,9 +304,10 @@
   </section>
 
   <aside class="title-side">
-    {% if not title.removal %}
+    {% if not title.removal and not title.local_list_removed %}
     <section class="editorial-panel">
       <header class="panel-heading"><div><span class="section-index">Help</span><h2>Playback and media help</h2></div></header>
+      <p>Rescanning updates Plex metadata. It does not create or add a Japanese audio track.</p>
       <div class="repair-list">
         {% if title.publication_pending %}<a class="button button-secondary" href="/plus/library/{{ title.id }}">Check Plex status</a>{% else %}
         <form method="post" action="/plus/library/{{ title.id }}/retry" data-busy-form>
