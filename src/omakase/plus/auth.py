@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from argon2 import PasswordHasher
@@ -47,6 +48,15 @@ def session_max_age() -> int:
     return (days if 7 <= days <= 365 else 90) * 86400
 
 
+def session_absolute_max_age() -> int:
+    """Configured absolute session lifetime, bounded to 7–730 days (default 365)."""
+    try:
+        days = int(os.getenv("OMAKASE_SESSION_ABSOLUTE_DAYS", "365"))
+    except ValueError:
+        days = 365
+    return (days if 7 <= days <= 730 else 365) * 86400
+
+
 def create_session(db, user_id: int) -> str:
     """Insert a persistent session for *user_id*.
 
@@ -76,12 +86,19 @@ def authenticate_session(db, session_id: str, *, renew: bool = True) -> tuple[in
     """Authenticate and occasionally extend idle expiry using compare-and-set.
 
     The boolean asks the HTTP layer to renew its persistent cookie. Missing,
-    expired and revoked sessions can never be recreated by this operation.
+    expired, absolutely aged-out and revoked sessions can never be recreated
+    by this operation.
     """
-    row = db.execute(
-        "SELECT user_id, expires_at FROM sessions WHERE id = ?",
-        (session_id,),
-    ).fetchone()
+    try:
+        row = db.execute(
+            "SELECT user_id, expires_at, created_at FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        row = db.execute(
+            "SELECT user_id, expires_at FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
     if row is None:
         return None, False
     now = datetime.now(timezone.utc)
@@ -94,6 +111,19 @@ def authenticate_session(db, session_id: str, *, renew: bool = True) -> tuple[in
         db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         db.commit()
         return None, False
+    created_raw = row["created_at"] if "created_at" in row.keys() else None
+    if created_raw is not None:
+        try:
+            created = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            absolutely_expired = now - created >= timedelta(seconds=session_absolute_max_age())
+        except (TypeError, ValueError):
+            absolutely_expired = False
+        if absolutely_expired:
+            db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            db.commit()
+            return None, False
     renewed = False
     lifetime = session_max_age()
     if renew and expires - now < timedelta(seconds=lifetime / 3):

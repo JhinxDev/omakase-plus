@@ -267,6 +267,29 @@ templates.env.globals["release_status_label"] = release_status_label
 _login_attempts: dict[str, list[float]] = defaultdict(list)
 _RATE_LIMIT = 5
 _RATE_WINDOW = 60  # seconds
+_LOGIN_TRACKED_MAX_IPS = 4096
+
+
+def _prune_login_attempts(now: float | None = None) -> None:
+    """Drop stale and excess login-attempt buckets to bound memory."""
+    current = time.monotonic() if now is None else now
+    stale = [
+        ip
+        for ip, timestamps in _login_attempts.items()
+        if not any(current - stamp < _RATE_WINDOW for stamp in timestamps)
+    ]
+    for ip in stale:
+        _login_attempts.pop(ip, None)
+    excess = len(_login_attempts) - _LOGIN_TRACKED_MAX_IPS
+    if excess > 0:
+        oldest_first = sorted(
+            _login_attempts.items(),
+            key=lambda item: max(item[1]) if item[1] else float("-inf"),
+        )
+        for ip, _timestamps in oldest_first[:excess]:
+            _login_attempts.pop(ip, None)
+
+
 _MACHINE_CACHE_HEADERS = {"Cache-Control": "private, no-store"}
 
 
@@ -701,8 +724,10 @@ def _delete_session_cookie(response: Response) -> None:
 
 
 @router.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request, error: str = ""):
-    return templates.TemplateResponse(request, "login.html", {"error": error})
+async def login_page(request: Request, error: str = "", signed_out: str = ""):
+    return templates.TemplateResponse(
+        request, "login.html", {"error": error, "signed_out": bool(signed_out)}
+    )
 
 
 @router.post("/login", response_class=HTMLResponse)
@@ -714,6 +739,7 @@ async def login_post(
 ):
     ip = request.client.host if request.client else "unknown"
     now = datetime.now(timezone.utc).timestamp()
+    _prune_login_attempts(now)
     _login_attempts[ip] = [t for t in _login_attempts[ip] if now - t < _RATE_WINDOW]
 
     # Check rate limit before verifying credentials
@@ -780,6 +806,14 @@ async def signup_post(
             {"error": "Passwords do not match."},
         )
 
+    password_problem = validate_new_password(password)
+    if password_problem is not None:
+        return templates.TemplateResponse(
+            request,
+            "signup.html",
+            {"error": password_problem},
+        )
+
     existing = db.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
     if existing:
         return templates.TemplateResponse(
@@ -821,7 +855,7 @@ async def logout(request: Request, db=Depends(get_db), user=Depends(require_user
     session_id = request.cookies.get(_SESSION_COOKIE)
     if session_id:
         _delete_session(db, session_id)
-    response = RedirectResponse(url="/", status_code=302)
+    response = RedirectResponse(url="/plus/login?signed_out=1", status_code=302)
     _delete_session_cookie(response)
     return response
 
@@ -3792,3 +3826,27 @@ async def plan_and_download(
 
     result = await search_and_download(db, user.id, title, planning_id=planning_id)
     return result
+
+
+# ── Friendly browser 404 ────────────────────────────────────
+
+
+@router.get("/{path:path}", response_class=HTMLResponse)
+async def plus_browser_not_found(request: Request, path: str):
+    """Return a branded page for browser navigation and JSON for API clients."""
+    del path
+    if "text/html" not in request.headers.get("accept", ""):
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+    return templates.TemplateResponse(
+        request,
+        "error.html",
+        {
+            "status_code": 404,
+            "error_code": "404",
+            "title": "Page not found",
+            "message": "That page is not part of this Omakase server.",
+            "signed_in": bool(request.cookies.get(_SESSION_COOKIE)),
+        },
+        status_code=404,
+        headers={"Cache-Control": "private, no-store"},
+    )

@@ -6,10 +6,11 @@ loopback by default and use a protected HTTPS origin for deliberate remote acces
 
 ## Report a vulnerability
 
-The source repository is JhinxDev/omakase-plus. If private vulnerability
-reporting is enabled there, use its Security tab. Otherwise request a private
-reporting channel without posting credentials, personal data or exploit details
-in a public issue. Do not test against someone else's installation.
+The source repository is JhinxDev/omakase-plus. Private vulnerability reporting
+is enabled there: open the repository Security tab and use
+https://github.com/JhinxDev/omakase-plus/security/advisories/new. Do not post
+credentials, personal data or exploit details in a public issue, and do not
+test against someone else's installation.
 
 ## Installation and maintenance
 
