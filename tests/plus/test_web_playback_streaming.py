@@ -1,0 +1,218 @@
+"""HLS direct-stream playback sessions, independent of the prepared remux path."""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+import pytest
+from fastapi import FastAPI
+from fastapi.templating import Jinja2Templates
+from fastapi.testclient import TestClient
+from starlette.requests import Request
+
+from omakase.plus import households
+from omakase.plus.auth import create_session
+from omakase.plus.db import run_migrations
+from omakase.plus.deps import get_db
+from omakase.plus.web_playback_routes import create_player_router
+from omakase.plus.web_playback_source import PlexStream, ResolvedAnimeSource
+from omakase.plus.web_security import csrf_token
+
+
+@pytest.fixture
+def setup(monkeypatch, tmp_path):
+    monkeypatch.setenv("OMAKASE_PLUS_PRIVATE", "true")
+    monkeypatch.setenv("OMAKASE_PLUS_WEB_PLAYER_ENABLED", "true")
+    monkeypatch.setenv("OMAKASE_PLAYBACK_STREAMING", "true")
+    monkeypatch.setenv("OMAKASE_PLAYBACK_STREAM_CACHE_ROOT", str(tmp_path / "playback-streams"))
+    db = sqlite3.connect(":memory:", check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys=ON")
+    run_migrations(db)
+    for uid in (1, 2):
+        db.execute(
+            "INSERT INTO users(id,email,password_hash) VALUES(?,?,?)",
+            (uid, f"{uid}@example.invalid", "fixture"),
+        )
+        households.ensure_personal_library(db, user_id=uid)
+    db.execute(
+        "INSERT INTO media_monitors(id,user_id,anilist_id,title,season_number) "
+        "VALUES(1,1,100,'Synthetic stream',1)"
+    )
+    db.commit()
+
+    async def resolver(db, **values):
+        scope = households.resolve_scope(
+            db, viewer_id=values["actor_user_id"], library_id=values["library_id"]
+        )
+        return ResolvedAnimeSource(
+            actor_user_id=1,
+            library_id=scope.library_id,
+            anilist_id=100,
+            season_number=1,
+            episode_number=values["episode_number"],
+            server_id="synthetic-server",
+            account_id="12345",
+            metadata_key="11",
+            part_key="/library/parts/12/1234/file.mkv",
+            part_size=1_500_000_000,
+            duration_ms=1_436_250,
+            container="mkv",
+            video_codec="h264",
+            audio_codec="aac",
+            streams=(
+                PlexStream("3", "video", "h264", "und", True, False, True, 0),
+                PlexStream("4", "audio", "aac", "jpn", True, False, True, 1),
+                PlexStream("5", "subtitle", "ass", "eng", False, False, True, 2),
+            ),
+            media_version="a" * 64,
+            source_identity="b" * 64,
+            base_url="https://plex.invalid",
+            token="dummy-only",
+            _scope=scope,
+            _snapshot=(),
+        )
+
+    launches = []
+
+    async def fake_launcher(source, sid, item):
+        folder = tmp_path / "playback-streams" / sid
+        folder.mkdir(parents=True)
+        playlist = folder / "index.m3u8"
+        playlist.write_text(
+            "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:4\n"
+            "#EXT-X-PLAYLIST-TYPE:EVENT\n#EXTINF:4.004,\n"
+            "segments/seg-00000.ts\n#EXT-X-ENDLIST\n",
+            encoding="utf-8",
+        )
+        (folder / "seg-00000.ts").write_bytes(b"synthetic-ts")
+        subtitle = folder / "subtitle.ass"
+        subtitle.write_text("[Script Info]\nTitle: synthetic\n", encoding="utf-8")
+        item.update(
+            {
+                "streaming": True,
+                "stream_dir": folder,
+                "stream_playlist": playlist,
+                "stream_subtitle": subtitle,
+                "stream_process": None,
+                "subtitle_process": None,
+            }
+        )
+        launches.append(sid)
+
+    templates = Jinja2Templates(
+        directory=str(Path(__file__).resolve().parents[2] / "src/omakase/plus/templates")
+    )
+    app = FastAPI()
+    app.include_router(
+        create_player_router(
+            templates,
+            lambda request, user, **kw: {"email": user.email},
+            resolver=resolver,
+            source_guard=lambda db, source: None,
+            remote_guard=lambda *args, **kwargs: True,
+            stream_launcher=fake_launcher,
+            cache_root=tmp_path / "remux",
+        ),
+        prefix="/plus",
+    )
+    app.dependency_overrides[get_db] = lambda: db
+    sessions = {uid: create_session(db, uid) for uid in (1, 2)}
+    db.commit()
+    yield app, db, sessions, launches, tmp_path / "playback-streams"
+    db.close()
+
+
+def client(app, session):
+    result = TestClient(app, base_url="https://testserver", follow_redirects=False)
+    result.cookies.set("omakase_session", session)
+    request = Request(
+        {"type": "http", "headers": [(b"cookie", f"omakase_session={session}".encode())]}
+    )
+    result.headers["x-csrf-token"] = csrf_token(request)
+    result.headers["origin"] = "https://testserver"
+    return result
+
+
+def start_stream(owner):
+    return owner.post(
+        "/plus/api/playback/sessions",
+        json={
+            "monitor_id": 1,
+            "episode_number": 10,
+            "codecs": ["h264", "aac"],
+            "ass_supported": True,
+        },
+    )
+
+
+def test_stream_starts_without_the_prepared_size_limit(setup):
+    app, _, sessions, launches, _ = setup
+    owner = client(app, sessions[1])
+    response = start_stream(owner)
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["streaming"] is True
+    assert payload["preparation_required"] is False
+    assert payload["media_type"] == "application/vnd.apple.mpegurl"
+    assert payload["media_url"].endswith("/playlist.m3u8")
+    assert payload["subtitle_url"].endswith("/subtitle.ass")
+    assert payload["source"]["mode"] == "stream"
+    assert len(launches) == 1
+    assert "dummy-only" not in response.text
+    assert "plex.invalid" not in response.text
+
+
+def test_stream_playlist_segments_and_subtitles_are_authenticated(setup):
+    app, _, sessions, _, cache_root = setup
+    owner = client(app, sessions[1])
+    payload = start_stream(owner).json()
+    sid = payload["session_id"]
+    playlist = owner.get(payload["media_url"])
+    assert playlist.status_code == 200
+    assert playlist.text.startswith("#EXTM3U")
+    assert playlist.headers["content-type"].startswith("application/vnd.apple.mpegurl")
+    segment = owner.get(f"/plus/api/playback/sessions/{sid}/segments/seg-00000.ts")
+    assert segment.status_code == 200
+    assert segment.content == b"synthetic-ts"
+    subtitle = owner.get(payload["subtitle_url"])
+    assert subtitle.status_code == 200
+    assert "Script Info" in subtitle.text
+    # Another signed-in user cannot use the session.
+    stranger = client(app, sessions[2])
+    assert stranger.get(payload["media_url"]).status_code == 404
+    assert (
+        stranger.get(f"/plus/api/playback/sessions/{sid}/segments/seg-00000.ts").status_code == 404
+    )
+    assert (cache_root / sid).is_dir()
+
+
+def test_stream_close_removes_the_session_cache(setup):
+    app, _, sessions, _, cache_root = setup
+    owner = client(app, sessions[1])
+    payload = start_stream(owner).json()
+    sid = payload["session_id"]
+    response = owner.post(
+        f"/plus/api/playback/sessions/{sid}/close",
+        json={},
+    )
+    assert response.status_code == 204, response.text
+    assert not (cache_root / sid).exists()
+    assert owner.get(payload["media_url"]).status_code == 404
+
+
+def test_stream_start_requires_csrf(setup):
+    app, _, sessions, _, _ = setup
+    owner = client(app, sessions[1])
+    del owner.headers["x-csrf-token"]
+    response = start_stream(owner)
+    assert response.status_code == 403
+
+
+def test_stream_rejects_invalid_csrf_token(setup):
+    app, _, sessions, _, _ = setup
+    owner = client(app, sessions[1])
+    owner.headers["x-csrf-token"] = "0" * 64
+    response = start_stream(owner)
+    assert response.status_code == 403
