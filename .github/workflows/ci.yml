@@ -53,10 +53,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install media probe tools
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: |
-          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=1 update
-          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=1 install --no-install-recommends -y ffmpeg
+          if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+            echo "ffmpeg and ffprobe are already installed; skipping apt."
+            ffmpeg -version | head -n 1
+            exit 0
+          fi
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 install --no-install-recommends -y ffmpeg
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
       - name: Install package + dev deps
         run: |
           pip install --require-hashes -r requirements-dev.txt -r requirements-build.txt
