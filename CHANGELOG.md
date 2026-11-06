@@ -6,6 +6,11 @@ GitHub Release. The update-feed identity (`PRODUCT_VERSION` in
 `src/omakase/plus/update_service.py`) is a separate operator-facing build
 identifier; it does not replace the public release version.
 
+## 0.4.5 - 2026-11-06
+
+### Fixed
+
+- The Plus Content-Security-Policy now includes `'wasm-unsafe-eval'` in `script-src`, which the styled ASS subtitle renderer needs to compile its WebAssembly worker. Without it, attached subtitles failed with "Styled subtitles cannot display in this playback mode".
 ## 0.4.4 - 2026-11-06
 
 ### Fixed
@@ -83,5 +88,6 @@ identifier; it does not replace the public release version.
 
 - Public CI reliability, packaging hygiene and the documented release
   surface.
+
 
 

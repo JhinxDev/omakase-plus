@@ -148,7 +148,7 @@ def test_production_csp_allows_only_fixed_google_form_redirect_paths(client, db)
     account = client.get("/plus/auth/google/account")
     expected = "form-action 'self' https://accounts.google.com;"
     assert expected in account.headers["content-security-policy"]
-    assert "script-src 'self';" in account.headers["content-security-policy"]
+    assert "script-src 'self' 'wasm-unsafe-eval';" in account.headers["content-security-policy"]
     linked = client.post("/plus/auth/google/link", data={"csrf_token": csrf(session)})
     assert linked.status_code == 303
     assert linked.headers["location"].startswith(ga.AUTH_URL + "?")
