@@ -1,7 +1,7 @@
 {
   "corresponding-source.tar.gz": {
-    "sha256": "820a4a6c3b3e9f28ea5cd26c17d92079c2bd85e7319422c2b6f98071a96e1cf4",
-    "bytes": 62013876
+    "sha256": "1e351d9d79dbefbd2897f3a581a892cb6d08129724437772015f52b325539adf",
+    "bytes": 62013653
   },
   "default.woff2": {
     "sha256": "886929903707c5bb28b07cd2eed69921b3d5ef5c49c73a0dd1e187ebf6546a4c",
@@ -24,7 +24,7 @@
     "bytes": 753959
   },
   "SOURCE.json": {
-    "sha256": "92419584cbcd8ed1a5558b40a280e2059230e6096913d5630595184ba8ab574a",
+    "sha256": "7cfbcb2a80fd6d8590c7abca34fde583ce11e88c23ce8358b2454c28e9f74aef",
     "bytes": 2086
   },
   "worker.js": {

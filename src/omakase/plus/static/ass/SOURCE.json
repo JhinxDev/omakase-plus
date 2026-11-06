@@ -1,8 +1,8 @@
 {
   "schema": "omakase-ass-source-offer-v1",
   "bundle": "corresponding-source.tar.gz",
-  "sha256": "820a4a6c3b3e9f28ea5cd26c17d92079c2bd85e7319422c2b6f98071a96e1cf4",
-  "bytes": 62013876,
+  "sha256": "1e351d9d79dbefbd2897f3a581a892cb6d08129724437772015f52b325539adf",
+  "bytes": 62013653,
   "instructions": "THIRD-PARTY/jassub-2.5.23/REBUILD.md",
   "native_projects": {
     "jassub": {
