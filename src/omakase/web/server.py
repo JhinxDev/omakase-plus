@@ -175,7 +175,7 @@ async def plus_security_headers(request, call_next):
                 form_sources += " https://accounts.google.com"
         response.headers.setdefault(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; "
             "font-src 'self'; img-src 'self' data:; connect-src 'self'; "
             "media-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; "
             f"base-uri 'self'; form-action {form_sources}; frame-ancestors 'none'",

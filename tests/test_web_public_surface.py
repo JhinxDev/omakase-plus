@@ -153,3 +153,10 @@ def test_plus_csp_allows_mse_blob_media(private_app):
     assert "media-src 'self' blob:" in policy
     assert "worker-src 'self' blob:" in policy
     assert "default-src 'self'" in policy
+
+
+def test_plus_csp_allows_wasm_for_styled_subtitles(private_app):
+    client = TestClient(private_app)
+    policy = client.get("/plus/login").headers["content-security-policy"]
+    assert "script-src 'self' 'wasm-unsafe-eval';" in policy
+    assert "'unsafe-eval'" not in policy.replace("'wasm-unsafe-eval'", "")
