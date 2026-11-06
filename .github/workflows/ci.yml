@@ -31,6 +31,12 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
+      - name: Fetch pinned recovery fixture commit
+        # tests/plus/test_player_recovery_overlay.py regenerates and archives the
+        # accepted old source at this exact historical commit, and the default
+        # depth-1 checkout does not contain it. Fetch only that commit, not the
+        # full history; the tests still prove the pinned objects byte-for-byte.
+        run: git fetch --no-tags --depth=1 origin c9d491ccbdfa68aedd31692028da5820fcd6638d
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
