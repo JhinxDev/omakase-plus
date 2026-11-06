@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-__version__ = "0.4.3"
+__version__ = "0.4.4"
 
 # Load .env file at import time so CLI and web entry points pick up env vars
 # without needing python-dotenv or manual export. Docker compose handles this

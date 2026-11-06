@@ -6,6 +6,12 @@ GitHub Release. The update-feed identity (`PRODUCT_VERSION` in
 `src/omakase/plus/update_service.py`) is a separate operator-facing build
 identifier; it does not replace the public release version.
 
+## 0.4.4 - 2026-11-06
+
+### Fixed
+
+- The streaming subtitle endpoint now returns 404 until the background ASS extraction has written non-empty output. Previously the empty placeholder could be attached by the player and produce a styled-subtitle error at playback start.
+- The Plus Content-Security-Policy now allows same-origin `blob:` URLs for media and workers, which Shaka MediaSource requires. Without it, playback stalled before requesting the HLS playlist.
 ## 0.4.3 - 2026-11-06
 
 ### Added
@@ -77,3 +83,5 @@ identifier; it does not replace the public release version.
 
 - Public CI reliability, packaging hygiene and the documented release
   surface.
+
+

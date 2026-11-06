@@ -177,7 +177,7 @@ async def plus_security_headers(request, call_next):
             "Content-Security-Policy",
             "default-src 'self'; script-src 'self'; style-src 'self'; "
             "font-src 'self'; img-src 'self' data:; connect-src 'self'; "
-            "object-src 'none'; "
+            "media-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; "
             f"base-uri 'self'; form-action {form_sources}; frame-ancestors 'none'",
         )
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
