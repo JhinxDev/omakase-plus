@@ -6,6 +6,12 @@ GitHub Release. The update-feed identity (`PRODUCT_VERSION` in
 `src/omakase/plus/update_service.py`) is a separate operator-facing build
 identifier; it does not replace the public release version.
 
+## 0.4.6 - 2026-11-06
+
+### Fixed
+
+- The player timeline now uses the larger of the media element duration and Shaka's reported seek range, and seeks through the native media element path used by Shaka's own controls. It no longer calls a nonexistent player.seek API.
+- Keyboard Home and End use the same server timeline duration.
 ## 0.4.5 - 2026-11-06
 
 ### Fixed
@@ -88,6 +94,8 @@ identifier; it does not replace the public release version.
 
 - Public CI reliability, packaging hygiene and the documented release
   surface.
+
+
 
 
 

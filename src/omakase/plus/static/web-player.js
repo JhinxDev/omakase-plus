@@ -377,9 +377,12 @@
   // This is a rendering clock only. Watch evidence continues through the existing
   // semantic video events and five-second sampler, never animation frames.
   class SmoothTimeline {
-    constructor(video, range, clock, onRender = () => {}) {
+    constructor(video, range, clock, onRender = () => {}, options = {}) {
       this.video = video; this.range = range; this.clock = clock; this.onRender = onRender;
       this.frame = null; this.dragging = false; this.pendingValue = null; this.pointerId = null; this.listeners = [];
+      this.seekTo = typeof options.seek === 'function' ? options.seek : value => { this.video.currentTime = value; };
+      this.duration = typeof options.duration === 'function' ? options.duration
+        : () => Number.isFinite(this.video.duration) && this.video.duration > 0 ? this.video.duration : 0;
       this.listen = (node, name, fn) => { node.addEventListener(name, fn); this.listeners.push([node, name, fn]); };
       const update = () => { this.render(); this.schedule(); };
       for (const name of ['playing', 'pause', 'ended', 'timeupdate', 'durationchange', 'loadedmetadata', 'seeked', 'progress']) this.listen(video, name, update);
@@ -409,20 +412,21 @@
         const offsets = { ArrowLeft: -5, ArrowDown: -5, ArrowRight: 5, ArrowUp: 5, PageDown: -30, PageUp: 30 };
         if (!(event.key in offsets) && !['Home', 'End'].includes(event.key)) return;
         event.preventDefault(); event.stopPropagation();
-        this.commit(event.key === 'Home' ? 0 : event.key === 'End' ? video.duration : video.currentTime + offsets[event.key]);
+        this.commit(event.key === 'Home' ? 0 : event.key === 'End' ? this.duration() : video.currentTime + offsets[event.key]);
         this.dragging = false; this.pendingValue = null; this.pointerId = null; update();
       });
       // Keyup still reaches the supplied controls so their pressed-key state clears.
       update();
     }
     commit(value) {
-      if (!this.range.disabled && Number.isFinite(value) && Number.isFinite(this.video.duration)) {
-        const target = Math.max(0, Math.min(this.video.duration, value));
-        if (Math.abs(this.video.currentTime - target) > .000001) this.video.currentTime = target;
+      const duration = this.duration();
+      if (!this.range.disabled && Number.isFinite(value) && duration > 0) {
+        const target = Math.max(0, Math.min(duration, value));
+        if (Math.abs(this.video.currentTime - target) > .000001) this.seekTo(target);
       }
     }
     render() {
-      const duration = Number.isFinite(this.video.duration) && this.video.duration > 0 ? this.video.duration : 0;
+      const duration = this.duration();
       const value = Math.max(0, Math.min(duration, Number(this.dragging ? this.range.value : this.video.currentTime) || 0));
       this.range.max = String(duration || 1); if (!this.dragging) this.range.value = String(value);
       this.range.style.setProperty('--played', `${duration ? value / duration * 100 : 0}%`);
@@ -924,6 +928,7 @@
       const media = new URL(session.media_url, window.location.origin);
       if (media.origin !== window.location.origin || !['http:', 'https:'].includes(media.protocol)) throw new Error('Invalid media source');
       player = new shaka.Player();
+      window.__omakasePlayer = player;
       await player.attach(video);
       registerBarControls();
       overlay = new shaka.ui.Overlay(player, container, video);
@@ -956,6 +961,12 @@
         const marker = ready && !failed && !video.seeking ? activeSkipSegment(validatedSkipSegments(session), video.currentTime) : null;
         find('skip').hidden = !marker;
         if (marker) find('skip').textContent = marker.kind === 'intro' ? 'Skip Intro' : 'Skip Credits';
+      }, {
+        duration: () => Math.max(
+          Number.isFinite(Number(video.duration)) ? Number(video.duration) : 0,
+          player && typeof player.seekRange === 'function' && Number.isFinite(player.seekRange().end) ? player.seekRange().end : 0,
+        ) || 1,
+        seek: time => { video.currentTime = time; },
       });
       find('ass-select').disabled = false;
       refreshBarControls();
