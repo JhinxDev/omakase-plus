@@ -83,12 +83,15 @@ substitute for a reviewed storage mount.
 ## Create an account
 
 After the container is healthy, open `/plus` at your configured app address and
-choose **Create account**. Account creation is available only when the server's
-private/invite configuration permits it. Use your own email and a unique
+choose **Create account**. A private deployment lets the first account bootstrap
+the instance; after that, account creation is closed until an administrator sets
+`OMAKASE_PLUS_INVITE` and shares that invitation. Public BYOK/Lite deployments
+require the invite configuration from the start. Use your own email and a unique
 password. Google sign-in is available only when the administrator configured it.
 
-Keep the app private. Setting private mode enables private features and account
-creation; it is not a network firewall or a replacement for protected deployment.
+Keep the app private. Setting private mode enables the authenticated product and
+its private features; it is not open registration, a network firewall or a
+replacement for protected deployment.
 
 ## Follow the four steps
 

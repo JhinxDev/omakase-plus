@@ -41,6 +41,10 @@ _LABELS = {
     "top_rated": "Top rated",
     "newest": "Newest",
 }
+# One page shares this wall deadline across genres, candidates and detail reads.
+# At most 20 exact detail lookups (plus genres/candidates), concurrency three.
+_DISCOVERY_TIMEOUT = 8.0
+_DETAIL_LIMIT = 20
 
 
 def _number(value: Any, maximum: float) -> float:
@@ -59,6 +63,8 @@ class MovieDiscoveryService:
             raise MovieError("invalid_input")
         self.movies, self.db = movies, movies.db
         self.history, self._ttl = MovieHistoryService(movies), cache_seconds
+        self.notice = ""
+        self.last_options = {}
         self._scope = (
             hashlib.sha256(_base(movies.connections.seerr_url).encode()).hexdigest()
             if movies.connections.seerr_url
@@ -145,7 +151,7 @@ class MovieDiscoveryService:
         return None
 
     async def _cache(
-        self, kind: str, identity: Any, loader: Callable[[], Awaitable[Any]]
+        self, kind: str, identity: Any, loader: Callable[[], Awaitable[Any]], *, deadline=None
     ) -> tuple[Any, bool]:
         key = self._key(kind, identity)
         row = self._row(key)
@@ -169,8 +175,19 @@ class MovieDiscoveryService:
                 return previous, True
             raise cooldown
         try:
-            result = await loader()
+            if deadline is None:
+                result = await loader()
+            else:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise MovieError("transport_timeout")
+                try:
+                    result = await asyncio.wait_for(loader(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    raise MovieError("transport_timeout") from None
         except MovieError as error:
+            if deadline is not None and error.code == "transport_timeout":
+                self.notice = "Some movie details took too long. Showing available metadata; try Explore again when you want a fresh check."
             self._put(
                 kind, key, previous, error=error, fetched_at=row["fetched_at"] if row else None
             )
@@ -182,7 +199,7 @@ class MovieDiscoveryService:
         self._put(kind, key, result)
         return result, False
 
-    async def options(self, user_id: int) -> dict[str, Any]:
+    async def options(self, user_id: int, *, deadline=None) -> dict[str, Any]:
         self.movies._guard(user_id)
 
         async def load():
@@ -195,7 +212,7 @@ class MovieDiscoveryService:
                 raise MovieError("invalid_metadata") from None
             return _genre_rows(data)
 
-        genres, stale = await self._cache("genres", "en", load)
+        genres, stale = await self._cache("genres", "en", load, deadline=deadline)
         return {
             "genres": genres,
             "sorts": [{"value": value, "label": _LABELS[value]} for value in _SORTS],
@@ -295,7 +312,10 @@ class MovieDiscoveryService:
                 raise MovieError("invalid_input")
         if year_from is not None and year_to is not None and year_from > year_to:
             raise MovieError("invalid_input")
-        options = await self.options(user_id)
+        deadline = asyncio.get_running_loop().time() + _DISCOVERY_TIMEOUT
+        self.notice = ""
+        options = await self.options(user_id, deadline=deadline)
+        self.last_options = options
         genres = {row["id"]: row for row in options["genres"]}
         if genre_id is not None and genre_id not in genres:
             raise MovieError("invalid_input")
@@ -312,7 +332,9 @@ class MovieDiscoveryService:
                 await self.movies._json("seerr", "/api/v1/discover/movies", params=params)
             )
 
-        public, stale_candidates = await self._cache("candidates", params, load_candidates)
+        public, stale_candidates = await self._cache(
+            "candidates", params, load_candidates, deadline=deadline
+        )
         candidates = []
         for row in public:
             known = self.db.execute(
@@ -322,6 +344,8 @@ class MovieDiscoveryService:
             if not include_completed and known is not None and known["status"] == "completed":
                 continue
             candidates.append(row)
+            if len(candidates) >= _DETAIL_LIMIT:
+                break
         semaphore = asyncio.Semaphore(3)
 
         async def card_for(row: dict[str, Any]) -> dict[str, Any]:
@@ -331,7 +355,9 @@ class MovieDiscoveryService:
                     async def detail():
                         return await self.movies._metadata(row["tmdb_id"])
 
-                    metadata, stale_detail = await self._cache("detail", row["tmdb_id"], detail)
+                    metadata, stale_detail = await self._cache(
+                        "detail", row["tmdb_id"], detail, deadline=deadline
+                    )
                     metadata = dict(metadata)
                     if "genres" not in metadata:
                         metadata["genres"] = [

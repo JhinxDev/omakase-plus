@@ -104,6 +104,7 @@ from omakase.plus.posters import PosterUnavailable, banner_bytes, poster_bytes
 from omakase.plus.product_views import (
     ProductViewError,
     activity_view,
+    cached_title_languages,
     dashboard_view,
     discover_view,
     health_view,
@@ -185,6 +186,7 @@ from omakase.plus.watch.service import (
     ingest_watch_event,
     resolve_watch_confirmation,
 )
+from omakase.plus.web_playback_routes import create_player_router
 from omakase.plus.web_security import csrf_token as _csrf_token
 from omakase.plus.web_security import require_csrf as _require_csrf
 from omakase.types import OmakaseConfig, resolve_model_preset
@@ -229,6 +231,12 @@ _STATIC_ASSETS = {
     "search.js": "application/javascript",
     "geist-variable.woff2": "font/woff2",
     "dashboard.js": "application/javascript",
+    "shaka-player-5.3.3.js": "application/javascript",
+    "shaka-controls-5.3.3.css": "text/css",
+    "web-player.css": "text/css",
+    "web-player.js": "application/javascript",
+    "web-ass.js": "application/javascript",
+    "shaka-player-5.3.3-LICENSE.txt": "text/plain",
     "omakase-seal.svg": "image/svg+xml",
     "omakase-icon.svg": "image/svg+xml",
 }
@@ -629,11 +637,26 @@ def _run_job(job_id: str, cfg: OmakaseConfig, profile_path: str) -> None:
                 pass
 
 
-def _signup_allowed() -> bool:
-    """Signup is only enabled in private mode or when an invite code is set."""
-    private = os.getenv("OMAKASE_PLUS_PRIVATE", "false").lower() == "true"
-    invite = bool(os.getenv("OMAKASE_PLUS_INVITE"))
-    return private or invite
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _signup_allowed(db=None) -> bool:
+    """Return whether account creation is available for this deployment.
+
+    Public (BYOK/Lite) deployments keep the historical contract: signup is
+    closed unless the operator sets ``OMAKASE_PLUS_INVITE``. Private Plus
+    deployments additionally allow the documented first-run bootstrap while the
+    database has no accounts yet; once an account exists, open registration is
+    closed again and an operator must set ``OMAKASE_PLUS_INVITE`` to invite more
+    people. This keeps a shipped private instance from accepting registrations
+    from anyone who can reach its origin.
+    """
+    if os.getenv("OMAKASE_PLUS_INVITE", "").strip():
+        return True
+    private = os.getenv("OMAKASE_PLUS_PRIVATE", "false").strip().lower() in _TRUTHY
+    if not private or db is None:
+        return False
+    return db.execute("SELECT 1 FROM users LIMIT 1").fetchone() is None
 
 
 # ── Session cookie helpers ──────────────────────────────────
@@ -722,8 +745,8 @@ async def login_post(
 
 
 @router.get("/signup", response_class=HTMLResponse)
-async def signup_page(request: Request, error: str = ""):
-    if not _signup_allowed():
+async def signup_page(request: Request, error: str = "", db=Depends(get_db)):
+    if not _signup_allowed(db):
         return RedirectResponse(url="/plus/login", status_code=302)
     return templates.TemplateResponse(request, "signup.html", {"error": error})
 
@@ -736,7 +759,7 @@ async def signup_post(
     confirm_password: str = Form(...),
     db=Depends(get_db),
 ):
-    if not _signup_allowed():
+    if not _signup_allowed(db):
         return RedirectResponse(url="/plus/login", status_code=302)
 
     if not email or not password:
@@ -813,6 +836,31 @@ async def plus_static_asset(asset_name: str, request: Request):
     from omakase.plus.static_delivery import static_response
 
     return await run_in_threadpool(static_response, asset_path, media_type, request)
+
+
+@router.get("/static/ass/{asset_name}")
+async def ass_runtime_asset(asset_name: str, request: Request):
+    types = {
+        "jassub.js": "application/javascript",
+        "worker.js": "application/javascript",
+        "jassub-worker.wasm": "application/wasm",
+        "jassub-worker-modern.wasm": "application/wasm",
+        "default.woff2": "font/woff2",
+        "LICENSES.txt": "text/plain",
+        "SOURCE.json": "application/json",
+        "corresponding-source.tar.gz": "application/gzip",
+    }
+    if asset_name not in types:
+        raise HTTPException(404)
+    path = _STATIC_DIR / "ass" / asset_name
+    if not path.is_file():
+        raise HTTPException(404)
+    from omakase.plus.static_delivery import static_response
+
+    response = await run_in_threadpool(static_response, path, types[asset_name], request)
+    if asset_name == "worker.js":
+        response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+    return response
 
 
 @router.get("/static/services/{asset_name}")
@@ -951,6 +999,7 @@ router.include_router(create_mal_router(templates, _product_context))
 router.include_router(create_language_router(templates, _product_context))
 router.include_router(create_history_artwork_router())
 router.include_router(create_onboarding_router(templates, _product_context))
+router.include_router(create_player_router(templates, _product_context))
 
 
 @router.get("/", include_in_schema=False)
@@ -966,6 +1015,9 @@ async def home_page(
     user=Depends(require_user),
     db=Depends(get_db),
 ):
+    selected = (
+        households.selected_scope(db, viewer_id=user.id) if households.feature_enabled() else None
+    )
     return templates.TemplateResponse(
         request,
         "home.html",
@@ -974,11 +1026,14 @@ async def home_page(
             **home_view(
                 db,
                 user_id=user.id,
-                library_scope=households.selected_scope(db, viewer_id=user.id)
-                if households.feature_enabled()
-                else None,
+                library_scope=selected,
             ),
-            "watch_history": viewing_history(db, user_id=user.id, limit=6)["items"],
+            "watch_history": viewing_history(
+                db,
+                user_id=user.id,
+                limit=6,
+                exclude_local_anime=selected is None or selected.kind == "personal",
+            )["items"],
             "message": message,
         },
         headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
@@ -1282,11 +1337,16 @@ async def title_page(
     monitor_id: int,
     message: str = "",
     completed: bool = False,
+    library_id: str | None = None,
     user=Depends(require_user),
     db=Depends(get_db),
 ):
-    if households.feature_enabled():
-        selected = households.selected_scope(db, viewer_id=user.id)
+    if library_id is not None or households.feature_enabled():
+        selected = (
+            households.resolve_scope(db, viewer_id=user.id, library_id=library_id)
+            if library_id is not None
+            else households.selected_scope(db, viewer_id=user.id)
+        )
         if selected.kind == "household":
             # A monitor URL is never itself an access grant to another account.
             match = db.execute(
@@ -1303,6 +1363,16 @@ async def title_page(
     title = title_detail(db, user_id=user.id, monitor_id=monitor_id)
     if title is None:
         raise HTTPException(status_code=404, detail="Media title not found")
+    from omakase.plus.local_list import local_removed
+
+    title["local_list_removed"] = local_removed(
+        db, user_id=user.id, anilist_id=title["anilist_id"], season=title["season_number"]
+    )
+    title.update(cached_title_languages(title))
+    if title["local_list_removed"]:
+        title["active"] = False
+        title["can_recheck"] = False
+        title["play_url"] = None
     title.update(await ensure_anime_synopsis(db, user_id=user.id, anilist_id=title["anilist_id"]))
     tracker = db.execute(
         """SELECT o.sync_state FROM tracker_sync_outbox o
@@ -1743,7 +1813,48 @@ async def title_removal_page(
         )
     except TitleRemovalError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    from omakase.plus.local_list import local_removed
+
+    preview["local_list_removed"] = local_removed(
+        db, user_id=user.id, anilist_id=preview["anilist_id"], season=preview["season_number"]
+    )
     return _render_title_removal(request, user, preview)
+
+
+@router.post("/library/{monitor_id}/local-list/{action}")
+async def update_local_list(
+    request: Request,
+    monitor_id: int,
+    action: str,
+    csrf_token: str = Form(""),
+    library_id: str = Form(""),
+    user=Depends(require_user),
+    db=Depends(get_db),
+):
+    _require_csrf(request, csrf_token)
+    if action not in {"remove", "restore"}:
+        raise HTTPException(404, "Local list action unavailable")
+    from omakase.plus.local_list import set_local_removed
+
+    try:
+        selected = set_local_removed(
+            db,
+            user_id=user.id,
+            monitor_id=monitor_id,
+            library_id=library_id or None,
+            removed=action == "remove",
+        )
+    except households.HouseholdError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    message = (
+        "Removed from your Omakase list. AniList and media files are unchanged."
+        if action == "remove"
+        else "Restored to your Omakase list."
+    )
+    return RedirectResponse(
+        f"/plus/library/{monitor_id}?library_id={selected}&message={quote(message, safe='')}",
+        status_code=303,
+    )
 
 
 @router.post("/library/{monitor_id}/remove")

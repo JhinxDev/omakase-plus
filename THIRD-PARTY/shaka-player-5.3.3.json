@@ -1,0 +1,27 @@
+{
+  "package": "shaka-player",
+  "version": "5.3.3",
+  "registry": "https://registry.npmjs.org/shaka-player/5.3.3",
+  "tarball": "https://registry.npmjs.org/shaka-player/-/shaka-player-5.3.3.tgz",
+  "integrity": "sha512-Y0i1Vkdv2kdGVfjKWiKENw+/mgavB031tXi9toHunAwRqvs40nkelbkw/hOMnCaLH5rrs7+1w0vhkfqMaIfwZg==",
+  "files": {
+    "src/omakase/plus/static/shaka-player-5.3.3.js": {
+      "sha256": "f9dfe725a7c32124f808312b0fd0b2a570543021eca6922e4c265ce6866afe74",
+      "bytes": 1201578
+    },
+    "src/omakase/plus/static/shaka-controls-5.3.3.css": {
+      "sha256": "ab39542decddda2b3ea821f6d67984db79dde8a46668332566e556dc15c7b2f0",
+      "bytes": 44585
+    },
+    "THIRD-PARTY/shaka-player-5.3.3-LICENSE": {
+      "sha256": "20ce2eba547fd0a8c4023511c003eabe510982a335cccd4e270f1f55ffbd2250",
+      "bytes": 14924
+    }
+  },
+  "adaptations": {
+    "src/omakase/plus/static/shaka-controls-5.3.3.css": {
+      "change": "Remove remote Roboto font face; use existing app font. Add prominent modified-file notice retaining upstream license and copyright.",
+      "served_sha256": "2e71498a087a4b3a542e440449ed8d4aee881a189941cf05e97acb2fea9dbd3b"
+    }
+  }
+}

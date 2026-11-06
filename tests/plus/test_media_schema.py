@@ -305,9 +305,10 @@ def test_migration_upgrades_current_schema_and_is_idempotent(monkeypatch, tmp_pa
     current_dir = tmp_path / "current-migrations"
     current_dir.mkdir()
     migrations_dir = plus_db._MIGRATIONS_DIR
-    # Later indexes, bindings and proof triggers require the omitted media/watch schema.
+    # Freeze the pre-player foundation: later player migrations also require
+    # the omitted media/watch schema and belong to the full upgrade below.
     for path in migrations_dir.glob("*.sql"):
-        if not path.name.startswith(
+        if int(path.name.split("-", 1)[0]) < 37 and not path.name.startswith(
             (
                 "005-",
                 "006-",
@@ -453,8 +454,11 @@ def test_provider_migration_backfills_existing_realdebrid_evidence(monkeypatch, 
     legacy_dir.mkdir()
     migrations_dir = plus_db._MIGRATIONS_DIR
     for path in migrations_dir.glob("*.sql"):
-        # Later indexes and language-proof triggers depend on migration008 tables.
-        if not path.name.startswith(("008-", "032-", "033-", "034-", "035-", "036-")):
+        # Freeze the pre-player legacy snapshot; later player migrations rebuild
+        # watch indexes only after the omitted provider/language upgrades exist.
+        if int(path.name.split("-", 1)[0]) < 37 and not path.name.startswith(
+            ("008-", "032-", "033-", "034-", "035-", "036-")
+        ):
             shutil.copy2(path, legacy_dir / path.name)
 
     conn = sqlite3.connect(":memory:")

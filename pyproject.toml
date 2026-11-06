@@ -72,6 +72,7 @@ omakase = [
     "web/static/*",
     "plus/templates/*.html",
     "plus/static/*",
+    "plus/static/ass/*",
     "plus/static/services/*.png",
     "plus/static/services/provenance.json",
     "plus/migrations/*.sql",
@@ -88,3 +89,8 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+# Make repo-root modules (scripts/) importable for every invocation style.
+# A bare `pytest` console script does not put the working directory on
+# sys.path the way `python -m pytest` does, so tests that import repository
+# helpers failed in CI; `pythonpath` is resolved against rootdir and fixes both.
+pythonpath = ["."]

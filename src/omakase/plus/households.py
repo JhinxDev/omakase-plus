@@ -422,7 +422,9 @@ def _bind_item(
             "Removal is in progress. This media cannot be shared now.",
             409,
         )
-    if item["state"] == "removed":
+    # Personal anime exclusions survive implicit catalog/import/Play binding.
+    # Only the explicit local-list Restore action owns undo.
+    if item["state"] == "removed" and not (scope.kind == "personal" and domain == "anime"):
         db.execute(
             "UPDATE library_items SET state='active',title=? WHERE id=?", (title, item["id"])
         )

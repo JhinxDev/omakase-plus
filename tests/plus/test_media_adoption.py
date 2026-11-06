@@ -24,7 +24,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def test_brief_06_adoption_request_preserves_exact_six_reviewed_assets():
     payload = json.loads(
-        (REPO_ROOT / "deploy" / "brief-06-anime-movie-adoption.json").read_text(encoding="utf-8")
+        (REPO_ROOT / "tests" / "fixtures" / "brief-06-anime-movie-adoption.json").read_text(
+            encoding="utf-8"
+        )
     )
 
     assert payload["schema_version"] == "existing-movie-adoption-request-v1"

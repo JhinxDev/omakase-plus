@@ -1,4 +1,20 @@
-"""FastAPI web server for the Omakase setup UI.
+"""FastAPI web server for the Omakase recommendation and Plus products.
+
+Deployment modes
+----------------
+* BYOK/Lite public mode (``OMAKASE_PLUS_PRIVATE`` unset or false): the public
+  recommendation product at ``/`` and its ``/api/*`` endpoints are available
+  exactly as before.
+* Plus private mode (``OMAKASE_PLUS_PRIVATE=true``, set by the shipped Plus
+  compose files): the authenticated product under ``/plus`` is mounted and the
+  unauthenticated legacy product is gated off that origin. ``/`` redirects into
+  the Plus UI and the legacy ``/api/*`` endpoints no longer exist. Public
+  front-door routes a Plus deployment needs (``/plus/login``, ``/plus/health``,
+  static assets, ``/favicon.ico``) stay reachable.
+
+Neither mode hosts an API console on the app origin: ``/docs`` redirects to the
+maintained documentation site and ``/openapi.json``/``/redoc`` are absent, so an
+app origin cannot enumerate its authenticated or administrative routes.
 
 Run with:  omakase web
 Or:        python -m omakase web
@@ -14,8 +30,8 @@ from urllib.parse import urlsplit
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -63,12 +79,32 @@ _PUBLIC_LLM_HOSTS = {
     for value in DEFAULT_URLS.values()
     if (parsed := urlsplit(value)).hostname is not None
 }
+
+# Documentation is hosted separately. The app origin exposes no API console or
+# OpenAPI document, so a deployment cannot enumerate its authenticated or
+# administrative routes for anonymous visitors.
+_DOCS_SITE = "https://omakase-plus.jhinx.dev/docs"
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _private_plus_mode() -> bool:
+    """Return True for a deployed (authenticated) Plus instance.
+
+    ``OMAKASE_PLUS_PRIVATE`` describes the deployment, not source visibility:
+    the shipped Plus compose files set it to ``true`` and mount ``/plus``.
+    """
+    return os.getenv("OMAKASE_PLUS_PRIVATE", "").strip().lower() in _TRUTHY
+
+
 app = FastAPI(
     title="Omakase",
     version=__version__,
-    docs_url=None if _PRODUCTION else "/docs",
-    redoc_url=None if _PRODUCTION else "/redoc",
-    openapi_url=None if _PRODUCTION else "/openapi.json",
+    # Never expose an API console or route inventory on the served origin; see
+    # the ``/docs`` route below for the documentation-site redirect.
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 _allowed_hosts = [
@@ -78,9 +114,44 @@ if _allowed_hosts and "*" not in _allowed_hosts:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 
+def _legacy_surface_response(request) -> Response | None:
+    """Gate the unauthenticated legacy product on Plus origins.
+
+    BYOK/Lite public deployments (``OMAKASE_PLUS_PRIVATE`` unset or false) keep
+    the legacy recommendation product at ``/`` and ``/api/*`` unchanged. A Plus
+    deployment serves only the authenticated product: browsers entering the
+    origin's root are sent to the Plus UI, and the legacy JSON endpoints no
+    longer exist on that origin. The routes a Plus deployment still needs in
+    public (``/plus/login``, ``/plus/health``, static assets, ``/favicon.ico``)
+    are not affected.
+    """
+    if not _private_plus_mode():
+        return None
+    path = request.url.path
+    if path == "/" and request.method in {"GET", "HEAD"}:
+        return RedirectResponse(
+            url="/plus/home",
+            status_code=302,
+            headers={"Cache-Control": "no-store"},
+        )
+    if path == "/api" or path.startswith("/api/"):
+        return JSONResponse(
+            {"detail": "Not Found"},
+            status_code=404,
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+    return None
+
+
 @app.middleware("http")
 async def plus_security_headers(request, call_next):
     """Apply a self-contained browser policy to the private Plus product."""
+    gated = _legacy_surface_response(request)
+    if gated is not None:
+        return gated
     response = await call_next(request)
     if request.url.path == "/plus" or request.url.path.startswith("/plus/"):
         refresh = getattr(request.state, "session_cookie_refresh", None)
@@ -105,7 +176,8 @@ async def plus_security_headers(request, call_next):
         response.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
+            "font-src 'self'; img-src 'self' data:; connect-src 'self'; "
+            "object-src 'none'; "
             f"base-uri 'self'; form-action {form_sources}; frame-ancestors 'none'",
         )
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -128,11 +200,17 @@ async def plus_security_headers(request, call_next):
 
 app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
 
-# Conditionally mount Plus routes in private mode (workstation-only).
-if os.getenv("OMAKASE_PLUS_PRIVATE", "false").lower() == "true":
+# Conditionally mount Plus routes in private mode (workstation/self-hosted app).
+if _private_plus_mode():
     from omakase.plus.routes import router as plus_router  # noqa: E402
 
     app.include_router(plus_router)
+
+
+@app.get("/docs", include_in_schema=False)
+async def docs_redirect():
+    """Redirect API explorers to the maintained documentation site."""
+    return RedirectResponse(url=_DOCS_SITE, status_code=307)
 
 
 # ── Request / response models ─────────────────────────────

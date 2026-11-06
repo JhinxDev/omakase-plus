@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from omakase.plus.movie_presentation import present_movie
+
 
 class Forms(HTMLParser):
     def __init__(self):
@@ -92,21 +94,39 @@ def render(name, **context):
 
 
 @pytest.mark.parametrize(
-    "state,label",
+    "state,code,label",
     [
-        ("ready", "Ready in Plex"),
-        ("verifying", "Check in Plex"),
-        ("deferred", "Needs attention"),
-        ("not_requested", "Not requested"),
+        ("ready", "ready", "Ready in Plex"),
+        ("verifying", "verifying", "Not checked in Plex"),
+        ("deferred", "no_eligible_results", "No eligible copy"),
+        ("not_requested", "verifying", "Not checked in Plex"),
     ],
 )
-def test_movie_badge_does_not_confuse_unrequested_with_absent(state, label):
+def test_movie_badge_does_not_confuse_unrequested_with_absent(state, code, label):
     templates = Path(__file__).resolve().parents[2] / "src/omakase/plus/templates"
     environment = Environment(loader=FileSystemLoader(templates), autoescape=True)
     macro = environment.get_template("_movie_components.html").module.movie_poster
-    html = str(macro(dict(imdb_id="tt0084787", title="The Thing", requested=False, state=state)))
+    html = str(
+        macro(
+            present_movie(
+                dict(
+                    imdb_id="tt0084787", title="The Thing", requested=False, state=state, code=code
+                )
+            )
+        )
+    )
     assert label in html
     assert "Not in your library" not in html
+
+
+@pytest.mark.parametrize("macro_name", ["movie_poster", "movie_card"])
+def test_unpresented_movie_has_unknown_availability_without_template_error(macro_name):
+    templates = Path(__file__).resolve().parents[2] / "src/omakase/plus/templates"
+    environment = Environment(loader=FileSystemLoader(templates), autoescape=True)
+    macro = getattr(environment.get_template("_movie_components.html").module, macro_name)
+    html = str(macro(dict(imdb_id="tt0084787", title="The Thing", requested=False)))
+    assert "Availability not checked" in html
+    assert "Ready in Plex" not in html and "Not in your library" not in html
 
 
 def library_context(lifecycle="active"):

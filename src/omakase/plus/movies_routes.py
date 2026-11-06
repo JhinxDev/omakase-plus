@@ -97,6 +97,7 @@ def create_movies_router(
         history = MovieHistoryService(svc)
         for card in cards:
             card["history"] = history.get(user.id, card["imdb_id"]) if card.get("imdb_id") else None
+        cards = [present_movie(card) for card in cards]
         if households_enabled() if callable(households_enabled) else households_enabled:
             from omakase.plus.household_media import personal_legacy_visible
             from omakase.plus.households import selected_scope
@@ -470,7 +471,6 @@ def create_movies_router(
                 selected_genre = int(raw_genre)
                 if not 0 < selected_genre <= 2_147_483_647:
                     raise ValueError("Invalid genre")
-            options = await discovery.options(user.id)
             result = await discovery.discover(
                 user.id, genre_id=selected_genre, sort=sort, include_completed=include_completed
             )
@@ -480,10 +480,12 @@ def create_movies_router(
                 card["history"] = (
                     history.get(user.id, card["imdb_id"]) if card.get("imdb_id") else None
                 )
+            cards = [present_movie(card) for card in cards]
         except (MovieError, ValueError) as exc:
             error = (
                 exc.detail if isinstance(exc, MovieError) else "Choose a valid discovery filter."
             )
+        options = discovery.last_options
         return templates.TemplateResponse(
             request,
             "movies.html",
@@ -495,6 +497,7 @@ def create_movies_router(
                 "view": "discover",
                 "movies_error": error,
                 "discover_movies": True,
+                "discovery_notice": discovery.notice,
                 "genre_options": options,
                 "genre_id": selected_genre,
                 "sort": sort,

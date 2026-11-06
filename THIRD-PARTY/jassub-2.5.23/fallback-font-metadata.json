@@ -1,0 +1,12 @@
+{
+  "file": "src/omakase/plus/static/ass/default.woff2",
+  "sha256": "886929903707c5bb28b07cd2eed69921b3d5ef5c49c73a0dd1e187ebf6546a4c",
+  "method": "Native WOFF2 directory parsing, Node zlib.brotliDecompressSync, untransformed name table Unicode records",
+  "family": "Liberation Sans",
+  "style": "Regular",
+  "version": "Version 2.00.5",
+  "copyright": "Digitized data copyright (c) 2010 Google Corporation. Copyright (c) 2012 Red Hat, Inc.",
+  "license": "Licensed under the SIL Open Font License, Version 1.1",
+  "licenseURL": "http://scripts.sil.org/OFL",
+  "matchingLicenseSource": "https://raw.githubusercontent.com/liberationfonts/liberation-fonts/2.00.5/LICENSE"
+}

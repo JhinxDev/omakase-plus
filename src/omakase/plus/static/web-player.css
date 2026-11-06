@@ -1,0 +1,168 @@
+.web-player { --shaka-font-family: var(--sans, Geist, sans-serif); width: 100%; min-width: 0; max-width: 1200px; margin-inline: auto; color: var(--stream-text, #f0edf8); }
+.web-player-stage { --player-controls-band: calc(52px + 3rem); --player-row-height: max(44px, 3rem); position: relative; width: 100%; min-width: 0; box-sizing: border-box; padding-bottom: var(--player-controls-band); min-height: 260px; overflow: hidden; background: #020408; border: 1px solid #303547; border-radius: 14px; isolation: isolate; }
+.web-player-stage video { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: contain; }
+/* Keep canvas coordinates tied to the video image, including in fullscreen.
+   JASSUB measures the resized video; never translate its positioned ASS layer. */
+.web-player-stage:fullscreen video { height: 100%; aspect-ratio: auto; }
+/* Native fullscreen starts on the click; a brief opacity ease softens entry
+   without moving the video, ASS canvas or control hitboxes. */
+@keyframes omakase-fullscreen-entry { from { opacity: .92; } to { opacity: 1; } }
+.web-player-stage:fullscreen { animation: omakase-fullscreen-entry 180ms cubic-bezier(.2, .8, .2, 1); }
+.web-player-start { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; background: radial-gradient(ellipse at 50% 100%, #25243c, #080d18 80%); z-index: 3; }
+.web-player [hidden] { display: none !important; }
+.web-player-eyebrow { color: #c5b8eb; font-size: .75rem; font-weight: 650; letter-spacing: .15em; }
+.web-player h2 { margin: 0; font-size: 1.05rem; line-height: 1.4; }
+.web-player-start h2 { font-size: clamp(1.4rem, 3vw, 2rem); letter-spacing: -.025em; }
+.web-player p { margin: 0; color: #b8c0d1; line-height: 1.6; }
+.web-player button, .web-player a { font: inherit; }
+.web-player button, .web-player-next, .web-player-details a { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 16px; border: 1px solid #4b4c65; border-radius: 8px; background: #1c2232; color: #f0edf8; cursor: pointer; text-decoration: none; }
+.web-player button:hover, .web-player a:hover { border-color: #c8b5f1; }
+.web-player button:disabled { opacity: .5; cursor: default; }
+.web-player .web-player-primary { color: #171325; background: var(--stream-accent, #c3b1ff); border-color: var(--stream-accent, #c3b1ff); font-weight: 650; padding-inline: 28px; }
+.web-player-resume { display: flex; align-items: center; gap: 10px; min-height: 44px; color: #cbd1df; font-size: .875rem; }
+.web-player-resume input { width: 18px; height: 18px; accent-color: var(--stream-accent, #c3b1ff); flex: none; }
+.web-player :focus-visible { outline: 3px solid var(--stream-accent, #c3b1ff); outline-offset: 3px; }
+.web-player-state { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 24px; padding: 16px 0; font-size: .875rem; }
+.web-player-state .web-player-save { color: #bdc8dd; }
+.web-player-error { margin: 0 0 24px; padding: 18px; border: 1px solid #885461; border-radius: 10px; background: #2c1d28; }
+.web-player-error p { color: #ffd8e0; }
+.web-player-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+.web-player-details { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, .38fr); gap: 32px; border-top: 1px solid #303547; padding: 24px 0; }
+.web-player-details p { margin-top: 8px; font-size: .9rem; max-width: 55ch; }
+.web-player-details button, .web-player-details a { margin-top: 20px; }
+.web-player-next { margin-bottom: 16px; }
+.web-player .shaka-video-container, .web-player .shaka-controls-container, .web-player .shaka-settings-menu { font-family: var(--sans, Geist, sans-serif); }
+.web-player .shaka-controls-container button { min-width: 44px; min-height: 44px; padding: 8px; border: 0; border-radius: 4px; background: transparent; }
+.web-player .shaka-controls-container button.material-icons-round { font-family: 'Material Icons Round'; }
+.web-player :is(.shaka-settings-menu, .shaka-overflow-menu) { box-sizing: border-box; max-width: calc(100% - 24px); max-height: min(250px, calc(100% - 76px)); background: #171e2d; color: #f0edf8; }
+.web-player :is(.shaka-settings-menu, .shaka-overflow-menu, .shaka-sub-menu) > * { flex-shrink: 0; }
+.web-player :is(.shaka-settings-menu, .shaka-sub-menu) .shaka-back-to-overflow-button { position: sticky; top: -5px; z-index: 3; background: #171e2d; }
+.web-player .shaka-settings-menu button { font-family: inherit; text-align: start; }
+.web-player .shaka-settings-menu .material-icons-round { font-family: 'Material Icons Round'; }
+.web-player .shaka-spinner-container { z-index: 2; }
+/* Active overlay controls need a known backing even over white/cyan video. */
+.web-player .shaka-bottom-controls { box-sizing: border-box; padding: 0 8px 8px; border-radius: 8px; background: #080d1a; }
+.web-player .shaka-scrim-container { background: none; }
+.web-player .shaka-controls-button-panel > * { opacity: 1; color: #f0edf8; }
+.web-player .shaka-controls-button-panel .shaka-spacer { min-width: 0; width: 0; padding: 0; flex: 1 1 0; }
+/* The app button display rule must not expose Shaka's empty ad placeholder. */
+.web-player .shaka-controls-container .shaka-ad-info:empty { display: none; }
+.web-player .shaka-controls-container :focus-visible { outline: 3px solid var(--stream-accent, #c3b1ff); outline-offset: 2px; }
+.web-player input.shaka-range-element::-webkit-slider-thumb { box-sizing: border-box; border: 2px solid #080d1a; background: var(--stream-accent, #c3b1ff); box-shadow: 0 0 0 1px var(--stream-accent, #c3b1ff); }
+.web-player input.shaka-range-element::-moz-range-thumb { box-sizing: border-box; border: 2px solid #080d1a; background: var(--stream-accent, #c3b1ff); box-shadow: 0 0 0 1px var(--stream-accent, #c3b1ff); }
+/* Keep the supplied range track/thumb styling, overriding app form padding and
+   borders. The input remains a44px hit target centered on its4px track. */
+body.product-body .web-player input.shaka-range-element[type="range"] { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; height: 44px; min-height: 0; max-height: 44px; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; top: calc((var(--shaka-track-h, 4px) - 44px) / 2); }
+.web-player .shaka-range-container { min-width: 0; }
+.web-player .shaka-playback-rate-slider-row { min-height: 44px; }
+.web-player .shaka-playback-rate-slider-section { padding-bottom: 12px; }
+.web-player .omakase-ass-overlay { z-index: 1; }
+.web-player .shaka-controls-container { z-index: 2; }
+.web-player .web-player-version-note { padding: 0 0 20px; color: #f1d3a1; }
+.web-player-ass-options { margin-top: 20px; display: grid; gap: 8px; min-width: 0; }
+.web-player-ass-options label { color: #e1d9ef; font-size: .9rem; font-weight: 600; }
+.web-player-ass-options select { box-sizing: border-box; min-width: 0; width: 100%; max-width: 100%; min-height: 48px; padding: 10px 12px; border: 1px solid #616078; border-radius: 8px; background: #1c2232; color: #f0edf8; font: inherit; }
+.web-player .web-player-caption-mode { padding: 12px; border-left: 2px solid #ab98d1; background: #1b1e2d; }
+@media (max-width: 640px) {
+  .web-player { --shaka-icon-size: 44px; }
+  .web-player-stage { border-radius: 8px; min-height: 280px; }
+  .web-player-start { gap: 10px; padding: 16px; }
+  .web-player-start p { font-size: .875rem; }
+  .web-player-details { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .web-player .shaka-volume-bar-container { display: none; }
+  .web-player .shaka-current-time { font-size: .75rem; padding-inline: 2px; }
+}
+@media (prefers-reduced-motion: reduce) { .web-player *, .web-player *::before, .web-player *::after { animation: none !important; transition: none !important; } }
+@media (forced-colors: active) { .web-player button, .web-player-stage, .web-player-error { border: 1px solid ButtonText; } }
+
+/* One transport row; settings live in the gear, Next stays beside Play. */
+.web-player .shaka-controls-button-panel { flex-wrap: nowrap; overflow: visible; gap: 2px; }
+.web-player .shaka-controls-button-panel .omakase-next-control { display: inline-flex; flex: none; align-items: center; justify-content: center; gap: 5px; width: auto; min-width: 44px; min-height: 44px; height: 44px; margin: 0; padding: 6px; border: 0; border-radius: 4px; background: transparent; color: var(--stream-text, #f0edf8); font: .8125rem var(--sans, Geist, sans-serif); text-decoration: none; }
+.web-player .omakase-next-control:hover { background: #25283d; }
+.web-player .omakase-next-control[aria-disabled="true"] { opacity: .5; cursor: default; }
+.web-player .omakase-next-icon { font-size: 22px; line-height: 1; }
+.web-player [data-next-label] { display: none; }
+.web-player [data-next-compact] { display: inline; }
+.web-player .omakase-caption-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 20px; border: 1px solid currentColor; border-radius: 3px; font-size: 11px; font-weight: 650; }
+.web-player .omakase-subtitles-menu { width: min(360px, calc(100% - 16px)); padding: 8px; overflow-y: auto; }
+.web-player .omakase-subtitles-menu .web-player-ass-options { margin: 8px 4px 4px; }
+.web-player .omakase-subtitles-menu p { white-space: normal; overflow-wrap: anywhere; font-size: .8125rem; line-height: 1.5; }
+.web-player .omakase-subtitles-menu .web-player-caption-mode { padding: 8px; }
+.web-player :is(.shaka-chosen-item, .shaka-current-selection-span, [aria-pressed="true"]) { color: var(--stream-accent, #c3b1ff); }
+.web-player .omakase-quality-menu button:disabled { opacity: 1; cursor: default; }
+/* The native input is owned by SmoothTimeline. Its frame clock only paints the
+   current video clock, never writes playback evidence or drives automatic seeks. */
+.web-player-timeline { position: absolute; inset-inline: 16px; bottom: calc(8px + var(--player-row-height)); height: 44px; z-index: 3; display: flex; align-items: center; }
+body.product-body .web-player input[data-player-timeline] { --played: 0%; --buffered: 0%; appearance: none; -webkit-appearance: none; box-sizing: border-box; width: 100%; height: 44px; min-height: 44px; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; cursor: pointer; touch-action: pan-y; box-shadow: none; }
+.web-player input[data-player-timeline]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--stream-accent, #c3b1ff) 0 var(--played), #9da5ba var(--played) var(--buffered), #454b60 var(--buffered) 100%); }
+.web-player input[data-player-timeline]::-moz-range-track { height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--stream-accent, #c3b1ff) 0 var(--played), #9da5ba var(--played) var(--buffered), #454b60 var(--buffered) 100%); }
+.web-player input[data-player-timeline]::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border: 2px solid #080d1a; border-radius: 50%; background: var(--stream-accent, #c3b1ff); box-shadow: 0 0 0 1px var(--stream-accent, #c3b1ff); }
+.web-player input[data-player-timeline]::-moz-range-thumb { width: 10px; height: 10px; border: 2px solid #080d1a; border-radius: 50%; background: var(--stream-accent, #c3b1ff); box-shadow: 0 0 0 1px var(--stream-accent, #c3b1ff); }
+.web-player .web-player-skip { position: absolute; right: 20px; bottom: calc(var(--player-controls-band) + 16px); z-index: 3; color: #151323; background: var(--stream-accent, #c3b1ff); border-color: var(--stream-accent, #c3b1ff); font-weight: 650; }
+.web-player-details .web-player-series { display: inline; padding: 0; border: 0; background: none; min-height: 0; color: var(--stream-accent, #c3b1ff); text-decoration: none; font-size: .875rem; }
+.web-player .web-player-episode h2 { margin-top: 10px; font-size: clamp(1.35rem, 2vw, 1.8rem); letter-spacing: -.025em; }
+.web-player .web-player-synopsis { max-width: 68ch; margin-top: 16px; }
+.web-player-more summary, .web-player-tools summary { min-height: 44px; display: list-item; align-content: center; cursor: pointer; color: #c9cddd; font-size: .875rem; }
+.web-player-tools { margin-top: 20px; border-top: 1px solid #303547; padding-top: 8px; }
+.web-player-tools-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.web-player .web-player-tools-actions :is(a,button) { margin: 8px 0; }
+.web-player .web-player-tools p a { display: inline; border: 0; padding: 0; margin: 0; min-height: 0; background: none; color: var(--stream-accent, #c3b1ff); text-decoration: underline; }
+.web-player-sidebar { border-left: 1px solid #303547; padding-left: 28px; }
+.web-player-sidebar nav { display: grid; gap: 8px; margin-top: 14px; }
+.web-player .web-player-sidebar nav a { display: flex; justify-content: space-between; width: 100%; box-sizing: border-box; margin: 0; background: #151b2a; }
+.web-player .web-player-sidebar p { font-size: .8125rem; }
+.web-player .web-player-genres { color: #9ca8bd; }
+@media (max-width: 640px) {
+  .web-player .shaka-controls-button-panel { gap: 0; }
+  .web-player .shaka-controls-button-panel .shaka-current-time { flex: 1 1 55px; min-width: 0; width: auto; font-size: .7rem; margin: 0; padding-inline: 0; }
+  .web-player .shaka-controls-button-panel .shaka-spacer { display: none; }
+  .web-player .omakase-next-control [data-next-compact] { display: none; }
+  .web-player .omakase-next-icon { display: inline; }
+  .web-player-sidebar { border-left: 0; border-top: 1px solid #303547; padding: 24px 0 0; }
+  .web-player-sidebar nav { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+  .web-player-timeline { inset-inline: 12px; }
+}
+@media (forced-colors: active) {
+  .web-player input[data-player-timeline] { forced-color-adjust: auto; }
+  .web-player input[data-player-timeline]::-webkit-slider-runnable-track { background: CanvasText; }
+  .web-player input[data-player-timeline]::-webkit-slider-thumb { background: Highlight; border-color: Canvas; }
+}
+
+/* Shaka5 supplies content-box48px buttons and .shaka-current-time. Own the
+   actual transport border boxes so padding cannot push Play outside the stage. */
+.web-player .shaka-controls-button-panel > :is(button, a) { box-sizing: border-box; flex-shrink: 0; margin: 0; }
+.web-player .shaka-controls-button-panel > button:not(.shaka-current-time) { width: 44px; min-width: 44px; max-width: 44px; height: 44px; padding: 8px; }
+.web-player .shaka-controls-button-panel .omakase-next-control { box-sizing: border-box; }
+.web-player .shaka-bottom-controls { padding-inline: 4px; }
+.web-player .shaka-overflow-menu { box-sizing: border-box; width: min(340px, calc(100% - 24px)); overflow-y: auto; overflow-x: hidden; }
+.web-player .shaka-overflow-menu .shaka-overflow-button-label { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.web-player .omakase-subtitles-menu { box-sizing: border-box; width: 100%; max-width: 100%; padding: 4px; margin: 0; overflow: visible; }
+.web-player .omakase-subtitles-menu [data-subtitle-choice] { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 44px; height: auto; white-space: normal; overflow-wrap: anywhere; text-align: start; font: inherit; line-height: 1.5; }
+.web-player .omakase-subtitles-menu [data-subtitle-choice][aria-checked="true"]::after { content: "✓"; flex: none; color: var(--stream-accent, #c3b1ff); }
+.web-player .omakase-subtitles-menu [data-subtitle-choice]:focus-visible { outline-offset: -3px; }
+@media (max-width: 640px) {
+  .web-player .shaka-controls-button-panel { display: grid; grid-template-columns: 44px 44px minmax(0, 1fr) 44px 44px 44px; align-items: center; gap: 0; min-width: 0; min-height: var(--player-row-height); width: 100%; box-sizing: border-box; }
+  .web-player .shaka-controls-button-panel .omakase-next-control { box-sizing: border-box; width: 44px; min-width: 44px; max-width: 44px; padding: 6px; }
+  .web-player .shaka-controls-button-panel .shaka-current-time { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; min-height: 44px; height: auto; max-height: none; padding: 2px; margin: 0; white-space: normal; overflow-wrap: anywhere; font-size: .65rem; line-height: 1.2; }
+  .web-player .shaka-controls-button-panel .shaka-volume-bar-container, .web-player .shaka-controls-button-panel .shaka-spacer { display: none; }
+}
+
+/* The supplied controls are a later sibling. Raise the owned range for actual
+   hit testing, then yield to a visible settings surface so menus remain on top. */
+.web-player-stage:has(.shaka-overflow-menu:not(.shaka-hidden), .shaka-settings-menu:not(.shaka-hidden)) .web-player-timeline { z-index: 1; }
+.web-player-stage:has(.shaka-overflow-menu:not(.shaka-hidden), .shaka-settings-menu:not(.shaka-hidden)) .web-player-skip { z-index: 1; }
+@media (max-width: 360px) {
+  /* Rem-based page gutters also grow at200% text. Preserve Play, Next, time,
+     fullscreen and gear; hardware/keyboard mute remains available. */
+  .web-player .shaka-controls-button-panel { grid-template-columns: 44px 44px minmax(0, 1fr) 44px 44px; }
+  .web-player .shaka-controls-button-panel .shaka-mute-button { display: none; }
+}
+
+/* Before playback, real enlarged copy determines stage height. Once the start
+   panel is hidden, none of these rules matches the qualified playback layout. */
+.web-player-stage:has(> .web-player-start:not([hidden])) { padding-bottom: 0; }
+.web-player-stage:has(> .web-player-start:not([hidden])) > video { position: absolute; inset: 0; width: 100%; height: 100%; aspect-ratio: auto; }
+.web-player-stage:has(> .web-player-start:not([hidden])) > .web-player-start { position: relative; inset: auto; box-sizing: border-box; min-height: inherit; }
+.web-player-stage:has(> .web-player-start:not([hidden])) > .web-player-start > * { box-sizing: border-box; min-width: 0; max-width: 100%; }
+.web-player-stage:has(> .web-player-start:not([hidden])) > .web-player-start :is(button, h2, p) { white-space: normal; overflow-wrap: anywhere; }
+.web-player-stage:has(> .web-player-start:not([hidden])) > :is(.web-player-timeline, .web-player-skip, .shaka-controls-container) { visibility: hidden; }

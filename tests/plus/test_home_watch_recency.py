@@ -182,3 +182,71 @@ def test_shared_home_ranks_only_this_viewers_visible_scoped_titles(db, monkeypat
         for card in home_view(db, user_id=2, library_scope=viewer)["continue_watching"]
     ] == ["Zed shared title", "Alpha shared title"]
     assert db.total_changes == changes
+
+
+def test_personal_home_recent_history_filters_before_six_card_limit_without_changing_history(
+    db, monkeypatch
+):
+    import asyncio
+    from types import SimpleNamespace
+
+    from starlette.requests import Request
+
+    from omakase.plus import households, routes
+    from omakase.plus.local_list import set_local_removed
+    from omakase.plus.viewing_history import viewing_history
+
+    monitors = []
+    for number in range(9):
+        monitor, watch = entry(db, anilist_id=100 + number, title=f"Fixture {number}")
+        event(db, watch, stamp=f"2026-11-01T{number:02d}:00:00Z", key=f"fixture:{number}")
+        monitors.append(monitor)
+    db.commit()
+    for monitor in monitors[-3:]:
+        set_local_removed(db, user_id=1, monitor_id=monitor, removed=True)
+    before = [tuple(row) for row in db.execute("SELECT * FROM watch_events")]
+    monkeypatch.setattr(routes, "_product_context", lambda *a, **kw: {})
+    monkeypatch.setattr(
+        routes.templates, "TemplateResponse", lambda request, name, context, **kw: context
+    )
+    monkeypatch.setenv("OMAKASE_PLUS_HOUSEHOLDS_ENABLED", "false")
+    request = Request({"type": "http", "headers": []})
+    user = SimpleNamespace(id=1, email="fixture@example.invalid")
+    context = asyncio.run(routes.home_page(request, user=user, db=db))
+    assert [card["monitor_id"] for card in context["watch_history"]] == list(reversed(monitors[:6]))
+    assert viewing_history(db, 1, limit=6)["items"][0]["monitor_id"] == monitors[-1]
+    set_local_removed(db, user_id=1, monitor_id=monitors[-1], removed=False)
+    assert (
+        asyncio.run(routes.home_page(request, user=user, db=db))["watch_history"][0]["monitor_id"]
+        == monitors[-1]
+    )
+    set_local_removed(db, user_id=1, monitor_id=monitors[-1], removed=True)
+    shared = households.create_household(db, user_id=1, name="Separate scope")
+    households.select_library(db, households.resolve_scope(db, viewer_id=1, library_id=shared))
+    monkeypatch.setenv("OMAKASE_PLUS_PRIVATE", "true")
+    monkeypatch.setenv("OMAKASE_PLUS_HOUSEHOLDS_ENABLED", "true")
+    assert (
+        asyncio.run(routes.home_page(request, user=user, db=db))["watch_history"][0]["monitor_id"]
+        == monitors[-1]
+    )
+    assert [tuple(row) for row in db.execute("SELECT * FROM watch_events")] == before
+
+
+def test_personal_home_exclusion_applies_to_exact_web_completion_cards_too(db):
+    from omakase.plus import households
+    from omakase.plus.local_list import set_local_removed
+    from omakase.plus.viewing_history import viewing_history
+
+    monitor, _ = entry(db, anilist_id=701, title="Exact web viewing")
+    library = households.ensure_personal_library(db, user_id=1)
+    db.execute(
+        "INSERT INTO web_playback_watch(user_id,library_id,anilist_id,season_number,episode_number,media_version,covered_seconds,duration_seconds,revision,last_played_at,completed_at) VALUES(1,?,701,1,1,?,90,100,1,'2026-11-01T00:00:00Z','2026-11-01T00:00:00Z')",
+        (library, "a" * 64),
+    )
+    db.commit()
+    before = [tuple(row) for row in db.execute("SELECT * FROM web_playback_watch")]
+    assert len(viewing_history(db, 1, exclude_local_anime=True)["items"]) == 1
+    set_local_removed(db, user_id=1, monitor_id=monitor, removed=True)
+    assert viewing_history(db, 1, exclude_local_anime=True)["items"] == []
+    assert len(viewing_history(db, 1)["items"]) == 1
+    assert [tuple(row) for row in db.execute("SELECT * FROM web_playback_watch")] == before

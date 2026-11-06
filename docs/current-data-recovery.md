@@ -73,3 +73,31 @@ a library pointer does not rewind account history or external providers.
 
 See the [release checklist](release-checklist.md), [Storage and Plex](local-storage-plex-setup.md),
 and [operator documentation](https://omakase-plus.jhinx.dev/docs/backup-upgrade-recovery).
+
+## Accepted binary after web-player provenance
+
+Disabling the player in the current binary and recovering with an independent
+older binary are different operations. The accepted source at
+`c9d491ccbdfa68aedd31692028da5820fcd6638d` rejects retained `web_player` watch
+provenance without a compatibility overlay. Keep the current 037–042 schema and
+all watch/resume/completion/outbox/consent rows; do not remove player tables,
+rewrite provenance or restore a stale database to satisfy that parser.
+
+The prepared [accepted-image overlay](../deploy/player-recovery/README.md) contains
+exactly three full modules derived from that pinned accepted commit: its watch
+source allowlist and existing product/history source labels/query. The manifest
+records original, patched and patch-file hashes and fixed Python 3.12 site-package
+targets. Files bind individually read-only; no new player implementation is loaded.
+The accepted image ID remains unchanged, but the effective recovery identity must
+also record the overlay hashes, mount set and operator flag/fence configuration.
+
+The maintained isolated old-source test uses populated current-schema synthetic
+data and authenticated old-router reads, preserving complete database bytes and
+enabled consent without provider requests. This is component proof only. Before
+any activation, qualify the actual accepted image plus exact overlay on a private
+current-data clone, verify native imported bytes/mounts and read-only route behavior,
+and keep scheduler, tracker/acquisition/curator and other writers fenced. Set the
+player flag off; that flag alone does not fence old writers or enforce read-only
+recovery. The existing backup, current-data preservation, operator approval and
+native acceptance rules above still apply. No recovery engine or activation is
+introduced by this package.

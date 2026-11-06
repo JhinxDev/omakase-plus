@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
@@ -12,6 +13,15 @@ from omakase.plus import db as manager
 
 
 def connection(path=":memory:", **kwargs):
+    # PEP 249 ``autocommit`` was added to sqlite3 in Python 3.12; the project
+    # supports 3.11. In the legacy API, isolation_level=None is the equivalent
+    # no-implicit-transaction mode, so the atomicity test runs on every version
+    # instead of being skipped there.
+    if kwargs.pop("autocommit", False):
+        if sys.version_info >= (3, 12):
+            kwargs["autocommit"] = True
+        else:
+            kwargs["isolation_level"] = None
     db = sqlite3.connect(path, **kwargs)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")

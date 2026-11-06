@@ -161,7 +161,46 @@ def dashboard_view(db, *, user_id: int, run: str = "") -> dict[str, Any]:
     }
 
 
+def cached_title_languages(title):
+    """Describe saved file checks only, never infer language from release names."""
+    names = {
+        "ja": "Japanese",
+        "jpn": "Japanese",
+        "en": "English",
+        "eng": "English",
+        "zh": "Chinese",
+        "zho": "Chinese",
+        "chi": "Chinese",
+    }
+    assets = title.get("current_assets") or []
+    result = {}
+    for kind in ("audio", "subtitle"):
+        values = set()
+        if not assets or len(assets) > 64:
+            values.add("Unknown")
+        for asset in assets[:64]:
+            rows = (
+                (asset.get("probe") or {}).get("audio")
+                if kind == "audio"
+                else asset.get("subtitles")
+            )
+            if not isinstance(rows, list) or not rows or len(rows) > 16:
+                values.add("Unknown")
+            for row in rows[:16] if isinstance(rows, list) else []:
+                language = row.get("language") if isinstance(row, dict) else None
+                language = language.lower().split("-")[0] if isinstance(language, str) else ""
+                values.add(
+                    names.get(language, language.upper())
+                    if re.fullmatch(r"[a-z]{2,3}", language) and language != "und"
+                    else "Unknown"
+                )
+        result[kind + "_languages"] = sorted(values)
+    return result
+
+
 def home_view(db, *, user_id: int, library_scope=None) -> dict[str, Any]:
+    from omakase.plus.home_activity import present_home_activity
+
     titles = library_titles(db, user_id=user_id, library_scope=library_scope)
     states = {state: sum(item["state"] == state for item in titles) for state in _states()}
     attention = [item for item in titles if item["state"] == "attention"][:5]
@@ -189,7 +228,7 @@ def home_view(db, *, user_id: int, library_scope=None) -> dict[str, Any]:
         "ready": ready,
         "ready_to_watch": ready,
         "new_episodes": new_episodes,
-        "recent_activity": recent,
+        "recent_activity": present_home_activity(db, recent),
     }
 
 
@@ -235,9 +274,12 @@ def library_titles(
         households._require(library_scope.viewer_id == user_id, "Library viewer mismatch.", 403)
         households.revalidate_scope(db, library_scope)
         if library_scope.kind == "household":
+            from omakase.plus.web_playback_navigation import attach_navigation
+
             cards = anime_cards(
                 db, library_scope, viewer_id=user_id, query=query, lifecycle=lifecycle
             )
+            attach_navigation(db, cards, user_id=user_id, library_scope=library_scope)
             return [
                 card
                 for card in cards
@@ -273,6 +315,13 @@ def library_titles(
     ).fetchall()
     titles: list[dict[str, Any]] = []
     for monitor in monitors:
+        from omakase.plus.local_list import local_removed
+
+        excluded = local_removed(
+            db, user_id=user_id, anilist_id=monitor["anilist_id"], season=monitor["season_number"]
+        )
+        if excluded and not include_removed:
+            continue
         if text and text not in str(monitor["title"]).casefold():
             continue
         is_movie = str(monitor["format"]) == "MOVIE"
@@ -512,6 +561,7 @@ def library_titles(
         last_source_label = {
             "plex": "Plex",
             "apple_tv": "Apple TV",
+            "web_player": "Web player",
             "anilist": "AniList",
             "manual": "Manual",
             "migration": "Imported history",
@@ -612,7 +662,9 @@ def library_titles(
                 (user_id, str(item["id"]), library_scope.library_id, library_scope.library_id),
             ).fetchone()
         ]
-    return titles
+    from omakase.plus.web_playback_navigation import attach_navigation
+
+    return attach_navigation(db, titles, user_id=user_id, library_scope=library_scope)
 
 
 def title_detail(db, *, user_id: int, monitor_id: int) -> dict[str, Any] | None:
@@ -801,6 +853,7 @@ def title_detail(db, *, user_id: int, monitor_id: int) -> dict[str, Any] | None:
             "source_label": {
                 "plex": "Plex",
                 "apple_tv": "Apple TV",
+                "web_player": "Web player",
                 "anilist": "AniList",
                 "manual": "Manual",
                 "migration": "Imported history",
@@ -828,6 +881,7 @@ def title_detail(db, *, user_id: int, monitor_id: int) -> dict[str, Any] | None:
             "source_label": {
                 "plex": "Plex",
                 "apple_tv": "Apple TV",
+                "web_player": "Web player",
                 "anilist": "AniList",
                 "manual": "Manual",
                 "migration": "Imported history",
@@ -1126,6 +1180,7 @@ def activity_view(
         source_label = {
             "plex": "Plex",
             "apple_tv": "Apple TV",
+            "web_player": "Web player",
             "anilist": "AniList",
             "manual": "manually",
             "migration": "imported history",

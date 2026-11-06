@@ -18,14 +18,16 @@
   <picture class="cinema-hero-art" data-hero-quality data-hero-poster="/plus/media/{{ featured.anilist_id }}/poster"><img src="/plus/media/{{ featured.anilist_id }}/banner?display=hero-v3" alt="" fetchpriority="high"></picture>
   {% endif %}
   <div class="cinema-hero-copy">
-    <div class="cinema-eyebrow"><span class="cinema-wordmark">O<span>+</span></span><span>{% if featured and featured.progress_episodes %}CONTINUE WATCHING{% elif featured %}FROM YOUR WATCHLIST{% else %}MADE FOR YOUR NEXT WATCH{% endif %}</span></div>
+    <div class="cinema-eyebrow"><span class="cinema-wordmark">O<span>+</span></span><span>{% if featured and (featured.progress_episodes or featured.partial_playback) %}CONTINUE WATCHING{% elif featured %}FROM YOUR WATCHLIST{% else %}MADE FOR YOUR NEXT WATCH{% endif %}</span></div>
     <h1 id="featured-title">{% if featured %}{{ featured.title }}{% else %}A good story starts here.{% endif %}</h1>
     {% if featured %}
-      <div class="cinema-meta"><span>Anime</span>{{ ready_badge(featured) }}{% if featured.progress_episodes %}<span class="watched-count">Watched <b>{{ featured.progress_episodes }}{% if featured.episode_total %}/{{ featured.episode_total }}{% endif %}</b></span>{% else %}<span>Not started</span>{% endif %}</div>
+      <div class="cinema-meta"><span>Anime</span>{{ ready_badge(featured) }}{% if featured.progress_episodes %}<span class="watched-count">Watched <b>{{ featured.progress_episodes }}{% if featured.episode_total %}/{{ featured.episode_total }}{% endif %}</b></span>{% elif featured.partial_playback %}<span>Episode in progress</span>{% else %}<span>Not started</span>{% endif %}</div>
       {% set featured_url = featured.detail_url | default('/plus/library/' ~ featured.id, true) %}
       {% set shared_detail = '/plus/libraries/' in featured_url %}
       {% set episode_anchor = '#episode-' ~ featured.next_episode if featured.next_episode and featured.episode_total and featured.next_episode <= featured.episode_total else '#episode-heading' %}
-      <div class="cinema-actions"><a class="button button-primary" href="{{ featured_url }}{{ '#overview' if shared_detail else episode_anchor }}">{{ 'View title' if shared_detail else 'View episodes' }}</a>{% if not shared_detail %}<a class="button button-secondary" href="{{ featured_url }}#overview"><span class="cinema-info-icon" aria-hidden="true">i</span> More info</a>{% endif %}</div>
+      <div class="cinema-actions"><a class="button button-primary" href="{{ featured.play_url if featured.play_url else featured_url ~ ('#overview' if shared_detail else episode_anchor) }}">{{ featured.play_label if featured.play_url else ('View title' if shared_detail else 'View episodes') }}</a>{% if not shared_detail or featured.play_url %}<a class="button button-secondary" href="{{ featured_url }}#overview"><span class="cinema-info-icon" aria-hidden="true">i</span> More info</a>{% endif %}</div>
+      {% if featured.partial_playback %}<p class="title-progress-source">Episode in progress · {{ featured.progress_episodes }} episodes watched through</p>{% endif %}
+      {% if featured.playback_navigation_state %}<p class="title-progress-source">{{ featured.playback_navigation_state }}</p>{% endif %}
     {% else %}
       <p>Discover something that fits your taste, save it to your watchlist, and let your collection take shape.</p>
       <div class="cinema-actions"><a class="button button-primary" href="/plus/discover">Find something to watch</a><a class="button button-secondary" href="/plus/library">Your anime</a></div>
@@ -86,13 +88,15 @@
 {% if watch_history %}
 <section class="home-section" aria-labelledby="recent-watching-heading"><header class="stream-section-heading"><div><h2 id="recent-watching-heading">Recently watched</h2></div><a href="/plus/activity?view=watch">View history</a></header><div class="media-rail history-shelf" role="group" aria-label="Recent viewing history">{% for item in watch_history[:8] %}<div>{{ history_card(item) }}</div>{% endfor %}</div></section>
 {% endif %}
-<details class="home-system-updates"><summary>Library updates</summary>
+<details class="home-system-updates"><summary><span>Library updates</span><span class="home-updates-chevron" aria-hidden="true">⌄</span></summary>
 <section class="home-section recent-section" aria-labelledby="recent-heading">
   <header class="stream-section-heading"><div><span>Your latest updates</span><h2 id="recent-heading">Recent activity</h2></div><a href="/plus/activity?view=system">Library &amp; services</a></header>
   {% if recent_activity %}
   <ol class="viewer-activity-list">
     {% for event in recent_activity %}
-    <li><span class="event-dot event-{{ event.category }}" aria-hidden="true"></span><div><strong>{% if event.monitor_id %}<a href="/plus/library/{{ event.monitor_id }}">{{ event.title }}</a>{% else %}{{ event.title }}{% endif %}</strong><small>{{ event.detail or event.outcome }}</small></div><time data-local-datetime="{{ event.created_at }}" datetime="{{ event.created_at }}">{{ event.created_at }} UTC</time></li>
+    <li><span class="event-dot event-{{ event.category }}" aria-hidden="true"></span><div class="home-event-copy"><strong>{{ event.title }}</strong><p class="home-event-outcome">{{ event.outcome }}{% if event.repeat_count > 1 %} <span>· {{ event.repeat_count }} matching updates</span>{% endif %}</p><small>{{ event.detail or event.outcome }}</small>
+      <details class="home-event-context"><summary>About this update</summary><p>These are saved checks, not a new action. {% if event.repeat_count > 1 %}Matching results are grouped here; every check remains in library activity.{% endif %}</p><ol>{% for attempt in event.attempts %}<li><span>{{ attempt.outcome }} · {{ attempt.detail }}</span><time datetime="{{ attempt.created_at }}" data-local-datetime="{{ attempt.created_at }}">{{ attempt.created_at }}</time></li>{% endfor %}</ol><a href="/plus/activity?view=system">View library activity</a></details>
+      {% if event.monitor_id %}<a class="home-event-anime" href="/plus/library/{{ event.monitor_id }}">View anime <span aria-hidden="true">↗</span></a>{% endif %}</div><time data-local-datetime="{{ event.created_at }}" datetime="{{ event.created_at }}">{{ event.created_at }} UTC</time></li>
     {% endfor %}
   </ol>
   {% else %}

@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import re
 import secrets
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from omakase.plus.acquisition_policy import AcquisitionPolicy, load_user_acquisition_policy
 from omakase.plus.catalog import (
@@ -135,6 +137,12 @@ def _legacy_language_monitor(db, monitor_id):
 
 
 def _monitor_withdrawn(db: sqlite3.Connection, monitor_id: int) -> bool:
+    from omakase.plus.local_list import monitoring_excluded
+
+    return monitoring_excluded(db, monitor_id) or _publication_withdrawn(db, monitor_id)
+
+
+def _publication_withdrawn(db: sqlite3.Connection, monitor_id: int) -> bool:
     return (
         db.execute(
             """SELECT 1 FROM media_title_removals WHERE monitor_id = ?
@@ -173,12 +181,17 @@ def _withdrawal_heartbeat(db, monitor_id, heartbeat):
 
 
 def _keep_withdrawn_inactive(db: sqlite3.Connection, monitor_id: int) -> bool:
-    if not _monitor_withdrawn(db, monitor_id):
-        return False
-    db.execute(
-        "UPDATE media_monitors SET active = 0, next_check_at = NULL WHERE id = ?", (monitor_id,)
-    )
-    return True
+    from omakase.plus.local_list import monitoring_excluded
+
+    if _publication_withdrawn(db, monitor_id):
+        # Physical/completion withdrawal keeps its existing persistent stop.
+        db.execute(
+            "UPDATE media_monitors SET active = 0, next_check_at = NULL WHERE id = ?", (monitor_id,)
+        )
+        return True
+    # A reversible list exclusion skips this work without destroying the original
+    # active flag or schedule. Restore must resume exactly that eligibility.
+    return monitoring_excluded(db, monitor_id)
 
 
 async def _download_access_error(provider, external_id: str) -> str:
@@ -2520,15 +2533,51 @@ def _selected_monitors(
     if not normalized:
         return []
     placeholders = ",".join("?" for _ in normalized)
+    from omakase.plus.local_list import MONITOR_EXCLUDED_SQL
+
     return list(
         db.execute(
             f"""SELECT * FROM media_monitors WHERE (active = 1 OR (? = 1 AND release_status = 'FINISHED')) AND id IN ({placeholders})
+                AND NOT ({MONITOR_EXCLUDED_SQL})
                 AND NOT EXISTS (SELECT 1 FROM media_title_removals r WHERE r.monitor_id = media_monitors.id)
                 AND NOT EXISTS (SELECT 1 FROM completion_plex_cleanup_blocks b WHERE b.monitor_id = media_monitors.id)
                 ORDER BY id""",
             (int(include_finished_inactive), *normalized),
         ).fetchall()
     )
+
+
+def _maintain_web_playback(db):
+    """Optional bounded housekeeping under the already acquired sync lease.
+
+    Only the configured existing cache is considered. Remux cleanup validates
+    known rows and ownership markers; it never admits jobs or creates a cache.
+    This checkpoint owns no unfinished sync transaction when rolling back errors.
+    """
+    from omakase.plus import web_playback_remux as remux
+    from omakase.plus import web_playback_store as store
+    from omakase.plus.web_playback_navigation import enabled
+
+    if not enabled():
+        return
+    try:
+        store.cleanup_sessions(db)
+        db.commit()
+    except (OSError, sqlite3.Error, ValueError):
+        db.rollback()
+        logging.getLogger(__name__).warning("Player session maintenance unavailable")
+    try:
+        cache = Path(os.getenv("OMAKASE_PLAYBACK_CACHE_ROOT", "/run/omakase-playback"))
+        if not cache.is_absolute() or cache.is_symlink() or not cache.is_dir():
+            return
+        held = {row["media_version"] for row in store.active_media_holds(db)} | set(
+            remux.held_media_versions(db)
+        )
+        remux.cleanup(db, cache, held_versions=lambda: held)
+    except (OSError, sqlite3.Error, ValueError):
+        db.rollback()
+        # Unsupported/read-only caches cannot prevent ordinary media sync.
+        logging.getLogger(__name__).warning("Player cache maintenance unavailable")
 
 
 async def run_media_sync(
@@ -2626,6 +2675,13 @@ async def run_media_sync(
 
     results: list[SchedulerMonitorResult] = []
     try:
+        from omakase.plus.completion_cleanup import process_deferred_completion_cleanup
+
+        # Completion may precede the end of an active player. The normal sync
+        # lease also owns bounded retries after its final session expires.
+        process_deferred_completion_cleanup(db)
+        db.commit()
+        _maintain_web_playback(db)
         selected_monitors = _selected_monitors(
             db,
             now=started_at,

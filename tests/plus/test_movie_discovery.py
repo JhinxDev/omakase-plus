@@ -231,3 +231,50 @@ def test_genres_and_ratings_are_per_user_but_candidates_are_public_cache(db):
     calls = len(fake.calls)
     assert run(discovery.discover(2))[0]["tmdb_id"] == 7001
     assert len(fake.calls) == calls
+
+
+def test_explore_shared_deadline_cancels_slow_details_and_keeps_partial_cards(db, monkeypatch):
+    import asyncio
+    import time
+
+    import omakase.plus.movie_discovery as module
+
+    discovery, movies, fake = discovery_service(db)
+    monkeypatch.setattr(module, "_DISCOVERY_TIMEOUT", 0.04)
+    active = [0]
+
+    async def slow(request):
+        if request.url.path == "/api/v1/movie/7002":
+            active[0] += 1
+            try:
+                await asyncio.sleep(10)
+            finally:
+                active[0] -= 1
+        return fake(request)
+
+    movies._transport = httpx.MockTransport(slow)
+    started = time.monotonic()
+    cards = run(discovery.discover(1))
+    assert time.monotonic() - started < 0.5
+    assert active == [0]
+    assert len(cards) == 2
+    assert any(card["requestable"] for card in cards)
+    assert any(not card["requestable"] for card in cards)
+    assert discovery.notice
+    assert all(call.method == "GET" for call in fake.calls)
+
+
+def test_explore_detail_request_count_is_bounded_before_candidate_fanout(db, monkeypatch):
+    discovery, movies, fake = discovery_service(db)
+    fake.rows = [{**fake.rows[0], "id": 7001 + i} for i in range(100)]
+    metadata = run(movies._metadata(7001))
+    calls = []
+
+    async def detail(tmdb_id):
+        calls.append(tmdb_id)
+        return {**metadata, "tmdb_id": tmdb_id, "imdb_id": f"tt{9000000 + tmdb_id}"}
+
+    monkeypatch.setattr(movies, "_metadata", detail)
+    cards = run(discovery.discover(1))
+    assert len(calls) <= 20
+    assert len(cards) == 20

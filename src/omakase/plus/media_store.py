@@ -648,11 +648,14 @@ def list_due_monitors(
     """Return active monitors scheduled no later than ``now`` in stable order."""
     now = _timestamp("now", now)
     limit = _positive_int("limit", limit)
+    from omakase.plus.local_list import MONITOR_EXCLUDED_SQL
+
     return list(
         db.execute(
-            """SELECT *
+            f"""SELECT *
                FROM media_monitors
                WHERE active = 1
+                 AND NOT ({MONITOR_EXCLUDED_SQL})
                  AND (
                      next_check_at IS NULL
                      OR (

@@ -162,12 +162,13 @@ def present_movie(card, *, now=None):
     history = card.get("history") or {}
     watch_label = (
         {
+            "unwatched": "Not watched",
             "completed": "Watched",
             "watching": "Watching",
             "dropped": "Stopped watching",
-        }.get(history.get("status"), "Not watched")
+        }.get(history.get("status"), "Viewing status unavailable")
         if history.get("status_source") not in {None, "", "none"}
-        else "Not watched"
+        else "No viewing record"
     )
     display = {
         "status_label": label,

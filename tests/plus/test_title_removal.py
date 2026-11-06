@@ -209,7 +209,7 @@ def test_removal_result_states_do_not_offer_duplicate_destructive_form(
     )
     html = _render_removal(preview)
     assert expected in html
-    assert "<form" not in html
+    assert f'action="/plus/library/{monitor}/remove"' not in html
     assert "1 source item kept" in html
     assert "AniList is unchanged" in html
     assert "&lt;script&gt;" in html and "<script>" not in html

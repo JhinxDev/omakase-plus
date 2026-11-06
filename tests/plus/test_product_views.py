@@ -73,6 +73,55 @@ def _user(db, email: str) -> int:
     )
 
 
+def test_persisted_web_player_provenance_survives_feature_disable_without_history_rewrite(
+    db, monkeypatch
+):
+    from omakase.plus.watch.models import WatchEvent
+    from omakase.plus.watch.service import ingest_watch_event
+
+    user_id = _user(db, "web-viewer@example.invalid")
+    monitor_id, _ = _seed_ready_title(db, user_id)
+    accepted = ingest_watch_event(
+        db,
+        user_id=user_id,
+        monitor_id=monitor_id,
+        event=WatchEvent.progress(source="web_player", episode=1, event_key="web:accepted"),
+        observed_at="2026-10-31T10:00:00Z",
+    )
+    assert accepted.disposition == "accepted"
+    pending = ingest_watch_event(
+        db,
+        user_id=user_id,
+        monitor_id=monitor_id,
+        event=WatchEvent.progress(
+            source="web_player", episode=2, event_key="web:inferred", confidence="inferred"
+        ),
+        observed_at="2026-10-31T10:01:00Z",
+    )
+    assert pending.disposition == "confirmation_required"
+    monkeypatch.setenv("OMAKASE_PLUS_WEB_PLAYER_ENABLED", "false")
+    monkeypatch.setenv("OMAKASE_PLUS_HOUSEHOLDS_ENABLED", "false")
+    before = [tuple(row) for row in db.execute("SELECT * FROM watch_events ORDER BY id")]
+    projection = [tuple(row) for row in db.execute("SELECT * FROM watch_entries ORDER BY id")]
+    changes = db.total_changes
+    card = library_titles(db, user_id=user_id)[0]
+    detail = title_detail(db, user_id=user_id, monitor_id=monitor_id)
+    activity = activity_view(db, user_id=user_id)["watch_activity"]
+    assert card["last_source_label"] == "Web player"
+    assert detail["last_source_label"] == "Web player"
+    assert {event["source_label"] for event in detail["watch_timeline"]} == {"Web player"}
+    assert detail["pending_confirmations"][0]["source_label"] == "Web player"
+    assert {event["source_label"] for event in activity} == {"Web player"}
+    assert next(event for event in activity if event["id"] == accepted.event_id)["detail"] == (
+        "Updated by Web player"
+    )
+    assert db.total_changes == changes
+    assert [tuple(row) for row in db.execute("SELECT * FROM watch_events ORDER BY id")] == before
+    assert [
+        tuple(row) for row in db.execute("SELECT * FROM watch_entries ORDER BY id")
+    ] == projection
+
+
 def _curator_receipt(*, anilist_id: int, season: int, episodes: int) -> dict:
     counts = {"Anime": 3, "Anime Movies": 0, "TV Shows": 0, "Movies": 0}
     return {

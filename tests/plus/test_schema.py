@@ -170,6 +170,14 @@ def test_all_tables_exist(_fresh_db):
         "viewer_playback_bindings",
         "viewer_selection_observations",
         "watch_library_links",
+        "web_playback_resumes",
+        "web_playback_sessions",
+        "web_playback_events",
+        "web_playback_watch",
+        "deferred_completion_cleanup",
+        "web_playback_remux",
+        "web_playback_cycle_coverage",
+        "web_playback_completions",
         "_migrations",  # internal tracking table
     }
     assert tables == expected, (
