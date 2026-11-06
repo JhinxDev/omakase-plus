@@ -288,7 +288,7 @@ class TestSignupAndLogin:
             # Logout
             resp3 = client.post("/plus/logout", follow_redirects=False)
             assert resp3.status_code == 302
-            assert resp3.headers["location"] == "/"
+            assert resp3.headers["location"] == "/plus/login?signed_out=1"
 
             # Dashboard should now redirect
             resp4 = client.get("/plus/dashboard", follow_redirects=False)

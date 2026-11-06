@@ -29,6 +29,7 @@
         <span class="page-kicker">Welcome back</span>
         <h1 id="login-heading">Sign in to your library.</h1>
         <p>Your collection is waiting for you.</p>
+        {% if signed_out %}<div class="product-notice" role="status">You have been signed out.</div>{% endif %}
         {% if error %}<div class="product-notice notice-danger semantic-notice--error" role="alert">{{ error }}</div>{% endif %}
         {% if google_enabled %}
         <a href="/plus/auth/google/login" class="button button-secondary button-wide">Continue with Google</a>
