@@ -22,6 +22,18 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
 
+  docker-build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image
+        # Base images are pinned by digest in the Dockerfile. Building here proves
+        # the public tree still produces the shipped image without pulling a
+        # different base or relying on an untracked local file.
+        run: docker build --build-arg OMAKASE_REVISION=${{ github.sha }} -t omakase-plus:ci .
+
   test:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -41,7 +53,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install media probe tools
-        timeout-minutes: 5
+        timeout-minutes: 15
         run: |
           sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=1 update
           sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=1 install --no-install-recommends -y ffmpeg
