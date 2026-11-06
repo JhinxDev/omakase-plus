@@ -81,7 +81,15 @@ jobs:
           pip install --require-hashes -r requirements-dev.txt -r requirements-build.txt
           pip install --no-build-isolation --no-deps -e .
       - name: Run pytest
-        run: pytest -ra --cov=omakase --cov-report=term-missing
+        run: pytest -ra --cov=omakase --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: warn
+          retention-days: 14
 
   agent-protocol:
     name: Optional MCP protocol
