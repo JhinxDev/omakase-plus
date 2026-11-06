@@ -5,13 +5,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
+import shutil
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from omakase.plus import households
@@ -158,6 +160,7 @@ def create_player_router(
     transport=None,
     remux_prepare=None,
     resource_getter=None,
+    stream_launcher=None,
     cache_root=None,
 ):
     resolver = resolver or resolve_anime_source
@@ -168,6 +171,24 @@ def create_player_router(
     cache_root = Path(
         cache_root or os.getenv("OMAKASE_PLAYBACK_CACHE_ROOT", "/run/omakase-playback")
     )
+    streaming_enabled = os.getenv("OMAKASE_PLAYBACK_STREAMING", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    stream_cache_root = Path(
+        os.getenv(
+            "OMAKASE_PLAYBACK_STREAM_CACHE_ROOT",
+            "/home/omakase/data/playback-streams",
+        )
+    )
+    try:
+        stream_cache_max_bytes = int(
+            os.getenv("OMAKASE_PLAYBACK_STREAM_CACHE_MAX_BYTES", str(6 * 1024**3))
+        )
+    except ValueError:
+        stream_cache_max_bytes = 6 * 1024**3
     router = APIRouter(
         route_class=bounded_form_route(
             4096, "Playback request too large", guard=_enabled, forward_disconnect=True
@@ -192,6 +213,210 @@ def create_player_router(
             remux.held_media_versions(db)
         )
 
+    def _stop_process(process):
+        if process is None:
+            return
+        try:
+            if process.returncode is None:
+                process.terminate()
+        except ProcessLookupError:
+            pass
+
+    def cleanup_stream(item):
+        if not item:
+            return
+        _stop_process(item.get("stream_process"))
+        _stop_process(item.get("subtitle_process"))
+        folder = item.get("stream_dir")
+        if folder:
+            shutil.rmtree(folder, ignore_errors=True)
+
+    async def stop_stream(item):
+        processes = [item.get("stream_process"), item.get("subtitle_process")]
+        _stop_process(processes[0])
+        _stop_process(processes[1])
+        for process in processes:
+            if process is None or process.returncode is not None:
+                continue
+            try:
+                await asyncio.wait_for(process.wait(), 5)
+            except TimeoutError:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                await process.wait()
+        cleanup_stream(item)
+
+    def prune_stream_cache():
+        active = {
+            item.get("stream_dir")
+            for item in handles.values()
+            if item.get("stream_dir") is not None
+        }
+        try:
+            stream_cache_root.mkdir(parents=True, exist_ok=True)
+            folders = [folder for folder in stream_cache_root.iterdir() if folder.is_dir()]
+        except OSError:
+            return
+        entries = []
+        total = 0
+        for folder in folders:
+            size = 0
+            try:
+                for path in folder.iterdir():
+                    if path.is_file():
+                        size += path.stat().st_size
+            except OSError:
+                continue
+            entries.append((folder, size))
+            total += size
+        for folder, size in sorted(entries, key=lambda entry: entry[0].stat().st_mtime):
+            if total <= stream_cache_max_bytes:
+                break
+            if folder in active:
+                continue
+            shutil.rmtree(folder, ignore_errors=True)
+            total -= size
+
+    def stream_checks(source, body):
+        if source.container != "mkv":
+            raise remux.RemuxError("unsupported_source")
+        if source.video_codec not in body.codecs:
+            raise remux.RemuxError("unsupported_browser")
+        if any(
+            stream.codec not in body.codecs for stream in source.streams if stream.kind == "audio"
+        ):
+            raise remux.RemuxError("unsupported_browser_audio")
+        if (
+            any(
+                stream.kind == "subtitle" and stream.codec in {"ass", "ssa"}
+                for stream in source.streams
+            )
+            and not body.ass_supported
+        ):
+            raise remux.RemuxError("styled_subtitles_unsupported")
+
+    async def spawn_stream(source, sid, item):
+        prune_stream_cache()
+        try:
+            stream_cache_root.mkdir(parents=True, exist_ok=True)
+            folder = stream_cache_root / sid
+            folder.mkdir(mode=0o700)
+        except OSError:
+            raise remux.RemuxError("stream_cache_unavailable") from None
+        url = source.base_url + source.part_key
+        base = [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-headers",
+            f"X-Plex-Token: {source.token}\r\n",
+            "-i",
+            url,
+        ]
+        playlist = folder / "index.m3u8"
+        command = base + [
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0",
+            "-c",
+            "copy",
+            "-f",
+            "hls",
+            "-hls_time",
+            "4",
+            "-hls_playlist_type",
+            "event",
+            "-hls_flags",
+            "independent_segments",
+            "-hls_list_size",
+            "0",
+            "-hls_base_url",
+            "segments/",
+            "-hls_segment_filename",
+            str(folder / "seg-%05d.ts"),
+            str(playlist),
+        ]
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except OSError:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise remux.RemuxError("stream_worker_unavailable") from None
+        item.update(
+            {
+                "streaming": True,
+                "stream_dir": folder,
+                "stream_playlist": playlist,
+                "stream_process": process,
+            }
+        )
+        subtitles = [stream for stream in source.streams if stream.kind == "subtitle"]
+        ass_index = next(
+            (index for index, stream in enumerate(subtitles) if stream.codec in {"ass", "ssa"}),
+            None,
+        )
+        if ass_index is not None:
+            subtitle = folder / "subtitle.ass"
+            subtitle_command = base + [
+                "-map",
+                f"0:s:{ass_index}",
+                "-c",
+                "copy",
+                "-f",
+                "ass",
+                str(subtitle),
+            ]
+            try:
+                item["subtitle_process"] = await asyncio.create_subprocess_exec(
+                    *subtitle_command,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                item["stream_subtitle"] = subtitle
+            except OSError:
+                item["subtitle_process"] = None
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if playlist.is_file() and any(folder.glob("seg-*.ts")):
+                return
+            if process.returncode is not None:
+                break
+            await asyncio.sleep(0.1)
+        cleanup_stream(item)
+        raise remux.RemuxError("stream_start_failed")
+
+    def stream_response(db, item, state):
+        source = item["source"]
+        prefix = f"/plus/api/playback/sessions/{state['session_id']}/"
+        return JSONResponse(
+            state
+            | {
+                "source": public_projection(source) | {"mode": "stream"},
+                "skip_segments": normalize_skip_segments(source),
+                "media_url": prefix + "playlist.m3u8",
+                "media_type": "application/vnd.apple.mpegurl",
+                "next_url": exact_next_url(db, source=source, monitor_id=item["monitor_id"]),
+                "subtitles": [],
+                "fonts": [],
+                "track_map": [],
+                "resume_version_changed": item["version_changed"],
+                "preparation_required": False,
+                "prepare_url": None,
+                "streaming": True,
+                "subtitle_url": prefix + "subtitle.ass" if item.get("stream_subtitle") else None,
+            },
+            status_code=201,
+            headers=HEADERS,
+        )
+
     def abandon(db, request, user_id, state):
         if state is not None:
             with households._transaction(db):
@@ -201,7 +426,8 @@ def create_player_router(
                     (time.time(), state["session_id"], user_id, _binding(request)),
                 )
                 process_deferred_completion_cleanup(db)
-            handles.pop(state["session_id"], None)
+            item = handles.pop(state["session_id"], None)
+            cleanup_stream(item)
 
     def current(db, request, user_id, sid):
         item = handles.get(sid)
@@ -350,7 +576,8 @@ def create_player_router(
                 (sid, time.time(), time.time() - 1200),
             ).fetchone()
             if not active:
-                del handles[sid]
+                item = handles.pop(sid, None)
+                cleanup_stream(item)
         if len(handles) + admission.active[("start",)] >= 16:
             raise HTTPException(429, "The player is busy. Try after an existing session ends.")
         release_start = admit("start", user.id)
@@ -379,17 +606,25 @@ def create_player_router(
             source_guard(db, source)
             projection = public_projection(source)
             copied = source.container not in {"mp4", "webm"}
+            stream_mode = False
             if copied:
-                remux._inventory(source)
-                if source.container != "mkv" or source.video_codec not in body.codecs:
-                    raise remux.RemuxError("unsupported_browser")
-                if any(s.codec not in body.codecs for s in source.streams if s.kind == "audio"):
-                    raise remux.RemuxError("unsupported_browser_audio")
-                if (
-                    any(s.kind == "subtitle" and s.codec in {"ass", "ssa"} for s in source.streams)
-                    and not body.ass_supported
-                ):
-                    raise remux.RemuxError("styled_subtitles_unsupported")
+                if streaming_enabled and source.container == "mkv":
+                    stream_checks(source, body)
+                    stream_mode = True
+                else:
+                    remux._inventory(source)
+                    if source.container != "mkv" or source.video_codec not in body.codecs:
+                        raise remux.RemuxError("unsupported_browser")
+                    if any(s.codec not in body.codecs for s in source.streams if s.kind == "audio"):
+                        raise remux.RemuxError("unsupported_browser_audio")
+                    if (
+                        any(
+                            s.kind == "subtitle" and s.codec in {"ass", "ssa"}
+                            for s in source.streams
+                        )
+                        and not body.ass_supported
+                    ):
+                        raise remux.RemuxError("styled_subtitles_unsupported")
             target = store.ResolvedTarget(
                 user.id,
                 scope.library_id,
@@ -442,12 +677,17 @@ def create_player_router(
                 "reads": 0,
                 "monitor_id": body.monitor_id,
                 "version_changed": version_changed,
+                "streaming": stream_mode,
             }
             handles[state["session_id"]] = item
-            pending = copied and body.defer_prepare
-            if copied and not pending:
-                await prepare_item(db, request, user.id, state, item)
-            response = prepared_response(db, state, item, pending=pending)
+            if stream_mode:
+                await (stream_launcher or spawn_stream)(source, state["session_id"], item)
+                response = stream_response(db, item, state)
+            else:
+                pending = copied and body.defer_prepare
+                if copied and not pending:
+                    await prepare_item(db, request, user.id, state, item)
+                response = prepared_response(db, state, item, pending=pending)
             delivered = True
             return response
         except remux.RemuxError as error:
@@ -676,7 +916,9 @@ def create_player_router(
                     expected_snapshot=_snapshot(source),
                 )
                 process_deferred_completion_cleanup(db)
-            handles.pop(sid, None)
+            item = handles.pop(sid, None)
+            if item is not None:
+                await stop_stream(item)
             return Response(status_code=204, headers=HEADERS)
         except store.PlaybackStoreError:
             raise HTTPException(
@@ -687,5 +929,57 @@ def create_player_router(
             if not future.done():
                 future.set_result(None)
             release()
+
+    @router.get("/api/playback/sessions/{sid}/playlist.m3u8")
+    async def stream_playlist(
+        request: Request, sid: str, user=Depends(require_user), db=Depends(get_db)
+    ):
+        current(db, request, user.id, sid)
+        item = handles.get(sid)
+        playlist = item.get("stream_playlist") if item else None
+        if playlist is None or not Path(playlist).is_file():
+            raise HTTPException(404, "Playlist unavailable")
+        return FileResponse(
+            playlist,
+            media_type="application/vnd.apple.mpegurl",
+            headers=HEADERS | {"Cache-Control": "private, no-store"},
+        )
+
+    @router.get("/api/playback/sessions/{sid}/segments/{name}")
+    async def stream_segment(
+        request: Request,
+        sid: str,
+        name: str,
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        if not re.fullmatch(r"seg-[0-9]{5}\.ts", name):
+            raise HTTPException(404, "Segment unavailable")
+        current(db, request, user.id, sid)
+        item = handles.get(sid)
+        folder = item.get("stream_dir") if item else None
+        path = Path(folder) / name if folder is not None else None
+        if path is None or not path.is_file():
+            raise HTTPException(404, "Segment unavailable")
+        return FileResponse(
+            path,
+            media_type="video/mp2t",
+            headers=HEADERS | {"Cache-Control": "private, no-store"},
+        )
+
+    @router.get("/api/playback/sessions/{sid}/subtitle.ass")
+    async def stream_subtitle(
+        request: Request, sid: str, user=Depends(require_user), db=Depends(get_db)
+    ):
+        current(db, request, user.id, sid)
+        item = handles.get(sid)
+        subtitle = item.get("stream_subtitle") if item else None
+        if subtitle is None or not Path(subtitle).is_file():
+            raise HTTPException(404, "Subtitles unavailable")
+        return FileResponse(
+            subtitle,
+            media_type="text/plain; charset=utf-8",
+            headers=HEADERS | {"Cache-Control": "private, no-store"},
+        )
 
     return router

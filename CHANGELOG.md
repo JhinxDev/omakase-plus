@@ -6,6 +6,25 @@ GitHub Release. The update-feed identity (`PRODUCT_VERSION` in
 `src/omakase/plus/update_service.py`) is a separate operator-facing build
 identifier; it does not replace the public release version.
 
+## 0.4.3 - 2026-11-06
+
+### Added
+
+- Direct-stream HLS playback for MKV sources in supported browsers. Playback starts
+  after the first few segments instead of preparing a complete copy, so large anime
+  episodes and movies are no longer limited by the prepared-remux size cap. Seeking
+  works as segments become available and becomes fully available when the stream
+  completes.
+- Background ASS subtitle extraction for streaming sessions, attached through the
+  existing styled-subtitle renderer when ready.
+- `OMAKASE_PLAYBACK_STREAMING`, `OMAKASE_PLAYBACK_STREAM_CACHE_ROOT` and
+  `OMAKASE_PLAYBACK_STREAM_CACHE_MAX_BYTES` configuration for the stream cache.
+
+### Changed
+
+- Prepared copy-remux remains available for browsers or sources where streaming is
+  unavailable. Plex remains the explicit fallback for unsupported codecs.
+
 ## 0.4.2 - 2026-11-06
 
 ### Added

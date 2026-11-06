@@ -796,6 +796,27 @@
     captionTasks = task;
     return task;
   }
+  async function watchStreamSubtitles(target) {
+    if (!target?.streaming || !target.subtitle_url) return;
+    for (let attempt = 0; attempt < 180; attempt++) {
+      if (leaving || failed || session !== target) return;
+      try {
+        const response = await fetch(target.subtitle_url, { credentials: 'same-origin', cache: 'no-store' });
+        if (response.ok) {
+          const wasPlaying = !video.paused;
+          target.subtitles = [{
+            plex_stream_id: 0, codec: 'ass', language: 'eng', selected: true, url: target.subtitle_url,
+          }];
+          await prepareTracks();
+          if (wasPlaying && ready && !failed && !leaving) {
+            try { await video.play(); } catch { status.textContent = 'Subtitles ready. Press Play to continue.'; }
+          }
+          return;
+        }
+      } catch { /* Subtitle extraction is still running; retry. */ }
+      await new Promise(resolve => { window.setTimeout(resolve, 1000); });
+    }
+  }
   async function prepareTracks() {
     assTracks = styledSubtitleTracks(session.subtitles || []);
     customTextId = null;
@@ -926,6 +947,7 @@
         275,
       );
       ready = true;
+      if (session.streaming) void watchStreamSubtitles(session);
       find('timeline').disabled = false;
       timeline = new SmoothTimeline(video, find('timeline'), {
         request: callback => window.requestAnimationFrame(callback), cancel: id => window.cancelAnimationFrame(id),
