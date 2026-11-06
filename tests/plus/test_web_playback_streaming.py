@@ -216,3 +216,17 @@ def test_stream_rejects_invalid_csrf_token(setup):
     owner.headers["x-csrf-token"] = "0" * 64
     response = start_stream(owner)
     assert response.status_code == 403
+
+
+def test_stream_subtitle_waits_for_nonempty_extraction(setup):
+    app, _, sessions, _, cache_root = setup
+    owner = client(app, sessions[1])
+    payload = start_stream(owner).json()
+    sid = payload["session_id"]
+    subtitle_path = cache_root / sid / "subtitle.ass"
+    subtitle_path.write_bytes(b"")
+    assert owner.get(payload["subtitle_url"]).status_code == 404
+    subtitle_path.write_text("[Script Info]\n", encoding="utf-8")
+    response = owner.get(payload["subtitle_url"])
+    assert response.status_code == 200
+    assert "Script Info" in response.text

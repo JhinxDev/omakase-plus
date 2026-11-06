@@ -1,6 +1,6 @@
 [project]
 name = "omakase"
-version = "0.4.3"
+version = "0.4.4"
 description = "Self-hosted anime, movie and TV discovery, viewing progress, ratings and connected library management."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -101,6 +101,7 @@ source = ["omakase"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+
 
 
 

@@ -974,7 +974,7 @@ def create_player_router(
         current(db, request, user.id, sid)
         item = handles.get(sid)
         subtitle = item.get("stream_subtitle") if item else None
-        if subtitle is None or not Path(subtitle).is_file():
+        if subtitle is None or not Path(subtitle).is_file() or Path(subtitle).stat().st_size <= 0:
             raise HTTPException(404, "Subtitles unavailable")
         return FileResponse(
             subtitle,

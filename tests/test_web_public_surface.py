@@ -145,3 +145,11 @@ def test_public_origin_keeps_legacy_byok_product(public_app):
     assert "Try it with your API key" in home.text
     assert client.get("/api/sources").status_code == 200
     assert client.get("/api/backends").status_code == 200
+
+
+def test_plus_csp_allows_mse_blob_media(private_app):
+    client = TestClient(private_app)
+    policy = client.get("/plus/login").headers["content-security-policy"]
+    assert "media-src 'self' blob:" in policy
+    assert "worker-src 'self' blob:" in policy
+    assert "default-src 'self'" in policy
