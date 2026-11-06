@@ -637,11 +637,26 @@ def _run_job(job_id: str, cfg: OmakaseConfig, profile_path: str) -> None:
                 pass
 
 
-def _signup_allowed() -> bool:
-    """Signup is only enabled in private mode or when an invite code is set."""
-    private = os.getenv("OMAKASE_PLUS_PRIVATE", "false").lower() == "true"
-    invite = bool(os.getenv("OMAKASE_PLUS_INVITE"))
-    return private or invite
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _signup_allowed(db=None) -> bool:
+    """Return whether account creation is available for this deployment.
+
+    Public (BYOK/Lite) deployments keep the historical contract: signup is
+    closed unless the operator sets ``OMAKASE_PLUS_INVITE``. Private Plus
+    deployments additionally allow the documented first-run bootstrap while the
+    database has no accounts yet; once an account exists, open registration is
+    closed again and an operator must set ``OMAKASE_PLUS_INVITE`` to invite more
+    people. This keeps a shipped private instance from accepting registrations
+    from anyone who can reach its origin.
+    """
+    if os.getenv("OMAKASE_PLUS_INVITE", "").strip():
+        return True
+    private = os.getenv("OMAKASE_PLUS_PRIVATE", "false").strip().lower() in _TRUTHY
+    if not private or db is None:
+        return False
+    return db.execute("SELECT 1 FROM users LIMIT 1").fetchone() is None
 
 
 # ── Session cookie helpers ──────────────────────────────────
@@ -730,8 +745,8 @@ async def login_post(
 
 
 @router.get("/signup", response_class=HTMLResponse)
-async def signup_page(request: Request, error: str = ""):
-    if not _signup_allowed():
+async def signup_page(request: Request, error: str = "", db=Depends(get_db)):
+    if not _signup_allowed(db):
         return RedirectResponse(url="/plus/login", status_code=302)
     return templates.TemplateResponse(request, "signup.html", {"error": error})
 
@@ -744,7 +759,7 @@ async def signup_post(
     confirm_password: str = Form(...),
     db=Depends(get_db),
 ):
-    if not _signup_allowed():
+    if not _signup_allowed(db):
         return RedirectResponse(url="/plus/login", status_code=302)
 
     if not email or not password:
