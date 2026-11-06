@@ -53,17 +53,29 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install media probe tools
-        timeout-minutes: 25
+        timeout-minutes: 12
+        continue-on-error: true
         run: |
           if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
             echo "ffmpeg and ffprobe are already installed; skipping apt."
             ffmpeg -version | head -n 1
             exit 0
           fi
-          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 install --no-install-recommends -y ffmpeg
-          ffmpeg -version | head -n 1
-          ffprobe -version | head -n 1
+          echo "Installing ffmpeg with a bounded apt attempt; real-media tests skip if it is unavailable."
+          if timeout 240 sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2 update \
+            && timeout 300 sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2 install --no-install-recommends -y ffmpeg; then
+            ffmpeg -version | head -n 1
+            ffprobe -version | head -n 1
+          else
+            echo "::warning::ffmpeg/ffprobe unavailable; real-media tests will skip"
+          fi
+      - name: Report media probe availability
+        run: |
+          if command -v ffmpeg >/dev/null 2>&1; then
+            ffmpeg -version | head -n 1
+          else
+            echo "ffmpeg unavailable; media-dependent tests will skip honestly."
+          fi
       - name: Install package + dev deps
         run: |
           pip install --require-hashes -r requirements-dev.txt -r requirements-build.txt
