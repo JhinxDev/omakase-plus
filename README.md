@@ -67,9 +67,16 @@ your account, and follow Choose → Connect → Review → Enjoy. On a remote ho
 use an administrator-configured secure tunnel or protected HTTPS proxy; its
 loopback is not the browser computer's loopback.
 
+The first account bootstraps a private instance. Account creation is then closed
+until an administrator sets `OMAKASE_PLUS_INVITE` for additional people.
+
 `OMAKASE_PLUS_PRIVATE=true` enables the authenticated application. It describes
 deployment access, not source-code visibility. Keep authentication and private
-network defaults when deploying this public source.
+network defaults when deploying this public source. A private instance serves
+only the authenticated product: `/` redirects into `/plus`, the public BYOK
+`/api/*` endpoints are not part of that origin, and `/docs` redirects to the
+documentation site. Neither mode serves `/openapi.json`, `/redoc` or an API
+console on the app origin.
 
 ## Choose your setup
 
