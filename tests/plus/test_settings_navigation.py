@@ -70,6 +70,7 @@ def test_static_group_headings_name_groups_without_becoming_actions(household):
     "active,path",
     [
         ("profile", "/plus/settings/profile"),
+        ("security", "/plus/settings/security"),
         ("signin", "/plus/auth/google/account"),
         ("household", "/plus/settings/household"),
         ("preferences", "/plus/settings/preferences"),
@@ -101,5 +102,5 @@ def test_household_permission_and_existing_health_setup_destinations_remain_exac
     present = [link["attrs"]["href"] for link in navigation(household=True).links]
     assert "/plus/settings/household" not in absent
     assert set(present) - set(absent) == {"/plus/settings/household"}
-    assert len(absent) == 13 and len(present) == 14
+    assert len(absent) == 14 and len(present) == 15
     assert "/plus/health/overview" in absent and "/plus/setup" in absent
