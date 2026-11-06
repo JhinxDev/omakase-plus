@@ -1,0 +1,27 @@
+<section id="security" class="editorial-panel settings-section">
+  <header class="panel-heading"><div><h2>Password &amp; sessions</h2><p>Signed in as {{ account_email }}.</p></div></header>
+  <form method="post" action="/plus/settings/security/password" class="settings-layout" autocomplete="off" data-form-type="other">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="settings-field">
+      <div><label for="current_password">Current password</label><p>Required before changing your password.</p></div>
+      <div class="field-control"><input type="password" id="current_password" name="current_password" autocomplete="current-password" required></div>
+    </div>
+    <div class="settings-field">
+      <div><label for="new_password">New password</label><p>At least 8 characters.</p></div>
+      <div class="field-control"><input type="password" id="new_password" name="new_password" autocomplete="new-password" minlength="8" maxlength="1024" required></div>
+    </div>
+    <div class="settings-field">
+      <div><label for="confirm_password">Confirm new password</label></div>
+      <div class="field-control"><input type="password" id="confirm_password" name="confirm_password" autocomplete="new-password" minlength="8" maxlength="1024" required></div>
+    </div>
+    <div class="settings-submit"><p>Changing your password signs out every other signed-in session.</p><button class="button button-primary" type="submit">Update password</button></div>
+  </form>
+  <form method="post" action="/plus/settings/security/sessions" class="settings-layout">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="settings-field">
+      <div><label>Other sessions</label><p>{% if other_session_count %}{{ other_session_count }} other signed-in session(s) on other devices or browsers.{% else %}No other signed-in sessions.{% endif %}</p></div>
+      <div class="field-control"><button class="button" type="submit" {% if not other_session_count %}disabled{% endif %}>Sign out other sessions</button></div>
+    </div>
+  </form>
+  <p class="form-hint">Forgot your password? Ask the instance operator to run <code>python -m omakase.plus.admin set-password --email {{ account_email }}</code> on the server.</p>
+</section>

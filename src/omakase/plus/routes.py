@@ -55,9 +55,13 @@ from omakase.plus.anilist import (
 from omakase.plus.anime_synopsis import ensure_anime_synopsis
 from omakase.plus.artwork_delivery import optimized_artwork
 from omakase.plus.auth import (
+    change_password,
     create_session,
     hash_password,
+    revoke_user_sessions,
+    session_count,
     session_max_age,
+    validate_new_password,
     verify_password,
 )
 from omakase.plus.auth import (
@@ -3110,6 +3114,7 @@ _CATALOG_SECRET_KEYS = {
 }
 
 
+@router.get("/settings/security", response_class=HTMLResponse)
 @router.get("/settings/storage", response_class=HTMLResponse)
 @router.get("/settings/downloads", response_class=HTMLResponse)
 @router.get("/settings/ai", response_class=HTMLResponse)
@@ -3118,7 +3123,11 @@ _CATALOG_SECRET_KEYS = {
 @router.get("/settings/sources", response_class=HTMLResponse)
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(
-    request: Request, saved: str = "", user=Depends(require_user), db=Depends(get_db)
+    request: Request,
+    saved: str = "",
+    error: str = "",
+    user=Depends(require_user),
+    db=Depends(get_db),
 ):
     from omakase.llm import list_backends
 
@@ -3146,6 +3155,12 @@ async def settings_page(
     catalog_stored = {
         key_name: bool(read_secret(db, user.id, key_name)) for key_name in _CATALOG_SECRET_KEYS
     }
+    current_session = request.cookies.get(_SESSION_COOKIE, "")
+    other_session_count = session_count(db, user.id, except_session_id=current_session)
+    account_row = db.execute("SELECT email FROM users WHERE id = ?", (user.id,)).fetchone()
+    account_email = (
+        account_row["email"] if account_row is not None else str(getattr(user, "email", "") or "")
+    )
     policy_warning = ""
     try:
         acquisition_policy = load_user_acquisition_policy(db, user.id)
@@ -3172,6 +3187,9 @@ async def settings_page(
             "keys": api_keys,
             "stored": api_stored,
             "saved": saved,
+            "settings_error": error,
+            "account_email": account_email,
+            "other_session_count": other_session_count,
             "backends": backends,
             "stored_backend": stored_backend,
             "anilist_username": anilist_username,
@@ -3261,6 +3279,72 @@ async def settings_post(
     msg = f"Saved: {', '.join(saved_keys)}" if saved_keys else "No changes made."
     return RedirectResponse(
         url=f"{return_path}?saved={quote(msg, safe='')}",
+        status_code=302,
+    )
+
+
+@router.post("/settings/security/password", response_class=HTMLResponse)
+async def settings_security_password(
+    request: Request,
+    db=Depends(get_db),
+    user=Depends(require_user),
+):
+    """Change the signed-in user's password after verifying the current one."""
+    form = await request.form()
+    _require_csrf(request, str(form.get("csrf_token") or ""))
+    current_password = str(form.get("current_password") or "")
+    new_password = str(form.get("new_password") or "")
+    confirm_password = str(form.get("confirm_password") or "")
+
+    def fail(message: str) -> RedirectResponse:
+        return RedirectResponse(
+            url="/plus/settings/security?error=" + quote(message, safe=""),
+            status_code=302,
+        )
+
+    if new_password != confirm_password:
+        return fail("New passwords do not match.")
+    problem = validate_new_password(new_password)
+    if problem:
+        return fail(problem)
+    try:
+        changed = change_password(
+            db,
+            user.id,
+            current_password,
+            new_password,
+            keep_session_id=request.cookies.get(_SESSION_COOKIE),
+        )
+    except ValueError as exc:
+        return fail(str(exc))
+    if not changed:
+        return fail("Current password is incorrect.")
+    return RedirectResponse(
+        url="/plus/settings/security?saved="
+        + quote("Password updated. Other sessions were signed out.", safe=""),
+        status_code=302,
+    )
+
+
+@router.post("/settings/security/sessions", response_class=HTMLResponse)
+async def settings_security_revoke_sessions(
+    request: Request,
+    db=Depends(get_db),
+    user=Depends(require_user),
+):
+    """Sign out every other browser session for this account."""
+    form = await request.form()
+    _require_csrf(request, str(form.get("csrf_token") or ""))
+    removed = revoke_user_sessions(
+        db, user.id, except_session_id=request.cookies.get(_SESSION_COOKIE)
+    )
+    message = (
+        f"Signed out {removed} other session(s)."
+        if removed
+        else "No other sessions were signed in."
+    )
+    return RedirectResponse(
+        url="/plus/settings/security?saved=" + quote(message, safe=""),
         status_code=302,
     )
 

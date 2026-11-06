@@ -115,3 +115,85 @@ def delete_session(db, session_id: str) -> None:
     """Remove *session_id* from the database."""
     db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
     db.commit()
+
+
+# ── Account lifecycle helpers ───────────────────────────────
+
+
+def validate_new_password(password: str) -> str | None:
+    """Return a human-readable problem with *password*, or None when valid.
+
+    Length is the only requirement (NIST-style: no forced composition rules).
+    """
+    if not password:
+        return "New password is required."
+    if len(password) < 8:
+        return "New password must be at least 8 characters."
+    if len(password) > 1024:
+        return "New password is too long."
+    return None
+
+
+def set_password(db, user_id: int, new_password: str) -> None:
+    """Replace a user's password hash and revoke all of their sessions."""
+    db.execute(
+        "UPDATE users SET password_hash = ? WHERE id = ?",
+        (hash_password(new_password), user_id),
+    )
+    db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    db.commit()
+
+
+def change_password(
+    db,
+    user_id: int,
+    current_password: str,
+    new_password: str,
+    *,
+    keep_session_id: str | None = None,
+) -> bool:
+    """Change a password after verifying the current one.
+
+    Returns False when the current password is wrong; on success all sessions
+    except *keep_session_id* are revoked so other devices must sign in again.
+    """
+    row = db.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,)).fetchone()
+    if row is None or not verify_password(current_password, row["password_hash"]):
+        return False
+    problem = validate_new_password(new_password)
+    if problem is not None:
+        raise ValueError(problem)
+    db.execute(
+        "UPDATE users SET password_hash = ? WHERE id = ?",
+        (hash_password(new_password), user_id),
+    )
+    revoke_user_sessions(db, user_id, except_session_id=keep_session_id)
+    db.commit()
+    return True
+
+
+def revoke_user_sessions(db, user_id: int, *, except_session_id: str | None = None) -> int:
+    """Delete every stored session for *user_id* (optionally keeping one)."""
+    if except_session_id:
+        cursor = db.execute(
+            "DELETE FROM sessions WHERE user_id = ? AND id <> ?",
+            (user_id, except_session_id),
+        )
+    else:
+        cursor = db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    db.commit()
+    return int(cursor.rowcount or 0)
+
+
+def session_count(db, user_id: int, *, except_session_id: str | None = None) -> int:
+    """Count stored sessions for *user_id* (optionally excluding one)."""
+    if except_session_id:
+        row = db.execute(
+            "SELECT COUNT(*) AS n FROM sessions WHERE user_id = ? AND id <> ?",
+            (user_id, except_session_id),
+        ).fetchone()
+    else:
+        row = db.execute(
+            "SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    return int(row["n"])

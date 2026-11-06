@@ -10,6 +10,7 @@
   <section aria-labelledby="settings-account-heading">
     <h2 id="settings-account-heading">Account</h2>
     {{ settings_link('Your profile', '/plus/settings/profile', active == 'profile') }}
+    {{ settings_link('Security', '/plus/settings/security', active == 'security') }}
     {{ settings_link('Sign-in methods', '/plus/auth/google/account', active == 'signin') }}
     {% if household_enabled | default(false) %}{{ settings_link('Household', '/plus/settings/household', active == 'household') }}{% endif %}
   </section>
