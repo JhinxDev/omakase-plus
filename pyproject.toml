@@ -95,4 +95,11 @@ addopts = "-ra --strict-markers"
 # helpers failed in CI; `pythonpath` is resolved against rootdir and fixes both.
 pythonpath = ["."]
 
+[tool.coverage.run]
+source = ["omakase"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
 
