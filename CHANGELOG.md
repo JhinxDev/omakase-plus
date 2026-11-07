@@ -6,6 +6,11 @@ GitHub Release. The update-feed identity (`PRODUCT_VERSION` in
 `src/omakase/plus/update_service.py`) is a separate operator-facing build
 identifier; it does not replace the public release version.
 
+## 0.4.7 - 2026-11-06
+
+### Fixed
+
+- Seeking beyond the currently buffered HLS segments now briefly reloads the same media at the requested timeline position through Shaka. A seek to 10 minutes lands at 10 minutes even when the MSE buffer only reached 4 minutes, instead of clamping to the buffer edge. The progress session and styled subtitle overlay remain attached.
 ## 0.4.6 - 2026-11-06
 
 ### Fixed
@@ -94,6 +99,7 @@ identifier; it does not replace the public release version.
 
 - Public CI reliability, packaging hygiene and the documented release
   surface.
+
 
 
 

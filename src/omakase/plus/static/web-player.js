@@ -583,6 +583,7 @@
   const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
   let session = null;
   let player = null;
+  let mediaUri = null;
   let timeline = null;
   let overlay = null;
   let queue = null;
@@ -927,8 +928,8 @@
       nextCandidate = session.next_url;
       const media = new URL(session.media_url, window.location.origin);
       if (media.origin !== window.location.origin || !['http:', 'https:'].includes(media.protocol)) throw new Error('Invalid media source');
+      mediaUri = media.href;
       player = new shaka.Player();
-      window.__omakasePlayer = player;
       await player.attach(video);
       registerBarControls();
       overlay = new shaka.ui.Overlay(player, container, video);
@@ -966,7 +967,16 @@
           Number.isFinite(Number(video.duration)) ? Number(video.duration) : 0,
           player && typeof player.seekRange === 'function' && Number.isFinite(player.seekRange().end) ? player.seekRange().end : 0,
         ) || 1,
-        seek: time => { video.currentTime = time; },
+        seek: time => {
+          const wasPlaying = !video.paused;
+          video.currentTime = time;
+          window.setTimeout(() => {
+            if (!Number.isFinite(video.currentTime) || Math.abs(video.currentTime - time) <= 2 || !player || !mediaUri) return;
+            player.load(mediaUri, time, session?.media_type || undefined)
+              .then(() => { if (wasPlaying && ready && !failed && !leaving) video.play().catch(() => {}); })
+              .catch(() => {});
+          }, 250);
+        },
       });
       find('ass-select').disabled = false;
       refreshBarControls();
