@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -30,6 +31,7 @@ from omakase.plus.web_playback_context import normalize_skip_segments, watch_con
 from omakase.plus.web_playback_delivery import HEADERS, DeliveryError, open_local, open_part
 from omakase.plus.web_playback_navigation import enabled, exact_next_url
 from omakase.plus.web_playback_source import (
+    PlaybackSourceError,
     fresh_source_transaction,
     public_projection,
     resolve_anime_source,
@@ -38,6 +40,85 @@ from omakase.plus.web_playback_source import (
 )
 from omakase.plus.web_playback_watch import observe_playback
 from omakase.plus.web_security import require_csrf
+
+_LOG = logging.getLogger(__name__)
+_CODEC_ERRORS = {"unsupported_browser", "unsupported_browser_audio", "unsupported_codec"}
+_FORMAT_ERRORS = {
+    "unsupported_source",
+    "unsupported_multi_audio",
+    "unsupported_subtitle_codec",
+    "ambiguous_track_inventory",
+    "styled_subtitles_unsupported",
+}
+_STREAM_TIMEOUT = 10
+_SUBTITLE_LIMIT = 8 * 1024**2
+
+
+def _failure(code, status, detail, *, source=None, retry_after=None):
+    headers = HEADERS if retry_after is None else HEADERS | {"Retry-After": str(retry_after)}
+    data = {"detail": detail, "code": code}
+    if source is not None:
+        data["source"] = source
+    return JSONResponse(data, status_code=status, headers=headers)
+
+
+def _remux_failure(error, source):
+    code = error.code
+    _LOG.warning("playback_start_failed reason=%s", code)
+    if code in _CODEC_ERRORS:
+        return _failure(
+            code, 415, "This browser cannot decode the selected video or audio.", source=source
+        )
+    if code in _FORMAT_ERRORS:
+        return _failure(
+            code, 415, "This media format is unavailable in the web player.", source=source
+        )
+    if code == "authorization_changed":
+        return _failure(code, 409, "Episode access changed during preparation.", source=source)
+    return _failure(
+        code,
+        503,
+        "The episode could not be prepared. Try again shortly.",
+        source=source,
+        retry_after=2,
+    )
+
+
+async def _stderr_tail(process, tail):
+    while chunk := await process.stderr.read(1024):
+        tail.extend(chunk)
+        del tail[:-4096]
+
+
+def _worker_diagnostics(phase, reason, process, tail):
+    # ffmpeg can echo input URLs, headers and paths. Keep the bounded tail in
+    # memory and emit only allowlisted, constant categories from that tail.
+    raw = bytes(tail).lower()
+    categories = [
+        label
+        for marker, label in (
+            (b"401 unauthorized", "upstream_401"),
+            (b"403 forbidden", "upstream_403"),
+            (b"404 not found", "upstream_404"),
+            (b"connection refused", "connection_refused"),
+            (b"timed out", "io_timeout"),
+            (b"no space left", "disk_full"),
+            (b"permission denied", "permission_denied"),
+            (b"invalid data", "invalid_input"),
+            (b"stream map", "track_missing"),
+            (b"error opening", "open_failed"),
+            (b"error writing", "write_failed"),
+        )
+        if marker in raw
+    ]
+    _LOG.warning(
+        "playback_worker phase=%s reason=%s return_code=%s stderr_categories=%s stderr_tail_bytes=%d",
+        phase,
+        reason,
+        process.returncode,
+        ",".join(categories) or "none",
+        len(raw),
+    )
 
 
 def feature_enabled():
@@ -227,11 +308,16 @@ def create_player_router(
             return
         _stop_process(item.get("stream_process"))
         _stop_process(item.get("subtitle_process"))
+        if task := item.get("subtitle_task"):
+            task.cancel()
         folder = item.get("stream_dir")
         if folder:
             shutil.rmtree(folder, ignore_errors=True)
 
     async def stop_stream(item):
+        if task := item.pop("subtitle_task", None):
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         processes = [item.get("stream_process"), item.get("subtitle_process")]
         _stop_process(processes[0])
         _stop_process(processes[1])
@@ -246,6 +332,8 @@ def create_player_router(
                 except ProcessLookupError:
                     pass
                 await process.wait()
+        if reader := item.pop("stream_stderr_task", None):
+            await reader
         cleanup_stream(item)
 
     def prune_stream_cache():
@@ -284,18 +372,9 @@ def create_player_router(
             raise remux.RemuxError("unsupported_source")
         if source.video_codec not in body.codecs:
             raise remux.RemuxError("unsupported_browser")
-        if any(
-            stream.codec not in body.codecs for stream in source.streams if stream.kind == "audio"
-        ):
+        audio = next((track for track in source.streams if track.kind == "audio"), None)
+        if audio is None or audio.codec not in body.codecs:
             raise remux.RemuxError("unsupported_browser_audio")
-        if (
-            any(
-                stream.kind == "subtitle" and stream.codec in {"ass", "ssa"}
-                for stream in source.streams
-            )
-            and not body.ass_supported
-        ):
-            raise remux.RemuxError("styled_subtitles_unsupported")
 
     async def spawn_stream(source, sid, item):
         prune_stream_cache()
@@ -343,55 +422,102 @@ def create_player_router(
         ]
         try:
             process = await asyncio.create_subprocess_exec(
-                *command,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                *command, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
             )
         except OSError:
             shutil.rmtree(folder, ignore_errors=True)
             raise remux.RemuxError("stream_worker_unavailable") from None
         item.update(
-            {
-                "streaming": True,
-                "stream_dir": folder,
-                "stream_playlist": playlist,
-                "stream_process": process,
-            }
+            streaming=True, stream_dir=folder, stream_playlist=playlist, stream_process=process
         )
-        subtitles = [stream for stream in source.streams if stream.kind == "subtitle"]
-        ass_index = next(
-            (index for index, stream in enumerate(subtitles) if stream.codec in {"ass", "ssa"}),
-            None,
-        )
-        if ass_index is not None:
-            subtitle = folder / "subtitle.ass"
-            subtitle_command = base + [
-                "-map",
-                f"0:s:{ass_index}",
-                "-c",
-                "copy",
-                "-f",
-                "ass",
-                str(subtitle),
-            ]
-            try:
-                item["subtitle_process"] = await asyncio.create_subprocess_exec(
-                    *subtitle_command,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                item["stream_subtitle"] = subtitle
-            except OSError:
-                item["subtitle_process"] = None
-        deadline = time.monotonic() + 8
-        while time.monotonic() < deadline:
-            if playlist.is_file() and any(folder.glob("seg-*.ts")):
-                return
+        tail = bytearray()
+        reader = asyncio.create_task(_stderr_tail(process, tail))
+        item["stream_stderr_task"] = reader
+        deadline = time.monotonic() + _STREAM_TIMEOUT
+        while not (playlist.is_file() and (folder / "seg-00000.ts").is_file()):
             if process.returncode is not None:
-                break
+                await reader
+                _worker_diagnostics("hls", "stream_start_failed", process, tail)
+                raise remux.RemuxError("stream_start_failed")
+            if time.monotonic() >= deadline:
+                _worker_diagnostics("hls", "stream_start_timeout", process, tail)
+                raise remux.RemuxError("stream_start_timeout")
             await asyncio.sleep(0.1)
-        cleanup_stream(item)
-        raise remux.RemuxError("stream_start_failed")
+        if item["allow_subtitles"]:
+            subtitles = [track for track in source.streams if track.kind == "subtitle"]
+            candidates = [
+                (index, track)
+                for index, track in enumerate(subtitles)
+                if track.codec in {"ass", "ssa"}
+            ]
+            if candidates:
+                index, track = max(candidates, key=lambda pair: (pair[1].selected, pair[1].default))
+                item["stream_subtitle"] = folder / "subtitle.ass"
+                item["subtitle_track"] = {
+                    "plex_stream_id": track.stream_id,
+                    "codec": track.codec,
+                    "language": track.language,
+                    "default": track.default,
+                    "forced": track.forced,
+                    "selected": track.selected,
+                }
+                item["subtitle_task"] = asyncio.create_task(extract_subtitle(base, item, index))
+
+    async def extract_subtitle(base, item, index):
+        subtitle = item["stream_subtitle"]
+        command = base + [
+            "-map",
+            f"0:s:{index}",
+            "-c",
+            "copy",
+            "-fs",
+            str(_SUBTITLE_LIMIT),
+            "-f",
+            "ass",
+            str(subtitle),
+        ]
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+            )
+        except OSError:
+            _LOG.warning("playback_worker phase=ass reason=subtitle_worker_unavailable")
+            return False
+        item["subtitle_process"] = process
+        tail = bytearray()
+        reader = asyncio.create_task(_stderr_tail(process, tail))
+        try:
+            await asyncio.wait_for(process.wait(), 120)
+        except TimeoutError:
+            _worker_diagnostics("ass", "subtitle_timeout", process, tail)
+            return False
+        finally:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            await reader
+            await process.wait()
+        if (
+            process.returncode != 0
+            or not subtitle.is_file()
+            or not 0 < subtitle.stat().st_size < _SUBTITLE_LIMIT
+        ):
+            _worker_diagnostics("ass", "subtitle_failed", process, tail)
+            return False
+        return True
+
+    async def start_stream(source, sid, item):
+        launcher = stream_launcher or spawn_stream
+        for retry in (False, True):
+            try:
+                await launcher(source, sid, item)
+                return
+            except remux.RemuxError as error:
+                if error.code != "stream_start_timeout" or retry:
+                    raise
+                await stop_stream(item)
 
     def stream_response(db, item, state):
         source = item["source"]
@@ -412,6 +538,7 @@ def create_player_router(
                 "prepare_url": None,
                 "streaming": True,
                 "subtitle_url": prefix + "subtitle.ass" if item.get("stream_subtitle") else None,
+                "subtitle_track": item.get("subtitle_track"),
             },
             status_code=201,
             headers=HEADERS,
@@ -432,10 +559,12 @@ def create_player_router(
     def current(db, request, user_id, sid):
         item = handles.get(sid)
         if item is None or item["source"].actor_user_id != user_id:
+            _LOG.info("playback_session_rejected reason=session_unavailable")
             raise HTTPException(404, "Playback session unavailable")
         source = item["source"]
         authenticated, _ = authenticate_session(db, request.cookies.get("omakase_session", ""))
         if authenticated != user_id:
+            _LOG.info("playback_session_rejected reason=session_auth_mismatch")
             raise HTTPException(401, "Sign in again")
         try:
             source_guard(db, source)
@@ -446,8 +575,14 @@ def create_player_router(
                 binding_digest=_binding(request),
                 expected_snapshot=_snapshot(source),
             )
+        except (PlaybackSourceError, store.PlaybackStoreError) as error:
+            _LOG.warning("playback_session_rejected reason=%s", error.code)
+            if error.code == "publication_read_conflict":
+                raise HTTPException(503, error.code, headers={"Retry-After": "1"}) from None
+            raise HTTPException(409, error.code) from None
         except (ValueError, households.HouseholdError):
-            raise HTTPException(409, "Playback access changed. Reload the player.") from None
+            _LOG.warning("playback_session_rejected reason=source_scope_changed")
+            raise HTTPException(409, "source_scope_changed") from None
         return source, state
 
     async def authorized_bytes(db, request, user_id, sid):
@@ -678,10 +813,12 @@ def create_player_router(
                 "monitor_id": body.monitor_id,
                 "version_changed": version_changed,
                 "streaming": stream_mode,
+                "allow_subtitles": body.ass_supported,
             }
             handles[state["session_id"]] = item
             if stream_mode:
-                await (stream_launcher or spawn_stream)(source, state["session_id"], item)
+                await start_stream(source, state["session_id"], item)
+                current(db, request, user.id, state["session_id"])
                 response = stream_response(db, item, state)
             else:
                 pending = copied and body.defer_prepare
@@ -691,17 +828,21 @@ def create_player_router(
             delivered = True
             return response
         except remux.RemuxError as error:
-            return JSONResponse(
-                {
-                    "detail": "This version cannot play here. Open the exact episode in Plex.",
-                    "code": error.code,
-                    "source": projection,
-                },
-                status_code=415,
-                headers=HEADERS,
+            return _remux_failure(error, projection)
+        except PlaybackSourceError as error:
+            _LOG.warning("playback_start_failed reason=%s", error.code)
+            retryable = error.code == "publication_read_conflict"
+            return _failure(
+                error.code,
+                503 if retryable else 409,
+                str(error),
+                source=projection,
+                retry_after=1 if retryable else None,
             )
         except ValueError:
-            raise HTTPException(409, "Exact personal playback could not be confirmed.") from None
+            return _failure(
+                "source_unavailable", 409, "Exact personal playback could not be confirmed."
+            )
         finally:
             release_start()
             if not delivered:
@@ -724,15 +865,7 @@ def create_player_router(
             delivered = True
             return response
         except remux.RemuxError as error:
-            return JSONResponse(
-                {
-                    "detail": "This version cannot play here. Open the exact episode in Plex.",
-                    "code": error.code,
-                    "source": public_projection(source),
-                },
-                status_code=415,
-                headers=HEADERS,
-            )
+            return _remux_failure(error, public_projection(source))
         finally:
             release_start()
             if not delivered:
@@ -808,10 +941,11 @@ def create_player_router(
                 )
                 observe_playback(db, source=source, state=result)
             return JSONResponse(result, headers=HEADERS)
-        except store.PlaybackStoreError:
-            raise HTTPException(
-                409, "Playback save is stale or invalid. Reload the player."
-            ) from None
+        except store.PlaybackStoreError as error:
+            _LOG.warning("playback_event_rejected reason=%s", error.code)
+            if error.code == "event_rate_limited":
+                return _failure(error.code, 429, "Playback save is busy.", retry_after=1)
+            return _failure(error.code, 409, "Playback save is stale or invalid.")
 
     @router.post("/api/playback/sessions/{sid}/close", status_code=204)
     async def close(
@@ -967,13 +1101,20 @@ def create_player_router(
             headers=HEADERS | {"Cache-Control": "private, no-store"},
         )
 
-    @router.get("/api/playback/sessions/{sid}/subtitle.ass")
+    @router.api_route("/api/playback/sessions/{sid}/subtitle.ass", methods=["GET", "HEAD"])
     async def stream_subtitle(
         request: Request, sid: str, user=Depends(require_user), db=Depends(get_db)
     ):
         current(db, request, user.id, sid)
         item = handles.get(sid)
         subtitle = item.get("stream_subtitle") if item else None
+        task = item.get("subtitle_task") if item else None
+        if task is not None and not task.done():
+            return Response(status_code=202, headers=HEADERS | {"Retry-After": "2"})
+        if task is not None and (
+            task.cancelled() or task.exception() is not None or not task.result()
+        ):
+            raise HTTPException(404, "Subtitles unavailable")
         if subtitle is None or not Path(subtitle).is_file() or Path(subtitle).stat().st_size <= 0:
             raise HTTPException(404, "Subtitles unavailable")
         return FileResponse(

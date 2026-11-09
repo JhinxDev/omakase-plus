@@ -74,7 +74,9 @@
           let result;
           try { result = await this.send(payload, item.keepalive || this.departing); }
           catch (error) {
-            if (error.status || item.keepalive || this.departing) throw error;
+            const retryable = ['event_rate_limited', 'publication_read_conflict'].includes(error.code);
+            if ((error.status && !retryable) || item.keepalive || this.departing) throw error;
+            if (retryable) await new Promise(resolve => setTimeout(resolve, 1000));
             // One bounded transport retry, with the exact same idempotency sequence.
             result = await this.send(payload, item.keepalive);
           }
@@ -319,7 +321,7 @@
     }
   }
   function enforcePlayback(video, state) {
-    if (state.ready && !state.failed && !state.leaving && !state.captionLoading) return true;
+    if (state.ready && !state.failed && !state.leaving) return true;
     video.pause();
     return false;
   }
@@ -631,7 +633,7 @@
         const error = new Error('Playback request failed');
         error.status = response.status;
         const body = await response.json().catch(() => null);
-        error.code = body?.code;
+        error.code = body?.code || (body?.detail === 'publication_read_conflict' ? body.detail : null);
         error.source = body?.source;
         throw error;
       }
@@ -652,15 +654,28 @@
     window.clearInterval(periodic);
     const blocked = [401, 403, 409].includes(error.status);
     find('error').hidden = false;
+    const descriptions = {
+      unsupported_browser: 'This browser cannot decode the selected video track.',
+      unsupported_browser_audio: 'This browser cannot decode the selected audio track.',
+      unsupported_codec: 'This browser cannot decode this video or audio format.',
+      unsupported_source: 'This source format is unavailable in the web player.',
+      styled_subtitles_unsupported: 'This browser cannot display the styled subtitles on this version.',
+      stream_start_timeout: 'The media server took too long to open this episode.',
+      stream_start_failed: 'The media server could not start the episode stream.',
+      stream_worker_unavailable: 'The streaming worker is temporarily unavailable.',
+      stream_cache_unavailable: 'The server could not open its streaming cache.',
+      publication_read_conflict: 'The library was updating while this episode opened.',
+    };
     find('error-text').textContent = blocked
-      ? 'Your session or library access changed. Reload this page before continuing.'
-      : saving ? 'Playback paused because your progress could not be saved. Reload to continue with your last confirmed save.'
-        : error.code === 'ass_display' ? 'Styled subtitles cannot display in this playback mode. Use the player’s fullscreen control, turn subtitles Off, or open this episode in Plex.'
-        : 'This episode could not play in this browser. You can try once more, or use Plex for other formats and subtitle support.';
+      ? 'Your session or library access changed. Reload the player to check access again.'
+      : saving ? 'Progress could not be saved. Reload to continue with your last confirmed save.'
+        : descriptions[error.code] || (error.status === 415 ? 'This version is unavailable in the web player.'
+          : error.status === 503 ? 'The server could not prepare this episode.'
+          : 'The player could not load the episode stream. Check your connection and try again.');
     if (safeLink(find('plex'), error.source?.plex_url)) find('fallback').hidden = true;
     status.textContent = 'Playback paused.';
     reload.hidden = !(blocked || saving);
-    retry.hidden = blocked || saving || triedAgain;
+    retry.hidden = blocked || saving || error.status === 415 || triedAgain;
     restart.disabled = true;
     start.disabled = true;
     start.hidden = false;
@@ -722,7 +737,7 @@
     const { QualityMenu, AudioMenu, SubtitlesMenu } = settingsMenuTypes(shaka, {
       document, find, state: () => ({ ready, failed, captionLoading }),
       register: item => barItems.add(item), unregister: item => barItems.delete(item),
-      selectSubtitle: id => changeCaption(id, !video.paused),
+      selectSubtitle: id => changeCaption(id),
     });
     class NextEpisode extends shaka.ui.Element {
       constructor(parent, controls) { super(parent, controls); this.link = find('next'); parent.appendChild(this.link); this.link.hidden = false; barItems.add(this); this.checkAvailability(); }
@@ -751,10 +766,17 @@
     captionTasks = captionTasks.catch(() => {}).then(async () => { if (old) await old.destroy(); });
     await captionTasks;
   }
-  function changeCaption(id, resumePlayback = false) {
+  function captionUnavailable() {
+    customTextId = 'off';
+    void captions?.clear().catch(() => {});
+    find('ass-select').value = 'off';
+    find('ass-status').textContent = 'Subtitles unavailable.';
+    refreshBarControls();
+  }
+
+  function changeCaption(id) {
     const intent = ++captionIntent;
     const source = session;
-    video.pause();
     captionLoading = true;
     find('ass-status').textContent = id === 'off' ? 'Turning subtitles off…' : id.startsWith('native:') ? 'Preparing browser subtitles…' : 'Preparing styled subtitles…';
     find('ass-select').disabled = true;
@@ -774,7 +796,7 @@
             const { OmakaseASS } = await import('/plus/static/web-ass.js');
             if (intent !== captionIntent || source !== session || leaving) return;
             const controller = new OmakaseASS({ video, container, onError: () => {
-              if (captions === controller && source === session && !leaving) showError(Object.assign(new Error('Styled subtitles failed'), { code: 'ass_display' }));
+              if (captions === controller && source === session && !leaving) captionUnavailable();
             } });
             captions = controller;
           }
@@ -790,37 +812,38 @@
         captionLoading = false;
         refreshBarControls();
         capture('progress');
-        if (resumePlayback && ready && !failed) {
-          try { await video.play(); } catch { status.textContent = 'Subtitles ready. Press Play to continue.'; }
-        }
-      } catch (error) {
-        if (intent === captionIntent && source === session && !leaving) showError(Object.assign(error, { code: 'ass_display' }));
-        throw error;
+      } catch {
+        if (intent === captionIntent && source === session && !leaving) captionUnavailable();
       } finally { if (intent === captionIntent) { captionLoading = false; find('ass-select').disabled = !ready || failed; refreshBarControls(); } }
     });
     captionTasks = task;
     return task;
   }
   async function watchStreamSubtitles(target) {
-    if (!target?.streaming || !target.subtitle_url) return;
-    for (let attempt = 0; attempt < 180; attempt++) {
-      if (leaving || failed || session !== target) return;
+    if (!target?.streaming || !target.subtitle_url || !target.subtitle_track) return;
+    const current = () => !leaving && !failed && session === target;
+    find('subtitle-unavailable').hidden = true;
+    find('ass-status').textContent = 'Subtitles are still preparing.';
+    const deadline = performance.now() + 130000;
+    let delay = 750;
+    while (current() && performance.now() < deadline) {
       try {
-        const response = await fetch(target.subtitle_url, { credentials: 'same-origin', cache: 'no-store' });
-        if (response.ok) {
-          const wasPlaying = !video.paused;
-          target.subtitles = [{
-            plex_stream_id: 0, codec: 'ass', language: 'eng', selected: true, url: target.subtitle_url,
-          }];
+        const response = await fetch(target.subtitle_url, {
+          method: 'HEAD', credentials: 'same-origin', cache: 'no-store',
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!current()) return;
+        if (response.status === 200) {
+          target.subtitles = [{ ...target.subtitle_track, url: target.subtitle_url }];
           await prepareTracks();
-          if (wasPlaying && ready && !failed && !leaving) {
-            try { await video.play(); } catch { status.textContent = 'Subtitles ready. Press Play to continue.'; }
-          }
           return;
         }
-      } catch { /* Subtitle extraction is still running; retry. */ }
-      await new Promise(resolve => { window.setTimeout(resolve, 1000); });
+        if (![202, 429, 503].includes(response.status)) break;
+      } catch { /* A timed-out status check can be retried. */ }
+      await new Promise(resolve => window.setTimeout(resolve, delay));
+      delay = Math.min(delay * 2, 5000);
     }
+    if (current()) captionUnavailable();
   }
   async function prepareTracks() {
     assTracks = styledSubtitleTracks(session.subtitles || []);
@@ -1043,9 +1066,8 @@
   reload.addEventListener('click', () => window.location.reload());
   find('ass-select').addEventListener('change', event => {
     if (!ready || failed || leaving) return;
-    const wasPlaying = !video.paused;
     const fromBar = !!event.target.closest('.omakase-subtitles-menu');
-    void changeCaption(event.target.value, wasPlaying).then(() => {
+    void changeCaption(event.target.value).then(() => {
       if (fromBar && (document.activeElement === document.body || document.activeElement === event.target || !document.activeElement?.isConnected)) container.querySelector('.omakase-subtitles-button')?.focus();
     }).catch(() => {});
   });
@@ -1063,7 +1085,7 @@
   });
   video.addEventListener('play', () => { enforcePlayback(video, playbackState()); });
   function unsupportedCaptionMode() {
-    if (typeof customTextId === 'string' && customTextId.startsWith('ass:')) showError(Object.assign(new Error('Canvas subtitles unavailable in native video mode'), { code: 'ass_display' }));
+    if (typeof customTextId === 'string' && customTextId.startsWith('ass:')) captionUnavailable();
   }
   video.addEventListener('webkitbeginfullscreen', unsupportedCaptionMode);
   video.addEventListener('enterpictureinpicture', () => {

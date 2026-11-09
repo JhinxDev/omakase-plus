@@ -33,6 +33,12 @@ Plex action as soon as resolution finishes. It can take tens of seconds; this is
 prepared playback rather than immediate streaming. A resource/format failure
 keeps the external action and does not retry or increase a limit automatically.
 
+Installations that enable \`OMAKASE_PLAYBACK_STREAMING=true\` use authenticated
+copy-only HLS for qualified MKV sources. A transient startup timeout gets one
+bounded retry. Preparation, source-access and codec failures have separate
+messages. Styled ASS extraction runs after video is ready. The subtitle menu
+shows preparation or unavailability without interrupting video playback.
+
 ASS/SSA uses the original script and admitted embedded fonts in a derived JASSUB
 renderer. It requires the isolated player document, shared WASM memory,
 OffscreenCanvas, Worker and native video-frame callbacks. Unsupported browsers,

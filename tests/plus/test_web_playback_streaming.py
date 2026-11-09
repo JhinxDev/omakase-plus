@@ -15,6 +15,7 @@ from omakase.plus import households
 from omakase.plus.auth import create_session
 from omakase.plus.db import run_migrations
 from omakase.plus.deps import get_db
+from omakase.plus.web_playback_remux import RemuxError
 from omakase.plus.web_playback_routes import create_player_router
 from omakase.plus.web_playback_source import PlexStream, ResolvedAnimeSource
 from omakase.plus.web_security import csrf_token
@@ -75,8 +76,11 @@ def setup(monkeypatch, tmp_path):
         )
 
     launches = []
+    launch_errors = []
 
     async def fake_launcher(source, sid, item):
+        if launch_errors:
+            raise RemuxError(launch_errors.pop(0))
         folder = tmp_path / "playback-streams" / sid
         folder.mkdir(parents=True)
         playlist = folder / "index.m3u8"
@@ -105,6 +109,7 @@ def setup(monkeypatch, tmp_path):
         directory=str(Path(__file__).resolve().parents[2] / "src/omakase/plus/templates")
     )
     app = FastAPI()
+    app.state.launch_errors = launch_errors
     app.include_router(
         create_player_router(
             templates,
@@ -230,3 +235,54 @@ def test_stream_subtitle_waits_for_nonempty_extraction(setup):
     response = owner.get(payload["subtitle_url"])
     assert response.status_code == 200
     assert "Script Info" in response.text
+
+
+def test_stream_start_retries_one_timeout_without_a_second_session(setup):
+    app, db, sessions, launches, _ = setup
+    app.state.launch_errors.extend(["stream_start_timeout"])
+    assert start_stream(client(app, sessions[1])).status_code == 201
+    assert len(launches) == 1
+    assert db.execute("SELECT count(*) FROM web_playback_sessions").fetchone()[0] == 1
+
+
+def test_stream_start_transient_and_codec_errors_are_distinct(setup):
+    app, db, sessions, _, _ = setup
+    owner = client(app, sessions[1])
+    app.state.launch_errors.extend(["stream_start_timeout", "stream_start_timeout"])
+    failure = start_stream(owner)
+    assert failure.status_code == 503
+    assert failure.headers["retry-after"] == "2"
+    assert failure.json()["code"] == "stream_start_timeout"
+    assert db.execute("SELECT closed FROM web_playback_sessions").fetchone()[0] == 1
+    codec = owner.post(
+        "/plus/api/playback/sessions",
+        json={"monitor_id": 1, "episode_number": 10, "codecs": ["aac"]},
+    )
+    assert codec.status_code == 415
+    assert codec.json()["code"] == "unsupported_browser"
+
+
+def test_publication_rechecks_after_concurrent_sqlite_commit(tmp_path, monkeypatch):
+    from omakase.plus import web_playback_source as source
+
+    with (
+        sqlite3.connect(tmp_path / "wal.sqlite") as reader,
+        sqlite3.connect(tmp_path / "wal.sqlite") as writer,
+    ):
+        reader.execute("PRAGMA journal_mode = WAL")
+        reader.execute("CREATE TABLE unrelated (value INTEGER)")
+        observations = []
+
+        def publication(db, *_):
+            count = db.execute("SELECT count(*) FROM unrelated").fetchone()[0]
+            observations.append(count)
+            if not count:
+                writer.execute("INSERT INTO unrelated VALUES (1)")
+                writer.commit()
+            return "relative.mkv", 10, "same-source"
+
+        monkeypatch.setattr(source, "_publication", publication)
+        result = source._current_publication(reader, None, 1, 1, 1, {})
+        assert result == ("relative.mkv", 10, "same-source")
+        assert observations == [0, 1]
+        assert not reader.in_transaction

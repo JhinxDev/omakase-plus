@@ -30,6 +30,10 @@ from omakase.plus.playback_proof import PlaybackProofError, _account, _get, _xml
 class PlaybackSourceError(ValueError):
     """Safe constant diagnostics; never includes credentials or provider bodies."""
 
+    def __init__(self, message, *, code="source_unavailable"):
+        super().__init__(message)
+        self.code = code
+
 
 _fresh_write_connection = ContextVar("playback_fresh_write_connection", default=None)
 
@@ -50,9 +54,14 @@ def fresh_source_transaction(db):
             _fresh_write_connection.reset(marker)
 
 
-def _require(value, message="The exact episode source is unavailable or changed."):
+def _require(
+    value,
+    message="The exact episode source is unavailable or changed.",
+    *,
+    code="source_unavailable",
+):
     if not value:
-        raise PlaybackSourceError(message)
+        raise PlaybackSourceError(message, code=code)
 
 
 def _numeric(value):
@@ -271,7 +280,9 @@ def _publication(db, scope, anilist_id, season_number, episode_number):
         )
         return relative, file["stat"]["size"], identity
     except (KeyError, TypeError, ValueError, RecursionError):
-        raise PlaybackSourceError("The exact current publication could not be confirmed.") from None
+        raise PlaybackSourceError(
+            "The exact current publication could not be confirmed.", code="publication_unavailable"
+        ) from None
 
 
 def _publication_boundary(db):
@@ -311,22 +322,29 @@ def _current_publication(db, scope, anilist_id, season_number, episode_number, c
         # The wrapper acquired BEGIN IMMEDIATE from an idle connection. Rebuild
         # under that lock; never nest BEGIN, roll back its writes or publish a memo.
         return _publication(db, scope, anilist_id, season_number, episode_number)
-    boundary = _publication_boundary(db)
-    key = (scope, anilist_id, season_number, episode_number, boundary)
-    if cache.get("db") is db and cache.get("key") == key:
-        result = cache["result"]
-    else:
+    for _ in range(2):
+        boundary = _publication_boundary(db)
+        key = (scope, anilist_id, season_number, episode_number, boundary)
+        if cache.get("db") is db and cache.get("key") == key:
+            result = cache["result"]
+        else:
+            cache.clear()
+            # The full library validation must see one coherent SQLite snapshot.
+            # We own this read transaction and never hold it across an await.
+            db.execute("BEGIN")
+            try:
+                result = _publication(db, scope, anilist_id, season_number, episode_number)
+            finally:
+                db.rollback()
+        if _publication_boundary(db) == boundary:
+            cache.update(db=db, key=key, result=result)
+            return result
+        # An unrelated WAL commit can move data_version during a read. Rebuild
+        # from a fresh snapshot once, then fail closed under sustained churn.
         cache.clear()
-        # The full library validation must see one coherent SQLite snapshot.
-        # We own this read transaction and never hold it across an await.
-        db.execute("BEGIN")
-        try:
-            result = _publication(db, scope, anilist_id, season_number, episode_number)
-        finally:
-            db.rollback()
-    _require(_publication_boundary(db) == boundary, "Publication changed during validation.")
-    cache.update(db=db, key=key, result=result)
-    return result
+    raise PlaybackSourceError(
+        "Publication changed during validation.", code="publication_read_conflict"
+    )
 
 
 def _snapshot(db, scope, anilist_id, season_number, episode_number, publication_cache=None):
@@ -373,7 +391,8 @@ def revalidate_source(db, source):
                 source.episode_number,
                 source._publication_cache,
             )
-            == source._snapshot
+            == source._snapshot,
+            code="source_snapshot_mismatch",
         )
         _require(
             db.execute(
@@ -382,9 +401,14 @@ def revalidate_source(db, source):
             ).fetchone()
             is None,
             "This Plex identity belongs to another viewer.",
+            code="source_account_mismatch",
         )
-    except ValueError:
-        raise PlaybackSourceError("Playback access changed. Resolve the episode again.") from None
+    except PlaybackSourceError:
+        raise
+    except (ValueError, households.HouseholdError):
+        raise PlaybackSourceError(
+            "Playback access changed. Resolve the episode again.", code="source_scope_changed"
+        ) from None
     return source
 
 
@@ -618,6 +642,8 @@ async def resolve_anime_source(
         _require(len(choices) == 1, "Choose one exact qualified media version.")
         result = choices[0]
         return revalidate_source(db, result)
+    except PlaybackSourceError:
+        raise
     except (PlaybackProofError, ValueError, KeyError, TypeError):
         raise PlaybackSourceError(
             "Personal playback access or exact source could not be confirmed."

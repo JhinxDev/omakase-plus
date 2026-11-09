@@ -24,6 +24,10 @@ _SHA = re.compile(r"[0-9a-f]{64}\Z")
 class PlaybackStoreError(ValueError):
     """Safe public validation failure."""
 
+    def __init__(self, message, *, code="event_invalid"):
+        super().__init__(message)
+        self.code = code
+
 
 def _number(value, low, high, name):
     if (
@@ -140,26 +144,26 @@ def _session(db, session_id, user_id, binding_digest, now, expected_snapshot=Non
     _positive(user_id, "viewer")
     _binding(binding_digest)
     if not isinstance(session_id, str) or len(session_id) > 128:
-        raise PlaybackStoreError("Playback session unavailable")
+        raise PlaybackStoreError("Playback session unavailable", code="session_unavailable")
     row = _row(
         db,
         "SELECT s.*, r.revision AS current_revision FROM web_playback_sessions s JOIN web_playback_resumes r USING(target_key) WHERE session_id=? AND s.user_id=?",
         (session_id, user_id),
     )
-    if (
-        not row
-        or not hmac.compare_digest(row["binding_digest"], binding_digest)
-        or row["closed"]
-        or row["revision"] != row["current_revision"]
-        or now < row["last_seen"]
-        or now >= row["expires_at"]
-        or now - row["last_seen"] >= 1200
-    ):
-        raise PlaybackStoreError("Playback session unavailable")
+    if not row or row["closed"]:
+        raise PlaybackStoreError("Playback session unavailable", code="session_unavailable")
+    if not hmac.compare_digest(row["binding_digest"], binding_digest):
+        raise PlaybackStoreError("Playback session unavailable", code="session_auth_mismatch")
+    if row["revision"] != row["current_revision"]:
+        raise PlaybackStoreError("Playback session unavailable", code="session_revision_mismatch")
+    if now < row["last_seen"] or now >= row["expires_at"] or now - row["last_seen"] >= 1200:
+        raise PlaybackStoreError("Playback session unavailable", code="session_lease_invalid")
     if expected_snapshot is not None and not hmac.compare_digest(
         row["snapshot_json"], _snapshot_json(expected_snapshot)
     ):
-        raise PlaybackStoreError("Playback authorization snapshot changed")
+        raise PlaybackStoreError(
+            "Playback authorization snapshot changed", code="session_snapshot_mismatch"
+        )
     return row
 
 
@@ -367,7 +371,7 @@ def record_event(
         if seq <= s["last_seq"]:
             raise PlaybackStoreError("Stale playback sequence")
         if s["last_seq"] and now - s["last_seen"] < 0.25:
-            raise PlaybackStoreError("Playback event rate exceeded")
+            raise PlaybackStoreError("Playback event rate exceeded", code="event_rate_limited")
         intervals = json.loads(r["intervals_json"])
         credited = None
         mono = time.monotonic()
