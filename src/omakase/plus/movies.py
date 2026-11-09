@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from secrets import token_hex
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 from xml.etree import ElementTree
@@ -767,12 +768,22 @@ class MovieService:
                 return self._card(user_id, metadata)
             if _authorize_submission is not None:
                 _authorize_submission()
+            from omakase.plus.movie_cleanup import movie_cleanup_enabled
+
+            cleanup_tag = None
+            if movie_cleanup_enabled():
+                if prior is None:
+                    cleanup_tag = token_hex(16)
+                elif prior["cleanup_owner_id"] == user_id:
+                    cleanup_tag = prior["cleanup_tag"]
             claimed = store.claim_submission(
                 self.db,
                 self._scope,
                 imdb_id,
                 tmdb_id,
                 now=_iso(self._clock()),
+                user_id=user_id,
+                cleanup_tag=cleanup_tag,
                 retry_rejected=prior is not None and prior["code"] == "connection_rejected",
             )
             if not claimed:
@@ -787,7 +798,10 @@ class MovieService:
                     retry_at=prior["retry_at"],
                 )
                 return self._card(user_id, metadata)
-            await self._bytes("riven", "POST", "/api/v1/items/add", params={"imdb_ids": imdb_id})
+            params = {"imdb_ids": imdb_id}
+            if cleanup_tag is not None:
+                params["omakase_acquisition_tag"] = cleanup_tag
+            await self._bytes("riven", "POST", "/api/v1/items/add", params=params)
             # Record acknowledgement BEFORE the follow-up read: a read-side
             # auth error cannot turn an accepted write into an auth retry.
             store.update_submission(

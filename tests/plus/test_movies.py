@@ -679,6 +679,48 @@ def test_existing_riven_movie_does_not_submit(db):
     assert fake.posts == []
 
 
+def test_new_tagged_movie_request_preserves_the_first_account_and_tag(db, monkeypatch):
+    monkeypatch.setenv("OMAKASE_PLUS_MOVIE_CLEANUP_ENABLED", "1")
+    fake = NativeMovies()
+    fake.post_status = 401
+    svc = service(db, fake)
+    assert request_movie(svc)["code"] == "connection_rejected"
+    original = dict(db.execute("SELECT * FROM movie_submissions").fetchone())
+    tag = original["cleanup_tag"]
+    assert original["cleanup_owner_id"] == 1
+    assert len(tag) == 32
+    assert fake.posts[0].url.params["omakase_acquisition_tag"] == tag
+
+    fake.post_status = 200
+    assert request_movie(svc, user_id=2)["code"] == "connection_rejected"
+    assert len(fake.posts) == 1
+    assert request_movie(svc)["state"] == "verifying"
+    assert len(fake.posts) == 2
+    assert fake.posts[1].url.params["omakase_acquisition_tag"] == tag
+    assert db.execute("SELECT cleanup_owner_id, cleanup_tag FROM movie_submissions").fetchone()[
+        :
+    ] == (
+        1,
+        tag,
+    )
+
+
+def test_legacy_or_already_existing_copy_is_not_claimed_when_cleanup_is_enabled(db, monkeypatch):
+    fake = NativeMovies()
+    svc = service(db, fake)
+    assert request_movie(svc)["state"] == "verifying"
+    assert "omakase_acquisition_tag" not in fake.posts[0].url.params
+    monkeypatch.setenv("OMAKASE_PLUS_MOVIE_CLEANUP_ENABLED", "1")
+    assert request_movie(svc)["state"] == "verifying"
+    assert len(fake.posts) == 1
+    assert db.execute("SELECT cleanup_owner_id, cleanup_tag FROM movie_submissions").fetchone()[
+        :
+    ] == (
+        None,
+        None,
+    )
+
+
 def test_acknowledgement_without_persistence_is_deferred_without_retry(db):
     fake = NativeMovies()
     fake.persist = False

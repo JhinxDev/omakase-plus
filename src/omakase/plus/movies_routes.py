@@ -405,8 +405,10 @@ def create_movies_router(
         cleanup = None
         if link and movie_cleanup_enabled():
             try:
-                await asyncio.wait_for(verify_movie_cleanup_copy(svc, user.id, imdb_id), timeout=7)
-                cleanup = "verified"
+                proof = await asyncio.wait_for(
+                    verify_movie_cleanup_copy(svc, user.id, imdb_id), timeout=7
+                )
+                cleanup = "verified" if proof.owned else "protected"
             except (MovieCleanupUnavailable, MovieError, TimeoutError):
                 cleanup = "unverified"
         payload = {"result": result, "plex_url": link}

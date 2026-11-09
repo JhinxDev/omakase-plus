@@ -223,6 +223,8 @@ def claim_submission(
     tmdb_id: int,
     *,
     now: str,
+    user_id: int,
+    cleanup_tag: str | None = None,
     retry_rejected: bool = False,
 ) -> bool:
     existing = get_submission(conn, backend_scope, imdb_id)
@@ -234,15 +236,18 @@ def claim_submission(
                 "UPDATE movie_submissions SET attempted_at=?, backend_id=NULL, state='deferred', "
                 "code='submission_pending', detail='An explicit authenticated retry is being checked.', "
                 "retry_after=NULL, retry_at=NULL WHERE backend_scope=? AND imdb_id=? "
-                "AND tmdb_id=? AND code='connection_rejected'",
-                (now, backend_scope, imdb_id, tmdb_id),
+                "AND tmdb_id=? AND code='connection_rejected' "
+                "AND (cleanup_tag IS NULL OR cleanup_owner_id=?)",
+                (now, backend_scope, imdb_id, tmdb_id, user_id),
             )
             conn.commit()
             return cursor.rowcount == 1
         return False
     cursor = conn.execute(
-        "INSERT OR IGNORE INTO movie_submissions (backend_scope, imdb_id, tmdb_id, attempted_at) VALUES (?, ?, ?, ?)",
-        (backend_scope, imdb_id, tmdb_id, now),
+        """INSERT OR IGNORE INTO movie_submissions
+           (backend_scope, imdb_id, tmdb_id, attempted_at, cleanup_owner_id, cleanup_tag)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (backend_scope, imdb_id, tmdb_id, now, user_id if cleanup_tag else None, cleanup_tag),
     )
     conn.commit()
     winner = get_submission(conn, backend_scope, imdb_id)

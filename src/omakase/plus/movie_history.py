@@ -11,6 +11,7 @@ from typing import Any
 from xml.etree import ElementTree
 
 from omakase.plus import movies_store as store
+from omakase.plus.movie_cleanup import record_movie_cleanup_intent
 from omakase.plus.movies import MovieError, MovieService, _base, _imdb, _iso, _positive
 
 UNSET = object()
@@ -208,11 +209,25 @@ class MovieHistoryService:
         await self._identity(user_id, imdb_id, tmdb_id)
         with self.db:
             self._ensure(user_id, imdb_id, tmdb_id)
+            before = self.db.execute(
+                """SELECT status, status_source, rating, rating_source FROM movie_history
+                   WHERE user_id=? AND imdb_id=?""",
+                (user_id, imdb_id),
+            ).fetchone()
             if status is not UNSET:
                 self._change(user_id, imdb_id, "status", status, "manual", "manual")
             if rating is not UNSET:
                 self._change(user_id, imdb_id, "rating", rating, "manual", "manual")
-        result = self.get(user_id, imdb_id)
+            result = self.get(user_id, imdb_id)
+            record_movie_cleanup_intent(
+                self.db,
+                user_id=user_id,
+                imdb_id=imdb_id,
+                backend_scope=getattr(self.movies, "_scope", ""),
+                before=before,
+                after=result,
+                now=_iso(self.movies._clock()),
+            )
         assert result is not None
         return result
 

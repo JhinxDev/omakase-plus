@@ -605,6 +605,28 @@ def test_completion_settings_save_and_reopen_native_preference(client):
     assert '<option value="0" selected>Keep in Plex when finished</option>' in response.text
 
 
+def test_movie_cleanup_opt_in_is_private_and_defaults_to_keep(client, monkeypatch):
+    _signup(client)
+    path = "/plus/settings/tracking"
+    assert 'name="remove_completed_movies"' not in client.get(path).text
+    monkeypatch.setenv("OMAKASE_PLUS_MOVIE_CLEANUP_ENABLED", "1")
+    page = client.get(path).text
+    assert '<option value="0" selected>Keep movies after watching</option>' in page
+    token = re.search(r'name="csrf_token" value="([0-9a-f]{64})"', page).group(1)
+    form = {
+        "settings_section": "tracking",
+        "movie_cleanup_present": "1",
+        "remove_completed_movies": "1",
+    }
+    assert client.post("/plus/settings", data=form).status_code == 403
+    response = client.post("/plus/settings", data={**form, "csrf_token": token})
+    assert response.status_code == 200
+    assert '<option value="1" selected>Remove after watching and rating</option>' in response.text
+    with _connect(client) as db:
+        assert db.execute("SELECT enabled FROM movie_cleanup_preferences").fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM movie_cleanup_jobs").fetchone()[0] == 0
+
+
 @pytest.mark.parametrize("keep", [False, True])
 def test_native_completion_queues_plex_only_or_honors_keep_exception(client, monkeypatch, keep):
     monkeypatch.setenv("OMAKASE_PLUS_REVIEW_MODE", "true")

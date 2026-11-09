@@ -5,13 +5,14 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from hmac import compare_digest
 from pathlib import PurePosixPath
 
 import httpx
 
 from omakase.plus.household_media import managed_removal_guard
 from omakase.plus.movies import _imdb
-from omakase.plus.movies_store import get_movie
+from omakase.plus.movies_store import get_movie, get_submission
 from omakase.plus.provider_limits import ProviderRateLimit
 from omakase.plus.realdebrid import RealDebridClient
 from omakase.plus.secrets import read_secret
@@ -28,6 +29,61 @@ def movie_cleanup_enabled() -> bool:
         "yes",
         "on",
     }
+
+
+def movie_cleanup_preference(db, user_id: int) -> bool:
+    row = db.execute(
+        "SELECT enabled FROM movie_cleanup_preferences WHERE user_id=?", (user_id,)
+    ).fetchone()
+    return bool(row and row["enabled"])
+
+
+def set_movie_cleanup_preference(db, user_id: int, enabled: bool) -> None:
+    db.execute(
+        """INSERT INTO movie_cleanup_preferences (user_id, enabled) VALUES (?, ?)
+           ON CONFLICT (user_id) DO UPDATE SET enabled=excluded.enabled""",
+        (user_id, int(enabled)),
+    )
+    if not enabled:
+        db.execute(
+            "UPDATE movie_cleanup_jobs SET state='cancelled' WHERE user_id=? AND state='queued'",
+            (user_id,),
+        )
+
+
+def watched_and_rated_manually(history) -> bool:
+    return bool(
+        history
+        and history["status"] == "completed"
+        and history["status_source"] == "manual"
+        and history["rating"] is not None
+        and history["rating_source"] == "manual"
+    )
+
+
+def record_movie_cleanup_intent(db, *, user_id, imdb_id, backend_scope, before, after, now):
+    """Record only an explicit new completion in the movie history transaction."""
+    if not watched_and_rated_manually(after):
+        db.execute(
+            """UPDATE movie_cleanup_jobs SET state='cancelled'
+               WHERE user_id=? AND imdb_id=? AND state='queued'""",
+            (user_id, imdb_id),
+        )
+        return
+    if watched_and_rated_manually(before) or not movie_cleanup_enabled():
+        return
+    db.execute(
+        """INSERT INTO movie_cleanup_jobs (user_id, imdb_id, cleanup_tag, backend_scope, queued_at)
+           SELECT s.cleanup_owner_id, s.imdb_id, s.cleanup_tag, s.backend_scope, ?
+           FROM movie_submissions s
+           JOIN movie_cleanup_preferences p ON p.user_id=s.cleanup_owner_id
+           WHERE s.cleanup_owner_id=? AND s.imdb_id=? AND s.backend_scope=?
+             AND s.cleanup_tag IS NOT NULL AND p.enabled=1
+           ON CONFLICT (user_id, imdb_id, cleanup_tag) DO UPDATE
+             SET queued_at=excluded.queued_at, state='queued'
+             WHERE movie_cleanup_jobs.state='cancelled'""",
+        (now, user_id, imdb_id, backend_scope),
+    )
 
 
 def _matches(value: object, pattern: str) -> bool:
@@ -53,6 +109,7 @@ class MovieCleanupProof:
     plex_key: str
     plex_section: int
     file_size: int
+    owned: bool
 
 
 def _owner_movie(service, user_id, imdb_id):
@@ -86,9 +143,36 @@ async def _riven_binding(service, movie):
         or len(publication) != 2
         or not all(_basename(part) for part in publication)
         or not publication[0].endswith(f"{{imdb-{movie['imdb_id']}}}")
+        or (
+            binding.get("acquisition_tag") is not None
+            and not _matches(binding["acquisition_tag"], r"[0-9a-f]{32}")
+        )
     ):
         raise MovieCleanupUnavailable("riven_binding_unverified")
     return binding
+
+
+def _owned_acquisition(service, user_id, movie, binding):
+    tag = binding.get("acquisition_tag")
+    if tag is None:
+        return False
+    submission = get_submission(service.db, service._scope, movie["imdb_id"])
+    if (
+        submission is None
+        or submission["tmdb_id"] != movie["tmdb_id"]
+        or submission["cleanup_owner_id"] != user_id
+        or submission["cleanup_tag"] is None
+        or not compare_digest(submission["cleanup_tag"], tag)
+    ):
+        return False
+    return (
+        service.db.execute(
+            """SELECT 1 FROM movie_requests
+           WHERE imdb_id=? AND user_id<>? AND backend_id=? AND state<>'unavailable' LIMIT 1""",
+            (movie["imdb_id"], user_id, binding["riven_id"]),
+        ).fetchone()
+        is None
+    )
 
 
 async def _plex_binding(service, movie, binding):
@@ -169,4 +253,5 @@ async def verify_movie_cleanup_copy(service, user_id: int, imdb_id: str) -> Movi
         plex_key,
         section,
         file_size,
+        _owned_acquisition(service, user_id, movie, binding),
     )

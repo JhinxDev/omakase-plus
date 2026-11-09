@@ -25,11 +25,12 @@
         link.rel = 'noopener noreferrer';
         link.className = 'button button-secondary';
         link.textContent = 'Manage copy in Plex';
-        const message = cleanup === 'verified'
-          ? 'The Plex copy and its Real-Debrid torrent match.'
-          : cleanup === 'unverified'
-            ? 'This movie is in Plex. The exact Real-Debrid copy could not be verified.'
-            : 'This movie is in Plex.';
+        const messages = {
+          verified: 'The Plex copy and its Real-Debrid torrent match.',
+          protected: 'The Plex and Real-Debrid copies match. This copy is protected from automatic cleanup.',
+          unverified: 'This movie is in Plex. The exact Real-Debrid copy could not be verified.',
+        };
+        const message = Object.hasOwn(messages, cleanup) ? messages[cleanup] : 'This movie is in Plex.';
         status.replaceChildren(message, link);
       } else {
         status.textContent = result === 'absent'

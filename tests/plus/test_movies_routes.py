@@ -441,7 +441,7 @@ def test_saving_a_watched_movie_opens_plex_review_without_touching_plex(browser,
     assert not service.calls
 
 
-@pytest.mark.parametrize("cleanup", [None, "verified", "unverified"])
+@pytest.mark.parametrize("cleanup", [None, "verified", "protected", "unverified"])
 def test_inline_movie_review_keeps_the_current_page_and_history(browser, monkeypatch, cleanup):
     from omakase.plus import movie_cleanup
     from omakase.plus.movies_store import upsert_movie
@@ -471,7 +471,7 @@ def test_inline_movie_review_keeps_the_current_page_and_history(browser, monkeyp
             assert svc is service and (user_id, title_id) == (1, imdb_id)
             if cleanup == "unverified":
                 raise movie_cleanup.MovieCleanupUnavailable("riven_binding_unverified")
-            return {"torrent_id": "internal-fixture"}
+            return SimpleNamespace(torrent_id="internal-fixture", owned=cleanup == "verified")
 
         monkeypatch.setattr(movie_cleanup, "verify_movie_cleanup_copy", verify_copy)
     path = f"/plus/movies/{imdb_id}/plex-review"

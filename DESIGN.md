@@ -89,6 +89,13 @@ The optional movie cleanup preview confirms one Riven publication, one Plex
 media part and one Real-Debrid torrent by exact identity and selected file size.
 It checks household use, the Plex scan preference and current playback. The
 browser receives the check result without the provider identifiers.
+Omakase reserves an opaque acquisition tag with the requesting account before
+submitting a movie. Cleanup ownership requires the same tag on the exact Riven
+publication. Older submissions and imported copies remain protected.
+The per-account movie cleanup preference defaults to keeping the copy. Saving
+both watched and a manual rating records one cleanup intent for the owned
+acquisition. The preference applies to future completions. Clearing either
+field or turning the preference off cancels a queued intent.
 
 ## Apple TV client boundary
 

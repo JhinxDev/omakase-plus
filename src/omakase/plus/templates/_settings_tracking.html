@@ -5,6 +5,13 @@
       <div><label for="remove_completed_from_plex">Remove completed anime from Plex</label><p>Choose what happens when you finish an anime series or anime film. Your watch history, rating and source media stay saved.</p></div>
       <div class="field-control"><select id="remove_completed_from_plex" name="remove_completed_from_plex"><option value="1" {% if remove_completed_from_plex %}selected{% endif %}>Remove from Plex when finished</option><option value="0" {% if not remove_completed_from_plex %}selected{% endif %}>Keep in Plex when finished</option></select></div>
     </div>
+    {% if movie_cleanup_enabled %}
+    <input type="hidden" name="movie_cleanup_present" value="1">
+    <div class="settings-field">
+      <div><label for="remove_completed_movies">Remove watched and rated movies</label><p>Remove eligible Omakase movies from Plex and Real-Debrid after you mark them watched and rate them. Your watch history and rating stay saved.</p></div>
+      <div class="field-control"><select id="remove_completed_movies" name="remove_completed_movies"><option value="0" {% if not remove_completed_movies %}selected{% endif %}>Keep movies after watching</option><option value="1" {% if remove_completed_movies %}selected{% endif %}>Remove after watching and rating</option></select></div>
+    </div>
+    {% endif %}
     <div class="integration-card">
       <img class="service-logo" src="/plus/static/services/anilist.png" alt="" width="40" height="40">
       <div><strong>AniList</strong><p><a href="/plus/settings/myanimelist">MyAnimeList and personal tracker sync</a></p><p>Mark recommendations completed, save an optional score, and keep future menus new.</p></div>

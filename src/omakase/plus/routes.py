@@ -3301,6 +3301,7 @@ async def settings_page(
         "yes",
         "on",
     }
+    from omakase.plus.movie_cleanup import movie_cleanup_enabled, movie_cleanup_preference
 
     return templates.TemplateResponse(
         request,
@@ -3332,6 +3333,8 @@ async def settings_page(
             "apple_tv_integration": apple_tv_integration,
             "apple_tv_watch_enabled": apple_tv_watch_enabled,
             "remove_completed_from_plex": get_completion_cleanup_preference(db, user_id=user.id),
+            "movie_cleanup_enabled": movie_cleanup_enabled(),
+            "remove_completed_movies": movie_cleanup_preference(db, user.id),
         },
     )
 
@@ -3353,6 +3356,16 @@ async def settings_post(
         raise HTTPException(422, "Use Settings > Connections to change media credentials")
     user_id = user.id
     saved_keys: list[str] = []
+
+    if form.get("movie_cleanup_present") == "1":
+        from omakase.plus.movie_cleanup import movie_cleanup_enabled, set_movie_cleanup_preference
+
+        choice = form.get("remove_completed_movies")
+        if section != "tracking" or not movie_cleanup_enabled() or choice not in {"0", "1"}:
+            raise HTTPException(422, "Movie cleanup is unavailable in this settings section")
+        with db:
+            set_movie_cleanup_preference(db, user_id, enabled=choice == "1")
+        saved_keys.append("completed movie preference")
 
     if form.get("completion_cleanup_present") == "1":
         set_completion_cleanup_preference(

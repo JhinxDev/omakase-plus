@@ -9,6 +9,8 @@ from xml.etree import ElementTree
 
 import pytest
 
+from omakase.plus.movie_cleanup import set_movie_cleanup_preference
+from omakase.plus.movies_store import claim_submission
 from tests.plus.test_movies import IMDB, NOW, TMDB, NativeMovies, run, service
 from tests.plus.test_movies import db as db
 
@@ -53,6 +55,71 @@ def test_manual_status_and_half_step_rating_have_independent_provenance(db):
     assert db.execute("SELECT count(*) FROM movie_history_events").fetchone()[0] == count
     assert db.execute("SELECT count(*) FROM anilist_plannings").fetchone()[0] == 0
     assert all(call.method == "GET" for call in fake.calls)
+
+
+def _cleanup_ready_history(db, monkeypatch, *, owned=True):
+    monkeypatch.setenv("OMAKASE_PLUS_MOVIE_CLEANUP_ENABLED", "1")
+    history, movies, fake = history_service(db)
+    claim_submission(
+        db,
+        movies._scope,
+        IMDB,
+        TMDB,
+        now="2026-10-27T14:00:00Z",
+        user_id=1,
+        cleanup_tag="c" * 32 if owned else None,
+    )
+    return history, fake
+
+
+@pytest.mark.parametrize("first", [{"status": "completed"}, {"rating": 8}])
+def test_opted_in_manual_watch_and_rating_enqueue_once_and_keep_history(db, monkeypatch, first):
+    history, fake = _cleanup_ready_history(db, monkeypatch)
+    with db:
+        set_movie_cleanup_preference(db, 1, True)
+    save(history, **first)
+    assert db.execute("SELECT count(*) FROM movie_cleanup_jobs").fetchone()[0] == 0
+    save(history, status="completed", rating=8)
+    save(history, status="completed", rating=8.5)
+    job = db.execute("SELECT user_id, imdb_id, state FROM movie_cleanup_jobs").fetchall()
+    assert [tuple(row) for row in job] == [(1, IMDB, "queued")]
+    assert history.get(1, IMDB)["rating"] == 8.5
+    save(history, rating=None)
+    assert db.execute("SELECT state FROM movie_cleanup_jobs").fetchone()[0] == "cancelled"
+    save(history, rating=8)
+    assert db.execute("SELECT state FROM movie_cleanup_jobs").fetchone()[0] == "queued"
+    with db:
+        set_movie_cleanup_preference(db, 1, False)
+    assert db.execute("SELECT state FROM movie_cleanup_jobs").fetchone()[0] == "cancelled"
+    assert all(call.method == "GET" for call in fake.calls)
+
+
+def test_enabling_preference_does_not_sweep_history_or_another_account(db, monkeypatch):
+    history, _ = _cleanup_ready_history(db, monkeypatch)
+    save(history, status="completed", rating=8)
+    with db:
+        set_movie_cleanup_preference(db, 1, True)
+        set_movie_cleanup_preference(db, 2, True)
+    save(history, rating=9)
+    save(history, user_id=2, status="completed", rating=8)
+    assert db.execute("SELECT count(*) FROM movie_cleanup_jobs").fetchone()[0] == 0
+
+
+def test_externally_acquired_movie_stays_protected_after_an_explicit_rating(db, monkeypatch):
+    history, _ = _cleanup_ready_history(db, monkeypatch, owned=False)
+    with db:
+        set_movie_cleanup_preference(db, 1, True)
+    save(history, status="completed", rating=8)
+    assert db.execute("SELECT count(*) FROM movie_cleanup_jobs").fetchone()[0] == 0
+
+
+def test_plex_history_import_does_not_enqueue_cleanup(db, monkeypatch):
+    history, fake = _cleanup_ready_history(db, monkeypatch)
+    with db:
+        set_movie_cleanup_preference(db, 1, True)
+    set_plex_fields(fake, {"viewCount": "1", "userRating": "8"})
+    assert run(history.sync_plex(1))["imported"] == 1
+    assert db.execute("SELECT count(*) FROM movie_cleanup_jobs").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("rating", [0, 10.5, 7.25, True, "8.5", float("nan"), float("inf")])

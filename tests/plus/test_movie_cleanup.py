@@ -12,7 +12,7 @@ import pytest
 from omakase.plus import movie_cleanup, realdebrid
 from omakase.plus.db import run_migrations
 from omakase.plus.movies import MovieService
-from omakase.plus.movies_store import upsert_movie
+from omakase.plus.movies_store import claim_submission, upsert_movie
 from omakase.plus.realdebrid import RDFile, RealDebridClient
 
 IMDB = "tt0123456"
@@ -20,6 +20,7 @@ TMDB = 9876
 TICKET = "fixture012"
 TORRENT_HASH = "a" * 40
 PUBLICATION = ["Sample Film (2024) {imdb-tt0123456}", "Published.mkv"]
+ACQUISITION_TAG = "c" * 32
 
 
 @pytest.fixture
@@ -61,6 +62,7 @@ def copy(monkeypatch):
         }
         service = SimpleNamespace(
             db=db,
+            _scope="d" * 64,
             _guard=lambda user_id: None,
             _json=AsyncMock(return_value=binding),
             _plex_movie=AsyncMock(return_value=(video, 3)),
@@ -92,9 +94,42 @@ def test_movie_cleanup_proof_matches_a_single_connected_copy(copy):
     assert proof.torrent_id == TICKET
     assert proof.publication == tuple(PUBLICATION)
     assert (proof.plex_key, proof.plex_section, proof.file_size) == ("7", 3, 144)
+    assert proof.owned is False
     service._json.assert_awaited_once_with("riven", "/api/v1/items/movie-removal-binding/" + IMDB)
     service._xml.assert_has_awaits([call("/:/prefs"), call("/status/sessions")])
     rd.assert_awaited_once_with(TICKET, require_definite_absence=True)
+
+
+@pytest.mark.parametrize(
+    "owner, native_tag, shared, owned",
+    [
+        (1, ACQUISITION_TAG, False, True),
+        (2, ACQUISITION_TAG, False, False),
+        (1, "f" * 32, False, False),
+        (1, None, False, False),
+        (1, ACQUISITION_TAG, True, False),
+    ],
+)
+def test_cleanup_ownership_needs_the_native_acquisition_for_this_user(
+    copy, owner, native_tag, shared, owned
+):
+    service, binding, _, _ = copy
+    binding["acquisition_tag"] = native_tag
+    now = "2026-11-09T08:00:00Z"
+    assert claim_submission(
+        service.db, service._scope, IMDB, TMDB, user_id=owner, cleanup_tag=ACQUISITION_TAG, now=now
+    )
+    if shared:
+        upsert_movie(
+            service.db, 2, {"imdb_id": IMDB, "tmdb_id": TMDB, "title": "Sample Film"}, now=now
+        )
+        service.db.execute(
+            """INSERT INTO movie_requests (user_id, imdb_id, backend_id, detail, created_at, updated_at)
+               VALUES (2, ?, ?, 'Fixture', ?, ?)""",
+            (IMDB, binding["riven_id"], now, now),
+        )
+    proof = asyncio.run(movie_cleanup.verify_movie_cleanup_copy(service, 1, IMDB))
+    assert proof.owned is owned
 
 
 def test_movie_cleanup_rejects_another_viewers_movie(copy):
