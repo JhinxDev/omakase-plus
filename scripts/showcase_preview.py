@@ -1206,7 +1206,10 @@ def check(app, catalog):
         for path in route_map["get_journeys"]:
             response = client.get(path)
             assert response.status_code == 200, (path, response.status_code, response.text[:100])
-            assert BANNER in response.text, path
+            if path == "/plus/discover/rows":
+                assert response.headers["X-Omakase-Demo"] == "real-media-sample-account-read-only"
+            else:
+                assert BANNER in response.text, path
             assert client.post(path).status_code == 405
         for path in route_map["rendered_states"]:
             response = client.get(path)
@@ -1277,7 +1280,8 @@ def check(app, catalog):
         for method in ("POST", "PUT", "PATCH", "DELETE"):
             assert client.request(method, "/plus/settings/downloads").status_code == 405
         assert client.get("/plus/account/avatar").headers["content-type"].startswith("image/png")
-        assert "alex.morgan@example.com" in client.get("/plus/settings").text
+        assert "alex.morgan@example.com" in client.get("/plus/settings/profile").text
+        assert "Video quality &amp; downloads" in client.get("/plus/settings").text
         assert "Alex Morgan" in client.get("/plus/settings").text
         assert client.post("/plus/onboarding/intent").status_code == 405
         assert client.get("/plus/auth/google").status_code == 404
