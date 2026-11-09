@@ -5,7 +5,7 @@
 {% block page_title %}Your history{% endblock %}
 {% block page_intro %}<p class="page-intro">Pick up a familiar story, or see what has changed in your library.</p>{% endblock %}
 {% block content %}
-<nav class="movie-tabs" aria-label="History views"><a href="/plus/activity?view=watch" {% if activity_view != 'system' %}aria-current="page"{% endif %}>Viewing history</a><a href="/plus/activity?view=system" {% if activity_view == 'system' %}aria-current="page"{% endif %}>Library & services</a></nav>
+<nav class="movie-tabs" aria-label="History views"><a href="/plus/activity?view=watch" {% if activity_view != 'system' %}aria-current="page"{% endif %}>Viewing history</a><a href="/plus/activity?view=system" {% if activity_view == 'system' %}aria-current="page"{% endif %}>Library updates</a></nav>
 {% if activity_view != 'system' %}
 {% if watch_history %}<header class="stream-section-heading"><div><h2>Most recent</h2></div></header><div class="history-grid">{% for item in watch_history %}{{ history_card(item) }}{% endfor %}</div>{% if history_has_more or history_page | default(1) > 1 %}<nav class="pagination" aria-label="Viewing history pages">{% if history_page | default(1) > 1 %}<a href="/plus/activity?view=watch&page={{ history_page - 1 }}" rel="prev">Newer</a>{% endif %}{% if history_has_more %}<a href="/plus/activity?view=watch&page={{ history_page | default(1) + 1 }}" rel="next">Earlier</a>{% endif %}</nav>{% endif %}
 {% else %}{{ empty_state('Your viewing history starts here', 'Episodes you confirm and linked viewing records appear here. Library checks are kept in their own view.', 'Browse your anime', '/plus/library') }}{% endif %}
@@ -15,7 +15,7 @@
   <a href="/plus/activity?view=system&outcome={{ value }}" {% if filter == value %}aria-current="page"{% endif %}>{{ label }}</a>
   {% endfor %}
 </nav>
-<header class="stream-section-heading activity-media-heading"><div><span>Acquisition, Plex, cleanup, and tracker sync</span><h2>Media and library work</h2></div></header>
+<header class="stream-section-heading activity-media-heading"><div><h2>Library activity log</h2><p>See library checks, list updates and removals.</p></div></header>
 {% if tracker_actions %}
 <section class="editorial-panel tracker-activity" aria-labelledby="tracker-activity-heading">
   <header class="panel-heading"><div><span class="section-index">01 / ANIME LIST</span><h2 id="tracker-activity-heading">List updates</h2></div><span class="count-stamp">{{ tracker_actions | length }}</span></header>
@@ -47,8 +47,8 @@
           <time data-local-datetime="{{ event.created_at }}" datetime="{{ event.created_at }}" title="{{ event.created_at }} UTC">{{ event.created_at }} UTC</time>
         </td>
         <td data-label="Title"><a href="{{ event.detail_url | default('/plus/library/' ~ event.monitor_id, true) }}">{{ event.title }}</a></td>
-        <td data-label="Outcome"><span class="state-tag state-{{ 'ready' if event.category == 'success' else ('acquiring' if event.category == 'running' else 'attention') }}">{{ event.outcome }}</span></td>
-        <td data-label="Coverage"><strong>{{ event.covered }} / {{ event.required }}</strong><small>{{ event.accepted }} accepted</small></td>
+        <td data-label="Outcome"><span class="state-tag state-{{ 'ready' if event.category == 'success' else ('acquiring' if event.category == 'running' else 'attention') }}">{{ 'Checked another copy' if event.outcome == 'Publication Withheld' else event.outcome }}</span></td>
+        <td data-label="Episodes">{% if event.required %}<strong>{{ event.covered }} of {{ event.required }}</strong><small>found</small>{% else %}<span>—</span>{% endif %}</td>
         <td data-label="Details"><span>{{ event.detail or 'No detail recorded' }}</span></td>
       </tr>
       {% endfor %}

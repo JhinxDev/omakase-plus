@@ -1,31 +1,32 @@
 {% extends "base.html" %}
-{% from "_collection_search.html" import collection_search %}
+{% from "_collection_search.html" import collection_search, collection_tabs %}
 {% from "_media_components.html" import ready_badge, progress_bar %}
 {% block title %}Anime · Omakase{% endblock %}
 {% block eyebrow %}Saved for your next watch{% endblock %}
-{% block page_title %}Your watchlist{% endblock %}
+{% block page_title %}Your anime{% endblock %}
 {% block page_intro %}<p class="page-intro">Everything you have chosen, from the next episode to the final credits.</p>{% endblock %}
 {% block page_actions %}<a class="button button-primary" href="/plus/add">Add anime</a>{% endblock %}
 {% block content %}
 <div class="watchlist-browser">
-<div class="library-views">
-<nav class="library-lifecycle-tabs" aria-label="Library views">
-  {% for value, label in [('active','Active watchlist'),('in_progress','Watching'),('ready_to_start','Ready'),('waiting','Pending'),('completed','Completed'),('all','All titles')] %}
-  <a href="/plus/library?lifecycle={{ value }}&query={{ query | urlencode }}&state={{ state_filter }}&provider={{ provider_filter }}&content_type={{ content_type_filter }}" {% if lifecycle_filter == value %}aria-current="page"{% endif %}>{{ label }}</a>
-  {% endfor %}
-</nav>
-<span class="library-views-cue" aria-hidden="true">›</span>
-</div>
+{% set collection_extra = '&query=' ~ (query | urlencode) ~ '&state=' ~ state_filter ~ '&provider=' ~ provider_filter ~ '&content_type=' ~ content_type_filter %}
+{{ collection_tabs('/plus/library', lifecycle_filter, 'lifecycle', 'in_progress', collection_extra) }}
 {% call(slot) collection_search('/plus/library', 'anime', 'Filter your saved collection', 'Search your anime', query, 'query', 'Find a saved title', titles | length) %}
 {% if slot == 'fields' %}
-  <input type="hidden" name="lifecycle" value="{{ lifecycle_filter }}">
   <datalist id="library-title-suggestions">
     {% for title in title_suggestions %}<option value="{{ title }}">{% endfor %}
   </datalist>
 {% else %}
-  <details class="watchlist-filter-details" {% if content_type_filter != 'all' or state_filter != 'all' or provider_filter != 'all' %}open{% endif %}>
-  <summary>More filters{% if content_type_filter != 'all' or state_filter != 'all' or provider_filter != 'all' %} · active{% endif %}</summary>
+  {% set extra_active = lifecycle_filter in ['active','ready_to_start','waiting'] or content_type_filter != 'all' or state_filter != 'all' or provider_filter != 'all' %}
+  <details class="watchlist-filter-details" {% if extra_active %}open{% endif %}>
+  <summary>More filters{% if extra_active %} · active{% endif %}</summary>
   <div class="watchlist-extra-filters">
+  <label><span>View</span>
+    <select name="lifecycle">
+      {% for value, label in [('all','Collection'),('in_progress','Watching'),('completed','Watched'),('available','Available'),('active','Active watchlist'),('ready_to_start','Ready to start'),('waiting','Pending')] %}
+      <option value="{{ value }}" {% if lifecycle_filter == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
   <label><span>Type</span>
     <select name="content_type">
       {% for value, label in [('all','All anime'),('series','Series'),('movies','Movies')] %}
@@ -93,7 +94,7 @@
         {{ progress_bar(item, true) }}
       </div>
     </a>
-    <div class="collection-card-availability">{{ ready_badge(item) }}{% if item.publication_pending %}<span>Publishing to Plex</span>{% endif %}</div>
+    <div class="collection-card-availability">{{ ready_badge(item, neutral=true) }}{% if item.publication_pending %}<span>Preparing for your library</span>{% endif %}</div>
     {% if item.release_qualities %}<div class="release-quality" role="group" aria-label="Verified release quality">{% for quality in item.release_qualities %}<span class="{{ 'quality-fallback' if quality == '720p' else '' }}">{{ quality }}{{ ' fallback' if quality == '720p' else ' release' }}</span>{% endfor %}</div>{% endif %}
     <details class="watchlist-coverage">
       <summary>Availability details</summary>

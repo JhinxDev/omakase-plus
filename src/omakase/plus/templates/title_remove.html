@@ -21,9 +21,11 @@
 
 
   {% if not removal.progress or removal.progress.status == "complete" %}
-  <section class="editorial-panel" aria-labelledby="local-list-heading">
-    <h3 id="local-list-heading">{{ 'Restore to your Omakase list' if removal.local_list_removed else 'Remove from your Omakase list' }}</h3>
-    <p>Omakase stops following this title in your personal list. AniList membership, watched history, ratings and media files stay unchanged. Other libraries keep their access and tracking. You can restore this title at any time.</p>
+  <section class="editorial-panel removal-list-option" aria-labelledby="local-list-heading">
+    <div>
+      <h3 id="local-list-heading">{{ 'Restore to your Omakase list' if removal.local_list_removed else 'Remove from your Omakase list' }}</h3>
+      <p>{% if removal.local_list_removed %}Track this title in your personal list again.{% else %}Stop tracking this title in your personal list. You can restore it anytime.{% endif %} Your AniList entry, watch history, ratings and media are kept.</p>
+    </div>
     <form method="post" action="/plus/library/{{ removal.monitor_id }}/local-list/{{ 'restore' if removal.local_list_removed else 'remove' }}" data-busy-form>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="button button-secondary" type="submit" data-busy-label="Saving…">{{ 'Restore to Omakase list' if removal.local_list_removed else 'Remove from Omakase list' }}</button>
@@ -49,7 +51,10 @@
   <details class="removal-details"><summary>Technical details</summary><p>{{ progress.detail }}</p></details>
   <div class="removal-actions"><a class="button button-primary" href="/plus/library/{{ removal.monitor_id }}">Back to title</a><a class="button button-secondary" href="/plus/library">Your anime</a></div>
   {% else %}
-  <p class="removal-lead">Remove this anime’s managed media from Plex{% if removal.eligible_provider_count %} and delete eligible Real-Debrid downloads{% endif %}. Automatic monitoring will stop. This does not remove your tracking entry.</p>
+  {% if removal.asset_count > 0 %}
+  <h3 class="removal-media-heading">Remove managed media</h3>
+  <p class="removal-lead">Remove this anime’s managed media from Plex{% if removal.eligible_provider_count %} and delete eligible Real-Debrid downloads{% endif %}. Automatic monitoring will stop. Your Omakase list entry is kept.</p>
+  {% endif %}
   {% if removal.household_blocked | default(false) %}<div class="product-notice notice-danger removal-error" role="alert"><strong>Shared media is protected.</strong> A library membership or keep/use claim still needs this media. Physical removal is unavailable. Remove this library’s catalog membership in Household settings instead; personal history and files are retained.</div>
   {% elif removal.shared_plex_title %}
   <div class="product-notice notice-danger removal-error" role="alert">
@@ -60,7 +65,6 @@
   {% endif %}
 
   {% if removal.asset_count > 0 %}
-  <h3>Separate action: remove managed media</h3>
   <ol class="removal-sequence" aria-label="Removal order">
     <li>
       <span>01</span>

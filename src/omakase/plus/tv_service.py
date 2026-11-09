@@ -310,17 +310,31 @@ class TVService(MovieService):
             "seasons": sorted(seasons, key=lambda s: s["season_number"]),
         }
 
-    async def collection_page(self, user_id, *, view="all", offset=0):
+    async def collection_page(self, user_id, *, view="all", offset=0, query=""):
         self._owner(user_id)
-        if view not in {"all", "watching", "completed"}:
+        if view not in {"all", "watching", "completed", "available"}:
             raise TVError("Invalid TV collection view.")
         number(offset, 10000, zero=True)
         page_size = 100
         where = "c.user_id=? AND json_extract(c.metadata_json,'$.in_collection')=1"
         values = [user_id]
-        if view != "all":
+        if view == "available":
+            if not self.connections.enabled:
+                raise TVError(
+                    "Connect your library in Settings to check which shows are available."
+                )
+            where += """ AND EXISTS (
+                SELECT 1 FROM tv_plex_snapshots s JOIN tv_episodes e
+                  ON e.user_id=s.user_id AND e.tmdb_id=s.tmdb_id
+                WHERE s.user_id=c.user_id AND s.tmdb_id=c.tmdb_id AND s.source_scope=?
+                  AND e.plex_present=1)"""
+            values.append(self._plex_scope())
+        elif view != "all":
             where += " AND h.status=?"
             values.append(view)
+        if query:
+            where += " AND (instr(lower(json_extract(c.metadata_json,'$.title')), lower(?)) > 0 OR CAST(c.tmdb_id AS TEXT)=?)"
+            values.extend((query, query))
         source = (
             "tv_catalog c LEFT JOIN tv_history h ON h.user_id=c.user_id AND h.tmdb_id=c.tmdb_id"
         )

@@ -788,6 +788,16 @@ def test_ready_requires_current_exact_movie_english_and_byte_evidence(db):
     assert len(fake.probes) == 1
 
 
+def test_collection_availability_includes_an_indexed_movie_before_playback_verification(db):
+    fake = NativeMovies()
+    svc = service(db, fake)
+    cards = run(svc.list(1, view="available"))
+    assert [(card["imdb_id"], card["plex_present"]) for card in cards] == [(IMDB, True)]
+    assert cards[0]["plex_url"] is None
+    assert run(svc.list(1, view="ready")) == []
+    assert not fake.probes
+
+
 @pytest.mark.parametrize(
     "status,size,content_range,code",
     [

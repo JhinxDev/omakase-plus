@@ -90,7 +90,18 @@ def create_movies_router(
         svc = service(db, user)
         cards, error = [], ""
         try:
-            cards = await svc.search(user.id, q) if q else await svc.list(user.id, view=view)
+            if q and view in {"all", "discover"}:
+                cards = await svc.search(user.id, q)
+            else:
+                cards = await svc.list(user.id, view=view)
+                if q:
+                    needle = q.strip().casefold()
+                    cards = [
+                        card
+                        for card in cards
+                        if needle
+                        in f"{card['title']} {card.get('year') or ''} {card['imdb_id']}".casefold()
+                    ]
         except MovieError as exc:
             error = exc.detail
         from omakase.plus.movie_history import MovieHistoryService
@@ -98,6 +109,13 @@ def create_movies_router(
         history = MovieHistoryService(svc)
         for card in cards:
             card["history"] = history.get(user.id, card["imdb_id"]) if card.get("imdb_id") else None
+        if view == "requests":
+            cards = [
+                card
+                for card in cards
+                if not card.get("plex_present")
+                and (card["history"] or {}).get("status") != "completed"
+            ]
         cards = [present_movie(card) for card in cards]
         if households_enabled() if callable(households_enabled) else households_enabled:
             from omakase.plus.household_media import personal_legacy_visible
@@ -142,7 +160,11 @@ def create_movies_router(
         user=Depends(require_user),
         db=Depends(get_db),
     ):
-        if view not in {"all", "requests", "ready", "discover"} or len(q) > 200:
+        if (
+            view
+            not in {"all", "requests", "ready", "discover", "available", "watching", "completed"}
+            or len(q) > 200
+        ):
             raise HTTPException(422, "Invalid movie search")
         if not 0 <= offset <= 10000:
             raise HTTPException(422, "Invalid library page")
@@ -160,7 +182,7 @@ def create_movies_router(
             db,
             q=q,
             offset=offset,
-            view=view,
+            view="available" if view == "ready" else view,
             notice=notice if notice in {"saved", "synced", "updated"} else "",
             sync_result=sync_result,
         )

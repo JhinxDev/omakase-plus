@@ -72,10 +72,13 @@ def create_tv_router(
         collection_page = None
         try:
             svc = service(db, user)
-            if q:
+            if q and view == "all":
                 cards = await svc.search(user.id, q)
             elif hasattr(svc, "collection_page"):
-                collection_page = await svc.collection_page(user.id, view=view, offset=offset)
+                filters = {"query": q.strip()} if q else {}
+                collection_page = await svc.collection_page(
+                    user.id, view=view, offset=offset, **filters
+                )
                 cards = collection_page["cards"]
             else:
                 cards = await svc.list(user.id, view=view)
@@ -116,7 +119,11 @@ def create_tv_router(
         user=Depends(require_user),
         db=Depends(get_db),
     ):
-        if len(q) > 200 or view not in {"all", "watching", "completed"} or not 0 <= offset <= 10000:
+        if (
+            len(q) > 200
+            or view not in {"all", "watching", "completed", "available"}
+            or not 0 <= offset <= 10000
+        ):
             raise HTTPException(422, "Invalid TV search")
         return await render(request, user, db, q, view, offset=offset)
 

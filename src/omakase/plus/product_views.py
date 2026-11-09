@@ -216,7 +216,7 @@ def home_view(db, *, user_id: int, library_scope=None) -> dict[str, Any]:
     confirmation_needed = [item for item in titles if item["has_pending_confirmation"]][:5]
     ready = [item for item in titles if item["lifecycle"] == "ready_to_start"][:10]
     new_episodes = [item for item in ordered_resume if item.get("new_episode_available")][:10]
-    recent = activity_view(db, user_id=user_id, limit=6)["events"]
+    recent = activity_view(db, user_id=user_id, limit=24)["events"]
     return {
         "summary": {
             "titles": len(titles),
@@ -228,7 +228,7 @@ def home_view(db, *, user_id: int, library_scope=None) -> dict[str, Any]:
         "ready": ready,
         "ready_to_watch": ready,
         "new_episodes": new_episodes,
-        "recent_activity": present_home_activity(db, recent),
+        "recent_activity": present_home_activity(db, recent, include_checks=False)[:6],
     }
 
 
@@ -255,6 +255,7 @@ def library_titles(
         "waiting",
         "completed",
         "all",
+        "available",
     }
     if lifecycle not in lifecycle_values:
         raise ProductViewError("library lifecycle filter is unsupported")
@@ -555,7 +556,7 @@ def library_titles(
             provider_summary = "No provider media found"
         if lifecycle == "active" and title_lifecycle == "completed":
             continue
-        if lifecycle not in {"active", "all", title_lifecycle}:
+        if lifecycle not in {"active", "all", "available", title_lifecycle}:
             continue
         if watch_status == "completed" and not resurfaced:
             progress_percent = 100
@@ -670,7 +671,14 @@ def library_titles(
         ]
     from omakase.plus.web_playback_navigation import attach_navigation
 
-    return attach_navigation(db, titles, user_id=user_id, library_scope=library_scope)
+    titles = attach_navigation(db, titles, user_id=user_id, library_scope=library_scope)
+    if lifecycle == "available":
+        return [
+            item
+            for item in titles
+            if min(item["usable"], item["plex_visible"]) or item.get("play_url")
+        ]
+    return titles
 
 
 def title_detail(db, *, user_id: int, monitor_id: int) -> dict[str, Any] | None:

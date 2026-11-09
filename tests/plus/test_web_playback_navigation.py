@@ -187,6 +187,42 @@ def test_home_play_retains_more_info_and_episode_links():
     assert "/plus/library/7#overview" in html and "More info" in html
 
 
+def test_home_resume_hero_shows_episode_and_watched_count_once():
+    card = dict(
+        id=7,
+        title="Synthetic",
+        anilist_id=123,
+        progress_episodes=10,
+        episode_total=13,
+        next_episode=11,
+        partial_playback=True,
+        state="ready",
+        required=13,
+        usable=13,
+        plex_visible=13,
+        play_url="/plus/watch/7/11?library_id=opaque",
+        play_label="Resume",
+        play_episode=11,
+    )
+    html = render(
+        "home.html",
+        continue_watching=[card],
+        ready_to_watch=[],
+        confirmation_needed=[],
+        attention=[],
+        recent_activity=[],
+        new_episodes=[],
+    )
+    hero = html.split('<section class="cinema-hero"', 1)[1].split("</section>", 1)[0]
+    assert "Resume episode 11" in hero
+    assert "Watched <b>10/13</b>" in hero
+    assert "episodes watched through" not in hero
+    rail = html.split('<div class="media-rail" role="list" aria-label="Continue watching">', 1)[1]
+    progress_row = rail.split('<div class="media-progress-meta">', 1)[1].split("</div>", 1)[0]
+    assert "Watched <b>10/13</b>" in progress_row
+    assert "Available <b>13/13</b>" in progress_row
+
+
 @pytest.mark.parametrize(
     "identity,expected_episode,label", [("b" * 64, 2, "Resume"), ("c" * 64, 1, "Play")]
 )

@@ -162,7 +162,7 @@ def test_default_season_skips_specials_but_explicit_zero_is_preserved():
 
 def test_legacy_raw_inventory_never_claims_a_season_count():
     html = render("tv.html", cards=[show(in_plex_episodes=38)], query="", view="all")
-    assert "In Plex" in html and "38 episodes indexed" in html
+    assert "Available" in html and "38 episodes indexed" in html
     assert "Season coverage unknown" in html
     assert "38 in Plex" not in html and "38 seasons" not in html
 

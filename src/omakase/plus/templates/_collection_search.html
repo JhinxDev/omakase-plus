@@ -9,3 +9,10 @@
   {% if caller is defined %}{{ caller('filters') }}{% endif %}
 </form>
 {%- endmacro %}
+{% macro collection_tabs(action, active, field='view', watching='watching', extra='') -%}
+<nav class="movie-tabs collection-view-tabs" aria-label="Collection views">
+  {% for value, label in [('all','Collection'),(watching,'Watching'),('completed','Watched'),('available','Available')] %}
+  <a href="{{ action }}?{{ field }}={{ value }}{{ extra }}" {% if active == value %}aria-current="page"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</nav>
+{%- endmacro %}

@@ -55,6 +55,18 @@ def test_exact_recorded_failure_reason_is_visible_and_different_outcomes_do_not_
     assert result[1]["detail"] == "Connection unavailable"
 
 
+def test_home_updates_skip_routine_checks_and_keep_recorded_problems():
+    routine = {**event(2), "outcome": "Checked existing files"}
+    assert present_home_activity(Evidence([]), [routine, event()], include_checks=False) == []
+    results = present_home_activity(
+        Evidence([{"reason": '{"v":1,"c":"PLEX_SOURCE_UNAVAILABLE"}'}]),
+        [routine, event()],
+        include_checks=False,
+    )
+    assert [row["outcome"] for row in results] == ["Source unavailable"]
+    assert results[0]["detail"] == "Omakase couldn’t reach the source."
+
+
 def test_home_reason_uses_exact_run_and_monitor_and_never_mutates_the_ledger():
     import sqlite3
 

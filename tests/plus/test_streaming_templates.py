@@ -191,7 +191,7 @@ def test_saved_watchlist_is_local_planning_with_exact_intake_and_csrf():
     assert "Saved for later" in html
     assert 'href="/plus/library?lifecycle=in_progress' in html
     assert ">Watching</a>" in html
-    assert ">Pending</a>" in html
+    assert ">Pending</option>" in html
 
 
 def test_completed_selection_preserves_cleanup_boundary_without_nested_forms():
@@ -207,7 +207,7 @@ def test_completed_selection_preserves_cleanup_boundary_without_nested_forms():
     assert cleanup["inputs"]["monitor_id"] == "7"
     assert "open" not in parsed.details["watchlist-coverage"]
     assert "Partial <b>19/24</b>" in html
-    assert 'aria-label="Example anime: 19 of 24 required episodes verified and in Plex"' in html
+    assert 'aria-label="Example anime: 19 of 24 required episodes available"' in html
     assert 'aria-label="Example anime: 10 of 24 episodes watched"' in html
 
 
@@ -233,7 +233,7 @@ def test_readiness_count_requires_both_usable_files_and_plex_visibility(
     assert len(parsed.badges) == 1
     badge = parsed.badges[0]
     assert badge["text"].strip() == (
-        f"In Plex {ready}/24"
+        f"Available {ready}/24"
         if state == "ready"
         else f"Partial {ready}/24"
         if ready
@@ -241,7 +241,7 @@ def test_readiness_count_requires_both_usable_files_and_plex_visibility(
     )
     assert status_class in badge["attrs"]["class"].split()
     assert badge["attrs"]["aria-label"] == (
-        f"Example anime: {ready} of 24 required episodes verified and in Plex"
+        f"Example anime: {ready} of 24 required episodes available"
     )
     assert not badge["hidden"], "availability must remain accessible beside poster artwork"
 
@@ -262,7 +262,7 @@ def test_ready_unstarted_title_keeps_full_title_without_empty_watched_progress()
     html = render("library.html", **context)
 
     assert f'<h2 title="{title["title"]}">{title["title"]}</h2>' in html
-    assert "In Plex <b>24/24</b>" in html
+    assert "Available <b>24/24</b>" in html
     progress = html.split('<div class="media-progress media-progress-compact">', 1)[1].split(
         "</div>", 1
     )[0]

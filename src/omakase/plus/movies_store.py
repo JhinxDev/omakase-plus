@@ -112,6 +112,8 @@ def collection_movies(
     *,
     native_ids: set[str],
     requested_only: bool = False,
+    available_only: bool = False,
+    watch_status: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return bounded personal/native membership, excluding mere catalog cache."""
     require_user(conn, user_id)
@@ -129,6 +131,13 @@ def collection_movies(
     conn.create_function("omakase_movie_collection_casefold", 1, str.casefold, deterministic=True)
     prefix = "SELECT c.* FROM movie_catalog c WHERE c.user_id = ? AND "
     order = " ORDER BY omakase_movie_collection_casefold(c.title), c.imdb_id LIMIT 100"
+    params = [user_id]
+    if watch_status is not None:
+        prefix += (
+            "EXISTS (SELECT 1 FROM movie_history h WHERE h.user_id=c.user_id "
+            "AND h.imdb_id=c.imdb_id AND h.status=?) AND "
+        )
+        params.append(watch_status)
     personal = (
         "EXISTS (SELECT 1 FROM movie_requests r WHERE r.user_id=c.user_id AND r.imdb_id=c.imdb_id)"
     )
@@ -138,16 +147,18 @@ def collection_movies(
             "WHERE h.user_id=c.user_id AND h.imdb_id=c.imdb_id "
             "AND (h.status_source != 'none' OR h.rating_source != 'none'))"
         )
-    candidates = {
-        row["imdb_id"]: dict(row)
-        for row in conn.execute(prefix + "(" + personal + ")" + order, (user_id,))
-    }
+    candidates = {}
+    if not available_only:
+        candidates = {
+            row["imdb_id"]: dict(row)
+            for row in conn.execute(prefix + "(" + personal + ")" + order, params)
+        }
     ordered_native = sorted(native_ids) if not requested_only else []
     for start in range(0, len(ordered_native), 400):
         chunk = ordered_native[start : start + 400]
         placeholders = ",".join("?" for _ in chunk)
         for row in conn.execute(
-            prefix + "c.imdb_id IN (" + placeholders + ")" + order, (user_id, *chunk)
+            prefix + "c.imdb_id IN (" + placeholders + ")" + order, (*params, *chunk)
         ):
             candidates[row["imdb_id"]] = dict(row)
     return sorted(candidates.values(), key=lambda row: (row["title"].casefold(), row["imdb_id"]))[

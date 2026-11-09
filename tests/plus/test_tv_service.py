@@ -155,6 +155,8 @@ def test_explicit_plex_import_is_bounded_and_never_playback_proof(db):
     assert card["in_plex_episodes"] == 1 and card["watched_episodes"] == 1
     assert card["available_episodes"] == 0 and card["status_source"] == "none"
     assert card["seasons"][0]["episodes"][0]["available"] is None
+    assert [row["tmdb_id"] for row in run(svc.list(1, view="available"))] == [42]
+    assert run(svc.list(2, view="available")) == []
     assert all("/library/parts/" not in r.url.path for r in native.calls)
     assert all(r.method == "GET" for r in native.calls)
     assert all(

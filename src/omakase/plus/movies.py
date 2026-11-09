@@ -1533,7 +1533,15 @@ class MovieService:
     async def list(self, user_id: int, *, view: str = "all") -> list[dict[str, Any]]:
         """List at most 100 cards, with current metadata and no media byte reads."""
         self._guard(user_id)
-        if view not in {"all", "requests", "ready", "discover"}:
+        if view not in {
+            "all",
+            "requests",
+            "ready",
+            "discover",
+            "available",
+            "watching",
+            "completed",
+        }:
             raise MovieError("invalid_input")
         inventory_error, plex_error = None, None
         inventory, videos, anime_ids, section = [], [], set(), None
@@ -1543,11 +1551,13 @@ class MovieService:
             inventory_error = error
         try:
             section, anime_section = await self._sections()
-            videos = await self._videos(section)
+            videos = await self._videos(section, require_complete=view == "available")
             if anime_section is not None:
                 for video in await self._videos(anime_section):
                     anime_ids.update(self._guids(video, "imdb"))
         except MovieError as error:
+            if view == "available":
+                raise
             plex_error = error
         by_imdb = {row["imdb_id"]: row for row in inventory}
         native_ids = set(by_imdb) - anime_ids
@@ -1556,6 +1566,7 @@ class MovieService:
                 store.upsert_movie(
                     self.db, user_id, row, now=_iso(self._clock()), identity_verified=False
                 )
+        by_plex_imdb = {}
         for video in videos:
             imdbs = self._guids(video, "imdb")
             if len(imdbs) != 1:
@@ -1583,6 +1594,7 @@ class MovieService:
                     self.db, user_id, metadata, now=_iso(self._clock()), identity_verified=False
                 )
                 native_ids.add(imdb_id)
+                by_plex_imdb.setdefault(imdb_id, []).append(video)
             except (ValueError, TypeError):
                 continue
 
@@ -1590,7 +1602,12 @@ class MovieService:
             if view == "discover":
                 return store.list_movies(self.db, user_id)
             return store.collection_movies(
-                self.db, user_id, native_ids=native_ids, requested_only=view == "requests"
+                self.db,
+                user_id,
+                native_ids=set(by_plex_imdb) if view == "available" else native_ids,
+                requested_only=view == "requests",
+                available_only=view == "available",
+                watch_status=view if view in {"watching", "completed"} else None,
             )
 
         await self._hydrate(user_id, excluded=anime_ids, records=visible_records())
@@ -1612,6 +1629,17 @@ class MovieService:
             if request is not None and view == "discover":
                 continue
             card = self._card(user_id, metadata)
+            plex_matches = by_plex_imdb.get(imdb_id, [])
+            if (
+                len(plex_matches) == 1
+                and plex_matches[0].get("type") == "movie"
+                and plex_matches[0].get("librarySectionID", str(section)) == str(section)
+                and self._guids(plex_matches[0], "tmdb") in (set(), {str(metadata["tmdb_id"])})
+                and re.fullmatch(r"[1-9][0-9]{0,19}", plex_matches[0].get("ratingKey", ""))
+            ):
+                card["plex_present"] = True
+            if view == "available" and not card.get("plex_present"):
+                continue
             if imdb_id in anime_ids:
                 card = self._failure(card, MovieError("anime_movie"))
             elif imdb_id in by_imdb and (

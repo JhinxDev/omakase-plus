@@ -36,7 +36,7 @@ _REASONS = {
 }
 
 
-def present_home_activity(db, events):
+def present_home_activity(db, events, *, include_checks=True):
     """Group only identical visible results, retaining every original attempt.
 
     Failure codes come from the exact run/monitor candidate record, never from
@@ -44,6 +44,8 @@ def present_home_activity(db, events):
     """
     grouped = {}
     for event in events[:24]:
+        if not include_checks and event["outcome"] in {"Check complete", "Checked existing files"}:
+            continue
         codes = set()
         if event["outcome"] == "Publication Withheld":
             for row in db.execute(
@@ -65,8 +67,23 @@ def present_home_activity(db, events):
                 except (ValueError, TypeError, RecursionError):
                     continue
         label, detail = event["outcome"], event["detail"]
+        if (
+            not include_checks
+            and label == "Publication Withheld"
+            and (not codes or codes == {"SELECTION_DEFERRED"})
+        ):
+            continue
         if len(codes) == 1 and next(iter(codes)) in _REASONS:
             label, detail = _REASONS[next(iter(codes))]
+            if not include_checks:
+                detail = {
+                    "Required subtitles missing": "The copy had no selectable English subtitles.",
+                    "Episode match needs attention": "The copy did not match the episodes we expected.",
+                    "File could not be checked": "Omakase couldn’t read the file.",
+                    "Library destination conflict": "Another copy already uses this location.",
+                    "Source unavailable": "Omakase couldn’t reach the source.",
+                    "Source excluded": "This source is outside your library settings.",
+                }.get(label, detail)
         elif label == "Publication Withheld":
             label = "Alternative not added"
             if detail.startswith("This release was not selected."):

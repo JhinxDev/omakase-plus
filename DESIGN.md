@@ -65,6 +65,14 @@ episode list puts the playback control in a consistent trailing position and
 keeps availability and watched state visible independently. Native links and
 disclosures retain visible focus, with no action on focus alone.
 
+Anime, Movies and TV Shows share Collection, Watching, Watched and Available.
+Available describes confirmed library presence or a qualified in-app episode
+source. A Play or Resume action still needs its own playback evidence. Provider
+and request details live in secondary controls. Continue Watching aligns the
+watched count and availability above the progress bar, and the featured title
+shows the resume episode once. Home Library updates surfaces changes and issues,
+with routine checks in the full activity log.
+
 For You opens on Anime, with separate Movies and TV Shows categories. Anime
 excludes locally watched IDs and uses a bounded read of the connected AniList
 watch list, including entries that have no Omakase monitor. If the history check

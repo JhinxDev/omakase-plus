@@ -1132,7 +1132,7 @@ async def anime_banner(anilist_id: int, user=Depends(require_user)):
 @router.get("/library", response_class=HTMLResponse)
 async def library_page(
     request: Request,
-    lifecycle: str = "active",
+    lifecycle: str = "all",
     state: str = "all",
     provider: str = "all",
     content_type: str = "all",
