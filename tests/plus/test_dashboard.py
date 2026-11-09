@@ -2059,7 +2059,8 @@ class TestProductShell:
         try:
             _signup_and_login(client)
             defaults = client.get("/plus/settings/downloads").text
-            assert "Download criteria" in defaults
+            assert "Video quality &amp; downloads" in defaults
+            assert "Advanced download rules" in defaults
             assert "1080p → 2160p → 720p" in defaults
             assert "Policy revision" in defaults
 
