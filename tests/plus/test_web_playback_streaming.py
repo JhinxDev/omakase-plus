@@ -143,7 +143,7 @@ def client(app, session):
     return result
 
 
-def start_stream(owner, *, ass_supported=True):
+def start_stream(owner, *, ass_supported=True, **options):
     return owner.post(
         "/plus/api/playback/sessions",
         json={
@@ -151,6 +151,7 @@ def start_stream(owner, *, ass_supported=True):
             "episode_number": 10,
             "codecs": ["h264", "aac"],
             "ass_supported": ass_supported,
+            **options,
         },
     )
 
@@ -172,8 +173,10 @@ def test_stream_starts_without_the_prepared_size_limit(setup):
     assert "plex.invalid" not in response.text
 
 
-@pytest.mark.parametrize("available", [True, False])
-def test_exact_anime_resume_uses_on_demand_stream_with_hls_fallback(setup, monkeypatch, available):
+@pytest.mark.parametrize("available,prefer_on_demand", [(True, True), (False, True), (True, False)])
+def test_exact_anime_resume_uses_on_demand_stream_with_hls_fallback(
+    setup, monkeypatch, available, prefer_on_demand
+):
     app, _, sessions, launches, _ = setup
     owner = client(app, sessions[1])
     old = start_stream(owner).json()
@@ -203,13 +206,14 @@ def test_exact_anime_resume_uses_on_demand_stream_with_hls_fallback(setup, monke
 
     monkeypatch.setattr(CompatibleStream, "open", open_at_position)
     app.state.single_plex_part = True
-    response = start_stream(owner, ass_supported=False)
+    response = start_stream(owner, ass_supported=False, prefer_on_demand=prefer_on_demand)
     assert response.status_code == 201, response.text
     payload = response.json()
-    assert offsets == [300]
+    assert offsets == ([300] if prefer_on_demand else [])
     assert payload["position_seconds"] == 300
-    assert payload["media_url"].endswith("/compatible.mpd" if available else "/playlist.m3u8")
-    assert len(launches) == (1 if available else 2)
+    fast = available and prefer_on_demand
+    assert payload["media_url"].endswith("/compatible.mpd" if fast else "/playlist.m3u8")
+    assert len(launches) == (1 if fast else 2)
     assert (
         owner.post(
             f"/plus/api/playback/sessions/{payload['session_id']}/close", json={}

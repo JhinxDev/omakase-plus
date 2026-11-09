@@ -159,6 +159,7 @@ class Start(StartOptions):
     monitor_id: StrictInt = Field(gt=0, le=2**63 - 1)
     episode_number: StrictInt = Field(ge=0, le=5000)
     library_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
+    prefer_on_demand: StrictBool = True
 
 
 class MovieTarget(BaseModel):
@@ -1021,6 +1022,8 @@ def create_player_router(
             # prefer an on-demand stream that can open directly at the saved time.
             fast_anime = (
                 compatible_available
+                and isinstance(body, Start)
+                and body.prefer_on_demand
                 and anime_episode
                 and source.container == "mkv"
                 and source.audio_codec == "aac"

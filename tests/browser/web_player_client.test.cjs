@@ -387,6 +387,21 @@ test('subtitle native select retains arrow defaults and Escape closes with focus
 });
 const { playerControlsConfiguration, qualityChoices, SmoothTimeline, validatedSkipSegments, activeSkipSegment } = require('../../src/omakase/plus/static/web-player.js');
 
+test('startup can finish a saved-position seek after the ordinary seek timeout', async t => {
+  const { waitForSeek } = require('../../src/omakase/plus/static/web-player.js');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const video = Object.assign(new EventTarget(), { currentTime: 115.39, seeking: true });
+  let result;
+  const landing = waitForSeek(video, 115.39, 10000).then(value => { result = value; });
+  t.mock.timers.tick(3500);
+  await Promise.resolve();
+  assert.equal(result, undefined);
+  video.seeking = false;
+  video.dispatchEvent(new Event('canplay'));
+  await landing;
+  assert.equal(result, true);
+});
+
 test('compact single row and gear priorities expose no app PiP paths', () => {
   const config=playerControlsConfiguration();
   assert.deepEqual(config.controlPanelElements,['play_pause','omakase_next','omakase_time','spacer','mute','volume','fullscreen','overflow_menu']);

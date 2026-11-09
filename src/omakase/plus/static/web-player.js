@@ -421,17 +421,17 @@
   function seekLanded(video, time) {
     return !video.seeking && Math.abs(video.currentTime - time) <= 1;
   }
-  function waitForSeek(video, time) {
+  function waitForSeek(video, time, timeout = 2000) {
     if (seekLanded(video, time)) return Promise.resolve(true);
     return new Promise(resolve => {
-      const events = ['seeked', 'loadeddata', 'timeupdate'];
+      const events = ['seeked', 'loadeddata', 'canplay', 'timeupdate'];
       const finish = ok => {
         clearTimeout(timer);
         for (const event of events) video.removeEventListener(event, check);
         resolve(ok);
       };
       const check = () => { if (seekLanded(video, time)) finish(true); };
-      const timer = setTimeout(() => finish(seekLanded(video, time)), 2000);
+      const timer = setTimeout(() => finish(seekLanded(video, time)), timeout);
       for (const event of events) video.addEventListener(event, check);
     });
   }
@@ -652,7 +652,7 @@
     }
     return { QualityMenu, AudioMenu, SubtitlesMenu, StreamInfoMenu };
   }
-  if (typeof module !== 'undefined' && module.exports) module.exports = { playbackTime, settingsMenuTypes, playerControlsConfiguration, qualityChoices, streamInfo, SmoothTimeline, validatedSkipSegments, activeSkipSegment, EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
+  if (typeof module !== 'undefined' && module.exports) module.exports = { playbackTime, settingsMenuTypes, playerControlsConfiguration, qualityChoices, streamInfo, waitForSeek, SmoothTimeline, validatedSkipSegments, activeSkipSegment, EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
   if (typeof document === 'undefined') return;
   const root = document.querySelector('[data-web-player]');
   if (!root) return;
@@ -684,6 +684,7 @@
   let starting = false;
   let leaving = false;
   let triedAgain = false;
+  let regularStreamVersion = null;
   let failed = false;
   let periodic = null;
   let captions = null;
@@ -785,6 +786,7 @@
     status.textContent = 'Playback paused.';
     reload.hidden = !(blocked || saving);
     retry.hidden = blocked || saving || error.status === 415 || triedAgain;
+    find('play-from-start').hidden = blocked || saving || error.code !== 'saved_position_unavailable';
     restart.disabled = true;
     start.disabled = true;
     if (saving) saved.textContent = 'Progress save interrupted.';
@@ -1046,12 +1048,13 @@
     if (starting || leaving) return;
     starting = true;
     const currentAttempt = ++attempt;
+    let useRegularStream = false;
     failed = false;
     start.disabled = true;
     startPanel.hidden = true;
     find('cancel-preparation').hidden = true;
     const mediaLabel = config.episode_number ? 'episode' : 'movie';
-    setLoading(`Loading ${mediaLabel}…`, true);
+    setLoading(regularStreamVersion ? 'Opening another stream…' : `Loading ${mediaLabel}…`, true);
     retry.hidden = true;
     find('error').hidden = true;
     status.textContent = `Preparing your ${mediaLabel}…`;
@@ -1074,6 +1077,10 @@
       const startUrl = config.catalog_target ? '/plus/api/playback/catalog-sessions' : '/plus/api/playback/sessions';
       const payload = startPayload(config, browserCapabilities(window, video));
       if (!find('resume').checked) payload.resume = false;
+      if (regularStreamVersion) {
+        payload.prefer_on_demand = false;
+        payload.media_version = regularStreamVersion;
+      }
       const opened = await post(startUrl, payload, false, 40000);
       if (!opened || typeof opened.session_id !== 'string' || !opened.session_id) throw new Error('Invalid playback session');
       if (currentAttempt !== attempt || leaving) {
@@ -1121,7 +1128,12 @@
       await player.load(media.href, position, session.media_type || undefined);
       if (failed || leaving) return;
       const unavailable = () => Object.assign(new Error('Saved position unavailable'), { code: 'saved_position_unavailable' });
-      if (session.seek_url && position > 0 && !(await waitForSeek(video, position))) throw unavailable();
+      if (session.seek_url && position > 0 && !seekLanded(video, position)) {
+        setLoading('Finding your saved position…', true);
+        status.textContent = 'Preparing your saved position…';
+        if (Math.abs(video.currentTime - position) > 1) video.currentTime = position;
+        if (!(await waitForSeek(video, position, 10000))) throw unavailable();
+      }
       if (session.streaming && position > 0 && !seekLanded(video, position)) {
         setLoading('Finding your saved position…', true);
         status.textContent = 'Preparing your saved position…';
@@ -1269,7 +1281,15 @@
       capture('seek');
       periodic = window.setInterval(() => { if (!video.paused && !video.ended) capture('progress'); }, 5000);
       await playReady();
-    } catch (error) { if (currentAttempt === attempt && !leaving) showError(error); }
+    } catch (error) {
+      if (currentAttempt === attempt && !leaving) {
+        const version = session?.source?.media_version;
+        useRegularStream = error.code === 'saved_position_unavailable' && !!session?.seek_url
+          && !config.catalog_target && !regularStreamVersion && /^[a-f0-9]{64}$/.test(version || '');
+        if (useRegularStream) regularStreamVersion = version;
+        else showError(error);
+      }
+    }
     finally {
       if (currentAttempt === attempt) {
         starting = false;
@@ -1277,6 +1297,7 @@
         container.removeAttribute('aria-busy');
       }
     }
+    if (useRegularStream) await begin();
   }
   find('cancel-preparation').addEventListener('click', async () => {
     if (!preparation) return;
@@ -1311,6 +1332,7 @@
   });
   start.addEventListener('click', () => { if (ready) void playReady(); else void begin(); });
   retry.addEventListener('click', () => { if (!triedAgain) { triedAgain = true; void begin(); } });
+  find('play-from-start').addEventListener('click', () => { find('resume').checked = false; void begin(); });
   reload.addEventListener('click', () => window.location.reload());
   subtitleDefault.addEventListener('change', () => {
     try { window.localStorage.setItem(subtitleDefaultKey, subtitleDefault.value); } catch { /* Apply for this player regardless. */ }
