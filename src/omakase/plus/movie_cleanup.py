@@ -13,7 +13,7 @@ import httpx
 from omakase.plus.household_media import managed_removal_guard
 from omakase.plus.movies import _imdb
 from omakase.plus.movies_store import get_movie, get_submission
-from omakase.plus.provider_limits import ProviderRateLimit
+from omakase.plus.provider_limits import ProviderRateLimit, cooldown_hooks
 from omakase.plus.realdebrid import RealDebridClient
 from omakase.plus.secrets import read_secret
 
@@ -46,7 +46,8 @@ def set_movie_cleanup_preference(db, user_id: int, enabled: bool) -> None:
     )
     if not enabled:
         db.execute(
-            "UPDATE movie_cleanup_jobs SET state='cancelled' WHERE user_id=? AND state='queued'",
+            """UPDATE movie_cleanup_jobs SET state='cancelled'
+               WHERE user_id=? AND state='queued' AND stage NOT IN ('complete', 'blocked')""",
             (user_id,),
         )
 
@@ -66,7 +67,8 @@ def record_movie_cleanup_intent(db, *, user_id, imdb_id, backend_scope, before, 
     if not watched_and_rated_manually(after):
         db.execute(
             """UPDATE movie_cleanup_jobs SET state='cancelled'
-               WHERE user_id=? AND imdb_id=? AND state='queued'""",
+               WHERE user_id=? AND imdb_id=? AND state='queued'
+                 AND stage NOT IN ('complete', 'blocked')""",
             (user_id, imdb_id),
         )
         return
@@ -80,8 +82,8 @@ def record_movie_cleanup_intent(db, *, user_id, imdb_id, backend_scope, before, 
            WHERE s.cleanup_owner_id=? AND s.imdb_id=? AND s.backend_scope=?
              AND s.cleanup_tag IS NOT NULL AND p.enabled=1
            ON CONFLICT (user_id, imdb_id, cleanup_tag) DO UPDATE
-             SET queued_at=excluded.queued_at, state='queued'
-             WHERE movie_cleanup_jobs.state='cancelled'""",
+             SET queued_at=excluded.queued_at, state='queued', attempts=0, retry_at=NULL, reason=NULL
+             WHERE movie_cleanup_jobs.state='cancelled' AND movie_cleanup_jobs.stage='prepare'""",
         (now, user_id, imdb_id, backend_scope),
     )
 
@@ -209,6 +211,23 @@ async def _plex_binding(service, movie, binding):
     return key, section, int(size)
 
 
+def _torrent_matches(torrent, torrent_id, torrent_hash, file_name, file_size):
+    selected = [file for file in torrent.files if file.selected] if torrent else []
+    return (
+        torrent is not None
+        and torrent.id == torrent_id
+        and torrent.torrent_hash.lower() == torrent_hash
+        and torrent.status == "downloaded"
+        and len(selected) == 1
+        and PurePosixPath(selected[0].path).name == file_name
+        and selected[0].bytes == file_size
+    )
+
+
+def _rd_client(service, user_id, key):
+    return RealDebridClient(key, timeout=6, **cooldown_hooks(service.db, user_id))
+
+
 async def verify_movie_cleanup_copy(service, user_id: int, imdb_id: str) -> MovieCleanupProof:
     """Match the user's exact provider item to Plex without changing either service."""
     imdb_id = _imdb(imdb_id)
@@ -219,10 +238,10 @@ async def verify_movie_cleanup_copy(service, user_id: int, imdb_id: str) -> Movi
     try:
         binding = await _riven_binding(service, movie)
         plex_key, section, file_size = await _plex_binding(service, movie, binding)
-        torrent = await RealDebridClient(key, timeout=6).get_torrent(
+        torrent = await _rd_client(service, user_id, key).get_torrent(
             binding["torrent_id"], require_definite_absence=True
         )
-    except MovieCleanupUnavailable:
+    except (MovieCleanupUnavailable, ProviderRateLimit):
         raise
     except (
         ValueError,
@@ -230,18 +249,10 @@ async def verify_movie_cleanup_copy(service, user_id: int, imdb_id: str) -> Movi
         OverflowError,
         RecursionError,
         httpx.HTTPError,
-        ProviderRateLimit,
     ) as error:
         raise MovieCleanupUnavailable("copy_lookup_failed") from error
-    selected = [file for file in torrent.files if file.selected] if torrent else []
-    if (
-        torrent is None
-        or torrent.id != binding["torrent_id"]
-        or torrent.torrent_hash.lower() != binding["torrent_hash"]
-        or torrent.status != "downloaded"
-        or len(selected) != 1
-        or PurePosixPath(selected[0].path).name != binding["file_name"]
-        or selected[0].bytes != file_size
+    if not _torrent_matches(
+        torrent, binding["torrent_id"], binding["torrent_hash"], binding["file_name"], file_size
     ):
         raise MovieCleanupUnavailable("real_debrid_binding_unverified")
     return MovieCleanupProof(

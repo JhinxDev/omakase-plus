@@ -264,9 +264,14 @@ class RealDebridClient:
                 torrents.append(_torrent_from_payload(t))
             return torrents
 
-    async def delete_torrent(self, torrent_id: str) -> bool:
+    async def delete_torrent(self, torrent_id: str, *, require_exact_id: bool = False) -> bool:
         """Delete a torrent from Real-Debrid. Returns True on success."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        options = {}
+        if require_exact_id:
+            if not re.fullmatch(r"[A-Za-z0-9]{3,64}", torrent_id):
+                raise ValueError("Invalid Real-Debrid item ID")
+            options = {"follow_redirects": False, "trust_env": False}
+        async with httpx.AsyncClient(timeout=self.timeout, **options) as client:
             self._before_request()
             resp = await client.delete(
                 f"{RD_API}/torrents/delete/{torrent_id}",

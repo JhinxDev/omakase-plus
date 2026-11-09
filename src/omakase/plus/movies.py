@@ -957,8 +957,10 @@ class MovieService:
             raise MovieError("plex_library_mismatch")
         return movies[0], anime[0] if anime else None
 
-    async def _videos(self, section: int) -> list[ElementTree.Element]:
+    async def _videos(self, section: int, *, require_complete=False) -> list[ElementTree.Element]:
         videos = []
+        expected_total = None
+        seen_keys = set()
         for offset in range(0, 1000, 100):
             params = {
                 "type": "1",
@@ -982,6 +984,20 @@ class MovieService:
                 raise MovieError("invalid_plex_metadata") from None
             if total < 0 or total > 1000:
                 raise MovieError("invalid_plex_metadata")
+            if require_complete:
+                if expected_total is None:
+                    expected_total = total
+                keys = {row.get("ratingKey") for row in rows}
+                if (
+                    root.get("totalSize") is None
+                    or total != expected_total
+                    or len(rows) != min(100, max(0, total - offset))
+                    or len(keys) != len(rows)
+                    or None in keys
+                    or seen_keys & keys
+                ):
+                    raise MovieError("invalid_plex_metadata")
+                seen_keys.update(keys)
             if len(rows) < 100 or len(videos) >= total:
                 return videos
         raise MovieError("invalid_plex_metadata")

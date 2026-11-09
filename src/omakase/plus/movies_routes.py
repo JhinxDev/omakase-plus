@@ -391,6 +391,7 @@ def create_movies_router(
             verify_movie_cleanup_copy,
         )
         from omakase.plus.movie_history import MovieHistoryService
+        from omakase.plus.provider_limits import ProviderRateLimit
 
         svc = service(db, user)
         movie = get_movie(db, user.id, imdb_id)
@@ -409,7 +410,7 @@ def create_movies_router(
                     verify_movie_cleanup_copy(svc, user.id, imdb_id), timeout=7
                 )
                 cleanup = "verified" if proof.owned else "protected"
-            except (MovieCleanupUnavailable, MovieError, TimeoutError):
+            except (MovieCleanupUnavailable, MovieError, ProviderRateLimit, TimeoutError):
                 cleanup = "unverified"
         payload = {"result": result, "plex_url": link}
         if cleanup:

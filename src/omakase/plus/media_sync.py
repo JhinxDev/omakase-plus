@@ -2681,6 +2681,10 @@ async def run_media_sync(
         # lease also owns bounded retries after its final session expires.
         process_deferred_completion_cleanup(db)
         db.commit()
+        if monitor_ids is None:
+            from omakase.plus.movie_cleanup_worker import process_movie_cleanup_jobs
+
+            await process_movie_cleanup_jobs(db, heartbeat=heartbeat)
         _maintain_web_playback(db)
         selected_monitors = _selected_monitors(
             db,
