@@ -99,7 +99,7 @@ const closeEnough = (actual, expected, tolerance = .05) => Math.abs(actual-expec
       report.desktop.steps.push({control:'volume',key,...state});
       assert(closeEnough(state.position,position)&&closeEnough(state.volume,expected,.001),'Volume navigation changes only its own value');
     }
-    const seek = page.getByRole('slider',{name:'Seek',exact:true});
+    const seek = page.getByRole('slider',{name:'Seek episode',exact:true});
     await seek.focus();await seek.press('End');
     await page.waitForFunction(()=>{const v=document.querySelector('video');return Math.abs(v.currentTime-v.duration)<.1;});
     const beforeHome = report.desktop.events.length;
@@ -113,7 +113,7 @@ const closeEnough = (actual, expected, tolerance = .05) => Math.abs(actual-expec
     page = active.page;
     await enter(page,true);await pauseAck(page,report.touch,true);
     const before = await (await page.request.get(base+'/review/evidence')).json();
-    const touchSeek = page.getByRole('slider',{name:'Seek',exact:true});
+    const touchSeek = page.getByRole('slider',{name:'Seek episode',exact:true});
     const box = await touchSeek.boundingBox();
     await touchSeek.tap({position:{x:box.width/2,y:box.height/2}});
     await page.waitForFunction(()=>Math.abs(document.querySelector('video').currentTime-15)<.1&&document.querySelector('video').paused);

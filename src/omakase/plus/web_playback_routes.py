@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -11,7 +12,7 @@ import shutil
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -27,6 +28,13 @@ from omakase.plus.middleware import require_user
 from omakase.plus.playback_proof import _insert_binding
 from omakase.plus.request_limits import bounded_form_route
 from omakase.plus.web_playback_admission import Admission, Busy
+from omakase.plus.web_playback_catalog import (
+    catalog_target,
+    personal_scope,
+    resolve_catalog_source,
+    revalidate_catalog_source,
+    revalidate_remote_catalog_source,
+)
 from omakase.plus.web_playback_context import normalize_skip_segments, watch_context
 from omakase.plus.web_playback_delivery import HEADERS, DeliveryError, open_local, open_part
 from omakase.plus.web_playback_navigation import enabled, exact_next_url
@@ -45,6 +53,7 @@ _LOG = logging.getLogger(__name__)
 _CODEC_ERRORS = {"unsupported_browser", "unsupported_browser_audio", "unsupported_codec"}
 _FORMAT_ERRORS = {
     "unsupported_source",
+    "stream_capacity",
     "unsupported_multi_audio",
     "unsupported_subtitle_codec",
     "ambiguous_track_inventory",
@@ -68,6 +77,10 @@ def _remux_failure(error, source):
     if code in _CODEC_ERRORS:
         return _failure(
             code, 415, "This browser cannot decode the selected video or audio.", source=source
+        )
+    if code == "stream_capacity":
+        return _failure(
+            code, 415, "This copy needs more room than the player can reserve.", source=source
         )
     if code in _FORMAT_ERRORS:
         return _failure(
@@ -130,17 +143,61 @@ def _enabled():
         raise HTTPException(404, "Player unavailable")
 
 
-class Start(BaseModel):
+class StartOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    monitor_id: StrictInt = Field(gt=0, le=2**63 - 1)
-    episode_number: StrictInt = Field(gt=0, le=5000)
-    library_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     media_version: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     codecs: list[Literal["h264", "hevc", "av1", "aac", "opus", "ac3", "eac3"]] = Field(
         default_factory=list, max_length=8
     )
     ass_supported: StrictBool = False
     defer_prepare: StrictBool = False
+
+
+class Start(StartOptions):
+    monitor_id: StrictInt = Field(gt=0, le=2**63 - 1)
+    episode_number: StrictInt = Field(ge=0, le=5000)
+    library_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
+
+
+class MovieTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    domain: Literal["movie"] = "movie"
+    imdb_id: str = Field(pattern=r"^tt[0-9]{7,10}$")
+
+
+class TVTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    domain: Literal["tv"] = "tv"
+    tmdb_id: StrictInt = Field(gt=0, le=2147483647)
+    season_number: StrictInt = Field(ge=0, le=200)
+    episode_number: StrictInt = Field(gt=0, le=1000)
+
+
+class CatalogStart(StartOptions):
+    target: Annotated[MovieTarget | TVTarget, Field(discriminator="domain")]
+
+
+def _catalog_key(target):
+    if isinstance(target, MovieTarget):
+        return target.domain, target.imdb_id, 0, 0
+    return target.domain, str(target.tmdb_id), target.season_number, target.episode_number
+
+
+def _tv_watch_url(tmdb_id, season, episode):
+    return f"/plus/watch/title/tv/{tmdb_id}/{season}/{episode}?play=1"
+
+
+def _catalog_neighbor(db, scope, target, offset):
+    if not isinstance(target, TVTarget):
+        return None
+    number = target.episode_number + offset
+    if not 1 <= number <= 1000:
+        return None
+    try:
+        catalog_target(db, scope, "tv", str(target.tmdb_id), target.season_number, number)
+    except PlaybackSourceError:
+        return None
+    return _tv_watch_url(target.tmdb_id, target.season_number, number)
 
 
 class Prepare(BaseModel):
@@ -209,7 +266,7 @@ def _monitor(db, user_id, monitor_id, library_id=None, *, prepare=False):
             domain="anime",
             canonical_id=str(monitor["anilist_id"]),
             title=monitor["title"],
-            season=monitor["season_number"],
+            season=monitor["season_number"] or 0,
             legacy_id=str(monitor["id"]),
         )
     if scope.kind == "household":
@@ -222,7 +279,7 @@ def _monitor(db, user_id, monitor_id, library_id=None, *, prepare=False):
                 scope.library_id,
                 scope.operational_owner_id,
                 str(monitor["anilist_id"]),
-                monitor["season_number"],
+                monitor["season_number"] or 0,
                 str(monitor["id"]),
             ),
         ).fetchone()
@@ -245,8 +302,19 @@ def create_player_router(
     cache_root=None,
 ):
     resolver = resolver or resolve_anime_source
-    source_guard = source_guard or revalidate_source
-    remote_guard = remote_guard or revalidate_remote_source
+    anime_source_guard = source_guard or revalidate_source
+    anime_remote_guard = remote_guard or revalidate_remote_source
+
+    def source_guard(db, source):
+        if getattr(source, "domain", "anime") in {"movie", "tv"}:
+            return revalidate_catalog_source(db, source)
+        return anime_source_guard(db, source)
+
+    def remote_guard(db, source, transport=None):
+        if getattr(source, "domain", "anime") in {"movie", "tv"}:
+            return revalidate_remote_catalog_source(db, source, transport)
+        return anime_remote_guard(db, source, transport=transport)
+
     remux_prepare = remux_prepare or remux.prepare_remux
     resource_getter = resource_getter or remux.get_resource
     cache_root = Path(
@@ -346,7 +414,7 @@ def create_player_router(
             stream_cache_root.mkdir(parents=True, exist_ok=True)
             folders = [folder for folder in stream_cache_root.iterdir() if folder.is_dir()]
         except OSError:
-            return
+            return None
         entries = []
         total = 0
         for folder in folders:
@@ -364,8 +432,12 @@ def create_player_router(
                 break
             if folder in active:
                 continue
-            shutil.rmtree(folder, ignore_errors=True)
+            try:
+                shutil.rmtree(folder)
+            except OSError:
+                continue
             total -= size
+        return total, dict(entries)
 
     def stream_checks(source, body):
         if source.container != "mkv":
@@ -376,10 +448,33 @@ def create_player_router(
         if audio is None or audio.codec not in body.codecs:
             raise remux.RemuxError("unsupported_browser_audio")
 
+    def stream_budget(source):
+        # MPEG-TS framing and per-segment headers add overhead to copied streams.
+        return (source.part_size * 5) // 4 + 16 * 1024**2
+
     async def spawn_stream(source, sid, item):
-        prune_stream_cache()
+        inventory = prune_stream_cache()
         try:
             stream_cache_root.mkdir(parents=True, exist_ok=True)
+            if getattr(source, "domain", "anime") != "anime":
+                if inventory is None:
+                    raise remux.RemuxError("stream_cache_unavailable")
+                cached, sizes = inventory
+                outstanding = sum(
+                    max(0, candidate["stream_budget"] - sizes.get(candidate.get("stream_dir"), 0))
+                    for candidate in handles.values()
+                    if candidate is not item
+                    and "stream_budget" in candidate
+                    and (
+                        candidate.get("stream_process") is None
+                        or candidate["stream_process"].returncode is None
+                    )
+                )
+                required = outstanding + stream_budget(source)
+                free = shutil.disk_usage(stream_cache_root).free
+                if required > min(stream_cache_max_bytes - cached, free - 512 * 1024**2):
+                    raise remux.RemuxError("stream_capacity")
+            item["stream_budget"] = stream_budget(source)
             folder = stream_cache_root / sid
             folder.mkdir(mode=0o700)
         except OSError:
@@ -519,6 +614,13 @@ def create_player_router(
                     raise
                 await stop_stream(item)
 
+    def next_url(db, item):
+        if getattr(item["source"], "domain", "anime") == "anime-film":
+            return None
+        if item["catalog_target"] is not None:
+            return _catalog_neighbor(db, item["source"]._scope, item["catalog_target"], 1)
+        return exact_next_url(db, source=item["source"], monitor_id=item["monitor_id"])
+
     def stream_response(db, item, state):
         source = item["source"]
         prefix = f"/plus/api/playback/sessions/{state['session_id']}/"
@@ -529,7 +631,7 @@ def create_player_router(
                 "skip_segments": normalize_skip_segments(source),
                 "media_url": prefix + "playlist.m3u8",
                 "media_type": "application/vnd.apple.mpegurl",
-                "next_url": exact_next_url(db, source=source, monitor_id=item["monitor_id"]),
+                "next_url": next_url(db, item),
                 "subtitles": [],
                 "fonts": [],
                 "track_map": [],
@@ -655,7 +757,7 @@ def create_player_router(
                 else "video/mp4"
                 if source.container == "mp4"
                 else "video/webm",
-                "next_url": exact_next_url(db, source=source, monitor_id=item["monitor_id"]),
+                "next_url": next_url(db, item),
                 "subtitles": subtitles,
                 "fonts": fonts,
                 "track_map": [] if artifact is None else artifact["track_map"],
@@ -673,12 +775,15 @@ def create_player_router(
         monitor_id: int,
         episode_number: int,
         library_id: str | None = None,
+        play: bool = False,
         user=Depends(require_user),
         db=Depends(get_db),
     ):
-        if not 1 <= episode_number <= 5000:
+        if not 0 <= episode_number <= 5000:
             raise HTTPException(404, "Episode unavailable")
         monitor, scope = _monitor(db, user.id, monitor_id, library_id)
+        if (episode_number == 0) != (monitor["format"] == "MOVIE"):
+            raise HTTPException(404, "Title unavailable")
         return templates.TemplateResponse(
             request,
             "player.html",
@@ -689,7 +794,7 @@ def create_player_router(
                 "monitor_id": monitor_id,
                 "episode_number": episode_number,
                 "library_id": scope.library_id,
-                "next_url": None,
+                "start_immediately": play,
                 "overview_url": f"/plus/library/{monitor_id}?library_id={scope.library_id}",
             },
             headers=HEADERS
@@ -699,10 +804,96 @@ def create_player_router(
             },
         )
 
+    def render_catalog_watch(request, db, user, target, play):
+        domain, canonical, season, episode = _catalog_key(target)
+        try:
+            scope = personal_scope(db, user.id)
+            catalog, entry = catalog_target(db, scope, domain, canonical, season, episode)
+        except PlaybackSourceError:
+            raise HTTPException(404, "Title unavailable in your library") from None
+        title = catalog["title"]
+        episode_data = json.loads(entry["episode_json"]) if entry is not None else {}
+        overview = episode_data.get("overview") if entry is not None else catalog.get("overview")
+        back_url = (
+            f"/plus/tv/{canonical}?season={season}#tv-seasons"
+            if entry
+            else f"/plus/movies/{canonical}"
+        )
+        return templates.TemplateResponse(
+            request,
+            "player.html",
+            {
+                **product_context(request, user, active_page="tv" if entry else "movies"),
+                "title": title,
+                "episode_number": episode,
+                "season_number": season,
+                "library_id": scope.library_id,
+                "catalog_target": target.model_dump(),
+                "start_immediately": play,
+                "overview_url": back_url,
+                "description_preview": overview,
+                "next_url": _catalog_neighbor(db, scope, target, 1),
+                "previous_url": _catalog_neighbor(db, scope, target, -1),
+            },
+            headers=HEADERS
+            | {
+                "Cross-Origin-Opener-Policy": "same-origin",
+                "Cross-Origin-Embedder-Policy": "require-corp",
+            },
+        )
+
+    @router.get("/watch/title/movie/{imdb_id}")
+    def watch_movie(
+        request: Request,
+        imdb_id: str,
+        play: bool = False,
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        try:
+            target = MovieTarget(imdb_id=imdb_id)
+        except ValueError:
+            raise HTTPException(404, "Movie unavailable") from None
+        return render_catalog_watch(request, db, user, target, play)
+
+    @router.get("/watch/title/tv/{tmdb_id}/{season}/{episode}")
+    def watch_tv(
+        request: Request,
+        tmdb_id: int,
+        season: int,
+        episode: int,
+        play: bool = False,
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        try:
+            target = TVTarget(tmdb_id=tmdb_id, season_number=season, episode_number=episode)
+        except ValueError:
+            raise HTTPException(404, "Episode unavailable") from None
+        return render_catalog_watch(request, db, user, target, play)
+
     @router.post("/api/playback/sessions")
     async def start(request: Request, body: Start, user=Depends(require_user), db=Depends(get_db)):
         require_csrf(request, request.headers.get("x-csrf-token", ""))
-        monitor, scope = _monitor(db, user.id, body.monitor_id, body.library_id, prepare=True)
+        monitor, scope = _monitor(db, user.id, body.monitor_id, body.library_id)
+        if (body.episode_number == 0) != (monitor["format"] == "MOVIE"):
+            raise HTTPException(404, "Title unavailable")
+        if scope.kind == "personal":
+            monitor, scope = _monitor(db, user.id, body.monitor_id, scope.library_id, prepare=True)
+        return await start_session(request, body, user, db, scope, monitor=monitor)
+
+    @router.post("/api/playback/catalog-sessions")
+    async def start_catalog(
+        request: Request, body: CatalogStart, user=Depends(require_user), db=Depends(get_db)
+    ):
+        require_csrf(request, request.headers.get("x-csrf-token", ""))
+        try:
+            scope = personal_scope(db, user.id)
+        except PlaybackSourceError:
+            raise HTTPException(404, "Personal library unavailable") from None
+        return await start_session(request, body, user, db, scope)
+
+    async def start_session(request, body, user, db, scope, *, monitor=None):
         for sid, item in list(handles.items()):
             active = db.execute(
                 "SELECT 1 FROM web_playback_sessions s JOIN web_playback_resumes r "
@@ -728,16 +919,30 @@ def create_player_router(
                     raise HTTPException(
                         429, "Your last save is finishing. Try again shortly."
                     ) from None
-            source = await resolver(
-                db,
-                actor_user_id=user.id,
-                library_id=scope.library_id,
-                anilist_id=monitor["anilist_id"],
-                season_number=monitor["season_number"],
-                episode_number=body.episode_number,
-                media_version=body.media_version,
-                transport=transport,
-            )
+            catalog = body.target if isinstance(body, CatalogStart) else None
+            if catalog is not None:
+                domain, canonical, season, episode = _catalog_key(catalog)
+                source = await resolve_catalog_source(
+                    db,
+                    scope=scope,
+                    domain=domain,
+                    canonical_id=canonical,
+                    season=season,
+                    episode=episode,
+                    media_version=body.media_version,
+                    transport=transport,
+                )
+            else:
+                source = await resolver(
+                    db,
+                    actor_user_id=user.id,
+                    library_id=scope.library_id,
+                    anilist_id=monitor["anilist_id"],
+                    season_number=monitor["season_number"] or 0,
+                    episode_number=body.episode_number,
+                    media_version=body.media_version,
+                    transport=transport,
+                )
             source_guard(db, source)
             projection = public_projection(source)
             copied = source.container not in {"mp4", "webm"}
@@ -763,25 +968,27 @@ def create_player_router(
             target = store.ResolvedTarget(
                 user.id,
                 scope.library_id,
-                str(source.anilist_id),
+                getattr(source, "canonical_id", str(source.anilist_id)),
                 source.season_number,
                 source.episode_number,
                 source.media_version,
                 source.duration_ms / 1000,
+                domain=getattr(source, "domain", "anime"),
             )
             previous = store.get_resume(db, target=target)
             version_changed = (
                 previous is None
                 and db.execute(
                     "SELECT 1 FROM web_playback_resumes WHERE user_id=? AND library_id=? "
-                    "AND canonical_id=? AND season_number=? AND episode_number=? "
+                    "AND domain=? AND canonical_id=? AND season_number=? AND episode_number=? "
                     "AND media_version!=? AND position_seconds>0 LIMIT 1",
                     (
                         user.id,
                         scope.library_id,
-                        str(source.anilist_id),
-                        source.season_number,
-                        source.episode_number,
+                        target.domain,
+                        target.canonical_id,
+                        target.season_number,
+                        target.episode_number,
                         source.media_version,
                     ),
                 ).fetchone()
@@ -789,6 +996,15 @@ def create_player_router(
             )
             with fresh_source_transaction(db):
                 source_guard(db, source)
+                if (
+                    target.domain == "movie"
+                    and db.execute(
+                        "SELECT 1 FROM movie_cleanup_jobs WHERE imdb_id=? AND state='queued' "
+                        "AND stage IN ('withdrawal_intent','awaiting_plex','provider_intent') LIMIT 1",
+                        (target.canonical_id,),
+                    ).fetchone()
+                ):
+                    raise PlaybackSourceError("This movie is being removed from the library.")
                 now = datetime.now(UTC)
                 _insert_binding(
                     db,
@@ -810,7 +1026,8 @@ def create_player_router(
                 "expires_at": state["expires_at"],
                 "artifact": None,
                 "reads": 0,
-                "monitor_id": body.monitor_id,
+                "monitor_id": body.monitor_id if catalog is None else None,
+                "catalog_target": catalog,
                 "version_changed": version_changed,
                 "streaming": stream_mode,
                 "allow_subtitles": body.ass_supported,
@@ -939,7 +1156,8 @@ def create_player_router(
                     expected_snapshot=_snapshot(source),
                     **body.model_dump(),
                 )
-                observe_playback(db, source=source, state=result)
+                if result["domain"] == "anime":
+                    observe_playback(db, source=source, state=result)
             return JSONResponse(result, headers=HEADERS)
         except store.PlaybackStoreError as error:
             _LOG.warning("playback_event_rejected reason=%s", error.code)
@@ -1041,7 +1259,8 @@ def create_player_router(
                         expected_snapshot=_snapshot(source),
                         **final.model_dump(),
                     )
-                    observe_playback(db, source=source, state=result)
+                    if result["domain"] == "anime":
+                        observe_playback(db, source=source, state=result)
                 store.close_session(
                     db,
                     session_id=sid,

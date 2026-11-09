@@ -357,7 +357,8 @@ test('terminal snapshots never credit a pending seek as an ended or pause interv
 test('direct Next accepts only the following episode in the same series and library', () => {
  const c={monitor_id:7,episode_number:2,library_id:'a'},o='https://app.example';
  assert.equal(nextEpisodeUrl('/plus/watch/7/3?library_id=a',c,o),o+'/plus/watch/7/3?library_id=a');
- for(const p of ['/plus/watch/8/3?library_id=a','/plus/watch/7/4?library_id=a','/plus/watch/7/3?library_id=b','/plus/watch/7/3?library_id=a&library_id=a','/plus/watch/7/3?library_id=a&x=1','/plus/watch/7/3?library_id=a#x','https://app.example/plus/watch/7/3?library_id=a','/plus/watch/7/2/../3?library_id=a',null]) assert.equal(nextEpisodeUrl(p,c,o),null,p);
+ assert.equal(nextEpisodeUrl('/plus/watch/7/3?library_id=a&play=1',c,o),o+'/plus/watch/7/3?library_id=a&play=1');
+ for(const p of ['/plus/watch/8/3?library_id=a','/plus/watch/7/4?library_id=a','/plus/watch/7/3?library_id=b','/plus/watch/7/3?library_id=a&library_id=a','/plus/watch/7/3?library_id=a&x=1','/plus/watch/7/3?library_id=a&play=0','/plus/watch/7/3?library_id=a&play=1&play=1','/plus/watch/7/3?library_id=a#x','https://app.example/plus/watch/7/3?library_id=a','/plus/watch/7/2/../3?library_id=a',null]) assert.equal(nextEpisodeUrl(p,c,o),null,p);
 });
 test('one subtitle menu restores native ID zero, ASS and Off without cross-version saved choices', () => {
  const n=[{id:0,language:'en',active:true},{id:8,language:'ja',forced:true}],a=[{plex_stream_id:12,language:'ja',selected:true,default:true}];

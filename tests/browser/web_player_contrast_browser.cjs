@@ -34,7 +34,9 @@ const assert=(ok,message)=>{if(!ok)throw new Error(message);};
    await page.locator('[data-player-container]').hover();
    await page.locator('.shaka-overflow-menu-button').focus();await page.keyboard.press('Tab');await page.keyboard.press('Shift+Tab');
    const state=await page.evaluate(()=>{
-    const rgb=value=>(value.match(/[\d.]+/g)||[]).map(Number);
+    const rgb=value=>value.startsWith('#')
+      ? (value.slice(1).match(/.{2}/g)||[]).map(part=>parseInt(part,16))
+      : (value.match(/[\d.]+/g)||[]).map(Number);
     const luminance=color=>color.slice(0,3).map(value=>value/255).map(value=>value<=.04045?value/12.92:((value+.055)/1.055)**2.4).reduce((sum,value,index)=>sum+value*[.2126,.7152,.0722][index],0);
     const contrast=(a,b)=>{const x=luminance(a),y=luminance(b);return(Math.max(x,y)+.05)/(Math.min(x,y)+.05);};
     const backing=document.querySelector('.shaka-bottom-controls'),back=getComputedStyle(backing),bg=rgb(back.backgroundColor);
@@ -42,21 +44,27 @@ const assert=(ok,message)=>{if(!ok)throw new Error(message);};
       const style=getComputedStyle(node),rect=node.getBoundingClientRect();let opacity=1;for(let el=node;el;el=el.parentElement){opacity*=Number(getComputedStyle(el).opacity);if(el.matches('[data-player-container]'))break;}
       return{name:node.getAttribute('aria-label')||node.textContent.trim(),foreground:style.color,opacity,ratio:contrast(rgb(style.color),bg),rect:rect.toJSON()};
     });
-    const seek=document.querySelector('.shaka-seek-bar').parentElement;
-    const track=getComputedStyle(seek).backgroundImage;
-    const trackColors=[...track.matchAll(/rgba?\([^)]+\)/g)].map(match=>match[0]);
+    const seek=document.querySelector('[data-player-timeline]');
+    const rules=[...document.styleSheets].flatMap(sheet=>{try{return[...sheet.cssRules];}catch{return[];}});
+    const seekBackground=rgb(getComputedStyle(seek.closest('[data-player-container]')).backgroundColor);
+    const accent=getComputedStyle(seek).getPropertyValue('--stream-accent').trim() || '#c3b1ff';
+    const resolvedAccent=css=>css.replace(/var\(--stream-accent,[^)]+\)/g,accent);
+    const trackRule=rules.find(rule=>rule.selectorText==='.web-player input[data-player-timeline]::-webkit-slider-runnable-track');
+    const track=resolvedAccent(trackRule.style.background);
+    const trackColors=track.match(/#[\da-f]{6}\b|rgba?\([^)]+\)/gi) || [];
     const focus=document.activeElement,focusStyle=getComputedStyle(focus);
-    const thumbRule=[...document.styleSheets].flatMap(sheet=>{try{return[...sheet.cssRules];}catch{return[];}}).find(rule=>rule.selectorText?.startsWith('.web-player input.shaka-range-element::-webkit-slider-thumb'));
+    const thumbRule=rules.find(rule=>rule.selectorText==='.web-player input[data-player-timeline]::-webkit-slider-thumb');
+    const thumbFill=resolvedAccent(thumbRule.style.background);
     const video=document.querySelector('video');
     const videoRect=video.getBoundingClientRect(),scale=Math.min(video.clientWidth/video.videoWidth,video.clientHeight/video.videoHeight);
     const image={left:videoRect.left+(video.clientWidth-video.videoWidth*scale)/2,top:videoRect.top+(video.clientHeight-video.videoHeight*scale)/2,width:video.videoWidth*scale,height:video.videoHeight*scale};image.bottom=image.top+image.height;
     return{width:innerWidth,fullscreen:!!document.fullscreenElement,scroll:document.documentElement.scrollWidth,backing:backing.getBoundingClientRect().toJSON(),video:videoRect.toJSON(),image,media:{position:video.currentTime,paused:video.paused,muted:video.muted,frames:video.getVideoPlaybackQuality().totalVideoFrames},background:back.backgroundColor,backingOpacity:Number(back.opacity),controls,
-      seek:{track,colors:trackColors.map(color=>({color,ratio:contrast(rgb(color),bg)})),thumb:thumbRule?{fill:thumbRule.style.backgroundColor,border:thumbRule.style.borderColor,ratio:contrast(rgb(thumbRule.style.backgroundColor),rgb(thumbRule.style.borderColor))}:null},
+      seek:{track,colors:trackColors.map(color=>({color,ratio:contrast(rgb(color),seekBackground)})),thumb:{fill:thumbFill,border:thumbRule.style.borderColor,ratio:contrast(rgb(thumbFill),rgb(thumbRule.style.borderColor))}},
       focus:{name:focus.getAttribute('aria-label'),visible:focus.matches(':focus-visible'),outline:focusStyle.outlineColor,width:focusStyle.outlineWidth,ratio:contrast(rgb(focusStyle.outlineColor),bg)}};
    });
    report.states.push(state);
    assert(state.scroll<=width,'No horizontal control overflow');assert(state.background==='rgb(8, 13, 26)'&&state.backingOpacity===1,'Known opaque backing over video');
-   for(const name of ['Unmute',fullscreen?'Exit full screen':'Full screen','More settings']){const control=state.controls.find(control=>control.name===name);assert(control&&control.opacity===1&&control.ratio>=3,name+' must retain3:1 contrast and no alpha blend with video');assert(control.rect.width>=44&&control.rect.height>=44,name+' retains touch target');}
+   for(const name of [...(width>360?['Unmute']:[]),fullscreen?'Exit full screen':'Full screen','More settings']){const control=state.controls.find(control=>control.name===name);assert(control&&control.opacity===1&&control.ratio>=3,name+' must retain3:1 contrast and no alpha blend with video');assert(control.rect.width>=44&&control.rect.height>=44,name+' retains touch target');}
    assert(state.controls.every(control=>control.ratio>=3),'Time/active controls retain contrast');
    assert(state.controls.every(control=>control.rect.left>=state.backing.left&&control.rect.right<=state.backing.right),'Every active control, including Play, stays inside the opaque strip');
    assert(state.image.bottom<=state.backing.top&&state.image.height>0,'Opaque controls remain below the actual contain-fit video image and its ASS coordinate rectangle');

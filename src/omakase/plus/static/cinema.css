@@ -270,8 +270,9 @@ body.product-body .streaming-title-hero,.movie-detail-hero{grid-template-columns
   font-weight: 650; line-height: 1.25;
 }
 .media-card-transport svg { box-sizing: content-box; flex: none; padding: .4rem; border-radius: 50%; background: #eeebf7; color: #171325; }
+.media-card-transport--details svg { background: #262b3b; color: #f0edf8; }
 .media-card-transport small { display: block; margin-top: .18rem; color: #d3cada; font-size: .75rem; font-weight: 450; }
-.media-card-cover:is(:hover, :focus-visible) .media-card-transport svg { background: var(--stream-accent, #c3b1ff); }
+.media-card-cover:is(:hover, :focus-visible) .media-card-transport svg { background: var(--stream-accent, #c3b1ff); color: #171325; }
 .media-rail .media-card-body h3 { block-size: 2.8em; min-block-size: 2.8em; -webkit-line-clamp: 2; }
 .media-card-detail { display: inline-block; max-width: 100%; color: inherit; text-decoration: none; }
 .media-card-detail:hover { text-decoration: underline; }

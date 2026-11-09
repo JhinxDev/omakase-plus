@@ -1,14 +1,18 @@
 # Optional authenticated web player
 
-The anime player is opt-in. Keep Plex/Infuse available for unsupported files,
-browsers and subtitle formats. Enabling a flag is not playback qualification for
-a particular device or installation. Movies, TV and combined episode files keep
-their existing playback actions.
+The web player is opt-in and supports qualified anime series, anime films, movies,
+and TV episodes. Plex remains a media source and an external playback option.
+The in-app player uses authenticated reads from the connected Plex library,
+including titles backed by local files or Real-Debrid. Movie and TV playback
+currently uses the viewer's personal library. Combined episode files and
+ambiguous copies still use the external playback action.
 
 ## Viewing
 
-Home and episode actions open the exact selected episode. Playback starts only
-after Play. The player supplies seek, pause, volume, speed from 0.25× to 2×,
+Choose Play or Resume to open the exact title in a black player with a loading
+indicator. Playback begins as soon as the source and saved position are ready.
+If your browser blocks autoplay, press Play in the player to continue.
+The player supplies seek, pause, volume, speed from 0.25× to 2×,
 audio selection and container fullscreen. A genuinely played partial episode can
 appear in Continue watching without marking earlier episodes watched. Exact
 episode completion requires 85% server-accepted played coverage. Seeking alone,
@@ -19,12 +23,14 @@ terminal save or access error stops playback until deliberate recovery. Leaving
 and quickly returning preserves the final paused seek without treating that jump
 as watched time.
 
-Resume and track choices belong to this viewer, library, episode and exact media
+Resume and track choices belong to this viewer, library, title and exact media
 version. A different encoding starts without the old offset. A later manual
 correction/reopen fences old completion evidence; a new explicit viewing can
 complete the episode again. Watching episode 5 does not imply episodes 1–4 were
 watched. The legacy aggregate advances only through contiguous known completion
-above existing explicit progress. Original events and tracker consent remain.
+above existing explicit progress. Original events and tracker consent remain. For anime films, movies,
+and TV episodes, the player saves the resume position. Use the title's watch
+status controls to mark those titles watched.
 
 MP4/WebM use authenticated ranged delivery. Eligible MKV files use a full copy-only
 static DASH preparation: at most 256 MiB, 40 minutes and 45 seconds. No video/audio
@@ -37,7 +43,9 @@ Installations that enable \`OMAKASE_PLAYBACK_STREAMING=true\` use authenticated
 copy-only HLS for qualified MKV sources. A transient startup timeout gets one
 bounded retry. Preparation, source-access and codec failures have separate
 messages. Styled ASS extraction runs after video is ready. The subtitle menu
-shows preparation or unavailability without interrupting video playback.
+shows preparation or unavailability without interrupting video playback. For
+movies, TV and anime films, the copy is opened in this mode only when the
+stream cache has room for the expected output.
 
 ASS/SSA uses the original script and admitted embedded fonts in a derived JASSUB
 renderer. It requires the isolated player document, shared WASM memory,

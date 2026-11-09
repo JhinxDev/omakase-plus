@@ -100,7 +100,9 @@ def test_actual_resume_publication_survives_eight_day_session_cleanup(
     changes = db.total_changes
     card = home_view(db, user_id=1)["continue_watching"][0]
     assert card["play_label"] == label
-    assert card["play_url"] == f"/plus/watch/{monitor}/{episode}?library_id={target.library_id}"
+    assert (
+        card["play_url"] == f"/plus/watch/{monitor}/{episode}?library_id={target.library_id}&play=1"
+    )
     assert card["partial_playback"] and card["progress_episodes"] == 0
     assert db.total_changes == changes
     if candidate is not None:
@@ -138,7 +140,7 @@ def test_other_resume_identity_never_qualifies_own_legacy_partial(db, monkeypatc
     changes = db.total_changes
     card = home_view(db, user_id=1)["continue_watching"][0]
     assert card["play_label"] == "Play"
-    assert card["play_url"] == f"/plus/watch/{monitor}/1?library_id={target.library_id}"
+    assert card["play_url"] == f"/plus/watch/{monitor}/1?library_id={target.library_id}&play=1"
     assert db.total_changes == changes
 
 
@@ -181,7 +183,7 @@ def test_legacy_session_snapshot_is_not_a_durable_proof_and_next_stays_read_only
     )
     assert (
         nav.exact_next_url(db, source=source, monitor_id=monitor)
-        == f"/plus/watch/{monitor}/3?library_id={target.library_id}"
+        == f"/plus/watch/{monitor}/3?library_id={target.library_id}&play=1"
     )
     assert db.total_changes == changes
     # A fresh trusted resolution qualifies the existing exact-version resume,

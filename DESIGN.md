@@ -47,16 +47,19 @@ live. Synthetic intervals only qualify the bounded UI behavior.
 
 Below the player: series link, episode heading and matching cached synopsis.
 The desktop sidebar contains scoped navigation, season and cached genres, then
-stacks on phones. Previous is shown only for a current published episode;
-Next retains its exact session-qualified URL. No provider is fetched on page
-open. Public scores and episode names are omitted when matching cached evidence
+stacks on phones. Previous and Next appear when the exact adjacent episode is
+present in the current scoped library. Starting an episode still rechecks access
+to its copy. The page renders its context from local data. Public scores and episode names are omitted when matching cached evidence
 is unavailable. Restart, exact Plex fallback and subtitle license/source access
 remain in a compact playback-options disclosure. Save feedback stays discreet;
 actual failures remain an alert and stop buffered playback.
 
-Play, preparation/cancel, deliberate bounded retry, session exit closure and
-authorization retain their existing contracts. No next-episode autoplay. Reduced
-motion disables decorative transitions; forced colors keeps visible boundaries.
+Play, Resume, and episode navigation open the same stable player frame. The
+loading indicator stays in the video area through startup and seeks. The player
+offers Play if the browser requires a gesture. The next episode starts after
+the viewer chooses it. A compact focus cue follows the timeline thumb for
+keyboard users. Reduced motion disables the spinner animation and forced colors
+keeps its boundaries visible.
 
 ## Viewing entry points
 

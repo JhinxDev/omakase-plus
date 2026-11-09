@@ -128,6 +128,8 @@ def has_active_playback_hold(db, *, user_id, monitor_id, now=None):
     ).fetchone()
     if monitor is None:
         return False
+    domain = "anime-film" if monitor["season_number"] is None else "anime"
+    season = monitor["season_number"] or 0
     # A worker may still read the original while its browser disconnects. The
     # durable RUNNING lease survives until process absence is actually proved.
     # This holds deletion only; it never authorizes a media request.
@@ -135,8 +137,8 @@ def has_active_playback_hold(db, *, user_id, monitor_id, now=None):
         "SELECT 1 FROM web_playback_remux j JOIN web_playback_resumes r "
         "ON r.media_version=j.media_version AND r.user_id=j.actor_user_id "
         "JOIN libraries l ON l.id=r.library_id WHERE j.state='RUNNING' "
-        "AND l.owner_user_id=? AND r.canonical_id=? AND r.season_number=? LIMIT 1",
-        (user_id, str(monitor["anilist_id"]), monitor["season_number"]),
+        "AND l.owner_user_id=? AND r.domain=? AND r.canonical_id=? AND r.season_number=? LIMIT 1",
+        (user_id, domain, str(monitor["anilist_id"]), season),
     ).fetchone():
         return True
     for hold in active_media_holds(db, now=now):
@@ -202,9 +204,9 @@ def has_active_playback_hold(db, *, user_id, monitor_id, now=None):
         if (
             owner
             and owner[0] == user_id
-            and hold["domain"] == "anime"
+            and hold["domain"] == domain
             and hold["canonical_id"] == str(monitor["anilist_id"])
-            and hold["season_number"] == monitor["season_number"]
+            and hold["season_number"] == season
         ):
             return True
     return False

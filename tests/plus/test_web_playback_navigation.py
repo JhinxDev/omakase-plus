@@ -44,7 +44,7 @@ def test_next_is_exact_same_title_season_and_read_only(fixture, monkeypatch):
     changes = db.total_changes
     assert (
         nav.exact_next_url(db, source=_source(db), monitor_id=1)
-        == "/plus/watch/1/2?library_id=library"
+        == "/plus/watch/1/2?library_id=library&play=1"
     )
     assert db.total_changes == changes
 
@@ -252,7 +252,10 @@ def test_resume_uses_actual_unfinished_episode_and_durable_source_identity(
     monkeypatch.setattr(nav, "_candidates", lambda *a: {1: "b" * 64, 2: "b" * 64})
     changes = db.total_changes
     card = home_view(db, user_id=1)["continue_watching"][0]
-    assert card["play_url"] == f"/plus/watch/{monitor}/{expected_episode}?library_id={library_id}"
+    assert (
+        card["play_url"]
+        == f"/plus/watch/{monitor}/{expected_episode}?library_id={library_id}&play=1"
+    )
     assert card["play_label"] == label
     assert card["progress_episodes"] == 0
     assert db.total_changes == changes

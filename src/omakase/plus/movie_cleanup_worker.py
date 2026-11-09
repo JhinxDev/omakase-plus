@@ -9,6 +9,7 @@ from pathlib import PurePosixPath
 
 import httpx
 
+from omakase.plus import households
 from omakase.plus.connections import movie_connections
 from omakase.plus.movie_cleanup import (
     MovieCleanupProof,
@@ -28,6 +29,7 @@ from omakase.plus.movies import MovieError, MovieService, _imdb
 from omakase.plus.movies_store import COPY_REMOVED_DETAIL, get_submission
 from omakase.plus.provider_limits import ProviderRateLimit
 from omakase.plus.secrets import read_secret
+from omakase.plus.web_playback_store import active_media_holds
 
 
 class _Wait(ValueError):
@@ -298,8 +300,16 @@ async def _step(db, job, heartbeat, service_factory):
         raise MovieCleanupUnavailable("real_debrid_disconnected")
     stamp = _connection_stamp(service.connections, key)
 
+    def require_idle_player():
+        if any(
+            hold["domain"] == "movie" and hold["canonical_id"] == imdb_id
+            for hold in active_media_holds(db)
+        ):
+            raise _Wait("movie_is_playing")
+
     def confirm_authorized(copy):
         heartbeat()
+        require_idle_player()
         current = service_factory(db, user_id)
         current_key = read_secret(db, user_id, "realdebrid_api_key")
         if _connection_stamp(current.connections, current_key) != stamp:
@@ -310,6 +320,7 @@ async def _step(db, job, heartbeat, service_factory):
         _ensure_unshared(db, copy)
 
     if stage == "prepare":
+        require_idle_player()
         copy = await verify_movie_cleanup_copy(service, user_id, imdb_id)
         if not copy.owned:
             raise MovieCleanupUnavailable("acquisition_unverified")
@@ -317,7 +328,9 @@ async def _step(db, job, heartbeat, service_factory):
         if job["intent"] == "manual" and job["selection_digest"] != _selection_digest(receipt):
             raise MovieCleanupUnavailable("confirmed_copy_changed")
         confirm_authorized(copy)
-        _update(db, job, stage="withdrawal_intent", proof=json.dumps(asdict(receipt)))
+        with households._transaction(db):
+            require_idle_player()
+            _advance(db, job, stage="withdrawal_intent", proof=json.dumps(asdict(receipt)))
         return
 
     receipt = _read_receipt(job)

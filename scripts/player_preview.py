@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -27,6 +28,7 @@ from omakase.plus.auth import create_session
 from omakase.plus.db import _connect
 from omakase.plus.deps import get_db
 from omakase.plus.middleware import require_user
+from omakase.plus.secrets import store_secret
 from omakase.plus.web_playback_delivery import parse_range
 from omakase.plus.web_playback_routes import create_player_router
 from omakase.plus.web_security import csrf_token
@@ -49,7 +51,25 @@ def preview(media: Path, data_dir: str):
     db.execute(
         "INSERT INTO media_monitors(id,user_id,anilist_id,title,season_number) VALUES(1,1,100,'Synthetic playback study',1)"
     )
+    db.execute(
+        "INSERT INTO movie_catalog(user_id,imdb_id,tmdb_id,title,year,identity_verified,updated_at) "
+        "VALUES(1,'tt1234567',100,'Synthetic movie',2025,1,'now')"
+    )
+    db.execute(
+        "INSERT INTO tv_catalog VALUES(1,100,?,'now')",
+        (json.dumps({"title": "Synthetic TV show", "tmdb_id": 100}),),
+    )
+    connector = hashlib.sha256(b"https://fixture.invalid\0dummy-web").hexdigest()
+    db.execute("INSERT INTO tv_plex_snapshots VALUES(1,100,?,'11',1,'now')", (connector,))
+    for ep in (1, 2):
+        db.execute("INSERT INTO tv_episodes VALUES(1,100,1,?,'{}',0,'none',1,'now')", (ep,))
     db.commit()
+    for key, value in {
+        "plex_url": "https://fixture.invalid",
+        "plex_token": "dummy-web",
+        "plex_machine_id": "synthetic-playback-fixture",
+    }.items():
+        store_secret(db, 1, key, value)
     login = create_session(db, 1)
     db.close()
 
@@ -100,8 +120,49 @@ def preview(media: Path, data_dir: str):
                     remaining -= len(data)
                     yield data
 
+    def media_xml(key, section, attributes, guids=""):
+        return (
+            f'<Video ratingKey="{key}" librarySectionID="{section}" duration="30000" {attributes}>'
+            f'{guids}<Media id="1" width="1920" height="1080" container="mp4" videoCodec="h264" audioCodec="aac">'
+            f'<Part id="1" size="{size}" key="/library/parts/1/1/fixture.mp4" file="/synthetic/{key}.mp4"/>'
+            "</Media></Video>"
+        )
+
+    movie = media_xml(
+        12,
+        2,
+        'type="movie" year="2025" librarySectionTitle="Movies"',
+        '<Guid id="imdb://tt1234567"/><Guid id="tmdb://100"/>',
+    )
+    tv = [
+        media_xml(
+            20 + ep, 3, f'type="episode" grandparentRatingKey="11" parentIndex="1" index="{ep}"'
+        )
+        for ep in (1, 2)
+    ]
+    fixture_xml = {
+        "/identity": '<MediaContainer machineIdentifier="synthetic-playback-fixture"/>',
+        "/library/sections": '<MediaContainer><Directory key="2" title="Movies" type="movie"/>'
+        '<Directory key="3" title="TV Shows" type="show"/></MediaContainer>',
+        "/library/sections/2/all": f'<MediaContainer totalSize="1">{movie}</MediaContainer>',
+        "/library/metadata/12": f"<MediaContainer>{movie}</MediaContainer>",
+        "/library/metadata/11": '<MediaContainer><Directory librarySectionID="3" ratingKey="11" type="show">'
+        '<Guid id="tmdb://100"/></Directory></MediaContainer>',
+        "/library/metadata/11/allLeaves": '<MediaContainer totalSize="2">'
+        + "".join(tv)
+        + "</MediaContainer>",
+        "/library/metadata/21": f"<MediaContainer>{tv[0]}</MediaContainer>",
+        "/library/metadata/22": f"<MediaContainer>{tv[1]}</MediaContainer>",
+    }
+
     def transport(request):
+        assert request.headers["x-plex-token"] == "dummy-web"
+        if request.url.host == "plex.tv":
+            assert request.url.path == "/api/v2/user"
+            return httpx.Response(200, json={"id": 1234567})
         assert request.url.host == "fixture.invalid"
+        if request.url.path in fixture_xml:
+            return httpx.Response(200, text=fixture_xml[request.url.path])
         assert request.url.path == "/library/parts/1/1/fixture.mp4"
         selected = request.headers.get("range")
         left, right = parse_range(selected, size) if selected else (0, size - 1)
@@ -179,8 +240,12 @@ def preview(media: Path, data_dir: str):
         }
 
     @app.get("/review/sign-in")
-    async def sign_in(request: Request):
-        response = RedirectResponse("/plus/watch/1/1", status_code=303)
+    async def sign_in(request: Request, title: str = ""):
+        path = {
+            "movie": "/plus/watch/title/movie/tt1234567?play=1",
+            "tv": "/plus/watch/title/tv/100/1/1?play=1",
+        }.get(title, "/plus/watch/1/1")
+        response = RedirectResponse(path, status_code=303)
         response.set_cookie("omakase_session", login, httponly=True, samesite="strict")
         return response
 

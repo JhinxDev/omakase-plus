@@ -103,6 +103,7 @@ def transport(
     metadata_missing_part=False,
     markers="",
     alternate_cut=False,
+    film=False,
 ):
     def handle(req):
         if callback:
@@ -124,6 +125,10 @@ def transport(
                 + video * (2 if duplicate else 1)
                 + "</MediaContainer>"
             )
+        if film:
+            body = body.replace('type="show" title="Anime"', 'type="movie" title="Anime Movies"')
+            body = body.replace('path="/managed/Anime"', 'path="/managed/Anime Movies"')
+            body = body.replace('type="episode"', 'type="movie"')
         if envelope_section and "<Video " in body:
             body = body.replace(' librarySectionID="3"', "").replace(
                 "<MediaContainer ", '<MediaContainer librarySectionID="3" '
@@ -182,6 +187,38 @@ def run(fixture, **kw):
             transport=transport(**kw),
         )
     )
+
+
+def test_anime_film_uses_published_movie_path_and_no_episode_timeline(fixture):
+    db, _, _, manifest = fixture
+    manifest["titles"][0]["format"] = "MOVIE"
+    manifest["titles"][0]["assets"][0]["quality"] = "1080p"
+    db.execute("UPDATE media_monitors SET season_number=NULL")
+    db.execute("UPDATE library_items SET season_number=0")
+    db.execute("UPDATE library_resources SET season_number=0")
+    db.commit()
+    path = "/managed/Anime Movies/Synthetic/Synthetic - 1080p [AAAAAAAA].mkv"
+    plex = transport(path=path, film=True)
+    result = asyncio.run(
+        source.resolve_anime_source(
+            db,
+            actor_user_id=2,
+            library_id="library",
+            anilist_id=123,
+            season_number=0,
+            episode_number=0,
+            transport=plex,
+        )
+    )
+    assert (result.domain, result.canonical_id, result.season_number, result.episode_number) == (
+        "anime-film",
+        "123",
+        0,
+        0,
+    )
+    assert asyncio.run(source.revalidate_remote_source(db, result, plex)) is result
+    with pytest.raises(source.PlaybackSourceError):
+        asyncio.run(source.revalidate_remote_source(db, result, transport(path=path)))
 
 
 def test_exact_source_and_private_projection(fixture):
@@ -577,10 +614,10 @@ def test_pagination_completeness_and_consistency(second):
         )
 
     if 'totalSize="2" offset="1"><Video ratingKey="2"' in second:
-        assert len(asyncio.run(source._episode_pages(xml, "3", 1, 1))) == 2
+        assert len(asyncio.run(source._section_pages(xml, "3", 4))) == 2
     else:
         with pytest.raises(source.PlaybackSourceError):
-            asyncio.run(source._episode_pages(xml, "3", 1, 1))
+            asyncio.run(source._section_pages(xml, "3", 4))
 
 
 def test_plex_section_identity_in_envelope_without_video_attribute(fixture):
@@ -612,7 +649,7 @@ def test_contradictory_envelope_and_video_section_rejected():
         )
 
     with pytest.raises(source.PlaybackSourceError):
-        asyncio.run(source._episode_pages(xml, "3", 1, 1))
+        asyncio.run(source._section_pages(xml, "3", 4))
 
 
 def test_noop_receipt_refresh_and_unrelated_title_preserve_exact_source_version(fixture):

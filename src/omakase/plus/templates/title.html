@@ -96,7 +96,7 @@
     {% if title.publication_pending and title.state != 'archived' and not plex_removal %}<p class="title-availability-copy">Preparing for your library.</p>{% endif %}
     {% if title.fallback_episodes %}<p class="title-availability-copy">{{ title.fallback_episodes | length }} episode{{ 's' if title.fallback_episodes | length != 1 else '' }} use a 720p fallback. <a href="#episode-heading">See episode quality</a>.</p>{% endif %}
     <div class="title-primary-actions">
-      {% if title.play_url %}{{ playback_link(title.play_url, title.play_label ~ ' episode ' ~ title.play_episode, title.play_label ~ ' ' ~ title.title ~ ', episode ' ~ title.play_episode) }}{% endif %}
+      {% if title.play_url %}{{ playback_link(title.play_url, title.play_label ~ (' episode ' ~ title.play_episode if title.play_episode else ' movie'), title.play_label ~ ' ' ~ title.title ~ (', episode ' ~ title.play_episode if title.play_episode else '')) }}{% endif %}
       <a class="button {{ 'button-secondary' if title.play_url else 'button-primary' }}" href="#episode-heading">{{ "View episode history" if title.state == "archived" else "View episodes" }}</a>
       <a class="button button-secondary" href="#watch-tracking" data-open-details>Update watch progress</a>
     </div>

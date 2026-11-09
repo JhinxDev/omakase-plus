@@ -398,3 +398,53 @@ def test_replay_receipts_bounded_recent_replay_and_old_sequence_rejected(db):
     with pytest.raises(PlaybackStoreError, match="sequence"):
         event(db, s, 1, 0, 358, playing=False)
     assert get_resume(db, target=TARGET).items() <= result.items()
+
+
+def test_typed_playback_targets_keep_separate_resume_positions(db):
+    targets = [
+        TARGET,
+        replace(TARGET, domain="tv"),
+        replace(TARGET, domain="anime-film", season_number=0, episode_number=0),
+        replace(
+            TARGET, domain="movie", canonical_id="tt1234567", season_number=0, episode_number=0
+        ),
+    ]
+    for i, target in enumerate(targets, start=1):
+        opened = session(db, target=target, now=100 + i * 10)
+        event(db, opened, 1, i, 101 + i * 10, event="seek", playing=False)
+    assert [get_resume(db, target=target)["position_seconds"] for target in targets] == [1, 2, 3, 4]
+
+
+def test_target_migration_preserves_live_session_and_coverage(monkeypatch, tmp_path):
+    import shutil
+
+    from omakase.plus import db as migrations
+
+    installed = migrations._MIGRATIONS_DIR
+    previous = tmp_path / "migrations"
+    previous.mkdir()
+    for path in installed.glob("*.sql"):
+        if not path.name.startswith("047-"):
+            shutil.copyfile(path, previous / path.name)
+    conn = sqlite3.connect(":memory:")
+    conn.execute("PRAGMA foreign_keys=ON")
+    monkeypatch.setattr(migrations, "_MIGRATIONS_DIR", previous)
+    migrations.run_migrations(conn)
+    conn.execute(
+        "INSERT INTO users(id,email,password_hash) VALUES(1,'demo@example.invalid','fixture')"
+    )
+    conn.execute(
+        "INSERT INTO libraries(id,kind,owner_user_id,name) VALUES(?,'household',1,'Fixture')",
+        ("d" * 32,),
+    )
+    conn.commit()
+    opened = session(conn)
+    event(conn, opened, 1, 0, 101, event="play")
+    receipt = event(conn, opened, 2, 5, 106)
+    monkeypatch.setattr(migrations, "_MIGRATIONS_DIR", installed)
+    migrations.run_migrations(conn)
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert event(conn, opened, 2, 5, 107) == receipt
+    assert get_resume(conn, target=TARGET)["position_seconds"] == 5
+    assert event(conn, opened, 3, 6, 107)["watch_covered_seconds"] == 6
+    conn.close()

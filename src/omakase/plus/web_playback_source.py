@@ -95,7 +95,7 @@ class PlexStream:
 class ResolvedAnimeSource:
     actor_user_id: int
     library_id: str
-    anilist_id: int
+    anilist_id: int | None
     season_number: int
     episode_number: int
     server_id: str
@@ -117,6 +117,14 @@ class ResolvedAnimeSource:
     _section_id: str = field(default="", repr=False)
     _publication_cache: dict = field(default_factory=dict, repr=False, compare=False)
     _skip_evidence: dict = field(default_factory=dict, repr=False, compare=False)
+    domain: str = "anime"
+    catalog_id: str = ""
+    _file_path: str = field(default="", repr=False)
+    _series_key: str = field(default="", repr=False)
+
+    @property
+    def canonical_id(self):
+        return self.catalog_id or str(self.anilist_id)
 
 
 def _physical_version(identity, server, section, metadata, media, part):
@@ -223,8 +231,10 @@ def publication_identity(item, asset_id, file, policy):
 
 
 def _publication(db, scope, anilist_id, season_number, episode_number):
+    film = season_number == 0 and episode_number == 0
+    published_season, published_episode = (1, 1) if film else (season_number, episode_number)
     item = db.execute(
-        "SELECT i.id,i.resource_id,r.legacy_id FROM library_items i JOIN library_resources r ON r.id=i.resource_id JOIN media_monitors m ON m.id=r.legacy_id WHERE i.library_id=? AND i.domain='anime' AND i.canonical_id=? AND i.season_number=? AND i.state='active' AND r.owner_user_id=? AND r.domain=i.domain AND r.canonical_id=i.canonical_id AND r.season_number=i.season_number AND m.user_id=r.owner_user_id AND m.anilist_id=CAST(r.canonical_id AS INTEGER) AND m.season_number=r.season_number",
+        "SELECT i.id,i.resource_id,r.legacy_id FROM library_items i JOIN library_resources r ON r.id=i.resource_id JOIN media_monitors m ON m.id=r.legacy_id WHERE i.library_id=? AND i.domain='anime' AND i.canonical_id=? AND i.season_number=? AND i.state='active' AND r.owner_user_id=? AND r.domain=i.domain AND r.canonical_id=i.canonical_id AND r.season_number=i.season_number AND m.user_id=r.owner_user_id AND m.anilist_id=CAST(r.canonical_id AS INTEGER) AND COALESCE(m.season_number,0)=r.season_number",
         (scope.library_id, str(anilist_id), season_number, scope.operational_owner_id),
     ).fetchone()
     _require(item is not None)
@@ -232,6 +242,7 @@ def _publication(db, scope, anilist_id, season_number, episode_number):
         receipt, manifest = qualified_publication(db)
         titles = [t for t in manifest["titles"] if t["anilist_id"] == anilist_id]
         _require(len(titles) == 1)
+        _require((titles[0].get("format") == "MOVIE") == film)
         title = titles[0]["canonical_title"]
         _require(
             isinstance(title, str)
@@ -245,8 +256,8 @@ def _publication(db, scope, anilist_id, season_number, episode_number):
             for f in receipt["publication_files"]
             if f["selected"]
             and f["anilist_id"] == anilist_id
-            and f["season_number"] == season_number
-            and episode_number in f["episodes"]
+            and f["season_number"] == published_season
+            and published_episode in f["episodes"]
         ]
         _require(len(files) == 1, "The episode requires one exact published source.")
         file = files[0]
@@ -257,9 +268,11 @@ def _publication(db, scope, anilist_id, season_number, episode_number):
         publication_policy = published_assets[0].get("language_contract")
         # Combined files need a qualified per-episode timeline before progress can
         # be safely mapped to an individual numbered episode.
-        _require(file["episodes"] == [episode_number], "Combined episode files are not qualified.")
+        _require(
+            file["episodes"] == [published_episode], "Combined episode files are not qualified."
+        )
         assets = db.execute(
-            "SELECT a.* FROM media_assets a JOIN media_monitors m ON m.id=a.monitor_id WHERE m.user_id=? AND m.anilist_id=? AND m.season_number=? AND upper(a.torrent_hash)=? AND m.id=? AND a.status='downloaded' AND a.inventory_verified_at IS NOT NULL",
+            "SELECT a.* FROM media_assets a JOIN media_monitors m ON m.id=a.monitor_id WHERE m.user_id=? AND m.anilist_id=? AND COALESCE(m.season_number,0)=? AND upper(a.torrent_hash)=? AND m.id=? AND a.status='downloaded' AND a.inventory_verified_at IS NOT NULL",
             (
                 scope.operational_owner_id,
                 anilist_id,
@@ -276,7 +289,14 @@ def _publication(db, scope, anilist_id, season_number, episode_number):
         )
         suffix = PurePosixPath(file["source"]).suffix.lower()
         _require(suffix in {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".webm", ".ts"})
-        relative = f"Anime/{title}/Season {season_number:02d}/{title} - S{season_number:02d}E{episode_number:02d}{suffix}"
+        if film:
+            quality = published_assets[0]["quality"]
+            torrent = file["torrent_hash"]
+            _require(re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", quality))
+            _require(re.fullmatch(r"(?:[A-F0-9]{40}|[A-F0-9]{64})", torrent))
+            relative = f"Anime Movies/{title}/{title} - {quality} [{torrent[:8]}]{suffix}"
+        else:
+            relative = f"Anime/{title}/Season {season_number:02d}/{title} - S{season_number:02d}E{episode_number:02d}{suffix}"
         identity = publication_identity(item, asset["id"], file, publication_policy)
         return relative, file["stat"]["size"], identity
     except (KeyError, TypeError, ValueError, RecursionError):
@@ -412,8 +432,8 @@ def revalidate_source(db, source):
     return source
 
 
-async def _episode_pages(xml, section, season, episode):
-    """Bounded complete pages using supported Plex episode-list parameters."""
+async def _section_pages(xml, section, media_type):
+    """Bounded complete pages of the selected Plex media type."""
     videos = []
     total = None
     seen = set()
@@ -422,7 +442,7 @@ async def _episode_pages(xml, section, season, episode):
         page = await xml(
             "/library/sections/"
             + section
-            + "/all?type=4"
+            + f"/all?type={media_type}"
             + f"&X-Plex-Container-Start={offset}&X-Plex-Container-Size=40"
         )
         children = page.findall("Video")
@@ -454,6 +474,103 @@ async def _episode_pages(xml, section, season, episode):
     return videos
 
 
+def _resolved_part(
+    video,
+    media,
+    part,
+    *,
+    scope,
+    anilist_id,
+    season_number,
+    episode_number,
+    account,
+    section,
+    base,
+    token,
+    server,
+    identity,
+    snapshot,
+    domain="anime",
+    catalog_id="",
+    series_key="",
+):
+    size_text = part.get("size", "")
+    _require(re.fullmatch(r"[1-9][0-9]{0,12}", size_text))
+    size = int(size_text)
+    file_path = part.get("file", "")
+    _require(0 < len(file_path) <= 4096 and not any(ord(char) < 32 for char in file_path))
+    metadata = _numeric(video.get("ratingKey", ""))
+    part_id = _numeric(part.get("id", ""))
+    _numeric(media.get("id", ""))
+    part_key = part.get("key", "")
+    _require(
+        re.fullmatch(
+            "/library/parts/" + part_id + r"/(?:[A-Za-z0-9_~.-]+/){0,2}[A-Za-z0-9_~.-]+",
+            part_key,
+        )
+        and all(p not in {".", ".."} for p in part_key.split("/"))
+    )
+    duration = part.get("duration") or video.get("duration", "")
+    _require(duration.isdigit() and 0 < int(duration) <= 86400000)
+    raw_streams = part.findall("Stream")
+    _require(len(raw_streams) <= 128)
+    streams = tuple(
+        PlexStream(
+            _numeric(s.get("id", "")),
+            {"1": "video", "2": "audio", "3": "subtitle"}.get(s.get("streamType"), "other"),
+            s.get("codec", ""),
+            s.get("languageCode", "und"),
+            s.get("default") == "1",
+            s.get("forced") == "1",
+            s.get("selected") == "1",
+            _container_index(s.get("index")),
+        )
+        for s in raw_streams
+    )
+    _require(len({s.stream_id for s in streams}) == len(streams))
+    indices = [s.container_index for s in streams if s.container_index is not None]
+    _require(len(indices) == len(set(indices)), "Plex container stream indices are ambiguous.")
+    version = _physical_version(identity, server, section, metadata, media, part)
+    return ResolvedAnimeSource(
+        scope.viewer_id,
+        scope.library_id,
+        anilist_id,
+        season_number,
+        episode_number,
+        server,
+        account,
+        metadata,
+        part_key,
+        size,
+        int(duration),
+        media.get("container", ""),
+        media.get("videoCodec", ""),
+        media.get("audioCodec", ""),
+        streams,
+        version,
+        identity,
+        base,
+        token,
+        snapshot,
+        scope,
+        section,
+        domain=domain,
+        catalog_id=catalog_id,
+        _file_path=file_path,
+        _series_key=series_key,
+    )
+
+
+def _anime_item_matches(video, season, episode, film):
+    if film:
+        return video.get("type") == "movie"
+    return (
+        video.get("type") == "episode"
+        and video.get("parentIndex") == str(season)
+        and video.get("index") == str(episode)
+    )
+
+
 async def resolve_anime_source(
     db,
     *,
@@ -466,13 +583,25 @@ async def resolve_anime_source(
     transport=None,
 ):
     """Resolve one immutable Part. Explicit versions are opaque SHA-256 values."""
+    film = (
+        type(season_number) is int
+        and type(episode_number) is int
+        and season_number == episode_number == 0
+    )
     for value, maximum in (
         (actor_user_id, 2**63 - 1),
         (anilist_id, 2147483647),
-        (season_number, 99),
-        (episode_number, 5000),
     ):
         _require(type(value) is int and 0 < value <= maximum)
+    _require(
+        film
+        or (
+            type(season_number) is int
+            and 0 < season_number <= 99
+            and type(episode_number) is int
+            and 0 < episode_number <= 5000
+        )
+    )
     _require(
         media_version is None
         or (isinstance(media_version, str) and re.fullmatch("[0-9a-f]{64}", media_version))
@@ -511,26 +640,25 @@ async def resolve_anime_source(
         )
         _require((await xml("/identity")).get("machineIdentifier") == server)
         sections = await xml("/library/sections")
+        name = "Anime Movies" if film else "Anime"
         matching = [
             s
             for s in sections.findall("Directory")
-            if s.get("type") == "show"
-            and s.get("title") == "Anime"
-            and any(loc.get("path") == root_path + "/Anime" for loc in s.findall("Location"))
+            if s.get("type") == ("movie" if film else "show")
+            and s.get("title") == name
+            and any(loc.get("path") == root_path + "/" + name for loc in s.findall("Location"))
         ]
         _require(
             len(matching) == 1,
             "This personal Plex connection cannot access the managed anime section.",
         )
         section = _numeric(matching[0].get("key", ""))
-        leaves = await _episode_pages(xml, section, season_number, episode_number)
+        leaves = await _section_pages(xml, section, 1 if film else 4)
         candidates = []
         for video in leaves:
             if not (
-                video.get("type") == "episode"
+                _anime_item_matches(video, season_number, episode_number, film)
                 and video.get("librarySectionID", section) == section
-                and video.get("parentIndex") == str(season_number)
-                and video.get("index") == str(episode_number)
             ):
                 continue
             for media in video.findall("Media"):
@@ -577,64 +705,23 @@ async def resolve_anime_source(
             hydrated.append((video, media, part))
         resolved = []
         for video, media, part in hydrated:
-            metadata = _numeric(video.get("ratingKey", ""))
-            part_id = _numeric(part.get("id", ""))
-            _numeric(media.get("id", ""))
-            part_key = part.get("key", "")
-            _require(
-                re.fullmatch(
-                    "/library/parts/" + part_id + r"/(?:[A-Za-z0-9_~.-]+/){0,2}[A-Za-z0-9_~.-]+",
-                    part_key,
-                )
-                and all(p not in {".", ".."} for p in part_key.split("/"))
-            )
-            duration = part.get("duration") or video.get("duration", "")
-            _require(duration.isdigit() and 0 < int(duration) <= 86400000)
-            raw_streams = part.findall("Stream")
-            _require(len(raw_streams) <= 128)
-            streams = tuple(
-                PlexStream(
-                    _numeric(s.get("id", "")),
-                    {"1": "video", "2": "audio", "3": "subtitle"}.get(s.get("streamType"), "other"),
-                    s.get("codec", ""),
-                    s.get("languageCode", "und"),
-                    s.get("default") == "1",
-                    s.get("forced") == "1",
-                    s.get("selected") == "1",
-                    _container_index(s.get("index")),
-                )
-                for s in raw_streams
-            )
-            _require(len({s.stream_id for s in streams}) == len(streams))
-            indices = [s.container_index for s in streams if s.container_index is not None]
-            _require(
-                len(indices) == len(set(indices)), "Plex container stream indices are ambiguous."
-            )
-            version = _physical_version(identity, server, section, metadata, media, part)
             resolved.append(
-                ResolvedAnimeSource(
-                    actor_user_id,
-                    library_id,
-                    anilist_id,
-                    season_number,
-                    episode_number,
-                    server,
-                    account,
-                    metadata,
-                    part_key,
-                    size,
-                    int(duration),
-                    media.get("container", ""),
-                    media.get("videoCodec", ""),
-                    media.get("audioCodec", ""),
-                    streams,
-                    version,
-                    identity,
-                    base,
-                    token,
-                    initial,
-                    scope,
-                    section,
+                _resolved_part(
+                    video,
+                    media,
+                    part,
+                    scope=scope,
+                    anilist_id=anilist_id,
+                    season_number=season_number,
+                    episode_number=episode_number,
+                    account=account,
+                    section=section,
+                    base=base,
+                    token=token,
+                    server=server,
+                    identity=identity,
+                    snapshot=initial,
+                    domain="anime-film" if film else "anime",
                 )
             )
             resolved[-1]._skip_evidence.update(_trusted_skip_evidence(resolved[-1], video))
@@ -677,9 +764,12 @@ async def revalidate_remote_source(db, source, transport=None):
         _require(
             video.get("librarySectionID", detail.get("librarySectionID")) == section
             and video.get("ratingKey") == metadata
-            and video.get("type") == "episode"
-            and video.get("parentIndex") == str(source.season_number)
-            and video.get("index") == str(source.episode_number)
+            and _anime_item_matches(
+                video,
+                source.season_number,
+                source.episode_number,
+                getattr(source, "domain", "anime") == "anime-film",
+            )
         )
         expected_path = source._snapshot[7] + "/" + source._snapshot[0]
         matches = []
@@ -716,6 +806,8 @@ def public_projection(source):
     """Safe UI metadata only; never serialize the server-only dataclass."""
     return {
         "anilist_id": source.anilist_id,
+        "domain": getattr(source, "domain", "anime"),
+        "canonical_id": getattr(source, "canonical_id", str(source.anilist_id)),
         "season_number": source.season_number,
         "episode_number": source.episode_number,
         "media_version": source.media_version,

@@ -62,14 +62,23 @@ class ResolvedTarget:
     domain: str = "anime"
 
     def __post_init__(self):
-        for name in ("user_id", "season_number", "episode_number"):
-            _positive(getattr(self, name), name)
-        if (
-            self.domain != "anime"
-            or not isinstance(self.canonical_id, str)
-            or not re.fullmatch(r"[1-9][0-9]{0,18}", self.canonical_id)
+        _positive(self.user_id, "user_id")
+        if self.domain not in {"anime", "anime-film", "movie", "tv"}:
+            raise PlaybackStoreError("Invalid playback domain")
+        pattern = r"tt[0-9]{7,10}" if self.domain == "movie" else r"[1-9][0-9]{0,18}"
+        if not isinstance(self.canonical_id, str) or not re.fullmatch(pattern, self.canonical_id):
+            raise PlaybackStoreError("Invalid exact title identity")
+        if self.domain in {"anime", "tv"}:
+            _positive(self.episode_number, "episode_number")
+            if self.domain == "anime" or self.season_number != 0:
+                _positive(self.season_number, "season_number")
+            elif type(self.season_number) is not int:
+                raise PlaybackStoreError("Invalid season_number")
+        elif any(
+            type(value) is not int or value != 0
+            for value in (self.season_number, self.episode_number)
         ):
-            raise PlaybackStoreError("Invalid exact anime target")
+            raise PlaybackStoreError("Standalone titles have no episode numbers")
         if not isinstance(self.media_version, str) or not _SHA.fullmatch(self.media_version):
             raise PlaybackStoreError("Invalid media version")
         _library(self.library_id)
@@ -268,12 +277,14 @@ def create_session(db, *, target, binding_digest, snapshot, now=None):
                 now,
             ),
         )
-        barrier = watch_barrier(
-            db,
-            user_id=target.user_id,
-            anilist_id=target.canonical_id,
-            season_number=target.season_number,
-        )
+        barrier = 0
+        if target.domain == "anime":
+            barrier = watch_barrier(
+                db,
+                user_id=target.user_id,
+                anilist_id=target.canonical_id,
+                season_number=target.season_number,
+            )
         db.execute(
             "UPDATE web_playback_sessions SET watch_barrier=? WHERE session_id=?", (barrier, sid)
         )

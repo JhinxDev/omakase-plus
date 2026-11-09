@@ -245,6 +245,8 @@ def create_tv_router(
             if exc.code == "invalid_input":
                 raise HTTPException(422, exc.detail) from None
             return await render(request, user, db, error=exc.detail)
+        from omakase.plus.web_playback_navigation import enabled as web_player_enabled
+
         return templates.TemplateResponse(
             request,
             "tv_detail.html",
@@ -252,6 +254,7 @@ def create_tv_router(
                 **context(request, user),
                 "card": card,
                 "selected_season": season,
+                "watch_in_app": web_player_enabled(),
                 "tv_error": "",
                 "notice": "",
             },

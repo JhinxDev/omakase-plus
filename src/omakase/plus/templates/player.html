@@ -9,67 +9,72 @@
 {% block page_intro %}{% endblock %}
 {% block page_actions %}<a class="button secondary" href="{{ overview_url }}">Back to title</a>{% endblock %}
 {% block content %}
-<section class="web-player" data-web-player aria-label="Episode player">
-  <div class="web-player-stage" data-player-container>
-    <video data-player-video playsinline disablepictureinpicture preload="none" aria-label="{{ title }}, episode {{ episode_number }}"></video>
-    <div class="web-player-timeline shaka-no-propagation"><input type="range" min="0" max="1" step="any" value="0" aria-label="Seek episode" data-player-timeline disabled></div>
+{% set episodic = episode_number > 0 %}
+{% set media = "episode" if episodic else "movie" %}
+{% set media_title = "Episode " ~ episode_number if episodic else title %}
+<section class="web-player" data-web-player aria-label="{{ media | capitalize }} player">
+  <div class="web-player-stage" data-player-container{% if start_immediately %} aria-busy="true"{% endif %}>
+    <video data-player-video playsinline disablepictureinpicture preload="none" aria-label="{{ title }}{% if episodic %}, episode {{ episode_number }}{% endif %}"></video>
+    <div class="web-player-timeline shaka-no-propagation"><input type="range" min="0" max="1" step="any" value="0" aria-label="Seek {{ media }}" data-player-timeline disabled></div>
     <button class="web-player-skip shaka-no-propagation" type="button" data-player-skip hidden>Skip Intro</button>
     <div data-player-bar-storage hidden>
       <div class="web-player-ass-options" data-player-ass-options>
         <label for="web-player-ass-select">Subtitle track</label>
         <select id="web-player-ass-select" data-player-ass-select aria-describedby="web-player-ass-status" disabled><option value="off">Off</option></select>
         <p id="web-player-ass-status" role="status" aria-live="polite" data-player-ass-status></p>
-        <p data-player-subtitle-unavailable hidden>No subtitles are available for this stream. Open this episode in Plex for other formats.</p>
+        <p data-player-subtitle-unavailable hidden>No subtitles are available for this stream. Open this {{ media }} in Plex for other formats.</p>
         <p class="web-player-caption-mode" data-player-caption-mode-note hidden>Styled subtitles display in this page and the player’s fullscreen mode. Use the player’s fullscreen button to keep them visible.</p>
       </div>
       <span class="shaka-current-time omakase-playback-clock" data-player-clock>0:00</span>
       <a class="web-player-next omakase-next-control shaka-no-propagation" data-player-next role="link" tabindex="0" aria-disabled="true" aria-label="Next episode unavailable"><span class="omakase-next-icon" aria-hidden="true">→</span><span data-next-label>Next episode</span><span data-next-compact aria-hidden="true">Next</span></a>
     </div>
-    <div class="web-player-start" data-player-start-panel>
-      <span class="web-player-eyebrow">EPISODE {{ episode_number }}</span>
-      <h2 data-player-start-heading>Ready when you are</h2>
-      <p data-player-start-copy>Start playback to check this episode’s available streams.</p>
-      <label class="web-player-resume" data-player-resume-option><input type="checkbox" data-player-resume checked> Resume from my saved position</label>
-      <button class="web-player-primary" type="button" data-player-start disabled>Play episode</button>
+    <div class="web-player-loading{% if start_immediately %} is-opening{% endif %}" data-player-loading {% if not start_immediately %}hidden{% endif %}>
+      <span class="web-player-loading-ring" aria-hidden="true"></span>
+      <span class="web-player-loading-label" data-player-loading-label aria-hidden="true">Loading {{ media }}…</span>
       <button type="button" data-player-cancel-preparation hidden>Cancel preparation</button>
+    </div>
+    <div class="web-player-start" data-player-start-panel {% if start_immediately %}hidden{% endif %}>
+      <h2 data-player-start-heading>{{ media_title }}</h2>
+      <label class="web-player-resume" data-player-resume-option><input type="checkbox" data-player-resume checked> Resume from my saved position</label>
+      <button class="web-player-primary" type="button" data-player-start disabled>Play {{ media }}</button>
     </div>
   </div>
   <div class="web-player-state">
-    <p class="web-player-status" role="status" aria-live="polite" data-player-status>Playback starts only when you choose Play episode.</p>
+    <p class="web-player-status" role="status" aria-live="polite" data-player-status>{% if start_immediately %}Loading {{ media }}…{% endif %}</p>
     <p class="web-player-save" role="status" data-player-save></p>
   </div>
-  <p class="web-player-version-note" data-player-version-note hidden>Your saved position belongs to a different copy of this episode. This copy starts from the beginning.</p>
+  <p class="web-player-version-note" data-player-version-note hidden>Your saved position belongs to a different copy of this {{ media }}. This copy starts from the beginning.</p>
   <div class="web-player-error" role="alert" data-player-error hidden>
     <p data-player-error-text></p>
     <div class="web-player-actions"><button type="button" data-player-retry hidden>Try playback once more</button><button type="button" data-player-reload hidden>Reload player</button></div>
   </div>
   <div class="web-player-details">
     <article class="web-player-episode" aria-labelledby="episode-heading">
-      <a class="web-player-series" href="{{ overview_url }}">{{ title }}</a>
-      <h2 id="episode-heading">Episode {{ episode_number }}</h2>
+      {% if episodic %}<a class="web-player-series" href="{{ overview_url }}">{{ title }}</a>{% endif %}
+      <h2 id="episode-heading">{{ media_title }}</h2>
       {% if description_preview %}<p class="web-player-synopsis">{{ description_preview }}</p>{% if description_more %}<details class="web-player-more"><summary>Read synopsis</summary><p>{{ description_more }}</p></details>{% endif %}{% endif %}
       <details class="web-player-tools"><summary>Playback options & credits</summary>
-        <div class="web-player-tools-actions"><button type="button" data-player-restart disabled>Restart episode</button>
-        <a data-player-plex hidden target="_blank" rel="noopener noreferrer">Open this episode in Plex <span aria-hidden="true">↗</span></a></div>
+        <div class="web-player-tools-actions"><button type="button" data-player-restart disabled>Restart {{ media }}</button>
+        <a data-player-plex hidden target="_blank" rel="noopener noreferrer">Open this {{ media }} in Plex <span aria-hidden="true">↗</span></a></div>
         <p data-player-fallback>Open the title for other playback options.</p>
-        <p>Progress saves while you watch. Seeking alone does not mark an episode watched.</p>
+        <p>Progress saves while you watch.{% if not catalog_target %} Seeking alone does not mark an episode watched.{% endif %}</p>
         <p><a href="/plus/static/ass/LICENSES.txt" target="_blank" rel="noopener">Subtitle renderer licenses</a> · <a href="/plus/static/ass/corresponding-source.tar.gz" download>Source and rebuild instructions</a></p>
       </details>
     </article>
-    <aside class="web-player-sidebar" aria-label="Series and episode navigation">
+    <aside class="web-player-sidebar" aria-label="Series and episode navigation"{% if not episodic %} hidden{% endif %}>
       <span class="web-player-eyebrow">UP NEXT & SERIES</span>
       <nav aria-label="Episode navigation">
-        <a data-player-sidebar-next hidden>Next episode <span aria-hidden="true">→</span></a>
+        <a data-player-sidebar-next {% if next_url %}href="{{ next_url }}"{% else %}hidden{% endif %}>Next episode <span aria-hidden="true">→</span></a>
         {% if previous_url %}<a href="{{ previous_url }}">Previous episode <span aria-hidden="true">←</span></a>{% endif %}
         <a href="{{ overview_url }}">See episodes <span aria-hidden="true">↗</span></a>
       </nav>
-      {% if season_number %}<p>Season {{ season_number }}</p>{% endif %}
+      {% if episodic and season_number is not none %}<p>{{ "Season " ~ season_number if season_number else "Specials" }}</p>{% endif %}
       {% if genres %}<p class="web-player-genres">{{ genres | join(' · ') }}</p>{% endif %}
     </aside>
   </div>
 </section>
-<noscript><p class="web-player-error">JavaScript is required for this player. <a href="{{ overview_url }}">Return to the title</a> to open the episode in Plex.</p></noscript>
-<script id="web-player-config" type="application/json">{{ {"monitor_id": monitor_id, "episode_number": episode_number, "library_id": library_id, "next_url": next_url | default(none)} | tojson }}</script>
+<noscript><style>.web-player-loading { display: none }</style><p class="web-player-error">JavaScript is required for this player. <a href="{{ overview_url }}">Return to the title</a> to open the {{ media }} in Plex.</p></noscript>
+<script id="web-player-config" type="application/json">{{ {"monitor_id": monitor_id | default(none), "episode_number": episode_number, "library_id": library_id, "next_url": next_url | default(none), "start_immediately": start_immediately | default(false), "catalog_target": catalog_target | default(none)} | tojson }}</script>
 {% endblock %}
 {% block end_scripts %}
 <script src="/plus/static/shaka-player-5.3.3.js?v={{ asset_version }}" defer></script>

@@ -107,6 +107,8 @@ def setup(monkeypatch, tmp_path):
             revalidate_source(db, source)
 
     async def serve(req):
+        if fixture := getattr(app.state, "catalog_plex_fixture", None):
+            return fixture(req)
         if getattr(app.state, "upstream_status", 200) == 451:
             return httpx.Response(451)
         assert req.headers["x-plex-token"] == "dummy-only"
@@ -185,14 +187,34 @@ def client(app, session):
     return result
 
 
-def test_page_does_not_resolve_media_or_create_history(setup):
+@pytest.mark.parametrize("play", [False, True])
+def test_page_does_not_resolve_media_or_create_history(setup, play):
     app, db, sessions, calls, _ = setup
-    response = client(app, sessions[1]).get("/plus/watch/1/1")
+    response = client(app, sessions[1]).get("/plus/watch/1/1", params={"play": int(play)})
     assert response.status_code == 200
+    assert ("is-opening" in response.text) is play
     assert "Play episode" in response.text
     assert calls == []
     assert db.execute("SELECT COUNT(*) FROM web_playback_sessions").fetchone()[0] == 0
     assert db.execute("SELECT COUNT(*) FROM watch_events").fetchone()[0] == 0
+
+
+def test_watch_shows_next_without_starting_a_session(setup, monkeypatch):
+    from omakase.plus import web_playback_navigation
+
+    app, db, sessions, calls, _ = setup
+    monkeypatch.setattr(web_playback_navigation, "_candidates", lambda *_: {2: None})
+    response = client(app, sessions[1]).get("/plus/watch/1/1")
+    library_id = db.execute("SELECT library_id FROM personal_libraries WHERE user_id=1").fetchone()[
+        0
+    ]
+    assert (
+        f'data-player-sidebar-next href="/plus/watch/1/2?library_id={library_id}&amp;play=1"'
+        in response.text
+    )
+    assert "Previous episode" not in response.text
+    assert calls == []
+    assert db.execute("SELECT COUNT(*) FROM web_playback_sessions").fetchone()[0] == 0
 
 
 def test_actual_source_guard_start_and_resource_routes_keep_atomic_authorization(
@@ -824,3 +846,149 @@ def test_skip_marker_contract_requires_matching_identity_and_finite_nonoverlap()
         {**valid, "segments": list(reversed(valid["segments"]))},
     ]:
         assert normalize_skip_segments(source, bad)["segments"] == []
+
+
+@pytest.mark.parametrize("domain", ["movie", "tv"])
+def test_catalog_plays_exact_personal_copy_and_saves_resume(setup, monkeypatch, domain):
+    import hashlib
+    import json
+    import secrets
+
+    from omakase.plus.web_playback_catalog import connections
+
+    app, db, sessions, calls, _ = setup
+    base_url = "https://plex.invalid"
+    fixture_auth = secrets.token_urlsafe(24)
+    monkeypatch.setattr(connections, "_values", lambda *args: (base_url, fixture_auth))
+    monkeypatch.setattr(connections, "_read", lambda *args: "synthetic-server")
+    db.execute(
+        "INSERT INTO movie_catalog(user_id,imdb_id,tmdb_id,title,year,identity_verified,updated_at) "
+        "VALUES(1,'tt1234567',100,'Synthetic film',2025,1,'now')"
+    )
+    db.execute(
+        "INSERT INTO tv_catalog VALUES(1,100,?,'now')",
+        (json.dumps({"title": "Synthetic show", "tmdb_id": 100, "imdb_id": "tt7654321"}),),
+    )
+    db.execute(
+        "INSERT INTO tv_plex_snapshots VALUES(1,100,?,'11',1,'now')",
+        (hashlib.sha256((base_url + "\0" + fixture_auth).encode()).hexdigest(),),
+    )
+    for ep in (1, 2):
+        db.execute(
+            "INSERT INTO tv_episodes VALUES(1,100,1,?,? ,0,'none',1,'now')",
+            (ep, json.dumps({"overview": f"Episode {ep} description"})),
+        )
+    db.commit()
+    if domain == "movie":
+        target = {"domain": domain, "imdb_id": "tt1234567"}
+        url = "/plus/watch/title/movie/tt1234567?play=1"
+        video_attrs = 'type="movie" year="2025" librarySectionTitle="Movies"'
+        ids = '<Guid id="imdb://tt1234567"/><Guid id="tmdb://100"/>'
+        section = "2"
+    else:
+        target = {"domain": domain, "tmdb_id": 100, "season_number": 1, "episode_number": 1}
+        url = "/plus/watch/title/tv/100/1/1?play=1"
+        video_attrs = 'type="episode" grandparentRatingKey="11" parentIndex="1" index="1"'
+        ids = ""
+        section = "3"
+    moved = [False]
+    provider_reads = []
+
+    def plex(request):
+        provider_reads.append(request.url.path)
+        assert request.headers["x-plex-token"] == fixture_auth
+        path = request.url.path
+        filename = "other" if moved[0] else "synthetic"
+        video = (
+            f'<Video ratingKey="12" librarySectionID="{section}" {video_attrs} duration="30000">'
+            + ids
+            + '<Media id="10" container="mp4" videoCodec="h264" audioCodec="aac" width="1920" height="1080">'
+            + f'<Part id="1" size="100000" key="/library/parts/1/123/file.mp4" file="/media/{filename}.mp4"/>'
+            + "</Media></Video>"
+        )
+        if path == "/api/v2/user":
+            return httpx.Response(200, json={"id": 123})
+        if path == "/identity":
+            return httpx.Response(
+                200, text='<MediaContainer machineIdentifier="synthetic-server"/>'
+            )
+        if path == "/library/sections":
+            return httpx.Response(
+                200,
+                text='<MediaContainer><Directory key="2" title="Movies" type="movie"/>'
+                '<Directory key="3" title="TV Shows" type="show"/></MediaContainer>',
+            )
+        if path == "/library/metadata/11":
+            return httpx.Response(
+                200,
+                text='<MediaContainer librarySectionID="3"><Directory ratingKey="11" type="show">'
+                '<Guid id="tmdb://100"/><Guid id="imdb://tt7654321"/></Directory></MediaContainer>',
+            )
+        if path in {
+            "/library/sections/2/all",
+            "/library/metadata/12",
+            "/library/metadata/11/allLeaves",
+        }:
+            return httpx.Response(
+                200,
+                text=f'<MediaContainer librarySectionID="{section}" totalSize="1">{video}</MediaContainer>',
+            )
+        assert path == "/library/parts/1/123/file.mp4"
+        assert request.headers["range"] == "bytes=0-9"
+
+        class Bytes(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b"0123456789"
+
+        return httpx.Response(
+            206,
+            stream=Bytes(),
+            headers={"Content-Range": "bytes 0-9/100000", "Content-Length": "10"},
+        )
+
+    app.state.catalog_plex_fixture = plex
+    viewer, stranger = (client(app, sessions[uid]) for uid in (1, 2))
+    page = viewer.get(url)
+    assert page.status_code == 200
+    assert ('aria-label="Movie player"' in page.text) is (domain == "movie")
+    if domain == "tv":
+        assert "/plus/watch/title/tv/100/1/2?play=1" in page.text
+    assert stranger.get(url).status_code == 404
+    assert not provider_reads
+
+    start = "/plus/api/playback/catalog-sessions"
+    assert viewer.post(start, json={"target": target | {"source_url": base_url}}).status_code == 422
+    assert stranger.post(start, json={"target": target}).status_code == 409
+    assert not provider_reads
+    response = viewer.post(start, json={"target": target})
+    assert response.status_code == 201, response.text
+    session = response.json()
+    assert session["domain"] == domain
+    assert session["source"]["anilist_id"] is None
+    assert fixture_auth not in response.text and "/media/" not in response.text
+    assert calls == []
+
+    media_url = session["media_url"]
+    assert stranger.get(media_url, headers={"range": "bytes=0-9"}).status_code == 404
+    assert viewer.get(media_url, headers={"range": "bytes=0-9"}).content == b"0123456789"
+    moved[0] = True
+    assert viewer.get(media_url, headers={"range": "bytes=0-9"}).status_code == 409
+    moved[0] = False
+
+    close = viewer.post(
+        f"/plus/api/playback/sessions/{session['session_id']}/close",
+        json={
+            "final_event": {
+                "seq": 1,
+                "position_seconds": 7.0,
+                "playing": False,
+                "event": "seek",
+                "playback_rate": 1.0,
+            }
+        },
+    )
+    assert close.status_code == 204, close.text
+    resumed = viewer.post(start, json={"target": target})
+    assert resumed.status_code == 201, resumed.text
+    assert resumed.json()["position_seconds"] == 7
+    assert db.execute("SELECT COUNT(*) FROM web_playback_watch").fetchone()[0] == 0

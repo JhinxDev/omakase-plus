@@ -21,7 +21,7 @@ def enabled():
 
 def _url(scope, monitor_id, episode):
     return f"/plus/watch/{int(monitor_id)}/{int(episode)}?" + urlencode(
-        {"library_id": scope.library_id}
+        {"library_id": scope.library_id, "play": "1"}
     )
 
 
@@ -37,8 +37,8 @@ def _monitor(db, scope, card):
     else:
         monitor_id = card["id"]
     return db.execute(
-        "SELECT * FROM media_monitors WHERE id=? AND user_id=? AND anilist_id=? AND season_number=?",
-        (monitor_id, scope.operational_owner_id, card["anilist_id"], card["season_number"]),
+        "SELECT * FROM media_monitors WHERE id=? AND user_id=? AND anilist_id=? AND COALESCE(season_number,0)=?",
+        (monitor_id, scope.operational_owner_id, card["anilist_id"], card["season_number"] or 0),
     ).fetchone()
 
 
@@ -48,16 +48,16 @@ def _candidates(db, scope, monitor, publication=None):
     Legacy candidates do not create resources or bypass the full source resolver.
     Bound media additionally uses the gateway's publication identity unchanged.
     """
-    if int(monitor["season_number"] or 0) <= 0 or (
-        "format" in monitor.keys() and str(monitor["format"] or "").upper() == "MOVIE"
-    ):
+    season = monitor["season_number"] or 0
+    film = "format" in monitor.keys() and monitor["format"] == "MOVIE"
+    if film != (season == 0):
         return {}
     try:
         receipt, manifest = publication() if publication is not None else qualified_publication(db)
     except (ValueError, KeyError, TypeError, RecursionError):
         return {}
     titles = [t for t in manifest["titles"] if t["anilist_id"] == monitor["anilist_id"]]
-    if len(titles) != 1:
+    if len(titles) != 1 or ((titles[0].get("format") == "MOVIE") != film):
         return {}
     title = titles[0]["canonical_title"]
     if (
@@ -73,7 +73,7 @@ def _candidates(db, scope, monitor, publication=None):
             scope.operational_owner_id,
             str(monitor["id"]),
             str(monitor["anilist_id"]),
-            monitor["season_number"],
+            season,
         ),
     ).fetchall()
     if len(bindings) > 1 or (scope.kind == "household" and len(bindings) != 1):
@@ -92,8 +92,10 @@ def _candidates(db, scope, monitor, publication=None):
         for f in receipt["publication_files"]
         if f["selected"]
         and f["anilist_id"] == monitor["anilist_id"]
-        and f["season_number"] == monitor["season_number"]
+        and f["season_number"] == (1 if film else season)
     ]
+    if film and (len(files) != 1 or files[0]["episodes"] != [1]):
+        return {}
     candidates = {}
     for file in files:
         episodes = file["episodes"]
@@ -132,7 +134,7 @@ def _candidates(db, scope, monitor, publication=None):
             if bindings
             else None
         )
-        candidates[episode] = identity
+        candidates[0 if film else episode] = identity
     return candidates
 
 
@@ -188,7 +190,7 @@ def _attach_navigation(db, cards, user_id, scope):
             if watch["episode_number"] in completed:
                 continue
             cycle = db.execute(
-                "SELECT c.intervals_json FROM web_playback_cycle_coverage c JOIN web_playback_resumes r USING(target_key) WHERE r.user_id=? AND r.library_id=? AND r.canonical_id=? AND r.season_number=? AND r.episode_number=? AND r.media_version=? AND c.barrier=?",
+                "SELECT c.intervals_json FROM web_playback_cycle_coverage c JOIN web_playback_resumes r USING(target_key) WHERE r.user_id=? AND r.library_id=? AND r.domain='anime' AND r.canonical_id=? AND r.season_number=? AND r.episode_number=? AND r.media_version=? AND c.barrier=?",
                 (
                     user_id,
                     scope.library_id,
@@ -217,6 +219,14 @@ def _attach_navigation(db, cards, user_id, scope):
             if monitor is None or card.get("state") == "archived":
                 continue
             candidates = _candidates(db, scope, monitor, publication)
+            if 0 in candidates:
+                card.update(
+                    play_url=_url(scope, monitor["id"], 0),
+                    play_label="Play",
+                    play_episode=None,
+                    playback_navigation_state="",
+                )
+                continue
             card["episode_play_urls"] = {ep: _url(scope, monitor["id"], ep) for ep in candidates}
             episode = card.get("next_episode") or 1
             resumed = False

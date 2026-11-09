@@ -141,13 +141,20 @@
     return preferred ? `ass:${preferred.plex_stream_id}` : 'off';
   }
   function nextEpisodeUrl(value, config, origin) {
-    if (typeof value !== 'string' || !Number.isSafeInteger(config.monitor_id) || config.monitor_id <= 0
-      || !Number.isSafeInteger(config.episode_number) || config.episode_number <= 0 || typeof config.library_id !== 'string') return null;
+    if (typeof value !== 'string' || !Number.isSafeInteger(config.episode_number) || config.episode_number <= 0) return null;
+    const tv = config.catalog_target;
+    if (tv?.domain === 'tv') {
+      const path = `/plus/watch/title/tv/${tv.tmdb_id}/${tv.season_number}/${config.episode_number + 1}?play=1`;
+      return value === path ? new URL(path, origin).href : null;
+    }
+    if (!Number.isSafeInteger(config.monitor_id) || config.monitor_id <= 0 || typeof config.library_id !== 'string') return null;
     const path = `/plus/watch/${config.monitor_id}/${config.episode_number + 1}`;
     if (value.split('?')[0] !== path || value.includes('#')) return null;
     try {
       const url = new URL(value, origin);
-      return url.origin === origin && [...url.searchParams.keys()].length === 1
+      const keys = [...url.searchParams.keys()];
+      const explicit = keys.length === 2 && url.searchParams.get('play') === '1';
+      return url.origin === origin && (keys.length === 1 || explicit)
         && url.searchParams.get('library_id') === config.library_id ? url.href : null;
     } catch { return null; }
   }
@@ -263,7 +270,9 @@
     }
   }
   function startPayload(config, capabilities) {
-    return { monitor_id: config.monitor_id, episode_number: config.episode_number, library_id: config.library_id, ...capabilities, defer_prepare: true };
+    const identity = config.catalog_target ? { target: config.catalog_target }
+      : { monitor_id: config.monitor_id, episode_number: config.episode_number, library_id: config.library_id };
+    return { ...identity, ...capabilities, defer_prepare: true };
   }
   function exitSnapshot(snapshot, queue, seeking = false, ended = false) {
     return { ...snapshot, event: seeking || queue.hasPendingSeek() ? 'seek' : ended ? 'ended' : 'pause', playing: false };
@@ -605,6 +614,8 @@
   const status = find('status');
   const saved = find('save');
   const start = find('start');
+  const startPanel = find('start-panel');
+  const loading = find('loading');
   const restart = find('restart');
   const retry = find('retry');
   const reload = find('reload');
@@ -671,7 +682,14 @@
     } finally { window.clearTimeout(timeout); externalSignal?.removeEventListener('abort', abort); }
   }
   function sessionPath(suffix = '') { return `/plus/api/playback/sessions/${encodeURIComponent(session.session_id)}${suffix}`; }
+  function setLoading(label = '', opening = false) {
+    loading.hidden = !label;
+    loading.classList.toggle('is-opening', opening);
+    if (label) find('loading-label').textContent = label;
+  }
   function showError(error, saving = false) {
+    setLoading();
+    startPanel.hidden = true;
     failed = true;
     // Stop event capture before pause, so a failing save cannot enqueue another write.
     ready = false;
@@ -689,27 +707,26 @@
       unsupported_codec: 'This browser cannot decode this video or audio format.',
       unsupported_source: 'This source format is unavailable in the web player.',
       styled_subtitles_unsupported: 'This browser cannot display the styled subtitles on this version.',
-      stream_start_timeout: 'The media server took too long to open this episode.',
-      stream_start_failed: 'The media server could not start the episode stream.',
+      stream_start_timeout: 'The media server took too long to open this title.',
+      stream_start_failed: 'The media server could not start the stream.',
       saved_position_unavailable: 'The stream did not reach your saved position. Try again in a moment.',
       stream_worker_unavailable: 'The streaming worker is temporarily unavailable.',
       stream_cache_unavailable: 'The server could not open its streaming cache.',
-      publication_read_conflict: 'The library was updating while this episode opened.',
+      stream_capacity: 'This copy is too large to prepare here. You can open it in Plex from Playback options.',
+      publication_read_conflict: 'The library was updating while this title opened.',
     };
     find('error-text').textContent = blocked
       ? 'Your session or library access changed. Reload the player to check access again.'
       : saving ? 'Progress could not be saved. Reload to continue with your last confirmed save.'
         : descriptions[error.code] || (error.status === 415 ? 'This version is unavailable in the web player.'
-          : error.status === 503 ? 'The server could not prepare this episode.'
-          : 'The player could not load the episode stream. Check your connection and try again.');
+          : error.status === 503 ? 'The server could not prepare this title.'
+          : 'The player could not load this stream. Check your connection and try again.');
     if (safeLink(find('plex'), error.source?.plex_url)) find('fallback').hidden = true;
     status.textContent = 'Playback paused.';
     reload.hidden = !(blocked || saving);
     retry.hidden = blocked || saving || error.status === 415 || triedAgain;
     restart.disabled = true;
     start.disabled = true;
-    start.hidden = false;
-    find('resume-option').hidden = false;
     if (saving) saved.textContent = 'Progress save interrupted.';
   }
   function tracks() {
@@ -759,6 +776,11 @@
     refreshBarControls();
   }
   function refreshBarControls() {
+    const next = nextEpisodeUrl(nextCandidate, config, window.location.origin);
+    const sidebar = find('sidebar-next');
+    sidebar.hidden = !next;
+    if (next) sidebar.href = next;
+    else sidebar.removeAttribute('href');
     for (const item of barItems) { item.checkAvailability(); if ((!ready || failed) && item.menu) { item.menu.classList.add('shaka-hidden'); item.button.setAttribute('aria-expanded', 'false'); } }
   }
   function registerBarControls() {
@@ -770,7 +792,7 @@
       selectSubtitle: id => changeCaption(id),
     });
     class NextEpisode extends shaka.ui.Element {
-      constructor(parent, controls) { super(parent, controls); this.link = find('next'); parent.appendChild(this.link); this.link.hidden = false; barItems.add(this); this.checkAvailability(); }
+      constructor(parent, controls) { super(parent, controls); this.link = find('next'); parent.appendChild(this.link); this.link.hidden = config.episode_number === 0; barItems.add(this); this.checkAvailability(); }
       checkAvailability() {
         const candidate = nextEpisodeUrl(nextCandidate, config, window.location.origin);
         const enabled = !!candidate && ready && !failed;
@@ -779,9 +801,6 @@
         this.link.querySelector('[data-next-label]').textContent = candidate ? 'Next episode' : 'No next episode';
         this.link.querySelector('[data-next-compact]').textContent = candidate ? 'Next' : 'No next';
         this.link.title = candidate ? 'Open the next episode in this series and library' : 'No next episode is available in this library';
-        const sidebar = find('sidebar-next'); sidebar.hidden = !candidate;
-        sidebar.removeAttribute('href'); if (enabled) sidebar.href = candidate;
-        sidebar.setAttribute('aria-disabled', String(!enabled));
       }
       release() { barItems.delete(this); super.release(); }
     }
@@ -927,21 +946,37 @@
     overlay = null;
     player = null;
   }
+  async function playReady() {
+    if (!ready || leaving || failed) return;
+    try {
+      await video.play();
+    } catch (error) {
+      if (!ready || leaving || failed) return;
+      if (error.name !== 'NotAllowedError') {
+        showError(error);
+        return;
+      }
+      setLoading();
+      find('start-heading').textContent = 'Press Play to start';
+      find('resume-option').hidden = true;
+      start.disabled = false;
+      startPanel.hidden = false;
+      status.textContent = 'Press Play to continue.';
+    }
+  }
   async function begin() {
     if (starting || leaving) return;
     starting = true;
     const currentAttempt = ++attempt;
     failed = false;
     start.disabled = true;
-    start.hidden = false;
-    find('resume-option').hidden = false;
+    startPanel.hidden = true;
     find('cancel-preparation').hidden = true;
-    find('start-panel').hidden = false;
-    find('start-heading').textContent = 'Opening your episode';
-    find('start-copy').textContent = 'Checking this episode’s available streams.';
+    const mediaLabel = config.episode_number ? 'episode' : 'movie';
+    setLoading(`Loading ${mediaLabel}…`, true);
     retry.hidden = true;
     find('error').hidden = true;
-    status.textContent = 'Preparing your episode…';
+    status.textContent = `Preparing your ${mediaLabel}…`;
     container.setAttribute('aria-busy', 'true');
     try {
       if (!csrf) throw new Error('Missing session protection');
@@ -957,19 +992,21 @@
       priorExitUnconfirmed = priorExit.record ? false : priorExitUnconfirmed || priorExit.unconfirmed;
       if (priorExitUnconfirmed) saved.textContent = 'Previous exit save could not be verified.';
       if (currentAttempt !== attempt || leaving) return;
-      status.textContent = 'Opening your episode…';
-      session = await post('/plus/api/playback/sessions', startPayload(config, browserCapabilities(window, video)), false, 40000);
-      if (!session || typeof session.session_id !== 'string' || !session.session_id) throw new Error('Invalid playback session');
+      status.textContent = `Opening your ${mediaLabel}…`;
+      const startUrl = config.catalog_target ? '/plus/api/playback/catalog-sessions' : '/plus/api/playback/sessions';
+      const opened = await post(startUrl, startPayload(config, browserCapabilities(window, video)), false, 40000);
+      if (!opened || typeof opened.session_id !== 'string' || !opened.session_id) throw new Error('Invalid playback session');
+      if (currentAttempt !== attempt || leaving) {
+        void post(`/plus/api/playback/sessions/${encodeURIComponent(opened.session_id)}/close`, {}, true).catch(() => {});
+        return;
+      }
+      session = opened;
       if (!Number.isFinite(session.duration_seconds) || session.duration_seconds <= 0) throw new Error('Invalid playback timeline');
       if (safeLink(find('plex'), session.source?.plex_url)) find('fallback').hidden = true;
       if (session.preparation_required) {
         const pending = new SessionPreparation(post, session, () => {
-          find('start-heading').textContent = 'Preparing your episode';
-          find('start-copy').textContent = 'Preparing this episode. This can take up to 45 seconds.';
-          status.textContent = 'Preparing this episode. This can take up to 45 seconds.';
-          find('resume').disabled = true;
-          find('resume-option').hidden = true;
-          start.hidden = true;
+          setLoading(`Preparing ${mediaLabel}…`, true);
+          status.textContent = `Preparing this ${mediaLabel}. This can take up to 45 seconds.`;
           find('cancel-preparation').hidden = false;
           find('cancel-preparation').disabled = false;
         });
@@ -979,8 +1016,6 @@
         preparation = null;
         session = prepared;
         find('cancel-preparation').hidden = true;
-        find('resume').disabled = false;
-        find('resume-option').hidden = false;
         if (safeLink(find('plex'), session.source?.plex_url)) find('fallback').hidden = true;
       }
       if (currentAttempt !== attempt || leaving) return;
@@ -1004,8 +1039,7 @@
       await player.load(media.href, position, session.media_type || undefined);
       if (failed || leaving) return;
       if (session.streaming && position > 0 && !seekLanded(video, position)) {
-        find('start-heading').textContent = 'Opening your saved position';
-        find('start-copy').textContent = 'Playback starts when your saved position is ready.';
+        setLoading('Finding your saved position…', true);
         status.textContent = 'Preparing your saved position…';
         const deadline = Date.now() + 45000;
         const unavailable = Object.assign(new Error('Saved position unavailable'), { code: 'saved_position_unavailable' });
@@ -1059,7 +1093,7 @@
                 return;
               }
               pendingSeek = null;
-              status.textContent = 'That part of the episode is still preparing. Try seeking again.';
+              status.textContent = 'That part of the video is still preparing. Try seeking again.';
               return;
             }
             if (activeSeekSession !== currentSession) {
@@ -1100,6 +1134,7 @@
           if (seekCurrent()) {
             timeline.render();
             if (pendingSeek) scheduleSeek(250);
+            else setLoading();
           }
         }
       }
@@ -1107,6 +1142,7 @@
         if (!seekCurrent()) return;
         pendingSeek = {time, deadline: Date.now() + 45000};
         status.textContent = 'Seeking to ' + playbackTime(time) + '…';
+        setLoading(status.textContent);
         timeline.render();
         if (!seeking) scheduleSeek(180);
       };
@@ -1139,16 +1175,12 @@
       status.textContent = session.source?.mode === 'direct' ? 'Ready to play · Direct stream' : 'Ready to play';
       capture('seek');
       periodic = window.setInterval(() => { if (!video.paused && !video.ended) capture('progress'); }, 5000);
-      try { await video.play(); }
-      catch { status.textContent = 'Ready. Press Play in the player controls to continue.'; }
+      await playReady();
     } catch (error) { if (currentAttempt === attempt && !leaving) showError(error); }
     finally {
       if (currentAttempt === attempt) {
         starting = false;
-        start.hidden = false;
-        find('resume-option').hidden = false;
         find('cancel-preparation').hidden = true;
-        find('resume').disabled = false;
         container.removeAttribute('aria-busy');
       }
     }
@@ -1166,20 +1198,17 @@
       if (session?.session_id === pending.pending.session_id) session = null;
       starting = false;
       start.disabled = false;
-      start.hidden = false;
       find('resume-option').hidden = false;
       find('cancel-preparation').hidden = true;
-      find('resume').disabled = false;
+      setLoading();
+      startPanel.hidden = false;
       container.removeAttribute('aria-busy');
       find('start-heading').textContent = 'Preparation cancelled';
-      find('start-copy').textContent = 'Choose Play episode to try again, or open this episode in Plex.';
       status.textContent = 'Preparation cancelled. Playback has not started.';
       start.focus();
     } catch (error) {
       if (cancellation === attempt && !leaving) {
         starting = false;
-        start.hidden = false;
-        find('resume-option').hidden = false;
         find('cancel-preparation').hidden = true;
         container.removeAttribute('aria-busy');
         showError(error);
@@ -1187,7 +1216,7 @@
       }
     }
   });
-  start.addEventListener('click', () => void begin());
+  start.addEventListener('click', () => { if (ready) void playReady(); else void begin(); });
   retry.addEventListener('click', () => { if (!triedAgain) { triedAgain = true; void begin(); } });
   reload.addEventListener('click', () => window.location.reload());
   find('ass-select').addEventListener('change', event => {
@@ -1207,7 +1236,10 @@
   });
   video.addEventListener('playing', () => {
     if (!enforcePlayback(video, playbackState())) return;
-    if (activeSeekSession !== session) { status.textContent = 'Playing'; capture('play'); }
+    const moveFocus = document.activeElement === start;
+    startPanel.hidden = true;
+    if (moveFocus) container.querySelector('.shaka-play-button')?.focus();
+    if (activeSeekSession !== session) { setLoading(); status.textContent = 'Playing'; capture('play'); }
   });
   video.addEventListener('play', () => { enforcePlayback(video, playbackState()); });
   function unsupportedCaptionMode() {
@@ -1217,8 +1249,8 @@
   video.addEventListener('enterpictureinpicture', () => {
     if (document.pictureInPictureElement) void document.exitPictureInPicture().catch(() => {});
   });
-  video.addEventListener('pause', () => { if (ready && activeSeekSession !== session && !leaving && !video.ended) { status.textContent = 'Paused'; capture('pause'); } });
-  video.addEventListener('waiting', () => { if (ready && activeSeekSession !== session) { status.textContent = 'Buffering…'; capture('pause'); } });
+  video.addEventListener('pause', () => { if (ready && activeSeekSession !== session && !leaving && !video.ended) { setLoading(); status.textContent = 'Paused'; capture('pause'); } });
+  video.addEventListener('waiting', () => { if (ready && activeSeekSession !== session && loading.hidden) { setLoading('Buffering…'); status.textContent = 'Buffering…'; capture('pause'); } });
   video.addEventListener('seeking', () => capture('seek'));
   video.addEventListener('seeked', () => capture(video.paused ? 'seek' : 'play'));
   video.addEventListener('ratechange', () => {
@@ -1226,8 +1258,8 @@
     // Preset buttons and shortcuts also update the slider without native input.
     container.querySelectorAll('.shaka-playback-rate-slider').forEach(range => range.setAttribute('aria-valuetext', `${video.playbackRate} times normal speed`));
   });
-  video.addEventListener('ended', () => { if (ready) { status.textContent = 'Episode finished. Your viewing progress is being saved.'; capture('ended'); } });
-  // Navigation remains manual; the next-episode link never starts playback itself.
+  video.addEventListener('ended', () => { if (ready) { status.textContent = 'Playback finished. Saving your position…'; capture('ended'); } });
+  // Navigation to another episode still requires a viewer action.
   window.addEventListener('pagehide', () => {
     if (leaving) return;
     leaving = true;
@@ -1249,4 +1281,15 @@
   });
   window.addEventListener('pageshow', event => { if (event.persisted) window.location.reload(); });
   start.disabled = false;
+  if (config.start_immediately === true) {
+    const startWhenVisible = () => {
+      if (document.hidden || document.prerendering) return;
+      document.removeEventListener('visibilitychange', startWhenVisible);
+      document.removeEventListener('prerenderingchange', startWhenVisible);
+      void begin();
+    };
+    document.addEventListener('visibilitychange', startWhenVisible);
+    document.addEventListener('prerenderingchange', startWhenVisible);
+    startWhenVisible();
+  }
 })();

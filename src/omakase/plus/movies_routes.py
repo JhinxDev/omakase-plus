@@ -305,6 +305,7 @@ def create_movies_router(
                 )
         from omakase.plus.movie_history import MovieHistoryService
         from omakase.plus.movies import _imdb
+        from omakase.plus.web_playback_navigation import enabled as web_player_enabled
 
         try:
             _imdb(imdb_id)
@@ -349,6 +350,7 @@ def create_movies_router(
                 "cleanup_enabled": movie_cleanup_enabled(),
                 "cleanup_status": removal,
                 "removal_refresh": request.query_params.get("removal_refresh") != "1",
+                "watch_in_app": web_player_enabled(),
             },
             headers={"Cache-Control": "private, no-store"},
         )

@@ -23,18 +23,18 @@ def watch_context(db, monitor, scope, episode_number):
         genres = [g for g in genres[:6] if isinstance(g, str) and 0 < len(g) <= 60]
     except (ValueError, TypeError, KeyError):
         genres = []
-    previous = None
-    if episode_number > 1:
-        try:
-            if episode_number - 1 in _candidates(db, scope, monitor):
-                previous = _url(scope, monitor["id"], episode_number - 1)
-        except (ValueError, KeyError, TypeError, RecursionError):
-            pass
+    try:
+        candidates = _candidates(db, scope, monitor)
+    except (ValueError, KeyError, TypeError, RecursionError):
+        candidates = {}
+    previous = episode_number - 1
+    following = episode_number + 1
     return {
         **cached_synopsis(db, int(monitor["anilist_id"])),
         "genres": genres,
         "season_number": monitor["season_number"],
-        "previous_url": previous,
+        "previous_url": _url(scope, monitor["id"], previous) if previous in candidates else None,
+        "next_url": _url(scope, monitor["id"], following) if following in candidates else None,
     }
 
 
