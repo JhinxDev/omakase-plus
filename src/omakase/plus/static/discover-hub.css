@@ -18,7 +18,7 @@
 .hub-options summary { display: flex; min-height: 44px; align-items: center; gap: .38rem; color: #d8cfff; cursor: pointer; width: fit-content; }
 .hub-options summary::-webkit-details-marker { display: none; }
 .hub-options summary span { font-size: 1.12em; }
-.hub-options[open] summary span { rotate: 45deg; }
+.hub-options[open] > summary span { rotate: 45deg; }
 .hub-options .feedback-actions { display: grid; padding: .18rem .35rem .35rem; border: 1px solid #343c52; border-radius: .5rem; background: #13192a; }
 .hub-options .text-action { text-align: left; white-space: normal; width: 100%; }
 .hub-unavailable p { margin-top: .55rem; }

@@ -52,6 +52,40 @@ Play, preparation/cancel, deliberate bounded retry, session exit closure and
 authorization retain their existing contracts. No next-episode autoplay. Reduced
 motion disables decorative transitions; forced colors keeps visible boundaries.
 
+## Viewing entry points
+
+Continue Watching uses one playable cover per title with a visible Play or
+Resume label and the exact episode number. The title underneath opens details.
+A title without a qualified playback target opens details from its cover. The
+episode list puts the playback control in a consistent trailing position and
+keeps availability and watched state visible independently. Native links and
+disclosures retain visible focus, with no action on focus alone.
+
+For You allocates each anime to at most one shelf per screen. Narrow airing and
+film shelves retain eligible candidates while personalized shelves rank by
+viewing, ratings and genre. Already watched opens an optional score selector and
+saves only on explicit submission.
+
+The Settings landing page is a directory. Watching and account tasks come first.
+Video quality uses familiar resolution names and a clear fallback order. More
+detailed source rules are available under an Advanced download rules disclosure.
+The form retains the same saved values and validation.
+
+Movie watch history and rating save together with a clear receipt. A watched
+movie can be reviewed through a read-only exact Plex identity check. The review
+distinguishes a match, absence in the checked library and an inconclusive check.
+Any copy-management action happens in Plex. The Omakase record remains saved.
+
+## Apple TV client boundary
+
+Keep catalog identity, exact episode numbering, scoped playback sessions,
+duration, resume and completion semantics independent of browser presentation.
+The web transport controls and ASS canvas are adapters for those contracts.
+The native app can use the tvOS focus system for rows and the native playback
+interface with qualified media. A future device check must cover authenticated
+HLS, long seeks, resume, audio and subtitles, including a decision for styled
+ASS, and Siri Remote focus. The web interface does not establish those results.
+
 ## Personal cinema
 
 Artwork leads; one primary action follows. Geist is served locally. Pale iris carries selection/action, emerald confirmed availability, amber partial/attention, slate unknown, muted red destructive/failure. Every state has meaningful words as well as color. Availability, watching, rating and media verification are independent.

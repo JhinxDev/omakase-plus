@@ -1,8 +1,8 @@
 <section id="tracking-connections" class="editorial-panel settings-section">
-    <header class="panel-heading"><div><h2>Tracking connection</h2></div><span class="privacy-stamp semantic-state--{{ 'connected' if anilist_connected else 'disconnected' }}">{{ 'Connected' if anilist_connected else 'Not connected' }}</span></header>
+    <header class="panel-heading"><div><h2>After watching & connected trackers</h2></div><span class="privacy-stamp semantic-state--{{ 'connected' if anilist_connected else 'disconnected' }}">{{ 'Connected' if anilist_connected else 'Not connected' }}</span></header>
     <input type="hidden" name="completion_cleanup_present" value="1">
     <div class="settings-field">
-      <div><label for="remove_completed_from_plex">Remove completed anime from Plex</label><p>When a new completion is saved, remove that season or movie from Plex. Keep your watched history, rating and source media. Previously completed titles stay unchanged.</p></div>
+      <div><label for="remove_completed_from_plex">Remove completed anime from Plex</label><p>Choose what happens when you finish an anime series or anime film. Your watch history, rating and source media stay saved.</p></div>
       <div class="field-control"><select id="remove_completed_from_plex" name="remove_completed_from_plex"><option value="1" {% if remove_completed_from_plex %}selected{% endif %}>Remove from Plex when finished</option><option value="0" {% if not remove_completed_from_plex %}selected{% endif %}>Keep in Plex when finished</option></select></div>
     </div>
     <div class="integration-card">

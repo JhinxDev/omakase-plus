@@ -245,6 +245,7 @@ def _attach_navigation(db, cards, user_id, scope):
                 card.update(
                     play_url=_url(scope, monitor["id"], episode),
                     play_label="Resume" if resumed else "Play",
+                    play_episode=episode,
                     playback_navigation_state="",
                 )
         except (ValueError, KeyError, TypeError, RecursionError):

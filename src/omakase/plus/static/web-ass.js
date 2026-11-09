@@ -141,6 +141,10 @@ export class OmakaseASS {
         if (generation !== this.generation || this.destroyed) return false;
         const canvas = document.createElement('canvas');
         canvas.className = 'omakase-ass-overlay';
+        const platform = navigator.userAgentData?.platform || navigator.platform;
+        if (/^Win/i.test(platform) && /(?:Chrome|Chromium)\//.test(navigator.userAgent)) {
+          canvas.classList.add('omakase-ass-composited');
+        }
         canvas.setAttribute('aria-hidden', 'true');
         Object.assign(canvas.style, {position: 'absolute', inset: '0', width: '100%', height: '100%', pointerEvents: 'none'});
         this.canvas = canvas;

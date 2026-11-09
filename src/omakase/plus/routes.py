@@ -3234,7 +3234,14 @@ async def settings_page(
 
     section = request.url.path.rsplit("/", 1)[-1]
     if section == "settings":
-        section = "preferences"
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            {
+                **_product_context(request, user, active_page="settings"),
+                "settings_section": "overview",
+            },
+        )
     stored = {}
     for key_name in _SECRET_KEYS:
         val = read_secret(db, user.id, key_name)

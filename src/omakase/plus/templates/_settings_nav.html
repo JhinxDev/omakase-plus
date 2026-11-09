@@ -7,6 +7,7 @@
 
 {% macro settings_nav(active='preferences', household_enabled=false) -%}
 <nav class="settings-navigation" aria-label="Settings navigation">
+  {{ settings_link('Settings home', '/plus/settings', active == 'overview') }}
   <section aria-labelledby="settings-account-heading">
     <h2 id="settings-account-heading">Account</h2>
     {{ settings_link('Your profile', '/plus/settings/profile', active == 'profile') }}
@@ -16,13 +17,16 @@
   </section>
   <section aria-labelledby="settings-experience-heading">
     <h2 id="settings-experience-heading">Your experience</h2>
-    {{ settings_link('Preferences', '/plus/settings/preferences', active == 'preferences') }}
-    {{ settings_link('Anime tracking', '/plus/settings/tracking', active == 'tracking') }}
-    {{ settings_link('Download criteria', '/plus/settings/downloads', active == 'downloads') }}
+    {{ settings_link('Recommendations', '/plus/settings/preferences', active == 'preferences') }}
+    {{ settings_link('Watch history', '/plus/settings/tracking', active == 'tracking') }}
+    {{ settings_link('Video quality & downloads', '/plus/settings/downloads', active == 'downloads') }}
   </section>
   <section aria-labelledby="settings-services-heading">
     <h2 id="settings-services-heading">Your services</h2>
     {{ settings_link('Connections', '/plus/settings/connections', active == 'connections') }}
+  </section>
+  <section aria-labelledby="settings-advanced-heading">
+    <h2 id="settings-advanced-heading">Advanced</h2>
     {{ settings_link('Storage & downloads', '/plus/settings/storage', active == 'storage') }}
     {{ settings_link('Source filters', '/plus/settings/sources', active == 'sources') }}
     {{ settings_link('AI provider', '/plus/settings/ai', active == 'ai') }}

@@ -1,3 +1,4 @@
+{% from "_watched_feedback.html" import watched_feedback %}
 {% macro shelf(row) -%}
 <section class="hub-shelf" aria-labelledby="hub-{{ row.key }}">
   <div class="hub-shelf-heading">
@@ -28,7 +29,7 @@
             </form>
             {% if not card.saved %}<button type="button" class="text-action btn-plan" data-media-id="{{ card.id }}" data-title="{{ card.title }}">Save to watchlist</button>{% endif %}
             {% endif %}
-            <button type="button" class="text-action btn-feedback" data-feedback="already_watched">Already watched</button>
+            {{ watched_feedback() }}
             <button type="button" class="text-action btn-feedback" data-feedback="not_for_me">Not for me</button>
           </div>
         </details>

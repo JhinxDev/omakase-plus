@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_media_components.html" import media_rail, empty_state, confirmation_card, ready_badge, history_card %}
+{% from "_media_components.html" import media_rail, playback_link, empty_state, confirmation_card, ready_badge, history_card %}
 {% block title %}Omakase{% endblock %}
 {% block masthead %}{% endblock %}
 {% block eyebrow %}Your private anime library{% endblock %}
@@ -25,7 +25,7 @@
       {% set featured_url = featured.detail_url | default('/plus/library/' ~ featured.id, true) %}
       {% set shared_detail = '/plus/libraries/' in featured_url %}
       {% set episode_anchor = '#episode-' ~ featured.next_episode if featured.next_episode and featured.episode_total and featured.next_episode <= featured.episode_total else '#episode-heading' %}
-      <div class="cinema-actions"><a class="button button-primary" href="{{ featured.play_url if featured.play_url else featured_url ~ ('#overview' if shared_detail else episode_anchor) }}">{{ featured.play_label if featured.play_url else ('View title' if shared_detail else 'View episodes') }}</a>{% if not shared_detail or featured.play_url %}<a class="button button-secondary" href="{{ featured_url }}#overview"><span class="cinema-info-icon" aria-hidden="true">i</span> More info</a>{% endif %}</div>
+      <div class="cinema-actions">{% if featured.play_url %}{{ playback_link(featured.play_url, featured.play_label ~ ' episode ' ~ featured.play_episode, featured.play_label ~ ' ' ~ featured.title ~ ', episode ' ~ featured.play_episode) }}{% else %}<a class="button button-primary" href="{{ featured_url ~ ('#overview' if shared_detail else episode_anchor) }}">{{ 'View title' if shared_detail else 'View episodes' }}</a>{% endif %}{% if not shared_detail or featured.play_url %}<a class="button button-secondary" href="{{ featured_url }}#overview"><span class="cinema-info-icon" aria-hidden="true">i</span> More info</a>{% endif %}</div>
       {% if featured.partial_playback %}<p class="title-progress-source">Episode in progress · {{ featured.progress_episodes }} episodes watched through</p>{% endif %}
       {% if featured.playback_navigation_state %}<p class="title-progress-source">{{ featured.playback_navigation_state }}</p>{% endif %}
     {% else %}

@@ -375,6 +375,34 @@ def create_movies_router(
         require_csrf(request, csrf)
         return await action(request, user, db, "refresh", imdb_id=imdb_id)
 
+    @router.post("/movies/{imdb_id}/plex-review", response_class=HTMLResponse)
+    async def plex_review(
+        request: Request,
+        imdb_id: str,
+        csrf: str = Form("", alias="csrf_token"),
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        require_csrf(request, csrf)
+        from omakase.plus.movie_history import MovieHistoryService
+
+        svc = service(db, user)
+        movie = get_movie(db, user.id, imdb_id)
+        history = MovieHistoryService(svc).get(user.id, imdb_id) if movie else None
+        if not history or history["status"] != "completed":
+            raise HTTPException(404, "Watched movie not found")
+        link, result = None, "matched"
+        try:
+            link = await svc.plex_review(user.id, imdb_id)
+        except MovieError as exc:
+            result = "absent" if exc.code == "plex_not_found" else "unknown"
+        return templates.TemplateResponse(
+            request,
+            "movie_plex_review.html",
+            {**context(request, user), "movie": movie, "plex_url": link, "result": result},
+            headers={"Cache-Control": "private, no-store"},
+        )
+
     @router.post("/movies/history")
     async def save_history(
         request: Request,
@@ -391,7 +419,7 @@ def create_movies_router(
 
         try:
             form = await request.form()
-            await MovieHistoryService(service(db, user)).save(
+            history = await MovieHistoryService(service(db, user)).save(
                 user.id,
                 imdb_id=imdb_id,
                 tmdb_id=tmdb_id,
@@ -407,7 +435,8 @@ def create_movies_router(
             return await render(
                 request, user, db, action_card={"title": "Rating not saved", "detail": detail}
             )
-        return RedirectResponse(f"/plus/movies/{imdb_id}?notice=saved", status_code=303)
+        fragment = "#movie-after-watch" if history.get("status") == "completed" else "#movie-rating"
+        return RedirectResponse(f"/plus/movies/{imdb_id}?notice=saved{fragment}", status_code=303)
 
     @router.post("/movies/sync")
     async def sync(

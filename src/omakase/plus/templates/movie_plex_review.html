@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Review Plex copy · {{ movie.title }} · Omakase{% endblock %}
+{% block eyebrow %}After watching{% endblock %}
+{% block page_title %}Review Plex copy{% endblock %}
+{% block page_intro %}<p class="page-intro">{{ movie.title }}{% if movie.year %} · {{ movie.year }}{% endif %}</p>{% endblock %}
+{% block content %}
+<section class="editorial-panel settings-section" aria-labelledby="plex-review-result">
+  {% if result == 'matched' %}
+  <h2 id="plex-review-result">This movie is still in Plex</h2>
+  <p>Open the matched copy in Plex to review your options. Keeping or removing it there leaves your Omakase rating and watch history saved.</p>
+  {% elif result == 'absent' %}
+  <h2 id="plex-review-result">No exact copy found</h2>
+  <p>The check found no match in your Plex Movies library. Your watch history and rating are saved.</p>
+  {% else %}
+  <h2 id="plex-review-result">Plex status could not be confirmed</h2>
+  <p>Check your Plex connection or library access, then try again. Your watch history and rating are saved.</p>
+  {% endif %}
+  <div class="movie-detail-actions">
+    {% if plex_url %}<a class="button button-primary" href="{{ plex_url }}" target="_blank" rel="noopener noreferrer">Open matched movie in Plex <span aria-hidden="true">↗</span></a>{% endif %}
+    <a class="button button-secondary" href="/plus/movies/{{ movie.imdb_id }}#movie-after-watch">Back to movie</a>
+  </div>
+</section>
+{% endblock %}

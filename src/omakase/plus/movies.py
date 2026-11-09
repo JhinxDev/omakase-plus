@@ -1343,6 +1343,29 @@ class MovieService:
         except httpx.HTTPError:
             return {**MovieError("transport_error").as_dict(), "bytes_read": 0}
 
+    async def plex_review(self, user_id: int, imdb_id: str) -> str:
+        """Find the exact saved movie without probing playback or changing Plex."""
+        self._guard(user_id)
+        metadata = store.get_movie(self.db, user_id, _imdb(imdb_id))
+        if not metadata or not metadata["identity_verified"]:
+            raise MovieError("plex_identity_mismatch")
+        try:
+            video, section = await asyncio.wait_for(self._plex_movie(metadata), _OPERATION_TIMEOUT)
+        except TimeoutError:
+            raise MovieError("transport_timeout") from None
+        tmdb = self._guids(video, "tmdb")
+        if (
+            video.get("type") != "movie"
+            or video.get("librarySectionID") != str(section)
+            or self._guids(video, "imdb") != {imdb_id}
+            or (tmdb and metadata["tmdb_id"] and tmdb != {str(metadata["tmdb_id"])})
+        ):
+            raise MovieError("plex_identity_mismatch")
+        link = self._plex_link(video.get("ratingKey", ""))
+        if link is None:
+            raise MovieError("invalid_plex_metadata")
+        return link
+
     async def verify(self, user_id: int, imdb_id: str, *, force: bool = False) -> dict[str, Any]:
         self._guard(user_id)
         imdb_id = _imdb(imdb_id)

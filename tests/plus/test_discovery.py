@@ -366,7 +366,10 @@ def test_for_you_rows_apply_account_feedback_and_expose_catalog_sections(client)
     assert "Dismissed title" not in response.text
     assert "Add to library" in response.text
     assert "Save to watchlist" in response.text
-    assert "Already watched" in response.text
+    assert "<summary>Already watched</summary>" in response.text
+    assert "<select data-feedback-score>" in response.text
+    assert '<option value="8">8/10</option>' in response.text
+    assert 'data-feedback="already_watched">Save watched</button>' in response.text
 
 
 def test_library_builds_rich_projection_once(client):
@@ -376,3 +379,64 @@ def test_library_builds_rich_projection_once(client):
     with patch.object(routes, "library_titles", wraps=routes.library_titles) as build:
         assert client.get("/plus/library").status_code == 200
     build.assert_called_once()
+
+
+def test_anime_recommendations_allocate_distinct_titles_to_matching_shelves(client):
+    from omakase.plus import discover_hub as hub
+
+    _signup_and_login(client)
+    anchors = [
+        {
+            "anilist_id": media_id,
+            "title": title,
+            "genres_json": genres,
+            "rating": rating,
+            "status": "completed",
+            "partial_at": None,
+            "progress": 12,
+            "observed": "",
+        }
+        for media_id, title, genres, rating in [
+            (1001, "Liked adventure", '["Action","Adventure"]', 9),
+            (1002, "Liked action", '["Action","Fantasy"]', 8),
+        ]
+    ]
+    shared = ("Action", "Adventure", "Fantasy")
+    groups = [
+        ("Overlapping series", shared, "FINISHED", "TV"),
+        ("Action series", ("Action",), "FINISHED", "TV"),
+        ("Adventure series", ("Adventure",), "FINISHED", "TV"),
+        ("Airing series", shared, "RELEASING", "TV"),
+        ("Anime film", shared, "FINISHED", "MOVIE"),
+    ]
+    catalog = [
+        hub._anime_card(10 * index + count + 1, f"{name} {count}", status=status, format=format)
+        | {"genres": genres}
+        for index, (name, genres, status, format) in enumerate(groups)
+        for count in range(8)
+    ]
+    by_id = {card["id"]: card for card in catalog}
+    with _connect_client_db(client) as db:
+        shelves = {
+            shelf["key"]: shelf["cards"]
+            for shelf in hub.anime_shelves(db, _user_id(client), catalog, anchors)
+        }
+    ids = [card["id"] for shelf in shelves.values() for card in shelf]
+    assert len(ids) == len(set(ids))
+    assert {
+        "top",
+        "liked-0",
+        "liked-1",
+        "genre-0",
+        "genre-1",
+        "airing",
+        "films",
+        "new",
+    } <= shelves.keys()
+    assert all(card["airing"] for card in shelves["airing"])
+    assert all(card["format"] == "Anime film" for card in shelves["films"])
+    assert "Action" in by_id[shelves["genre-0"][0]["id"]]["genres"]
+    assert "Adventure" not in by_id[shelves["genre-0"][0]["id"]]["genres"]
+    assert "Adventure" in by_id[shelves["genre-1"][0]["id"]]["genres"]
+    assert "Action" not in by_id[shelves["genre-1"][0]["id"]]["genres"]
+    assert not shelves["top"][0]["airing"]

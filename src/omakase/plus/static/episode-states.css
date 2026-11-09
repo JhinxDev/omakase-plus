@@ -119,3 +119,24 @@
   .viewer-episodes .episode-number { font-size:1.15rem; }
   .viewer-episodes .episode-copy h3 { font-size:.82rem; }
 }
+
+/* Keep playback in a single, predictable slot on every episode tile. */
+.viewer-episodes .viewer-episode:has(.playback-link) {
+  grid-template-columns: auto minmax(0, 1fr) auto 44px;
+}
+.viewer-episodes .playback-link--episode {
+  grid-column: 4; grid-row: 1 / span 2; display: grid; place-items: center;
+  min-height: 44px; min-width: 44px; border: 1px solid #514962; border-radius: 50%;
+  background: #221e30; color: #f0edf8; text-decoration: none;
+}
+.viewer-episodes .is-next .playback-link--episode,
+.viewer-episodes .playback-link--episode:is(:hover, :focus-visible) {
+  background: var(--stream-accent, #c3b1ff); border-color: var(--stream-accent, #c3b1ff); color: #171325;
+}
+.viewer-episodes .viewer-episode:has(.playback-link) .episode-quality-row { grid-column: 2 / 4; }
+@media (max-width: 440px) {
+  .viewer-episodes .viewer-episode:has(.playback-link) { grid-template-columns: auto minmax(0, 1fr) 44px; }
+  .viewer-episodes .viewer-episode:has(.playback-link) .episode-watch-state { grid-column: 2; grid-row: 2; justify-self: start; }
+  .viewer-episodes .viewer-episode:has(.playback-link) .episode-quality-row { grid-column: 2; grid-row: 3; }
+  .viewer-episodes .playback-link--episode { grid-column: 3; }
+}

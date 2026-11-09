@@ -31,19 +31,28 @@
 </div>
 {%- endmacro %}
 
+{% macro play_icon() -%}
+<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M6 4.6a.9.9 0 0 1 1.4-.75l8 5.4a.9.9 0 0 1 0 1.5l-8 5.4A.9.9 0 0 1 6 15.4z"/></svg>
+{%- endmacro %}
+
+{% macro playback_link(href, label, accessible_name, style='primary') -%}
+<a class="playback-link playback-link--{{ style }}{% if style == 'primary' %} button button-primary{% endif %}" href="{{ href }}" aria-label="{{ accessible_name }}">{{ play_icon() }}<span{% if style == 'episode' %} class="sr-only"{% endif %}>{{ label }}</span></a>
+{%- endmacro %}
+
 {% macro media_card(item, badge='', compact=false) -%}
+{% set detail = item.detail_url | default('/plus/library/' ~ item.id, true) %}
 <article class="media-card{% if compact %} media-card-compact{% endif %}">
-  <a class="media-card-link" href="{{ item.detail_url | default('/plus/library/' ~ item.id, true) }}" aria-label="Open {{ item.title }}">
-    <div class="poster-with-status">{{ artwork(item) }}</div>
-    <div class="media-card-body">
-      {% if badge %}<span class="media-kicker">{{ badge }}</span>{% endif %}
-      <h3 title="{{ item.title }}">{{ item.title }}</h3>
-      {{ progress_bar(item, true) }}
-      <div class="collection-card-availability">{{ ready_badge(item) }}</div>
-      {{ source_badge(item) }}
-    </div>
+  <a class="media-card-cover" href="{{ item.play_url or detail }}" aria-label="{% if item.play_url %}{{ item.play_label }} {{ item.title }}, episode {{ item.play_episode }}{% else %}Open {{ item.title }}{% endif %}">
+    {{ artwork(item) }}
+    {% if item.play_url %}<span class="media-card-transport" aria-hidden="true">{{ play_icon() }}<span>{{ item.play_label }}<small>Episode {{ item.play_episode }}</small></span></span>{% endif %}
   </a>
-  {% if item.play_url %}<a class="button button-primary" href="{{ item.play_url }}" aria-label="{{ item.play_label }} {{ item.title }}">{{ item.play_label }}</a>{% endif %}
+  <div class="media-card-body">
+    {% if badge %}<span class="media-kicker">{{ badge }}</span>{% endif %}
+    <h3 title="{{ item.title }}">{% if item.play_url %}<a class="media-card-detail" href="{{ detail }}">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}</h3>
+    {{ progress_bar(item, true) }}
+    <div class="collection-card-availability">{{ ready_badge(item) }}</div>
+    {{ source_badge(item) }}
+  </div>
 </article>
 {%- endmacro %}
 

@@ -11,9 +11,9 @@ test('supplied and native playback remain stopped after failure until a qualifie
   await play();assert.equal(plays,0);assert.equal(pauses,1);
   assert.equal(enforcePlayback(video,state),false);
   state={...state,failed:false};await play();assert.equal(plays,0,'Recovery setup does not authorize old buffered playback');
-  state={...state,ready:true,captionLoading:true};await play();assert.equal(plays,0);
-  state={...state,captionLoading:false};await play();assert.equal(plays,1);
-  state={...state,leaving:true};await play();assert.equal(plays,1);
+  state={...state,ready:true,captionLoading:true};await play();assert.equal(plays,1,'Preparing subtitles does not hold video playback');
+  state={...state,captionLoading:false};await play();assert.equal(plays,2);
+  state={...state,leaving:true};await play();assert.equal(plays,2);
 });
 
 function fixtureStorage() {
@@ -388,7 +388,7 @@ const { playerControlsConfiguration, qualityChoices, SmoothTimeline, validatedSk
 
 test('compact single row and gear priorities expose no app PiP paths', () => {
   const config=playerControlsConfiguration();
-  assert.deepEqual(config.controlPanelElements,['play_pause','omakase_next','time_and_duration','spacer','mute','volume','fullscreen','overflow_menu']);
+  assert.deepEqual(config.controlPanelElements,['play_pause','omakase_next','omakase_time','spacer','mute','volume','fullscreen','overflow_menu']);
   assert.deepEqual(config.overflowMenuButtons,['omakase_quality','omakase_audio','omakase_subtitles','playback_rate']);
   assert.equal(config.addSeekBar,false); assert.equal(config.customContextMenu,false);
   assert.deepEqual(config.contextMenuElements,[]); assert.equal(config.enableKeyboardPlaybackControls,true);
@@ -493,4 +493,12 @@ test('owned seek input consumes click/doubleclick without toggling the surroundi
   const f=timelineFixture();let stopped=0;
   for(const type of ['click','dblclick'])f.emit(f.range,type,{stopPropagation(){stopped++;}});
   assert.equal(stopped,2);assert.equal(f.video.paused,true);f.timeline.destroy();
+});
+
+test('episode clock displays exact elapsed seconds and supports longer films', () => {
+  const {playbackTime} = require('../../src/omakase/plus/static/web-player.js');
+  assert.equal(playbackTime(15.99), '0:15');
+  assert.equal(playbackTime(1435.99), '23:55');
+  assert.equal(playbackTime(3661), '1:01:01');
+  assert.equal(playbackTime(Infinity), '0:00');
 });

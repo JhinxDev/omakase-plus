@@ -6,7 +6,7 @@
 {% set history = card.history or {} %}
 {% set status_known = history.status_source and history.status_source != 'none' %}
 {% set display = card.display %}
-{% if notice == 'saved' %}<p class="product-notice" role="status">Your watched status and rating were saved.</p>
+{% if notice == 'saved' and history.status != 'completed' %}<p class="product-notice" role="status">Your viewing changes were saved.</p>
 {% elif notice == 'updated' %}<p class="product-notice" role="status">Check finished. Review the current result below.</p>
 {% elif notice == 'request_updated' %}<p class="product-notice" role="status">Request checked. The reported state changed.</p>
 {% elif notice == 'request_unchanged' %}<p class="product-notice" role="status">No change reported. This check did not submit another request.</p>
@@ -49,14 +49,25 @@
       </section>
       {% if card.imdb_id and card.tmdb_id %}
       <section id="movie-rating" class="movie-rating-panel" aria-labelledby="movie-rating-heading" tabindex="-1">
-        <h2 id="movie-rating-heading">Your experience</h2>
-        <p>Your watched status and rating are saved separately.</p><p class="movie-history-help">Saved to your Omakase account. Ratings guide local genre-based movie picks; they are not posted to TMDB or Plex.</p>
+        <h2 id="movie-rating-heading">Watch status & rating</h2>
+        <p class="movie-history-help">Saved to your Omakase account. Your rating helps personalize movie picks.</p>
         <form class="product-form" method="post" action="/plus/movies/history" data-busy-form data-single-flight>
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="imdb_id" value="{{ card.imdb_id }}"><input type="hidden" name="tmdb_id" value="{{ card.tmdb_id }}">
           <label><span>Watched status</span><select name="status"><option value="" {% if not status_known %}selected{% endif %}>Not recorded</option>{% for value,label in [('unwatched','Not watched'),('watching','Watching'),('completed','Watched'),('dropped','Stopped watching')] %}<option value="{{ value }}" {% if status_known and history.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
           <label><span>Your rating / 10</span><input type="number" name="rating" min="1" max="10" step="0.5" value="{{ history.rating if history.rating is not none else '' }}" placeholder="Not rated"></label>
           <button class="button button-secondary" type="submit" data-busy-label="Saving…">Save</button>
         </form>
+        {% if history.status == 'completed' and status_known %}
+        <section class="movie-after-watch" id="movie-after-watch" aria-labelledby="movie-after-watch-heading" tabindex="-1">
+          <h3 id="movie-after-watch-heading">Plex after watching</h3>
+          {% if notice == 'saved' %}<p role="status">Your viewing changes were saved. The Plex library was left as it was.</p>{% endif %}
+          <p>Check for the exact movie in Plex before deciding whether to keep it. Your Omakase watch history and rating stay saved.</p>
+          <form method="post" action="/plus/movies/{{ card.imdb_id }}/plex-review" data-busy-form data-single-flight>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button button-secondary" type="submit" data-busy-label="Looking in Plex…">Review Plex copy</button>
+          </form>
+        </section>
+        {% endif %}
       </section>
       {% endif %}
     </div>

@@ -57,6 +57,14 @@ body.product-body .web-player input.shaka-range-element[type="range"] { box-sizi
 .web-player .shaka-playback-rate-slider-row { min-height: 44px; }
 .web-player .shaka-playback-rate-slider-section { padding-bottom: 12px; }
 .web-player .omakase-ass-overlay { z-index: 1; }
+/* Force the overlapping video and transparent ASS surface into one composite
+   on Windows Chromium. The identity filter leaves video colors unchanged. */
+.web-player .omakase-ass-composited { backdrop-filter: brightness(1); }
+.web-player .shaka-controls-button-panel .omakase-playback-clock {
+  display: inline-flex; align-items: center; justify-content: center; white-space: nowrap;
+  color: #f0edf8; font-variant-numeric: tabular-nums; cursor: default;
+}
+
 .web-player .shaka-controls-container { z-index: 2; }
 .web-player .web-player-version-note { padding: 0 0 20px; color: #f1d3a1; }
 .web-player-ass-options { margin-top: 20px; display: grid; gap: 8px; min-width: 0; }

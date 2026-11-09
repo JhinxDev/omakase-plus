@@ -1,0 +1,13 @@
+{% macro watched_feedback() -%}
+<details class="watched-control">
+  <summary>Already watched</summary>
+  <label>
+    <span>Score (optional)</span>
+    <select data-feedback-score>
+      <option value="">No score</option>
+      {% for score in range(10, 0, -1) %}<option value="{{ score }}">{{ score }}/10</option>{% endfor %}
+    </select>
+  </label>
+  <button type="button" class="button button-secondary btn-feedback" data-feedback="already_watched">Save watched</button>
+</details>
+{%- endmacro %}

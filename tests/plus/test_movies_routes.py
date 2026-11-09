@@ -296,7 +296,7 @@ def test_history_form_preserves_omitted_fields(
 
     async def save(self, user_id, **kwargs):
         captured.update(kwargs)
-        return {}
+        return {"status": "unwatched"}
 
     monkeypatch.setattr(MovieHistoryService, "save", save)
     response = client.post(
@@ -413,3 +413,29 @@ def test_movie_collection_requests_have_truthful_heading_and_secondary_manual_to
     assert '<details class="movie-history-tools">' in response.text
     assert "does not use an AI recommendation model" in response.text
     assert svc.calls == ["list"]
+
+
+def test_saving_a_watched_movie_opens_plex_review_without_touching_plex(browser, monkeypatch):
+    from omakase.plus.movie_history import MovieHistoryService
+
+    client, service, token = browser
+
+    async def save(self, user_id, **kwargs):
+        assert kwargs["status"] == "completed"
+        assert kwargs["rating"] == 8.0
+        return {"status": "completed"}
+
+    monkeypatch.setattr(MovieHistoryService, "save", save)
+    response = client.post(
+        "/plus/movies/history",
+        data={
+            "csrf_token": token,
+            "imdb_id": "tt0084787",
+            "tmdb_id": 1091,
+            "status": "completed",
+            "rating": "8",
+        },
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/plus/movies/tt0084787?notice=saved#movie-after-watch"
+    assert not service.calls

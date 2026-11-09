@@ -21,6 +21,14 @@ query {
   trending: Page(perPage: 42) {
     media(type: ANIME, isAdult: false, sort: TRENDING_DESC) { ...card }
   }
+  finishedPopular: Page(perPage: 50) {
+    media(type: ANIME, isAdult: false, status: FINISHED,
+          format_in: [TV, TV_SHORT, ONA, OVA], sort: POPULARITY_DESC) { ...card }
+  }
+  finishedRated: Page(perPage: 50) {
+    media(type: ANIME, isAdult: false, status: FINISHED,
+          format_in: [TV, TV_SHORT, ONA, OVA], sort: SCORE_DESC) { ...card }
+  }
   airing: Page(perPage: 30) {
     media(type: ANIME, isAdult: false, status: RELEASING, sort: POPULARITY_DESC) { ...card }
   }
@@ -184,54 +192,59 @@ def anime_shelves(db, user_id, catalog, monitors):
         return card
 
     fresh = [card for card in ranked if card["id"] not in owned]
-    rows = [
-        _shelf(
-            "top",
-            "Top Picks for You",
-            map(project, fresh or ranked),
-            "Matched to your viewing and ratings."
-            if any(genres.values())
-            else "Popular picks to get you started.",
-        )
-    ]
-    for index, (_, title, liked) in enumerate(sorted(anchors, reverse=True)[:2]):
-        matched = [item for item in fresh if liked.intersection(item["genres"])]
-        if matched:
-            rows.append(
-                _shelf(f"liked-{index}", f"Because You Liked {title}", map(project, matched))
-            )
-    for index, (genre, weight) in enumerate(genres.most_common(2)):
-        if weight > 0:
-            matches = [item for item in ranked if genre in item["genres"]]
-            if matches:
-                rows.append(
-                    _shelf(
-                        f"genre-{index}",
-                        genre,
-                        map(project, matches),
-                        "One of your favorite genres",
-                    )
-                )
-    rows.extend(
-        (
-            _shelf(
-                "airing", "Currently Airing", (project(item) for item in ranked if item["airing"])
-            ),
-            _shelf(
-                "films",
-                "Anime Movies for You",
-                (project(item) for item in ranked if item["format"] == "Anime film"),
-            ),
-            _shelf(
-                "new",
-                "New for You",
-                islice(
-                    (project(item) for item in fresh if item["id"] not in saved), _CARD_LIMIT, None
-                ),
-            ),
-        )
+    # Give Top Picks a balanced entry point while retaining live and film rows.
+    top_picks = sorted(
+        fresh or ranked, key=lambda item: item["airing"] or item["format"] == "Anime film"
     )
-    return [row for row in rows if row["cards"]]
+    lanes = []
+
+    def lane(key, title, cards, note=""):
+        lanes.append((_shelf(key, title, (), note), iter(cards)))
+
+    lane(
+        "top",
+        "Top Picks for You",
+        top_picks,
+        "Matched to your viewing and ratings."
+        if any(genres.values())
+        else "Popular picks to get you started.",
+    )
+    for index, (_, title, liked) in enumerate(
+        sorted(anchors, key=lambda anchor: anchor[:2], reverse=True)[:2]
+    ):
+        matched = [item for item in fresh if liked.intersection(item["genres"])]
+        matched.sort(
+            key=lambda item: (
+                len(liked.intersection(item["genres"])) / len(liked.union(item["genres"]))
+            ),
+            reverse=True,
+        )
+        lane(f"liked-{index}", f"Because You Liked {title}", matched)
+    favorite_genres = [genre for genre, weight in genres.most_common(2) if weight > 0]
+    for index, genre in enumerate(favorite_genres):
+        other_genres = set(favorite_genres) - {genre}
+        matches = [item for item in ranked if genre in item["genres"]]
+        matches.sort(key=lambda item: bool(other_genres.intersection(item["genres"])))
+        lane(f"genre-{index}", genre, matches, "One of your favorite genres")
+    lane("airing", "Currently Airing", (item for item in ranked if item["airing"]))
+    lane(
+        "films",
+        "Anime Movies for You",
+        (item for item in ranked if item["format"] == "Anime film"),
+    )
+    lane("new", "New for You", (item for item in fresh if item["id"] not in saved))
+
+    # Deal one title per shelf per round. The narrow format and airing shelves
+    # select first, so a broad shelf cannot use their whole candidate pool.
+    used = {card["id"] for card in continue_shelf(monitors)["cards"]}
+    allocation_order = sorted(lanes, key=lambda entry: entry[0]["key"] not in {"airing", "films"})
+    for _ in range(_CARD_LIMIT):
+        for row, candidates in allocation_order:
+            item = next((card for card in candidates if card["id"] not in used), None)
+            if item is not None:
+                used.add(item["id"])
+                row["cards"].append(project(item))
+    return [row for row, _ in lanes if row["cards"]]
 
 
 async def _refresh_catalog():
@@ -250,8 +263,8 @@ async def _refresh_catalog():
                         return
         pages = json.loads(body).get("data") or {}
         cards = {}
-        for name in ("trending", "airing", "films"):
-            for item in (pages.get(name) or {}).get("media", [])[:42]:
+        for name in ("trending", "finishedPopular", "finishedRated", "airing", "films"):
+            for item in (pages.get(name) or {}).get("media", [])[:50]:
                 media_id = item.get("id")
                 title = (item.get("title") or {}).get("english") or (item.get("title") or {}).get(
                     "romaji"

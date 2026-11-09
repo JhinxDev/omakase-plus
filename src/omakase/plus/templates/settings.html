@@ -1,23 +1,23 @@
 {% extends "base.html" %}
 {% from "_settings_nav.html" import settings_nav %}
 {% set section = settings_section | default('preferences') %}
-{% set titles = {'preferences':'Preferences','tracking':'Anime tracking','downloads':'Download criteria','sources':'Source filters','ai':'AI provider','storage':'Storage & downloads','security':'Password & sessions'} %}
+{% set titles = {'overview':'Settings','preferences':'Recommendations','tracking':'Watch history','downloads':'Video quality & downloads','sources':'Source filters','ai':'AI provider','storage':'Storage & downloads','security':'Password & sessions'} %}
 {% block title %}{{ titles[section] }} · Omakase{% endblock %}
-{% block eyebrow %}Settings{% endblock %}
+{% block eyebrow %}{% if section != 'overview' %}Settings{% endif %}{% endblock %}
 {% block page_title %}{{ titles[section] }}{% endblock %}
-{% block page_intro %}<p class="page-intro">{{ {'preferences':'Make recommendations feel like you.','tracking':'Keep viewing progress, completion and connected trackers in sync.','downloads':'Choose quality preferences for future anime searches.','sources':'Choose where Omakase searches for anime releases.','ai':'Manage the key used for your recommendation requests.','storage':'Choose where media lives and how it reaches your library.','security':'Change your password and control signed-in sessions.'}[section] }}</p>{% endblock %}
+{% block page_intro %}<p class="page-intro">{{ {'overview':'Manage your account, viewing preferences and connected services.','preferences':'Choose how personalized suggestions are made.','tracking':'Manage how Omakase saves and syncs what you watch.','downloads':'Choose the picture quality Omakase looks for when adding anime.','sources':'Choose where Omakase searches for anime releases.','ai':'Manage the key used for your recommendation requests.','storage':'Choose where media lives and how it reaches your library.','security':'Change your password and control signed-in sessions.'}[section] }}</p>{% endblock %}
 {% block content %}
 {% if section == 'ai' %}<link rel="stylesheet" href="/plus/static/credentials.css?v={{ asset_version }}"><script src="/plus/static/credentials.js?v={{ asset_version }}" defer></script>{% endif %}
 {% set backend_labels = {'openai':'OpenAI','anthropic':'Anthropic','gemini':'Google Gemini','deepseek':'DeepSeek','openrouter':'OpenRouter','groq':'Groq','together':'Together AI','ollama':'Ollama','codex':'Codex subscription'} %}
 <div class="settings-workspace">{{ settings_nav(section, households_enabled | default(false)) }}<div class="settings-content">
 {% if saved %}<div class="product-notice" role="status">{{ saved }}</div>{% endif %}
 {% if settings_error %}<div class="product-notice notice-danger semantic-notice--error" role="alert">{{ settings_error }}</div>{% endif %}
-{% if section == 'storage' %}{% include '_settings_storage.html' %}{% elif section == 'security' %}{% include '_settings_security.html' %}{% else %}
+{% if section == 'overview' %}{% include '_settings_overview.html' %}{% elif section == 'storage' %}{% include '_settings_storage.html' %}{% elif section == 'security' %}{% include '_settings_security.html' %}{% else %}
 <form method="post" action="/plus/settings" class="settings-layout" autocomplete="off" data-form-type="other">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="hidden" name="settings_section" value="{{ section }}">
   {% include '_settings_' ~ section ~ '.html' %}
-  <div class="settings-submit"><p>Changes apply to this section. Saved keys stay private.</p><button class="button button-primary" type="submit" {% if section == 'ai' %}data-credential-submit data-credential-default="Save {{ titles[section] | lower }}"{% endif %}>Save {{ titles[section] | lower }}</button></div>
+  <div class="settings-submit"><p>{% if section == 'ai' %}Saved keys stay private.{% else %}Changes apply to this section.{% endif %}</p><button class="button button-primary" type="submit" {% if section == 'ai' %}data-credential-submit data-credential-default="Save {{ titles[section] | lower }}"{% endif %}>Save {{ titles[section] | lower }}</button></div>
 </form>{% endif %}
 </div></div>
 {% endblock %}

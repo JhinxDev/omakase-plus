@@ -1312,3 +1312,27 @@ def test_acknowledgement_preserves_persistence_read_retry_after(db):
     assert card["retry_after"] == "120"
     assert len([call for call in fake.calls if call.url.host == "riven.invalid"]) == riven_calls
     assert len(fake.posts) == 1
+
+
+def test_post_watch_plex_review_matches_identity_without_audio_or_file_probe(db):
+    from omakase.plus.movies_store import upsert_movie
+
+    fake = NativeMovies()
+    fake.english_selected = False
+    svc = service(db, fake)
+    upsert_movie(
+        db,
+        1,
+        {"imdb_id": IMDB, "tmdb_id": TMDB, "title": "The Thing", "year": 1982},
+        now=NOW.isoformat(),
+    )
+    result = asyncio.run(svc.plex_review(1, IMDB))
+    assert result.startswith("https://app.plex.tv/")
+    assert result.endswith("%2Flibrary%2Fmetadata%2F42")
+    assert all(r.method == "GET" and r.url.host == "plex.invalid" for r in fake.calls)
+    assert not fake.probes
+    fake.calls.clear()
+    with pytest.raises(backend().MovieError) as error:
+        asyncio.run(svc.plex_review(2, IMDB))
+    assert error.value.code == "plex_identity_mismatch"
+    assert not fake.calls

@@ -354,6 +354,13 @@
     const steps = container.querySelectorAll('.shaka-playback-rate-step-btn');
     steps.forEach(button => button.setAttribute('aria-label', button.textContent.trim() === '+' ? 'Increase playback speed' : 'Decrease playback speed'));
   }
+  function playbackTime(seconds) {
+    const elapsed = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
+    const hours = Math.floor(elapsed / 3600);
+    const minutes = Math.floor(elapsed / 60) % 60;
+    const remainder = String(elapsed % 60).padStart(2, '0');
+    return hours ? hours + ':' + String(minutes).padStart(2, '0') + ':' + remainder : minutes + ':' + remainder;
+  }
   function playerControlsConfiguration() {
     return {
       ...playbackRateConfiguration(), addSeekBar: false, customContextMenu: false,
@@ -361,7 +368,7 @@
       shortcuts: { picture_in_picture: '' },
       mediaSession: { allowAutoPiP: false, supportedActions: ['play', 'pause', 'seekbackward', 'seekforward', 'seekto'] },
       documentPictureInPicture: { enabled: false },
-      controlPanelElements: ['play_pause', 'omakase_next', 'time_and_duration', 'spacer', 'mute', 'volume', 'fullscreen', 'overflow_menu'],
+      controlPanelElements: ['play_pause', 'omakase_next', 'omakase_time', 'spacer', 'mute', 'volume', 'fullscreen', 'overflow_menu'],
       overflowMenuButtons: ['omakase_quality', 'omakase_audio', 'omakase_subtitles', 'playback_rate'],
     };
   }
@@ -435,9 +442,8 @@
       let buffered = value;
       for (let i = 0; i < this.video.buffered.length; i++) if (this.video.buffered.start(i) <= value + .1 && this.video.buffered.end(i) >= value) buffered = this.video.buffered.end(i);
       this.range.style.setProperty('--buffered', `${duration ? Math.min(100, buffered / duration * 100) : 0}%`);
-      const time = seconds => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
-      this.range.setAttribute('aria-valuetext', `${time(value)} of ${time(duration)}`);
-      this.onRender(value); // Also drives validated segment visibility, without writes.
+      this.range.setAttribute('aria-valuetext', playbackTime(value) + ' of ' + playbackTime(duration));
+      this.onRender(value, duration); // Also drives validated segment visibility, without writes.
     }
     schedule() {
       if (this.frame !== null) { this.clock.cancel(this.frame); this.frame = null; }
@@ -566,7 +572,7 @@
     }
     return { QualityMenu, AudioMenu, SubtitlesMenu };
   }
-  if (typeof module !== 'undefined' && module.exports) module.exports = { settingsMenuTypes, playerControlsConfiguration, qualityChoices, SmoothTimeline, validatedSkipSegments, activeSkipSegment, EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
+  if (typeof module !== 'undefined' && module.exports) module.exports = { playbackTime, settingsMenuTypes, playerControlsConfiguration, qualityChoices, SmoothTimeline, validatedSkipSegments, activeSkipSegment, EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
   if (typeof document === 'undefined') return;
   const root = document.querySelector('[data-web-player]');
   if (!root) return;
@@ -757,6 +763,11 @@
     }
     for (const [name, Type] of [['omakase_quality', QualityMenu], ['omakase_audio', AudioMenu], ['omakase_subtitles', SubtitlesMenu]]) shaka.ui.OverflowMenu.registerElement(name, { create: (parent, controls) => new Type(parent, controls) });
     shaka.ui.Controls.registerElement('omakase_next', { create: (parent, controls) => new NextEpisode(parent, controls) });
+    shaka.ui.Controls.registerElement('omakase_time', { create: parent => {
+      const clock = find('clock');
+      parent.appendChild(clock);
+      return { release() { find('bar-storage').appendChild(clock); } };
+    } });
   }
   async function stopCaptions() {
     captionIntent++;
@@ -978,25 +989,36 @@
       ready = true;
       if (session.streaming) void watchStreamSubtitles(session);
       find('timeline').disabled = false;
+      let seekIntent = 0;
       timeline = new SmoothTimeline(video, find('timeline'), {
         request: callback => window.requestAnimationFrame(callback), cancel: id => window.cancelAnimationFrame(id),
         document, reducedMotion: () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-      }, () => {
+      }, (position, duration) => {
+        const clock = find('clock');
+        const label = playbackTime(position) + ' / ' + playbackTime(duration);
+        if (clock.textContent !== label) clock.textContent = label;
         const marker = ready && !failed && !video.seeking ? activeSkipSegment(validatedSkipSegments(session), video.currentTime) : null;
         find('skip').hidden = !marker;
         if (marker) find('skip').textContent = marker.kind === 'intro' ? 'Skip Intro' : 'Skip Credits';
       }, {
-        duration: () => Math.max(
-          Number.isFinite(Number(video.duration)) ? Number(video.duration) : 0,
-          player && typeof player.seekRange === 'function' && Number.isFinite(player.seekRange().end) ? player.seekRange().end : 0,
-        ) || 1,
+        // An event playlist grows as segments publish. The exact session duration
+        // defines the control scale while the video element reports buffer state.
+        duration: () => session.duration_seconds,
         seek: time => {
+          const intent = ++seekIntent;
+          const currentSession = session;
+          const seekEnd = player.seekRange().end;
+          if (session.streaming && Number.isFinite(seekEnd) && time > seekEnd + 2) {
+            status.textContent = 'That part of the episode is still preparing. Try again in a moment.';
+            return;
+          }
           const wasPlaying = !video.paused;
+          const isCurrent = () => intent === seekIntent && session === currentSession && ready && !failed && !leaving;
           video.currentTime = time;
           window.setTimeout(() => {
-            if (!Number.isFinite(video.currentTime) || Math.abs(video.currentTime - time) <= 2 || !player || !mediaUri) return;
-            player.load(mediaUri, time, session?.media_type || undefined)
-              .then(() => { if (wasPlaying && ready && !failed && !leaving) video.play().catch(() => {}); })
+            if (!isCurrent() || !mediaUri || !Number.isFinite(video.currentTime) || Math.abs(video.currentTime - time) <= 2) return;
+            player.load(mediaUri, time, currentSession.media_type || undefined)
+              .then(() => { if (wasPlaying && isCurrent()) video.play().catch(() => {}); })
               .catch(() => {});
           }, 250);
         },

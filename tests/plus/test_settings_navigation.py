@@ -58,9 +58,10 @@ def test_static_group_headings_name_groups_without_becoming_actions(household):
         "Account",
         "Your experience",
         "Your services",
+        "Advanced",
     ]
     ids = [heading["attrs"].get("id") for heading in nav.headings]
-    assert all(ids) and len(set(ids)) == 3
+    assert all(ids) and len(set(ids)) == 4
     assert [section.get("aria-labelledby") for section in nav.sections] == ids
     for heading in nav.headings:
         assert not {"href", "tabindex", "onclick", "role"} & heading["attrs"].keys()
@@ -69,6 +70,7 @@ def test_static_group_headings_name_groups_without_becoming_actions(household):
 @pytest.mark.parametrize(
     "active,path",
     [
+        ("overview", "/plus/settings"),
         ("profile", "/plus/settings/profile"),
         ("security", "/plus/settings/security"),
         ("signin", "/plus/auth/google/account"),
@@ -102,5 +104,5 @@ def test_household_permission_and_existing_health_setup_destinations_remain_exac
     present = [link["attrs"]["href"] for link in navigation(household=True).links]
     assert "/plus/settings/household" not in absent
     assert set(present) - set(absent) == {"/plus/settings/household"}
-    assert len(absent) == 14 and len(present) == 15
+    assert len(absent) == 15 and len(present) == 16
     assert "/plus/health/overview" in absent and "/plus/setup" in absent

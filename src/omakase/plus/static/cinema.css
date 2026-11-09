@@ -56,7 +56,7 @@ body.product-body,body.auth-body{--stream-background:#090b12;--stream-surface:#1
 .media-rail>div{scroll-snap-align:start;min-width:0}.media-shelf{position:relative;min-width:0}.media-rail.shelf-enhanced{scrollbar-width:none}.media-rail.shelf-enhanced::-webkit-scrollbar{display:none}
 .shelf-arrow{display:none;position:absolute;z-index:3;top:30%;width:40px;height:60px;border:1px solid #ffffff30;border-radius:5px;background:#090b12e8;color:#fff;cursor:pointer;box-shadow:0 5px 20px #0006;font:36px/1 sans-serif}
 .has-overflow .shelf-arrow{display:grid;place-items:center}.shelf-arrow-previous{left:-16px}.shelf-arrow-next{right:-16px}.shelf-arrow:disabled{opacity:0;pointer-events:none}.shelf-arrow:hover{background:#302b40}.shelf-arrow:focus-visible{outline:2px solid #d5c5ff;outline-offset:3px}
-.media-rail .media-card{background:transparent;border:0;border-radius:0;overflow:visible;box-shadow:none}.media-rail .media-card-link{display:block}.poster-with-status{position:relative}
+.media-rail .media-card{background:transparent;border:0;border-radius:0;overflow:visible;box-shadow:none}.poster-with-status{position:relative}
 .media-rail .media-card .media-art{width:100%;height:auto;min-height:0;aspect-ratio:2/3;border-radius:6px;border:0;overflow:hidden}.media-art img{width:100%;height:100%;object-fit:cover}
 .media-rail .media-card-body{padding:.75rem 0 .15rem}
 .media-rail .media-card-body h3,.watchlist-card .library-card-copy h2,.movie-card h2,.tv-card .tv-card-copy h3{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;block-size:4.2em;min-block-size:4.2em;height:auto;margin:0;white-space:normal;overflow-wrap:anywhere;font-size:.93rem;font-weight:550;line-height:1.4;letter-spacing:-.015em}
@@ -257,3 +257,51 @@ body.product-body .streaming-title-hero,.movie-detail-hero{grid-template-columns
 .movie-taste-panel .movie-search { border: 0; margin: 0; }
 .movie-taste-panel>summary:is(:hover,:focus-visible) { background: #1c2233; }
 .movie-poster>.movie-pick-number { position: absolute; bottom: 8px; left: 8px; padding: 5px 7px; background: #0a0d1de0; color: #e1d9f6; border-radius: 3px; font-size: .72rem; }
+
+/* Shared playback entry points. The cover owns Play; the title opens details. */
+.media-rail .media-card-cover { position: relative; isolation: isolate; display: block; border-radius: 10px; color: var(--stream-text, #f0edf8); }
+.media-rail .media-card-cover .media-art { border-radius: inherit; }
+.media-card-transport {
+  position: absolute; z-index: 2; inset: auto 0 0; display: flex; align-items: center; gap: .65rem;
+  min-height: 58px; padding: .55rem .7rem; border-radius: 0 0 10px 10px;
+  background: linear-gradient(transparent, #090b13 75%); font-size: .875rem;
+  font-weight: 650; line-height: 1.25;
+}
+.media-card-transport svg { box-sizing: content-box; flex: none; padding: .4rem; border-radius: 50%; background: #eeebf7; color: #171325; }
+.media-card-transport small { display: block; margin-top: .18rem; color: #d3cada; font-size: .75rem; font-weight: 450; }
+.media-card-cover:is(:hover, :focus-visible) .media-card-transport svg { background: var(--stream-accent, #c3b1ff); }
+.media-rail .media-card-body h3 { block-size: 2.8em; min-block-size: 2.8em; -webkit-line-clamp: 2; }
+.media-card-detail { display: inline-block; max-width: 100%; color: inherit; text-decoration: none; }
+.media-card-detail:hover { text-decoration: underline; }
+.media-card-detail:focus-visible { outline-offset: -2px; }
+.playback-link svg { flex: none; }
+.playback-link--primary { gap: .45rem; }
+@media (forced-colors: active) {
+  .media-card-transport { background: Canvas; color: CanvasText; }
+  .media-card-transport small { color: CanvasText; }
+}
+
+/* Settings directory and progressively disclosed download controls. */
+.settings-content .settings-directory { margin-bottom: 16px; padding: 12px clamp(14px, 3vw, 24px); }
+.settings-directory h2 { margin: .6rem 0; font-size: 1rem; }
+.settings-entry {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  min-height: 64px; padding: .65rem .5rem; border-top: 1px solid #2a3040;
+  color: var(--stream-text, #f0edf8); text-decoration: none;
+}
+.settings-entry:is(:hover, :focus-visible) { background: #1d2230; }
+.settings-entry small { display: block; margin-top: .2rem; color: #bac3d3; font-size: .83rem; }
+.settings-entry svg { flex: none; color: #bbb1d3; }
+.settings-download-help, .settings-language-link { padding-inline: 1rem; }
+.settings-download-help { color: #bdc6d6; margin-block: .8rem; }
+.settings-advanced { border-top: 1px solid #303747; }
+.settings-advanced > summary { padding: .75rem 1rem; min-height: 44px; box-sizing: border-box; cursor: pointer; }
+.settings-advanced .settings-explainer { margin: 0 .75rem .75rem; padding: .8rem; border: 1px solid #303747; border-radius: 8px; background: #101521; }
+.settings-advanced .settings-criteria { margin-top: 0; gap: .6rem 1rem; }
+.settings-advanced .settings-criteria > div { border: 0; padding: 0; }
+.settings-advanced .settings-criteria dt { font: 600 .76rem var(--sans, Geist, sans-serif); letter-spacing: normal; text-transform: none; }
+
+.movie-after-watch { margin-top: 1rem; padding: 1rem 0; border-top: 1px solid #303747; scroll-margin-top: 6rem; }
+.movie-after-watch h3 { margin: 0; font-size: 1rem; }
+.movie-after-watch p { margin: .45rem 0 .7rem; color: #bdc6d6; }
+.movie-after-watch form { margin: 0; }
