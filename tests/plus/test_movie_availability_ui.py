@@ -71,6 +71,7 @@ def test_idle_availability_never_claims_an_active_check_or_changes_history(expir
     assert 'action="/plus/movies/tt3289956/plex-review"' in html
     assert 'src="/plus/static/movie-plex-review.js?' in html
     assert "Check in Plex" in html and "Open in Plex" not in html
+    assert ">Request movie</button>" in html
     assert 'href="/plus/settings/connections"' in html
     assert 'href="/plus/health/overview"' in html
     assert 'href="https://www.justwatch.com/" target="_blank" rel="noopener noreferrer"' in html
@@ -129,6 +130,31 @@ def test_specific_availability_failure_keeps_its_actionable_reason():
     assert "Check audio in Plex" in html and 'data-status-tone="attention"' in html
     assert "An English audio track is not selected in Plex." in html
     assert "playback check has not been saved" not in html
+
+
+@pytest.mark.parametrize("code", ["verifying", "verification_expired"])
+def test_indexed_movie_keeps_library_presence_separate_from_playback_check(code):
+    templates = Path(__file__).resolve().parents[2] / "src/omakase/plus/templates"
+    env = Environment(loader=FileSystemLoader(templates), autoescape=True)
+    card = present_movie(
+        {
+            "imdb_id": "tt3289956",
+            "tmdb_id": 397243,
+            "title": "Sample Film",
+            "code": code,
+            "state": "verifying",
+            "plex_present": True,
+            "detail": "A separate playback check is needed.",
+        }
+    )
+    html = env.get_template("movie_detail.html").render(
+        card=card, csrf_token="fixture-csrf", email="sample@example.test", watch_in_app=True
+    )
+    assert '<strong class="status-pill">In your library</strong>' in html
+    assert ">Play movie</a>" in html and ">Check playback</button>" in html
+    assert "A separate playback check is needed." in html
+    assert "Not checked in Plex" not in html and ">Request movie</button>" not in html
+    assert card["state"] == "verifying" and card["code"] == code
 
 
 @pytest.mark.parametrize(

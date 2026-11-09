@@ -167,6 +167,12 @@ def present_movie(card, *, now=None):
                 "attention",
                 f"Last saved as {request_label.lower()}. Check for an updated report.",
             )
+    if card.get("plex_present") and code in {"verifying", "verification_expired"}:
+        label, tone, summary = (
+            "In your library",
+            "ready",
+            "A matching copy was found. A playback check can confirm access to the file.",
+        )
     history = card.get("history") or {}
     watch_label = (
         {
