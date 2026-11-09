@@ -122,6 +122,7 @@ class ResolvedAnimeSource:
     _file_path: str = field(default="", repr=False)
     _series_key: str = field(default="", repr=False)
     _single_plex_part: bool = field(default=False, repr=False)
+    frame_rate: float | None = None
 
     @property
     def canonical_id(self):
@@ -532,6 +533,11 @@ def _resolved_part(
     indices = [s.container_index for s in streams if s.container_index is not None]
     _require(len(indices) == len(set(indices)), "Plex container stream indices are ambiguous.")
     version = _physical_version(identity, server, section, metadata, media, part)
+    video_stream = next((s for s in raw_streams if s.get("streamType") == "1"), None)
+    try:
+        frame_rate = float(video_stream.get("frameRate", "0")) if video_stream is not None else 0
+    except ValueError:
+        frame_rate = 0
     return ResolvedAnimeSource(
         scope.viewer_id,
         scope.library_id,
@@ -560,6 +566,7 @@ def _resolved_part(
         _file_path=file_path,
         _series_key=series_key,
         _single_plex_part=len(video.findall("Media")) == 1 and len(media.findall("Part")) == 1,
+        frame_rate=frame_rate if 0 < frame_rate <= 240 else None,
     )
 
 
@@ -816,6 +823,7 @@ def public_projection(source):
         "duration_ms": source.duration_ms,
         "container": source.container,
         "video_codec": source.video_codec,
+        "frame_rate": getattr(source, "frame_rate", None),
         "audio_codec": source.audio_codec,
         "streams": [
             {

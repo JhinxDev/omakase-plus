@@ -562,7 +562,16 @@ def create_player_router(
         ]
         if not candidates:
             return
-        index, track = max(candidates, key=lambda pair: (pair[1].selected, pair[1].default))
+        anime = getattr(source, "domain", "anime") in {"anime", "anime-film"}
+        index, track = max(
+            candidates,
+            key=lambda pair: (
+                anime and not pair[1].forced,
+                anime and pair[1].language.lower().split("-")[0] in {"en", "eng"},
+                pair[1].selected,
+                pair[1].default,
+            ),
+        )
         folder = item.get("stream_dir")
         if folder is None:
             folder = stream_cache_root / sid
@@ -848,6 +857,7 @@ def create_player_router(
                 "monitor_id": monitor_id,
                 "episode_number": episode_number,
                 "library_id": scope.library_id,
+                "subtitle_viewer_id": user.id,
                 "start_immediately": play,
                 "overview_url": f"/plus/library/{monitor_id}?library_id={scope.library_id}",
             },
@@ -883,6 +893,7 @@ def create_player_router(
                 "season_number": season,
                 "library_id": scope.library_id,
                 "catalog_target": target.model_dump(),
+                "subtitle_viewer_id": user.id,
                 "start_immediately": play,
                 "overview_url": back_url,
                 "description_preview": overview,
@@ -1001,18 +1012,30 @@ def create_player_router(
             projection = public_projection(source)
             copied = source.container not in {"mp4", "webm"}
             stream_mode = False
+            anime_episode = getattr(source, "domain", "anime") == "anime"
+            compatible_available = streaming_enabled and compatibility.eligible(source, body.codecs)
+            compatible_slots_full = (
+                sum("compatible_stream" in value for value in handles.values()) >= 2
+            )
+            # The growing HLS playlist starts at zero. For a qualified episode,
+            # prefer an on-demand stream that can open directly at the saved time.
+            fast_anime = (
+                compatible_available
+                and anime_episode
+                and source.container == "mkv"
+                and source.audio_codec == "aac"
+                and sum(track.kind == "audio" for track in source.streams) == 1
+                and not compatible_slots_full
+            )
             compatible_mode = (
-                streaming_enabled
-                and compatibility.eligible(source, body.codecs)
+                compatible_available
+                and not anime_episode
                 and (
                     source.audio_codec not in body.codecs
                     or (copied and stream_budget(source) > stream_cache_max_bytes)
                 )
             )
-            if (
-                compatible_mode
-                and sum("compatible_stream" in value for value in handles.values()) >= 2
-            ):
+            if compatible_mode and compatible_slots_full:
                 raise HTTPException(429, "The compatible player is busy. Try after a stream ends.")
             if copied and not compatible_mode:
                 if streaming_enabled and source.container == "mkv":
@@ -1100,7 +1123,7 @@ def create_player_router(
                 "allow_subtitles": body.ass_supported,
             }
             handles[state["session_id"]] = item
-            if compatible_mode:
+            if compatible_mode or fast_anime:
                 sid = state["session_id"]
                 compatible = compatibility.CompatibleStream(source, transport)
                 item["compatible_stream"] = compatible
@@ -1109,8 +1132,22 @@ def create_player_router(
                     current(db, request, user.id, sid)
 
                 position = state["position_seconds"] if body.resume and not version_changed else 0
-                await compatible.open(position, authorize)
-                prepare_stream_subtitle(source, sid, item, codecs={"ass", "ssa", "srt"})
+                try:
+                    if fast_anime:
+                        async with asyncio.timeout(5):
+                            await compatible.open(position, authorize)
+                    else:
+                        await compatible.open(position, authorize)
+                except (DeliveryError, TimeoutError):
+                    if not fast_anime:
+                        raise
+                    await stop_stream(item)
+                    _LOG.info("playback_start_fallback reason=on_demand_unavailable")
+            if "compatible_stream" in item:
+                item["streaming"] = False
+                prepare_stream_subtitle(
+                    source, state["session_id"], item, codecs={"ass", "ssa", "srt"}
+                )
                 response = compatible_response(db, item, state)
             elif stream_mode:
                 await start_stream(source, state["session_id"], item)

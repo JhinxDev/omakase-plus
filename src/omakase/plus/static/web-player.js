@@ -167,12 +167,22 @@
       ...styledTracks.map((track, index) => ({ value: `ass:${track.plex_stream_id}`, kind: 'ass',
         label: [language(track), 'Styled ASS', ...flags(track)].join(' · ') + ` (${index + 1})` }))];
   }
-  function initialSubtitleValue(nativeTracks, styledTracks, savedId, versionChanged = false) {
+  function initialSubtitleValue(nativeTracks, styledTracks, savedId, versionChanged = false, policy = 'auto') {
     const choices = subtitleChoices(nativeTracks, styledTracks);
-    if (!versionChanged && savedId === 'off') return 'off';
-    if (!versionChanged && savedId != null) {
+    if (policy === 'off' || (policy !== 'always' && !versionChanged && savedId === 'off')) return 'off';
+    if (!versionChanged && savedId != null && savedId !== 'off') {
       if (choices.some(choice => choice.value === savedId)) return savedId;
       if (choices.some(choice => choice.value === `native:${savedId}`)) return `native:${savedId}`;
+    }
+    if (policy === 'always') {
+      const tracks = [
+        ...styledTracks.map(track => ({ ...track, value: `ass:${track.plex_stream_id}` })),
+        ...nativeTracks.filter(track => track.id != null).map(track => ({ ...track, value: `native:${track.id}` })),
+      ];
+      const full = tracks.filter(track => !track.forced);
+      const preferred = full.length ? full : tracks;
+      return (preferred.find(track => /^(en|eng)(-|$)/i.test(track.language || ''))
+        || preferred.find(track => track.active || track.selected || track.default) || preferred[0])?.value ?? 'off';
     }
     const styled = styledTracks.find(track => track.selected);
     if (styled) return `ass:${styled.plex_stream_id}`;
@@ -378,7 +388,7 @@
       mediaSession: { allowAutoPiP: false, supportedActions: ['play', 'pause', 'seekbackward', 'seekforward', 'seekto'] },
       documentPictureInPicture: { enabled: false },
       controlPanelElements: ['play_pause', 'omakase_next', 'omakase_time', 'spacer', 'mute', 'volume', 'fullscreen', 'overflow_menu'],
-      overflowMenuButtons: ['omakase_quality', 'omakase_audio', 'omakase_subtitles', 'playback_rate'],
+      overflowMenuButtons: ['omakase_quality', 'omakase_audio', 'omakase_subtitles', 'playback_rate', 'omakase_stream_info'],
     };
   }
   function qualityChoices(tracks) {
@@ -391,6 +401,22 @@
     return [...choices.values()].sort((a, b) => (b.height || 0) - (a.height || 0)).map(item => ({ ...item,
       label: `${choices.size === 1 ? 'Original · ' : ''}${Number.isFinite(item.width) && Number.isFinite(item.height) && item.width > 0 && item.height > 0 ? `${item.width} × ${item.height}` : 'resolution unavailable'}`,
     }));
+  }
+  function streamInfo(video, track, stats, session) {
+    const number = value => Number.isFinite(value) && value > 0;
+    const width = video.videoWidth || track?.width;
+    const height = video.videoHeight || track?.height;
+    const fps = track?.frameRate || session?.source?.frame_rate;
+    const bandwidth = stats?.streamBandwidth || track?.bandwidth;
+    const quality = video.getVideoPlaybackQuality?.();
+    const transport = { 'application/dash+xml': 'DASH', 'application/vnd.apple.mpegurl': 'HLS' }[session?.media_type];
+    return [
+      ['Resolution', number(width) && number(height) ? `${width} × ${height}` : 'Unavailable'],
+      ['Frame rate', number(fps) ? `${Number(fps.toFixed(2))} fps` : 'Unavailable'],
+      ['Stream bitrate', number(bandwidth) ? `${(bandwidth / 1e6).toFixed(2)} Mbps` : 'Unavailable'],
+      ['Format', transport || (session?.source?.mode === 'direct' ? 'Direct file' : 'Unavailable')],
+      ['Dropped frames', Number.isFinite(quality?.droppedVideoFrames) ? String(quality.droppedVideoFrames) : 'Unavailable'],
+    ];
   }
   function seekLanded(video, time) {
     return !video.seeking && Math.abs(video.currentTime - time) <= 1;
@@ -568,13 +594,13 @@
       }
       checkAvailability() {
         super.checkAvailability();
-        const { ready, failed, captionLoading } = hooks.state();
+        const { ready, failed, captionLoading, subtitlePending } = hooks.state();
         const selector = find('ass-select');
         const choices = Array.from(selector.options, option => ({ value: option.value, label: option.textContent }));
         const key = JSON.stringify(choices);
         this.button.disabled = !ready || failed;
         this.menu.setAttribute('aria-busy', String(captionLoading));
-        this.currentSelection.textContent = choices.length === 1 ? 'No tracks · Off' : choices.find(choice => choice.value === selector.value)?.label || 'Off';
+        this.currentSelection.textContent = choices.length === 1 ? (subtitlePending ? 'Preparing…' : 'No tracks') : choices.find(choice => choice.value === selector.value)?.label || 'Off';
         if (key !== this.choiceKey) {
           for (const row of this.choiceRows) row.remove();
           this.choiceRows = choices.map(choice => {
@@ -599,9 +625,34 @@
       }
       release() { hooks.unregister(this); super.release(); }
     }
-    return { QualityMenu, AudioMenu, SubtitlesMenu };
+    class StreamInfoMenu extends shaka.ui.SettingsMenu {
+      constructor(parent, controls) {
+        super(parent, controls, 'info');
+        this.button.setAttribute('aria-label', 'Stream info');
+        this.nameSpan.textContent = 'Stream info'; this.backSpan.textContent = 'Stream info';
+        this.backButton.setAttribute('aria-label', 'Close stream info');
+        this.list = document.createElement('dl'); this.list.className = 'web-player-stream-info';
+        this.menu.appendChild(this.list);
+        this.button.addEventListener('click', () => this.checkAvailability());
+        hooks.register(this); this.checkAvailability();
+      }
+      checkAvailability() {
+        super.checkAvailability();
+        if (!this.list) return;
+        const { ready, failed } = hooks.state();
+        this.button.disabled = !ready || failed;
+        if (this.button.disabled) return;
+        this.list.replaceChildren(...hooks.streamInfo().flatMap(([label, value]) => {
+          const name = document.createElement('dt'); name.textContent = label;
+          const data = document.createElement('dd'); data.textContent = value;
+          return [name, data];
+        }));
+      }
+      release() { hooks.unregister(this); super.release(); }
+    }
+    return { QualityMenu, AudioMenu, SubtitlesMenu, StreamInfoMenu };
   }
-  if (typeof module !== 'undefined' && module.exports) module.exports = { playbackTime, settingsMenuTypes, playerControlsConfiguration, qualityChoices, SmoothTimeline, validatedSkipSegments, activeSkipSegment, EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
+  if (typeof module !== 'undefined' && module.exports) module.exports = { playbackTime, settingsMenuTypes, playerControlsConfiguration, qualityChoices, streamInfo, SmoothTimeline, validatedSkipSegments, activeSkipSegment, EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
   if (typeof document === 'undefined') return;
   const root = document.querySelector('[data-web-player]');
   if (!root) return;
@@ -640,7 +691,9 @@
   let captionIntent = 0;
   let assTracks = [];
   let customTextId = null;
+  let subtitleOverride = null;
   let captionLoading = false;
+  let subtitlePending = false;
   let samplingEpoch = 0;
   let preparation = null;
   let attempt = 0;
@@ -651,6 +704,12 @@
   let tabStorage = null;
   try { tabStorage = window.sessionStorage; } catch { /* Exit saving remains best effort without tab storage. */ }
   const terminalCheckpoint = new TerminalCheckpoint(tabStorage);
+  const subtitleDefault = find('caption-default');
+  const subtitleDefaultKey = `omakase.subtitleDefault.v1.${config.subtitle_viewer_id}`;
+  try {
+    const stored = window.localStorage.getItem(subtitleDefaultKey);
+    if (['anime', 'always', 'off'].includes(stored)) subtitleDefault.value = stored;
+  } catch { /* Browser storage is optional. */ }
   const playbackState = () => ({ ready, failed, leaving, captionLoading });
   // Supplied controls call this instance method. Gate before native play so a
   // terminal error cannot restart buffered media or create an unhandled aborted
@@ -731,8 +790,10 @@
     if (saving) saved.textContent = 'Progress save interrupted.';
   }
   function tracks() {
-    // These are Shaka track IDs for this media version, never Plex stream IDs.
-    return { ...selectedTracks(player), ...(customTextId != null ? { text_id: customTextId } : {}) };
+    const selected = selectedTracks(player);
+    const textId = customTextId ?? selected.text_id;
+    // An absent or still-loading caption is not an explicit preference for Off.
+    return { ...selected, text_id: captionLoading || (textId === 'off' && subtitleOverride !== 'off') ? null : textId };
   }
   function playbackSnapshot(event) {
     const position = eventPosition(video.currentTime, session?.duration_seconds);
@@ -787,10 +848,11 @@
   function registerBarControls() {
     if (controlsRegistered) return;
     controlsRegistered = true;
-    const { QualityMenu, AudioMenu, SubtitlesMenu } = settingsMenuTypes(shaka, {
-      document, find, state: () => ({ ready, failed, captionLoading }),
+    const { QualityMenu, AudioMenu, SubtitlesMenu, StreamInfoMenu } = settingsMenuTypes(shaka, {
+      document, find, state: () => ({ ready, failed, captionLoading, subtitlePending }),
       register: item => barItems.add(item), unregister: item => barItems.delete(item),
-      selectSubtitle: id => changeCaption(id),
+      selectSubtitle: id => chooseSubtitle(id),
+      streamInfo: () => streamInfo(video, player.getVariantTracks().find(track => track.active), player.getStats(), session),
     });
     class NextEpisode extends shaka.ui.Element {
       constructor(parent, controls) { super(parent, controls); this.link = find('next'); parent.appendChild(this.link); this.link.hidden = config.episode_number === 0; barItems.add(this); this.checkAvailability(); }
@@ -805,7 +867,7 @@
       }
       release() { barItems.delete(this); super.release(); }
     }
-    for (const [name, Type] of [['omakase_quality', QualityMenu], ['omakase_audio', AudioMenu], ['omakase_subtitles', SubtitlesMenu]]) shaka.ui.OverflowMenu.registerElement(name, { create: (parent, controls) => new Type(parent, controls) });
+    for (const [name, Type] of [['omakase_quality', QualityMenu], ['omakase_audio', AudioMenu], ['omakase_subtitles', SubtitlesMenu], ['omakase_stream_info', StreamInfoMenu]]) shaka.ui.OverflowMenu.registerElement(name, { create: (parent, controls) => new Type(parent, controls) });
     shaka.ui.Controls.registerElement('omakase_next', { create: (parent, controls) => new NextEpisode(parent, controls) });
     shaka.ui.Controls.registerElement('omakase_time', { create: parent => {
       const clock = find('clock');
@@ -827,6 +889,10 @@
     find('ass-select').value = 'off';
     find('ass-status').textContent = 'Subtitles unavailable.';
     refreshBarControls();
+  }
+  function chooseSubtitle(id) {
+    subtitleOverride = id;
+    return changeCaption(id);
   }
 
   function changeCaption(id) {
@@ -877,6 +943,8 @@
   async function watchStreamSubtitles(target) {
     if (!target?.subtitle_url || !target.subtitle_track) return;
     const current = () => !leaving && !failed && session === target;
+    subtitlePending = true;
+    refreshBarControls();
     find('subtitle-unavailable').hidden = true;
     find('ass-status').textContent = 'Subtitles are still preparing.';
     const deadline = performance.now() + 130000;
@@ -889,8 +957,9 @@
         });
         if (!current()) return;
         if (response.status === 200) {
+          subtitlePending = false;
           target.subtitles = [{ ...target.subtitle_track, url: target.subtitle_url }];
-          await prepareTracks();
+          prepareTracks();
           return;
         }
         if (![202, 429, 503].includes(response.status)) break;
@@ -898,11 +967,14 @@
       await new Promise(resolve => window.setTimeout(resolve, delay));
       delay = Math.min(delay * 2, 5000);
     }
-    if (current()) captionUnavailable();
+    if (current()) {
+      subtitlePending = false;
+      if (!player.getTextTracks().length && subtitleOverride !== 'off') captionUnavailable();
+      else refreshBarControls();
+    }
   }
-  async function prepareTracks() {
+  function prepareTracks() {
     assTracks = styledSubtitleTracks(session.subtitles || []);
-    customTextId = null;
     const selector = find('ass-select');
     selector.disabled = true;
     const nativeTracks = player.getTextTracks();
@@ -912,12 +984,15 @@
       if (options.length) { const group = document.createElement('optgroup'); group.label = label; for (const option of options) group.appendChild(new Option(option.label, option.value)); selector.appendChild(group); }
     }
     find('subtitle-unavailable').hidden = !!(nativeTracks.length || assTracks.length);
-    const audio = audioPreference(player, session);
-    if (audio?.native) player.selectAudioTrack(audio.native);
-    else if (audio?.variant) player.selectVariantTrack(audio.variant, true);
-    const initial = initialSubtitleValue(nativeTracks, assTracks, session.text_id, session.resume_version_changed);
+    const anime = !config.catalog_target;
+    const policy = subtitleDefault.value === 'anime' ? (anime ? 'always' : 'auto') : subtitleDefault.value;
+    const initial = subtitleOverride ?? initialSubtitleValue(nativeTracks, assTracks, session.text_id, session.resume_version_changed, policy);
     refreshBarControls();
-    await changeCaption(initial);
+    if (initial === 'off' && !subtitleOverride && policy !== 'off' && !nativeTracks.length && !assTracks.length && session.subtitle_url) {
+      selector.disabled = false;
+      return;
+    }
+    void changeCaption(initial);
   }
   async function dispose() {
     ready = false;
@@ -941,6 +1016,8 @@
     session = null;
     assTracks = [];
     customTextId = null;
+    subtitleOverride = null;
+    subtitlePending = false;
     video.disablePictureInPicture = true;
     if (overlay) await overlay.destroy();
     if (player) await player.destroy();
@@ -1043,27 +1120,29 @@
       video.preload = 'metadata';
       await player.load(media.href, position, session.media_type || undefined);
       if (failed || leaving) return;
+      const unavailable = () => Object.assign(new Error('Saved position unavailable'), { code: 'saved_position_unavailable' });
+      if (session.seek_url && position > 0 && !(await waitForSeek(video, position))) throw unavailable();
       if (session.streaming && position > 0 && !seekLanded(video, position)) {
         setLoading('Finding your saved position…', true);
         status.textContent = 'Preparing your saved position…';
         const deadline = Date.now() + 45000;
-        const unavailable = Object.assign(new Error('Saved position unavailable'), { code: 'saved_position_unavailable' });
         for (;;) {
           if (currentAttempt !== attempt || failed || leaving) return;
           const range = player.seekRange();
           if (position >= range.start - 1 && position <= range.end + 1) break;
-          if (Date.now() >= deadline) throw unavailable;
+          if (Date.now() >= deadline) throw unavailable();
           await new Promise(resolve => window.setTimeout(resolve, 250));
         }
         if (!seekLanded(video, position)) {
           await player.load(media.href, position, session.media_type || undefined);
           if (currentAttempt !== attempt || failed || leaving) return;
-          if (!(await waitForSeek(video, position))) throw unavailable;
+          if (!(await waitForSeek(video, position))) throw unavailable();
         }
       }
       if (currentAttempt !== attempt || failed || leaving) return;
-      await prepareTracks();
-      if (failed || leaving) return;
+      const audio = audioPreference(player, session);
+      if (audio?.native) player.selectAudioTrack(audio.native);
+      else if (audio?.variant) player.selectVariantTrack(audio.variant, true);
       queue = new EventQueue(
         (payload, keepalive) => post(sessionPath('/events'), payload, keepalive),
         error => showError(error, true),
@@ -1071,6 +1150,7 @@
         275,
       );
       ready = true;
+      prepareTracks();
       if (session.subtitle_url) void watchStreamSubtitles(session);
       find('timeline').disabled = false;
       const currentSession = session;
@@ -1232,10 +1312,15 @@
   start.addEventListener('click', () => { if (ready) void playReady(); else void begin(); });
   retry.addEventListener('click', () => { if (!triedAgain) { triedAgain = true; void begin(); } });
   reload.addEventListener('click', () => window.location.reload());
+  subtitleDefault.addEventListener('change', () => {
+    try { window.localStorage.setItem(subtitleDefaultKey, subtitleDefault.value); } catch { /* Apply for this player regardless. */ }
+    subtitleOverride = null;
+    if (ready && !failed && !leaving) prepareTracks();
+  });
   find('ass-select').addEventListener('change', event => {
     if (!ready || failed || leaving) return;
     const fromBar = !!event.target.closest('.omakase-subtitles-menu');
-    void changeCaption(event.target.value).then(() => {
+    void chooseSubtitle(event.target.value).then(() => {
       if (fromBar && (document.activeElement === document.body || document.activeElement === event.target || !document.activeElement?.isConnected)) container.querySelector('.omakase-subtitles-button')?.focus();
     }).catch(() => {});
   });

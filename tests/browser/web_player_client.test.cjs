@@ -390,9 +390,18 @@ const { playerControlsConfiguration, qualityChoices, SmoothTimeline, validatedSk
 test('compact single row and gear priorities expose no app PiP paths', () => {
   const config=playerControlsConfiguration();
   assert.deepEqual(config.controlPanelElements,['play_pause','omakase_next','omakase_time','spacer','mute','volume','fullscreen','overflow_menu']);
-  assert.deepEqual(config.overflowMenuButtons,['omakase_quality','omakase_audio','omakase_subtitles','playback_rate']);
+  assert.deepEqual(config.overflowMenuButtons,['omakase_quality','omakase_audio','omakase_subtitles','playback_rate','omakase_stream_info']);
   assert.equal(config.addSeekBar,false); assert.equal(config.customContextMenu,false);
   assert.deepEqual(config.contextMenuElements,[]); assert.equal(config.enableKeyboardPlaybackControls,true);
+});
+
+test('always-on subtitles recover from saved Off and favor a full English track', () => {
+  const native = [{ id: 0, language: 'eng', forced: true, active: true }, { id: 1, language: 'en-US' }];
+  const styled = [{ plex_stream_id: '3', language: 'jpn', default: true }];
+  assert.equal(initialSubtitleValue(native, styled, 'off', false, 'always'), 'native:1');
+  assert.equal(initialSubtitleValue(native, styled, 'ass:3', false, 'always'), 'ass:3');
+  assert.equal(initialSubtitleValue(native, styled, 'ass:3', false, 'off'), 'off');
+  assert.equal(initialSubtitleValue([], styled, 'off', false, 'always'), 'ass:3');
 });
 
 test('quality lists only actual distinct video variants and labels a sole original truthfully', () => {

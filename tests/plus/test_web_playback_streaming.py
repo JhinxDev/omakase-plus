@@ -15,6 +15,8 @@ from omakase.plus import households
 from omakase.plus.auth import create_session
 from omakase.plus.db import run_migrations
 from omakase.plus.deps import get_db
+from omakase.plus.web_playback_compatible import CompatibleStream
+from omakase.plus.web_playback_delivery import DeliveryError
 from omakase.plus.web_playback_remux import RemuxError
 from omakase.plus.web_playback_routes import create_player_router
 from omakase.plus.web_playback_source import PlexStream, ResolvedAnimeSource
@@ -73,6 +75,7 @@ def setup(monkeypatch, tmp_path):
             token="dummy-only",
             _scope=scope,
             _snapshot=(),
+            _single_plex_part=getattr(app.state, "single_plex_part", False),
         )
 
     launches = []
@@ -140,14 +143,14 @@ def client(app, session):
     return result
 
 
-def start_stream(owner):
+def start_stream(owner, *, ass_supported=True):
     return owner.post(
         "/plus/api/playback/sessions",
         json={
             "monitor_id": 1,
             "episode_number": 10,
             "codecs": ["h264", "aac"],
-            "ass_supported": True,
+            "ass_supported": ass_supported,
         },
     )
 
@@ -167,6 +170,52 @@ def test_stream_starts_without_the_prepared_size_limit(setup):
     assert len(launches) == 1
     assert "dummy-only" not in response.text
     assert "plex.invalid" not in response.text
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_exact_anime_resume_uses_on_demand_stream_with_hls_fallback(setup, monkeypatch, available):
+    app, _, sessions, launches, _ = setup
+    owner = client(app, sessions[1])
+    old = start_stream(owner).json()
+    route = f"/plus/api/playback/sessions/{old['session_id']}"
+    assert (
+        owner.post(
+            route + "/events",
+            json={
+                "seq": 1,
+                "event": "seek",
+                "position_seconds": 300,
+                "playing": False,
+                "playback_rate": 1,
+            },
+        ).status_code
+        == 200
+    )
+    assert owner.post(route + "/close", json={}).status_code == 204
+
+    offsets = []
+
+    async def open_at_position(self, position, authorize):
+        await authorize()
+        offsets.append(position)
+        if not available:
+            raise DeliveryError("Unavailable", 502)
+
+    monkeypatch.setattr(CompatibleStream, "open", open_at_position)
+    app.state.single_plex_part = True
+    response = start_stream(owner, ass_supported=False)
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert offsets == [300]
+    assert payload["position_seconds"] == 300
+    assert payload["media_url"].endswith("/compatible.mpd" if available else "/playlist.m3u8")
+    assert len(launches) == (1 if available else 2)
+    assert (
+        owner.post(
+            f"/plus/api/playback/sessions/{payload['session_id']}/close", json={}
+        ).status_code
+        == 204
+    )
 
 
 def test_stream_playlist_segments_and_subtitles_are_authenticated(setup):

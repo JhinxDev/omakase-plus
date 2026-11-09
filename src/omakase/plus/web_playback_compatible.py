@@ -178,11 +178,10 @@ def _manifest(data, upstream_id, generation, duration):
 
 def eligible(source, codecs):
     return (
-        getattr(source, "domain", "anime") != "anime"
-        and source.container in {"mkv", "mp4"}
+        source.container in {"mkv", "mp4"}
         and source.video_codec == "h264"
         and {"h264", "aac"}.issubset(codecs)
-        and source._single_plex_part
+        and getattr(source, "_single_plex_part", False)
         and source.audio_codec
     )
 

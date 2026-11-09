@@ -7,7 +7,7 @@
 {% block eyebrow %}Your private cinema{% endblock %}
 {% block page_title %}Watch{% endblock %}
 {% block page_intro %}{% endblock %}
-{% block page_actions %}<a class="button secondary" href="{{ overview_url }}">Back to title</a>{% endblock %}
+{% block page_actions %}<a class="web-player-back" href="{{ overview_url }}"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5m7 7-7-7 7-7"/></svg>Back to title</a>{% endblock %}
 {% block content %}
 {% set episodic = episode_number > 0 %}
 {% set media = "episode" if episodic else "movie" %}
@@ -57,6 +57,13 @@
         <div class="web-player-tools-actions"><button type="button" data-player-restart disabled>Restart {{ media }}</button>
         <a data-player-plex hidden target="_blank" rel="noopener noreferrer">Open this {{ media }} in Plex <span aria-hidden="true">↗</span></a></div>
         <p data-player-fallback>Open the title for other playback options.</p>
+        <label class="web-player-caption-default" for="web-player-caption-default">Default subtitles on this device
+          <select id="web-player-caption-default" data-player-caption-default>
+            <option value="anime">On for anime</option>
+            <option value="always">Always on</option>
+            <option value="off">Off by default</option>
+          </select>
+        </label>
         <p>Progress saves while you watch.{% if not catalog_target %} Seeking alone does not mark an episode watched.{% endif %}</p>
         <p><a href="/plus/static/ass/LICENSES.txt" target="_blank" rel="noopener">Subtitle renderer licenses</a> · <a href="/plus/static/ass/corresponding-source.tar.gz" download>Source and rebuild instructions</a></p>
       </details>
@@ -74,7 +81,7 @@
   </div>
 </section>
 <noscript><style>.web-player-loading { display: none }</style><p class="web-player-error">JavaScript is required for this player. <a href="{{ overview_url }}">Return to the title</a> to open the {{ media }} in Plex.</p></noscript>
-<script id="web-player-config" type="application/json">{{ {"monitor_id": monitor_id | default(none), "episode_number": episode_number, "library_id": library_id, "next_url": next_url | default(none), "start_immediately": start_immediately | default(false), "catalog_target": catalog_target | default(none)} | tojson }}</script>
+<script id="web-player-config" type="application/json">{{ {"monitor_id": monitor_id | default(none), "episode_number": episode_number, "library_id": library_id, "next_url": next_url | default(none), "start_immediately": start_immediately | default(false), "catalog_target": catalog_target | default(none), "subtitle_viewer_id": subtitle_viewer_id | default(none)} | tojson }}</script>
 {% endblock %}
 {% block end_scripts %}
 <script src="/plus/static/shaka-player-5.3.3.js?v={{ asset_version }}" defer></script>

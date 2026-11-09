@@ -12,6 +12,11 @@ ambiguous copies still use the external playback action.
 Choose Play or Resume to open the exact title in a black player with a loading
 indicator. Playback begins as soon as the source and saved position are ready.
 If your browser blocks autoplay, press Play in the player to continue.
+Subtitles start on for anime when a supported track is available. Under
+Playback options & credits, set the subtitle default for this browser to On for
+anime, Always on, or Off by default. Use Subtitles in the gear menu to change
+the current playback. Stream info in the gear menu shows the resolution, frame
+rate, bitrate, format and dropped frames when the browser reports them.
 The player supplies seek, pause, volume, speed from 0.25× to 2×,
 audio selection and container fullscreen. A genuinely played partial episode can
 appear in Continue watching without marking earlier episodes watched. Exact
@@ -55,6 +60,11 @@ stereo AAC audio. Omakase relays segments as needed, and a seek outside the
 buffer starts at the requested position. The compatibility stream uses one
 audio track and supports eligible ASS, SSA and SRT subtitles. Image-based
 subtitles and copies that require video conversion can be opened in Plex.
+
+Eligible single-copy anime episodes with H.264 video and one AAC track use
+the on-demand stream to open near the saved position. If Plex cannot prepare
+that stream, the player uses the regular HLS stream for the same copy.
+Styled subtitles can become available after the video starts.
 
 ASS/SSA uses the original script and admitted embedded fonts in a derived JASSUB
 renderer. It requires the isolated player document, shared WASM memory,

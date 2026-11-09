@@ -228,3 +228,18 @@ body.product-body .web-player input[data-player-timeline]:focus { outline: none;
   right: 0;
   transform: none;
 }
+.masthead-actions > .web-player-back {
+  display: inline-flex; align-items: center; justify-content: center; gap: .55rem;
+  min-height: 44px; padding: .5rem .9rem; border: 1px solid #525c76; border-radius: .5rem;
+  background: #1a2131; color: #f0edf8; font-weight: 650; text-decoration: none;
+}
+.masthead-actions > .web-player-back:hover { background: #282f44; border-color: #a898e0; }
+.masthead-actions > .web-player-back:focus-visible { outline: 2px solid #c6b5ff; outline-offset: 3px; }
+.web-player-caption-default { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .85rem; }
+.web-player-caption-default select { max-width: 100%; min-height: 44px; }
+.web-player-stream-info {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto); gap: .55rem .85rem;
+  margin: 0; padding: .75rem 1rem; font-size: .8125rem;
+}
+.web-player-stream-info dt { color: #b8c0d4; }
+.web-player-stream-info dd { margin: 0; text-align: end; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
