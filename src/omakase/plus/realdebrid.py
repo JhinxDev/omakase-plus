@@ -7,6 +7,8 @@ Token: https://real-debrid.com/apitoken
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
@@ -181,8 +183,12 @@ class RealDebridClient:
                     return False
         return True
 
-    async def get_torrent(self, torrent_id: str) -> RDTorrent | None:
-        """Get info for a specific torrent."""
+    async def get_torrent(
+        self, torrent_id: str, *, require_definite_absence: bool = False
+    ) -> RDTorrent | None:
+        """Get one torrent. Removal callers can require a definite 404 for absence."""
+        if require_definite_absence:
+            return await self._exact_torrent(torrent_id)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             self._before_request()
             resp = await client.get(
@@ -193,6 +199,31 @@ class RealDebridClient:
             if resp.status_code != 200:
                 return None
             return _torrent_from_payload(resp.json())
+
+    async def _exact_torrent(self, torrent_id: str) -> RDTorrent | None:
+        if not re.fullmatch(r"[A-Za-z0-9]{3,64}", torrent_id):
+            raise ValueError("Invalid Real-Debrid item ID")
+        url = f"{RD_API}/torrents/info/{torrent_id}"
+        self._before_request()
+        async with httpx.AsyncClient(
+            timeout=self.timeout, follow_redirects=False, trust_env=False
+        ) as client:
+            async with client.stream("GET", url, headers=self._headers()) as response:
+                self._check_response(response)
+                if response.status_code == 404:
+                    return None
+                response.raise_for_status()
+                if response.status_code != 200:
+                    raise ValueError("Unexpected Real-Debrid lookup response")
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > 512 * 1024:
+                        raise ValueError("Real-Debrid item response too large")
+                    body.extend(chunk)
+        data = json.loads(body)
+        if not isinstance(data, dict) or data.get("id") != torrent_id:
+            raise ValueError("Real-Debrid returned a different item")
+        return _torrent_from_payload(data)
 
     async def instant_available(self, torrent_hash: str) -> bool | None:
         """Check RD cache state without creating or selecting a torrent."""

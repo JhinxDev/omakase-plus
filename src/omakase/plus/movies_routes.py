@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -384,6 +385,11 @@ def create_movies_router(
         db=Depends(get_db),
     ):
         require_csrf(request, csrf)
+        from omakase.plus.movie_cleanup import (
+            MovieCleanupUnavailable,
+            movie_cleanup_enabled,
+            verify_movie_cleanup_copy,
+        )
         from omakase.plus.movie_history import MovieHistoryService
 
         svc = service(db, user)
@@ -396,15 +402,25 @@ def create_movies_router(
             link = await svc.plex_review(user.id, imdb_id)
         except MovieError as exc:
             result = "absent" if exc.code == "plex_not_found" else "unknown"
+        cleanup = None
+        if link and movie_cleanup_enabled():
+            try:
+                await asyncio.wait_for(verify_movie_cleanup_copy(svc, user.id, imdb_id), timeout=7)
+                cleanup = "verified"
+            except (MovieCleanupUnavailable, MovieError, TimeoutError):
+                cleanup = "unverified"
+        payload = {"result": result, "plex_url": link}
+        if cleanup:
+            payload["cleanup"] = cleanup
         if request.headers.get("accept") == "application/json":
             return JSONResponse(
-                {"result": result, "plex_url": link},
+                payload,
                 headers={"Cache-Control": "private, no-store"},
             )
         return templates.TemplateResponse(
             request,
             "movie_plex_review.html",
-            {**context(request, user), "movie": movie, "plex_url": link, "result": result},
+            {**context(request, user), "movie": movie, **payload},
             headers={"Cache-Control": "private, no-store"},
         )
 

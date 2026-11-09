@@ -85,6 +85,11 @@ The review distinguishes a match, absence in the checked library and an
 inconclusive check.
 Any copy-management action happens in Plex. The Omakase record remains saved.
 
+The optional movie cleanup preview confirms one Riven publication, one Plex
+media part and one Real-Debrid torrent by exact identity and selected file size.
+It checks household use, the Plex scan preference and current playback. The
+browser receives the check result without the provider identifiers.
+
 ## Apple TV client boundary
 
 Keep catalog identity, exact episode numbering, scoped playback sessions,

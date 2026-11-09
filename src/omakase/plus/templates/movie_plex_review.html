@@ -7,6 +7,8 @@
 <section class="editorial-panel movie-plex-result-panel" aria-labelledby="plex-review-result">
   {% if result == 'matched' %}
   <h2 id="plex-review-result">This movie is still in Plex</h2>
+  {% if cleanup == 'verified' %}<p>The Plex copy and its Real-Debrid torrent match.</p>{% endif %}
+  {% if cleanup == 'unverified' %}<p>The exact Real-Debrid copy could not be verified.</p>{% endif %}
   <p>Open the matched copy in Plex to review your options. Keeping or removing it there leaves your Omakase rating and watch history saved.</p>
   {% elif result == 'absent' %}
   <h2 id="plex-review-result">No exact copy found</h2>

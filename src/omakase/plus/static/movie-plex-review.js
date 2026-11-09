@@ -15,7 +15,7 @@
         headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(25000),
       });
       if (!response.ok || response.redirected) throw new Error('Plex check failed');
-      const {result, plex_url: url} = await response.json();
+      const {result, plex_url: url, cleanup} = await response.json();
       if (result === 'matched') {
         const target = new URL(url);
         if (target.origin !== 'https://app.plex.tv') throw new Error('Unexpected Plex destination');
@@ -25,7 +25,12 @@
         link.rel = 'noopener noreferrer';
         link.className = 'button button-secondary';
         link.textContent = 'Manage copy in Plex';
-        status.replaceChildren('This movie is in Plex.', link);
+        const message = cleanup === 'verified'
+          ? 'The Plex copy and its Real-Debrid torrent match.'
+          : cleanup === 'unverified'
+            ? 'This movie is in Plex. The exact Real-Debrid copy could not be verified.'
+            : 'This movie is in Plex.';
+        status.replaceChildren(message, link);
       } else {
         status.textContent = result === 'absent'
           ? 'No matching copy in your Plex Movies library.'

@@ -441,7 +441,9 @@ def test_saving_a_watched_movie_opens_plex_review_without_touching_plex(browser,
     assert not service.calls
 
 
-def test_inline_movie_review_keeps_the_current_page_and_history(browser, monkeypatch):
+@pytest.mark.parametrize("cleanup", [None, "verified", "unverified"])
+def test_inline_movie_review_keeps_the_current_page_and_history(browser, monkeypatch, cleanup):
+    from omakase.plus import movie_cleanup
     from omakase.plus.movies_store import upsert_movie
 
     client, service, token = browser
@@ -462,14 +464,27 @@ def test_inline_movie_review_keeps_the_current_page_and_history(browser, monkeyp
         return "https://app.plex.tv/desktop/#!/server/fixture/details"
 
     monkeypatch.setattr(service, "plex_review", review, raising=False)
+    if cleanup:
+        monkeypatch.setenv("OMAKASE_PLUS_MOVIE_CLEANUP_ENABLED", "1")
+
+        async def verify_copy(svc, user_id, title_id):
+            assert svc is service and (user_id, title_id) == (1, imdb_id)
+            if cleanup == "unverified":
+                raise movie_cleanup.MovieCleanupUnavailable("riven_binding_unverified")
+            return {"torrent_id": "internal-fixture"}
+
+        monkeypatch.setattr(movie_cleanup, "verify_movie_cleanup_copy", verify_copy)
     path = f"/plus/movies/{imdb_id}/plex-review"
     assert client.post(path, headers={"Accept": "application/json"}).status_code == 403
     result = client.post(path, data={"csrf_token": token}, headers={"Accept": "application/json"})
     assert result.status_code == 200
-    assert result.json() == {
+    expected = {
         "result": "matched",
         "plex_url": "https://app.plex.tv/desktop/#!/server/fixture/details",
     }
+    if cleanup:
+        expected["cleanup"] = cleanup
+    assert result.json() == expected
     assert tuple(service.db.execute("SELECT status,rating FROM movie_history").fetchone()) == (
         "completed",
         8.0,
