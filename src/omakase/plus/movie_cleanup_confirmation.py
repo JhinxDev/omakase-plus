@@ -21,7 +21,7 @@ def cleanup_status(db, user_id, imdb_id):
              AND (j.stage<>'complete' OR NOT EXISTS (
                   SELECT 1 FROM movie_submissions s
                   WHERE s.backend_scope=j.backend_scope AND s.imdb_id=j.imdb_id
-                    AND (s.cleanup_tag IS NOT j.cleanup_tag OR s.code<>'copy_removed')
+                    AND s.cleanup_tag IS NOT j.cleanup_tag
              ))
            ORDER BY j.queued_at DESC LIMIT 1""",
         (user_id, imdb_id),
