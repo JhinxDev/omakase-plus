@@ -25,7 +25,7 @@ from omakase.plus.movie_cleanup import (
     watched_and_rated_manually,
 )
 from omakase.plus.movies import MovieError, MovieService, _imdb
-from omakase.plus.movies_store import get_submission
+from omakase.plus.movies_store import COPY_REMOVED_DETAIL, get_submission
 from omakase.plus.provider_limits import ProviderRateLimit
 from omakase.plus.secrets import read_secret
 
@@ -50,8 +50,8 @@ def _job_key(job):
     return job["user_id"], job["imdb_id"], job["cleanup_tag"]
 
 
-def _update(db, job, *, stage, proof=None, attempts=0, retry_at=None, reason=None):
-    db.execute(
+def _advance(db, job, *, stage, proof=None, attempts=0, retry_at=None, reason=None):
+    return db.execute(
         """UPDATE movie_cleanup_jobs
            SET stage=?, proof_json=COALESCE(?, proof_json), attempts=?, retry_at=?, reason=?
            WHERE user_id=? AND imdb_id=? AND cleanup_tag=? AND state='queued' AND stage=?
@@ -68,7 +68,43 @@ def _update(db, job, *, stage, proof=None, attempts=0, retry_at=None, reason=Non
             job["selection_digest"],
         ),
     )
-    db.commit()
+
+
+def _update(db, job, **changes):
+    with db:
+        _advance(db, job, **changes)
+
+
+def _complete(db, job, copy):
+    """Publish the receipt and close only the request for this exact copy."""
+    user_id, imdb_id, tag = _job_key(job)
+    now = datetime.now(UTC).isoformat()
+    with db:
+        if _advance(db, job, stage="complete").rowcount != 1:
+            return
+        db.execute(
+            """DELETE FROM movie_verifications WHERE user_id=? AND imdb_id=? AND plex_key=?
+               AND code NOT IN ('provider_restricted', 'rate_limited')""",
+            (user_id, imdb_id, copy.plex_key),
+        )
+        submission = db.execute(
+            """UPDATE movie_submissions SET state='unavailable', code='copy_removed', detail=?,
+                   backend_id=NULL, retry_after=NULL, retry_at=NULL
+               WHERE backend_scope=? AND imdb_id=? AND cleanup_owner_id=? AND cleanup_tag=?
+                 AND (backend_id IS NULL OR backend_id=?)""",
+            (COPY_REMOVED_DETAIL, job["backend_scope"], imdb_id, user_id, tag, copy.riven_id),
+        )
+        if submission.rowcount == 1:
+            db.execute(
+                """INSERT INTO movie_requests
+                   (user_id, imdb_id, state, code, detail, created_at, updated_at)
+                   VALUES (?, ?, 'unavailable', 'copy_removed', ?, ?, ?)
+                   ON CONFLICT (user_id, imdb_id) DO UPDATE SET state='unavailable',
+                       code='copy_removed', detail=excluded.detail, updated_at=excluded.updated_at,
+                       backend_id=NULL, retry_after=NULL, retry_at=NULL
+                   WHERE movie_requests.backend_id IS NULL OR movie_requests.backend_id=?""",
+                (user_id, imdb_id, COPY_REMOVED_DETAIL, now, now, copy.riven_id),
+            )
 
 
 def _connection_stamp(connections, key):
@@ -296,7 +332,7 @@ async def _step(db, job, heartbeat, service_factory):
         if await rd.get_torrent(copy.torrent_id, require_definite_absence=True) is not None:
             raise MovieCleanupUnavailable("released_provider_item_reappeared")
         confirm_authorized(copy)
-        _update(db, job, stage="complete")
+        _complete(db, job, copy)
         return
     if stage == "withdrawal_intent":
         if withdrawal == "present":
@@ -328,7 +364,7 @@ async def _step(db, job, heartbeat, service_factory):
     if torrent is None:
         confirm_authorized(copy)
         await _release_withdrawal(service, path, params)
-        _update(db, job, stage="complete")
+        _complete(db, job, copy)
         return
     if not _torrent_matches(
         torrent, copy.torrent_id, copy.torrent_hash, copy.file_name, copy.file_size
@@ -350,7 +386,7 @@ async def _step(db, job, heartbeat, service_factory):
         raise _Wait("provider_removal_unconfirmed")
     confirm_authorized(copy)
     await _release_withdrawal(service, path, params)
-    _update(db, job, stage="complete")
+    _complete(db, job, copy)
 
 
 def _service(db, user_id):

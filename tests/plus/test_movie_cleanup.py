@@ -9,7 +9,7 @@ from xml.etree import ElementTree
 import httpx
 import pytest
 
-from omakase.plus import movie_cleanup, realdebrid
+from omakase.plus import movie_cleanup, movies_store, realdebrid
 from omakase.plus.db import run_migrations
 from omakase.plus.movies import MovieService
 from omakase.plus.movies_store import claim_submission, upsert_movie
@@ -350,6 +350,32 @@ def cleanup_job(copy, monkeypatch):
 
 def test_worker_waits_for_plex_and_verifies_both_provider_removals(cleanup_job):
     service, state, tick = cleanup_job
+    db = service.db
+    now = "2026-11-09T08:00:00Z"
+    movies_store.ensure_request(db, 1, IMDB, now=now, edition=None)
+    movies_store.update_request(db, 1, IMDB, now=now, backend_id="movie_tmdb_9876")
+    movies_store.upsert_movie(
+        db, 2, {"imdb_id": IMDB, "tmdb_id": TMDB, "title": "Sample Film"}, now=now
+    )
+    movies_store.ensure_request(db, 2, IMDB, now=now, edition=None)
+    for viewer, key in [(1, "7"), (1, "8"), (2, "7")]:
+        movies_store.save_verification(
+            db,
+            viewer,
+            IMDB,
+            {
+                "fingerprint": key * 64,
+                "plex_key": key,
+                "state": "ready",
+                "code": "ready",
+                "detail": "Fixture",
+                "selected_audio": "English",
+                "http_status": 206,
+                "bytes_read": 65536,
+                "verified_at": now,
+                "expires_at": now,
+            },
+        )
     assert tick()["stage"] == "withdrawal_intent"
     assert tick()["stage"] == "awaiting_plex"
     job = tick()
@@ -359,6 +385,14 @@ def test_worker_waits_for_plex_and_verifies_both_provider_removals(cleanup_job):
     assert tick()["stage"] == "provider_intent"
     assert tick()["stage"] == "complete"
     assert tick()["stage"] == "complete"
+    assert movies_store.get_request(db, 1, IMDB)["code"] == "copy_removed"
+    assert movies_store.get_request(db, 2, IMDB)["code"] == "requested"
+    assert not movies_store.collection_movies(db, 1, native_ids=set(), requested_only=True)
+    assert movies_store.collection_movies(db, 1, native_ids=set(), watch_status="completed")
+    assert movies_store.get_submission(db, service._scope, IMDB)["code"] == "copy_removed"
+    assert movies_store.get_verification(db, 1, IMDB, "7" * 64) is None
+    assert movies_store.get_verification(db, 1, IMDB, "8" * 64)["code"] == "ready"
+    assert movies_store.get_verification(db, 2, IMDB, "7" * 64)["code"] == "ready"
     assert state.events == [
         "riven_delete",
         "plex_check",

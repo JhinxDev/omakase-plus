@@ -705,6 +705,50 @@ def test_new_tagged_movie_request_preserves_the_first_account_and_tag(db, monkey
     )
 
 
+def test_request_after_verified_removal_requires_the_same_owner_and_a_fresh_tag(db, monkeypatch):
+    from omakase.plus.movie_cleanup_confirmation import cleanup_status
+
+    monkeypatch.setenv("OMAKASE_PLUS_MOVIE_CLEANUP_ENABLED", "1")
+    fake = NativeMovies()
+    svc = service(db, fake)
+    assert request_movie(svc)["requested"]
+    old_tag = fake.posts[0].url.params["omakase_acquisition_tag"]
+    fake.items.clear()
+    with db:
+        db.execute("UPDATE movie_submissions SET code='copy_removed', backend_id=NULL")
+        db.execute("UPDATE movie_requests SET code='copy_removed', backend_id=NULL")
+        db.execute(
+            """INSERT INTO movie_history
+               (user_id, imdb_id, tmdb_id, status, status_source, rating, rating_source,
+                created_at, updated_at) VALUES (1, ?, ?, 'completed', 'manual', 8, 'manual', ?, ?)""",
+            (IMDB, TMDB, NOW.isoformat(), NOW.isoformat()),
+        )
+        db.execute(
+            """INSERT INTO movie_cleanup_jobs
+               (user_id, imdb_id, cleanup_tag, backend_scope, queued_at, stage)
+               VALUES (1, ?, ?, ?, ?, 'complete')""",
+            (IMDB, old_tag, svc._scope, NOW.isoformat()),
+        )
+    assert cleanup_status(db, 1, IMDB) == "removed"
+    assert asyncio.run(svc.refresh(1, IMDB))["code"] == "copy_removed"
+    assert request_movie(svc, user_id=2)["code"] == "request_ownership_conflict"
+    assert len(fake.posts) == 1
+
+    # A newly observed copy is adopted without resubmitting or reusing cleanup authority.
+    fake.items = [fake.movie()]
+    assert request_movie(svc)["requested"]
+    assert len(fake.posts) == 1
+    assert db.execute("SELECT code FROM movie_submissions").fetchone()[0] == "copy_removed"
+    fake.items.clear()
+
+    assert request_movie(svc)["requested"]
+    assert len(fake.posts) == 2
+    assert fake.posts[-1].url.params["omakase_acquisition_tag"] != old_tag
+    assert cleanup_status(db, 1, IMDB) is None
+    assert request_movie(svc)["requested"]
+    assert len(fake.posts) == 2
+
+
 def test_legacy_or_already_existing_copy_is_not_claimed_when_cleanup_is_enabled(db, monkeypatch):
     fake = NativeMovies()
     svc = service(db, fake)

@@ -46,6 +46,8 @@ _DETAILS = {
     "transport_error": "The service could not be reached; the result is unknown.",
     "redirect_rejected": "The service returned a redirect; it was not followed.",
     "acknowledgement_unconfirmed": "Riven acknowledged the request, but persistence was not observed. No duplicate was sent.",
+    "copy_removed": store.COPY_REMOVED_DETAIL,
+    "request_ownership_conflict": "The previous copy was managed by another account. Ask the library owner to request it again.",
     "backend_item_missing": "The requested movie is not present in the bounded Riven inventory.",
     "submission_pending": "A submission is already being checked; no duplicate was sent.",
     "investigation_exhausted": "The bounded request checks are exhausted. A new eligible release or operator review is needed.",
@@ -257,6 +259,7 @@ def _outcome(code: str) -> str:
         "investigation_exhausted",
         "anime_movie",
         "backend_failed",
+        "copy_removed",
     }:
         return "unavailable"
     if code == "search_complete":
@@ -531,7 +534,7 @@ class MovieService:
             "overview": metadata.get("overview"),
             "genres": store.list_movie_genres(self.db, user_id, metadata["imdb_id"]),
             "edition": request["requested_edition"] if request else None,
-            "requested": request is not None,
+            "requested": request is not None and code != "copy_removed",
             "request_report": {
                 "state": request["state"],
                 "code": request["code"],
@@ -755,7 +758,7 @@ class MovieService:
                 self._save_status(
                     user_id, imdb_id, existing["code"], backend_id=existing["backend_id"]
                 )
-                if prior is not None:
+                if prior is not None and prior["code"] != "copy_removed":
                     store.update_submission(
                         self.db,
                         self._scope,
@@ -772,7 +775,7 @@ class MovieService:
 
             cleanup_tag = None
             if movie_cleanup_enabled():
-                if prior is None:
+                if prior is None or prior["code"] == "copy_removed":
                     cleanup_tag = token_hex(16)
                 elif prior["cleanup_owner_id"] == user_id:
                     cleanup_tag = prior["cleanup_tag"]
@@ -789,6 +792,8 @@ class MovieService:
             if not claimed:
                 prior = store.get_submission(self.db, self._scope, imdb_id)
                 assert prior is not None
+                if prior["code"] == "copy_removed" and prior["cleanup_owner_id"] != user_id:
+                    raise MovieError("request_ownership_conflict")
                 self._save_status(
                     user_id,
                     imdb_id,
@@ -900,6 +905,7 @@ class MovieService:
             "no_eligible_results",
             "investigation_exhausted",
             "backend_failed",
+            "copy_removed",
         } or self._waiting(request):
             return result()
         if request["investigations"] >= self._max_investigations:
@@ -1661,7 +1667,7 @@ class MovieService:
                         "observed_at": _iso(self._clock()),
                     },
                 )
-            elif inventory_error is not None:
+            elif inventory_error is not None and card["code"] != "copy_removed":
                 card = self._failure(card, inventory_error)
             matches = [video for video in videos if imdb_id in self._guids(video, "imdb")]
             if len(matches) == 1 and section is not None and plex_error is None:
@@ -1694,10 +1700,12 @@ class MovieService:
                 except MovieError as error:
                     store.invalidate_verification(self.db, user_id, imdb_id)
                     card = self._failure(card, error)
-            else:
+            elif card["code"] != "copy_removed" or card.get("plex_present"):
                 store.invalidate_verification(self.db, user_id, imdb_id)
                 if plex_error is not None:
                     card = self._failure(card, plex_error)
+                elif card["code"] == "copy_removed":
+                    card = self._failure(card, MovieError("verifying"))
             if view != "ready" or card["state"] == "ready":
                 cards.append(card)
         return cards

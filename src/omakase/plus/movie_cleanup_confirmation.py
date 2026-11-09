@@ -16,8 +16,14 @@ from omakase.plus.movies_store import get_submission
 
 def cleanup_status(db, user_id, imdb_id):
     job = db.execute(
-        """SELECT state, stage, reason FROM movie_cleanup_jobs
-           WHERE user_id=? AND imdb_id=? ORDER BY queued_at DESC LIMIT 1""",
+        """SELECT j.state, j.stage, j.reason FROM movie_cleanup_jobs j
+           WHERE j.user_id=? AND j.imdb_id=?
+             AND (j.stage<>'complete' OR NOT EXISTS (
+                  SELECT 1 FROM movie_submissions s
+                  WHERE s.backend_scope=j.backend_scope AND s.imdb_id=j.imdb_id
+                    AND (s.cleanup_tag IS NOT j.cleanup_tag OR s.code<>'copy_removed')
+             ))
+           ORDER BY j.queued_at DESC LIMIT 1""",
         (user_id, imdb_id),
     ).fetchone()
     if not job:

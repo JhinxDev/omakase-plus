@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from omakase.plus.movies_store import COPY_REMOVED_DETAIL
+
 _REPORT_TTL = timedelta(minutes=30)
 _ACTIVITY_CODES = {
     "requested",
@@ -74,6 +76,12 @@ _STATUS = {
         "The result is unknown. No duplicate request was sent.",
     ),
     "transport_error": ("Connection unavailable", "attention", "The service could not be reached."),
+    "copy_removed": ("Copy removed", "neutral", COPY_REMOVED_DETAIL),
+    "request_ownership_conflict": (
+        "Library owner action needed",
+        "attention",
+        "Ask the library owner to request this movie again.",
+    ),
     "backend_item_missing": (
         "Not found in Riven",
         "attention",

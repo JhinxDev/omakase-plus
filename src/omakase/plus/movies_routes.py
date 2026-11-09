@@ -317,6 +317,11 @@ def create_movies_router(
                 raise HTTPException(404, "Movie not found")
             card["history"] = MovieHistoryService(svc).get(user.id, imdb_id)
             card = present_movie(card)
+            removal = cleanup_status(db, user.id, imdb_id)
+            if removal == "removed" and (
+                card.get("plex_present") or card.get("requested") or card.get("request_observation")
+            ):
+                removal = None
         except MovieError as exc:
             if exc.code == "invalid_input":
                 raise HTTPException(422, "Invalid movie identity") from None
@@ -342,7 +347,7 @@ def create_movies_router(
                 else "",
                 "movies_error": "",
                 "cleanup_enabled": movie_cleanup_enabled(),
-                "cleanup_status": cleanup_status(db, user.id, imdb_id),
+                "cleanup_status": removal,
                 "removal_refresh": request.query_params.get("removal_refresh") != "1",
             },
             headers={"Cache-Control": "private, no-store"},

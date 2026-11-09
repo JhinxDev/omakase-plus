@@ -6,6 +6,8 @@ import re
 import sqlite3
 from typing import Any
 
+COPY_REMOVED_DETAIL = "Removal of this copy was confirmed. Your watch history and rating are saved."
+
 _CATALOG_FIELDS = ("imdb_id", "tmdb_id", "title", "year", "poster_url", "backdrop_url", "overview")
 _REQUEST_FIELDS = {"backend_id", "state", "code", "detail", "retry_after", "retry_at"}
 _RECEIPT_FIELDS = (
@@ -101,7 +103,7 @@ def list_movies(
     require_user(conn, user_id)
     query = "SELECT c.* FROM movie_catalog c WHERE c.user_id = ?"
     if requested_only:
-        query += " AND EXISTS (SELECT 1 FROM movie_requests r WHERE r.user_id=c.user_id AND r.imdb_id=c.imdb_id)"
+        query += " AND EXISTS (SELECT 1 FROM movie_requests r WHERE r.user_id=c.user_id AND r.imdb_id=c.imdb_id AND r.code<>'copy_removed')"
     query += " ORDER BY c.title COLLATE NOCASE, c.imdb_id LIMIT 100"
     return [dict(row) for row in conn.execute(query, (user_id,)).fetchall()]
 
@@ -138,9 +140,7 @@ def collection_movies(
             "AND h.imdb_id=c.imdb_id AND h.status=?) AND "
         )
         params.append(watch_status)
-    personal = (
-        "EXISTS (SELECT 1 FROM movie_requests r WHERE r.user_id=c.user_id AND r.imdb_id=c.imdb_id)"
-    )
+    personal = "EXISTS (SELECT 1 FROM movie_requests r WHERE r.user_id=c.user_id AND r.imdb_id=c.imdb_id AND r.code<>'copy_removed')"
     if not requested_only:
         personal += (
             " OR EXISTS (SELECT 1 FROM movie_history h "
@@ -242,6 +242,39 @@ def claim_submission(
     if existing is not None:
         if existing["tmdb_id"] != tmdb_id:
             raise ValueError("Movie identity mapping conflicts with the original submission")
+        if existing["code"] == "copy_removed":
+            cursor = conn.execute(
+                """UPDATE movie_submissions
+                   SET attempted_at=?, backend_id=NULL, state='deferred', code='submission_pending',
+                       detail='A new request is being checked.', retry_after=NULL, retry_at=NULL,
+                       cleanup_tag=?, cleanup_owner_id=?
+                   WHERE backend_scope=? AND imdb_id=? AND tmdb_id=? AND code='copy_removed'
+                     AND cleanup_owner_id=? AND cleanup_tag=?
+                     AND EXISTS (SELECT 1 FROM movie_cleanup_jobs j
+                                 WHERE j.user_id=movie_submissions.cleanup_owner_id
+                                   AND j.imdb_id=movie_submissions.imdb_id
+                                   AND j.cleanup_tag=movie_submissions.cleanup_tag
+                                   AND j.backend_scope=movie_submissions.backend_scope
+                                   AND j.stage='complete')""",
+                (
+                    now,
+                    cleanup_tag,
+                    user_id if cleanup_tag else None,
+                    backend_scope,
+                    imdb_id,
+                    tmdb_id,
+                    user_id,
+                    existing["cleanup_tag"],
+                ),
+            )
+            if cursor.rowcount == 1:
+                conn.execute(
+                    """UPDATE movie_requests SET investigations=0, created_at=?
+                       WHERE user_id=? AND imdb_id=? AND code='copy_removed'""",
+                    (now, user_id, imdb_id),
+                )
+            conn.commit()
+            return cursor.rowcount == 1
         if retry_rejected and existing["code"] == "connection_rejected":
             cursor = conn.execute(
                 "UPDATE movie_submissions SET attempted_at=?, backend_id=NULL, state='deferred', "
