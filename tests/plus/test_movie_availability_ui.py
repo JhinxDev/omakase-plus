@@ -53,7 +53,9 @@ def test_idle_availability_never_claims_an_active_check_or_changes_history(expir
     assert "Verifying</strong>" not in html
     assert ("Needs a Plex check" if expired else "Not checked in Plex") in html
     assert "Your rating 8.0/10" in html and ">Watched</span>" in html
-    assert "Your watched status and rating are saved separately." in html
+    assert 'id="movie-rating-heading"' in html
+    assert "Plex after watching" in html
+    assert 'action="/plus/movies/tt3289956/plex-review"' in html
     assert "Check in Plex" in html and "Open in Plex" not in html
     assert 'href="/plus/settings/connections"' in html
     assert 'href="/plus/health/overview"' in html
