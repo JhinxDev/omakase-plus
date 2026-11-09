@@ -28,6 +28,7 @@ plain BYOK/Lite deployment into the authenticated Plus product.
 | Variable | Default / requirement | Purpose |
 | --- | --- | --- |
 | `OMAKASE_PLUS_PRIVATE` | `false` | `true` enables the authenticated Plus product, its private surfaces and the shipped Plus compose behavior. |
+| `OMAKASE_PLUS_MOVIE_CLEANUP_ENABLED` | `false` | Enables the optional cleanup setting and worker for newly acquired, owner-bound movies. Leave it off until the connected Riven backend supports guarded withdrawal and Plex and Real-Debrid readbacks have been qualified. |
 | `OMAKASE_PLUS_INVITE` | empty | Non-empty opens signup for invitation-driven registration. Empty keeps signup closed except the first-account bootstrap in a new private instance. |
 | `OMAKASE_SESSION_DAYS` | `90` | Sliding idle session lifetime in days, bounded to 7 through 365. |
 | `OMAKASE_SESSION_ABSOLUTE_DAYS` | `365` | Absolute session lifetime in days, bounded to 7 through 730. Older sessions are rejected and deleted. |

@@ -288,7 +288,7 @@ body.product-body .streaming-title-hero,.movie-detail-hero{grid-template-columns
   padding: .2rem .35rem;
 }
 @media (max-width: 700px) {
-  .continue-section .media-rail { grid-auto-columns: 168px; }
+  .continue-section .media-rail { grid-auto-columns: 176px; }
 }
 .playback-link svg { flex: none; }
 .playback-link--primary { gap: .45rem; }

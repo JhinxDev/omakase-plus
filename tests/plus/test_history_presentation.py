@@ -101,7 +101,7 @@ def test_actual_history_template_distinguishes_series_completion_and_cover_fallb
     assert "Series completed" in pages["history"] and "Viewing progress" not in pages["history"]
     assert 'data-history-fallback="/plus/media/21/poster"' in pages["history"]
     assert "Series artwork" in pages["history"]
-    assert pages["library"].count('aria-label="Library views"') == 1
+    assert pages["library"].count('aria-label="Collection views"') == 1
 
 
 def test_movie_identity_is_a_heading_and_episode_event_semantics_are_retained():

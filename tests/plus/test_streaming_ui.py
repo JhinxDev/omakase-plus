@@ -419,13 +419,13 @@ def test_activity_defaults_to_visual_viewing_history_and_keeps_system_work_separ
     assert "Progress saved" in card.group(1)
     assert 'Observed <time datetime="2026-08-27T12:00:00Z"' in card.group(1)
     assert "Added manually" in card.group(1)
-    assert "Media and library work" not in html
+    assert "Library activity log" not in html
     assert 'class="activity-table"' not in html
 
     system = client.get("/plus/activity?view=system")
     assert system.status_code == 200
     assert 'href="/plus/activity?view=system" aria-current="page"' in system.text
-    assert "Media and library work" in system.text
+    assert "Library activity log" in system.text
     assert 'aria-label="Activity outcome"' in system.text
     assert 'href="/plus/activity?view=system&outcome=attention"' in system.text
     assert 'class="history-grid"' not in system.text
