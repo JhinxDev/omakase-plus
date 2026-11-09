@@ -42,7 +42,14 @@
 {%- endmacro %}
 {% for row in rows %}{{ shelf(row) }}{% else %}
 <section class="hub-shelf hub-unavailable">
-  {% if kind == "anime" %}
+  {% if history_unavailable %}
+  <h2>Your AniList history is temporarily unavailable</h2>
+  <p><a href="/plus/discover">Try again</a> to load picks that exclude titles you’ve watched.</p>
+  {% elif kind == "movies" %}
+  <h2>Movies for You</h2><p><a href="/plus/discover/movies">Browse movie discovery</a>.</p>
+  {% elif kind == "tv" %}
+  <h2>TV Shows for You</h2><p><a href="/plus/tv">Browse your TV library</a>.</p>
+  {% elif kind == "anime" %}
   <h2>Anime recommendations are temporarily unavailable</h2>
   <p><a href="/plus/search?kind=anime">Search anime</a> or <a href="/plus/discover?mode=recommend">ask for a menu</a>.</p>
   {% else %}

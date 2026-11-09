@@ -396,6 +396,11 @@ def create_movies_router(
             link = await svc.plex_review(user.id, imdb_id)
         except MovieError as exc:
             result = "absent" if exc.code == "plex_not_found" else "unknown"
+        if request.headers.get("accept") == "application/json":
+            return JSONResponse(
+                {"result": result, "plex_url": link},
+                headers={"Cache-Control": "private, no-store"},
+            )
         return templates.TemplateResponse(
             request,
             "movie_plex_review.html",

@@ -25,8 +25,12 @@ It paints the actual video clock, without interpolated watched time or a Shaka
 private timer/configuration workaround. Drag previews commit an exact seek;
 paused playback stays paused. Arrow/Page/Home/End range keys are isolated from
 video shortcuts. Hidden, paused and reduced-motion playback use event updates
-without continuous animation. The existing semantic watch events and five-second
-progress sampler remain unchanged. `--stream-accent` supplies played range,
+without continuous animation. A queued seek keeps the newest requested position
+visible while its stream prepares. Playback evidence uses the last stable
+position while the transport moves, then anchors at the confirmed destination.
+Transport tooltips sit above the timeline in the picture area. The existing
+semantic watch events and five-second progress sampler still record playback.
+`--stream-accent` supplies played range,
 thumb, focus, selected settings and skip action; buffered/unplayed tracks remain
 distinct on bright footage. Actual browser cadence and normal/fullscreen/phone
 visual acceptance require separate measured receipts.
@@ -61,6 +65,10 @@ episode list puts the playback control in a consistent trailing position and
 keeps availability and watched state visible independently. Native links and
 disclosures retain visible focus, with no action on focus alone.
 
+For You opens on Anime, with separate Movies and TV Shows categories. Anime
+excludes locally watched IDs and uses a bounded read of the connected AniList
+watch list, including entries that have no Omakase monitor. If the history check
+fails, the page displays a retry action before showing any anime picks.
 For You allocates each anime to at most one shelf per screen. Narrow airing and
 film shelves retain eligible candidates while personalized shelves rank by
 viewing, ratings and genre. Already watched opens an optional score selector and
@@ -72,8 +80,9 @@ detailed source rules are available under an Advanced download rules disclosure.
 The form retains the same saved values and validation.
 
 Movie watch history and rating save together with a clear receipt. A watched
-movie can be reviewed through a read-only exact Plex identity check. The review
-distinguishes a match, absence in the checked library and an inconclusive check.
+movie can be reviewed in place through a read-only exact Plex identity check.
+The review distinguishes a match, absence in the checked library and an
+inconclusive check.
 Any copy-management action happens in Plex. The Omakase record remains saved.
 
 ## Apple TV client boundary

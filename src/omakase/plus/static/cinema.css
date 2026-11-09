@@ -305,3 +305,9 @@ body.product-body .streaming-title-hero,.movie-detail-hero{grid-template-columns
 .movie-after-watch h3 { margin: 0; font-size: 1rem; }
 .movie-after-watch p { margin: .45rem 0 .7rem; color: #bdc6d6; }
 .movie-after-watch form { margin: 0; }
+
+.movie-plex-result:not(:empty) { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin-top: .75rem; color: #bdc6d6; }
+.movie-plex-result .button { min-height: 44px; }
+.movie-plex-result-panel { padding: clamp(1rem, 3vw, 1.75rem); max-width: 42rem; }
+.movie-plex-result-panel h2 { margin-top: 0; }
+.movie-plex-result-panel p { line-height: 1.55; }

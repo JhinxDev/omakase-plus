@@ -3,9 +3,22 @@
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from omakase.plus.movie_presentation import present_movie
+
+
+def test_movie_plex_review_script_is_served():
+    from omakase.plus.routes import router
+
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.get("/plus/static/movie-plex-review.js")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/javascript")
 
 
 @pytest.mark.parametrize(
@@ -56,6 +69,7 @@ def test_idle_availability_never_claims_an_active_check_or_changes_history(expir
     assert 'id="movie-rating-heading"' in html
     assert "Plex after watching" in html
     assert 'action="/plus/movies/tt3289956/plex-review"' in html
+    assert 'src="/plus/static/movie-plex-review.js?' in html
     assert "Check in Plex" in html and "Open in Plex" not in html
     assert 'href="/plus/settings/connections"' in html
     assert 'href="/plus/health/overview"' in html

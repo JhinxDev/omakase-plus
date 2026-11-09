@@ -440,3 +440,88 @@ def test_anime_recommendations_allocate_distinct_titles_to_matching_shelves(clie
     assert "Adventure" in by_id[shelves["genre-1"][0]["id"]]["genres"]
     assert "Action" not in by_id[shelves["genre-1"][0]["id"]]["genres"]
     assert not shelves["top"][0]["airing"]
+
+
+def test_for_you_tabs_render_and_fetch_only_the_selected_media_type(client):
+    from omakase.plus import discover_hub as hub
+
+    _signup_and_login(client)
+    movies = hub._shelf("movies", "Movies for You", [{"title": "Sample movie"}])
+    tv = hub._shelf("tv", "TV Shows for You", [{"title": "Sample TV show"}])
+    for kind, label in [("movies", "Movies"), ("tv", "TV Shows")]:
+        html = client.get(f"/plus/discover?kind={kind}").text
+        assert f'data-hub-rows="{kind}"' in html
+        assert html.count("data-hub-rows=") == 1
+        assert f'?kind={kind}" aria-current="page">{label}</a>' in html
+    with patch.object(hub, "screen_shelves", return_value=[movies, tv]):
+        movies_html = client.get("/plus/discover/rows?kind=movies").text
+        tv_html = client.get("/plus/discover/rows?kind=tv").text
+    assert "Sample movie" in movies_html and "Sample TV show" not in movies_html
+    assert "Sample TV show" in tv_html and "Sample movie" not in tv_html
+
+
+def test_tracker_and_unlinked_watch_history_are_excluded_from_every_anime_shelf(client):
+    from omakase.plus import discover_hub as hub
+
+    _signup_and_login(client)
+    with _connect_client_db(client) as db:
+        db.execute(
+            "INSERT INTO watch_entries(user_id,anilist_id,status,progress_episodes,completed_at) "
+            "VALUES (?,81001,'completed',12,'2026-11-09T08:00:00Z')",
+            (_user_id(client),),
+        )
+        db.commit()
+    rows = [
+        hub._anime_card(81001, "Completed locally without monitor") | {"genres": ("Action",)},
+        hub._anime_card(81002, "Completed on tracker", status="RELEASING")
+        | {"genres": ("Action",)},
+        hub._anime_card(81003, "Unseen title") | {"genres": ("Action",)},
+    ]
+    with (
+        patch.object(hub, "anime_catalog", return_value=rows),
+        patch.object(hub, "tracker_watched_ids", return_value=frozenset({81002})),
+    ):
+        html = client.get("/plus/discover/rows").text
+    assert "Unseen title" in html
+    assert "Completed locally" not in html and "Completed on tracker" not in html
+    with (
+        patch.object(hub, "anime_catalog", return_value=rows),
+        patch.object(hub, "tracker_watched_ids", return_value=None),
+    ):
+        unavailable = client.get("/plus/discover/rows").text
+    assert "Your AniList history is temporarily unavailable" in unavailable
+    assert "Unseen title" not in unavailable
+
+
+def test_anilist_history_uses_authenticated_identity_and_reads_all_chunks():
+    import asyncio
+
+    from omakase.plus import discover_hub as hub
+
+    requests = []
+
+    async def query(client, document, variables=None, token=None):
+        requests.append((document, variables, token))
+        if "Viewer" in document:
+            return {"Viewer": {"id": 77}}
+        chunk = variables["chunk"]
+        entries = [
+            {"mediaId": chunk, "status": "COMPLETED", "progress": 0},
+            {"mediaId": 100, "status": "PLANNING", "progress": 0},
+            {"mediaId": 101, "status": "PAUSED", "progress": 3},
+        ]
+        return {
+            "MediaListCollection": {
+                "hasNextChunk": chunk == 1,
+                "lists": [{"entries": entries}],
+            },
+        }
+
+    with patch.object(hub, "_anilist_query", query):
+        result = asyncio.run(hub._read_watch_history("fixture-token", "other-account"))
+    assert result == {1, 2, 101}
+    assert [request[1] for request in requests[1:]] == [
+        {"id": 77, "chunk": 1},
+        {"id": 77, "chunk": 2},
+    ]
+    assert all(request[2] == "fixture-token" for request in requests)

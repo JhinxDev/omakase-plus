@@ -439,3 +439,38 @@ def test_saving_a_watched_movie_opens_plex_review_without_touching_plex(browser,
     assert response.status_code == 303
     assert response.headers["location"] == "/plus/movies/tt0084787?notice=saved#movie-after-watch"
     assert not service.calls
+
+
+def test_inline_movie_review_keeps_the_current_page_and_history(browser, monkeypatch):
+    from omakase.plus.movies_store import upsert_movie
+
+    client, service, token = browser
+    imdb_id = "tt0084787"
+    now = "2026-11-09T08:00:00Z"
+    upsert_movie(
+        service.db, 1, {"imdb_id": imdb_id, "tmdb_id": 1091, "title": "The Thing"}, now=now
+    )
+    service.db.execute(
+        "INSERT INTO movie_history(user_id,imdb_id,tmdb_id,status,rating,status_source,"
+        "rating_source,created_at,updated_at) VALUES (1,?,1091,'completed',8,'manual','manual',?,?)",
+        (imdb_id, now, now),
+    )
+    service.db.commit()
+
+    async def review(user_id, title_id):
+        assert (user_id, title_id) == (1, imdb_id)
+        return "https://app.plex.tv/desktop/#!/server/fixture/details"
+
+    monkeypatch.setattr(service, "plex_review", review, raising=False)
+    path = f"/plus/movies/{imdb_id}/plex-review"
+    assert client.post(path, headers={"Accept": "application/json"}).status_code == 403
+    result = client.post(path, data={"csrf_token": token}, headers={"Accept": "application/json"})
+    assert result.status_code == 200
+    assert result.json() == {
+        "result": "matched",
+        "plex_url": "https://app.plex.tv/desktop/#!/server/fixture/details",
+    }
+    assert tuple(service.db.execute("SELECT status,rating FROM movie_history").fetchone()) == (
+        "completed",
+        8.0,
+    )

@@ -12,7 +12,7 @@
       const notice = document.createElement('p');
       notice.className = 'product-notice';
       notice.setAttribute('role', 'status');
-      notice.textContent = kind === 'anime' ? 'Anime recommendations are temporarily unavailable.' : 'Movie and TV recommendations are temporarily unavailable.';
+      notice.textContent = 'Recommendations are temporarily unavailable. Try again in a moment.';
       region.replaceChildren(notice);
     }).finally(() => region.setAttribute('aria-busy', 'false'));
   }

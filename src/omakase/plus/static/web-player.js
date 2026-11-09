@@ -383,12 +383,30 @@
       label: `${choices.size === 1 ? 'Original · ' : ''}${Number.isFinite(item.width) && Number.isFinite(item.height) && item.width > 0 && item.height > 0 ? `${item.width} × ${item.height}` : 'resolution unavailable'}`,
     }));
   }
+  function seekLanded(video, time) {
+    return !video.seeking && Math.abs(video.currentTime - time) <= 1;
+  }
+  function waitForSeek(video, time) {
+    if (seekLanded(video, time)) return Promise.resolve(true);
+    return new Promise(resolve => {
+      const events = ['seeked', 'loadeddata', 'timeupdate'];
+      const finish = ok => {
+        clearTimeout(timer);
+        for (const event of events) video.removeEventListener(event, check);
+        resolve(ok);
+      };
+      const check = () => { if (seekLanded(video, time)) finish(true); };
+      const timer = setTimeout(() => finish(seekLanded(video, time)), 2000);
+      for (const event of events) video.addEventListener(event, check);
+    });
+  }
   // This is a rendering clock only. Watch evidence continues through the existing
   // semantic video events and five-second sampler, never animation frames.
   class SmoothTimeline {
     constructor(video, range, clock, onRender = () => {}, options = {}) {
       this.video = video; this.range = range; this.clock = clock; this.onRender = onRender;
       this.frame = null; this.dragging = false; this.pendingValue = null; this.pointerId = null; this.listeners = [];
+      this.requested = options.requested || (() => null);
       this.seekTo = typeof options.seek === 'function' ? options.seek : value => { this.video.currentTime = value; };
       this.duration = typeof options.duration === 'function' ? options.duration
         : () => Number.isFinite(this.video.duration) && this.video.duration > 0 ? this.video.duration : 0;
@@ -421,7 +439,7 @@
         const offsets = { ArrowLeft: -5, ArrowDown: -5, ArrowRight: 5, ArrowUp: 5, PageDown: -30, PageUp: 30 };
         if (!(event.key in offsets) && !['Home', 'End'].includes(event.key)) return;
         event.preventDefault(); event.stopPropagation();
-        this.commit(event.key === 'Home' ? 0 : event.key === 'End' ? this.duration() : video.currentTime + offsets[event.key]);
+        this.commit(event.key === 'Home' ? 0 : event.key === 'End' ? this.duration() : (this.requested() ?? video.currentTime) + offsets[event.key]);
         this.dragging = false; this.pendingValue = null; this.pointerId = null; update();
       });
       // Keyup still reaches the supplied controls so their pressed-key state clears.
@@ -436,13 +454,15 @@
     }
     render() {
       const duration = this.duration();
-      const value = Math.max(0, Math.min(duration, Number(this.dragging ? this.range.value : this.video.currentTime) || 0));
+      const requested = this.requested();
+      const actual = Math.max(0, Math.min(duration, Number(this.video.currentTime) || 0));
+      const value = Math.max(0, Math.min(duration, Number(this.dragging ? this.range.value : (requested ?? actual)) || 0));
       this.range.max = String(duration || 1); if (!this.dragging) this.range.value = String(value);
-      this.range.style.setProperty('--played', `${duration ? value / duration * 100 : 0}%`);
-      let buffered = value;
-      for (let i = 0; i < this.video.buffered.length; i++) if (this.video.buffered.start(i) <= value + .1 && this.video.buffered.end(i) >= value) buffered = this.video.buffered.end(i);
+      this.range.style.setProperty('--played', `${duration ? actual / duration * 100 : 0}%`);
+      let buffered = actual;
+      for (let i = 0; i < this.video.buffered.length; i++) if (this.video.buffered.start(i) <= actual + .1 && this.video.buffered.end(i) >= actual) buffered = this.video.buffered.end(i);
       this.range.style.setProperty('--buffered', `${duration ? Math.min(100, buffered / duration * 100) : 0}%`);
-      this.range.setAttribute('aria-valuetext', playbackTime(value) + ' of ' + playbackTime(duration));
+      this.range.setAttribute('aria-valuetext', playbackTime(value) + (requested == null ? ' of ' : ' requested, duration ') + playbackTime(duration));
       this.onRender(value, duration); // Also drives validated segment visibility, without writes.
     }
     schedule() {
@@ -593,6 +613,9 @@
   let player = null;
   let mediaUri = null;
   let timeline = null;
+  let seekTo = null;
+  let activeSeekSession = null;
+  let seekOrigin = null;
   let overlay = null;
   let queue = null;
   let ready = false;
@@ -702,7 +725,7 @@
     };
   }
   function capture(event, keepalive = false, resample = true) {
-    if (!ready || !queue) return;
+    if (!ready || !queue || activeSeekSession === session) return;
     if (event !== 'progress' || !resample) samplingEpoch++;
     const epoch = samplingEpoch;
     const source = session;
@@ -878,6 +901,7 @@
   async function dispose() {
     ready = false;
     if (timeline) timeline.destroy(); timeline = null;
+    seekTo = null;
     find('timeline').disabled = true; find('skip').hidden = true;
     refreshBarControls();
     window.clearInterval(periodic);
@@ -989,39 +1013,98 @@
       ready = true;
       if (session.streaming) void watchStreamSubtitles(session);
       find('timeline').disabled = false;
-      let seekIntent = 0;
+      const currentSession = session;
+      let pendingSeek = null;
+      let seekTimer = null;
+      let seeking = false;
+      const seekCurrent = () => session === currentSession && ready && !failed && !leaving;
+      function scheduleSeek(delay) {
+        window.clearTimeout(seekTimer);
+        seekTimer = window.setTimeout(() => void applySeek(), delay);
+      }
+      async function applySeek() {
+        if (!seekCurrent() || seeking || !pendingSeek) return;
+        seeking = true;
+        let resume = false;
+        let settled = false;
+        try {
+          await queue.idle();
+          while (seekCurrent() && pendingSeek) {
+            const request = pendingSeek;
+            const seekEnd = player.seekRange().end;
+            if (currentSession.streaming && Number.isFinite(seekEnd) && request.time > seekEnd + 1) {
+              if (Date.now() < request.deadline) {
+                status.textContent = 'Preparing ' + playbackTime(request.time) + '…';
+                return;
+              }
+              pendingSeek = null;
+              status.textContent = 'That part of the episode is still preparing. Try seeking again.';
+              return;
+            }
+            if (activeSeekSession !== currentSession) {
+              resume = !video.paused;
+              seekOrigin = playbackSnapshot('pause');
+              capture('pause', false, false);
+              activeSeekSession = currentSession;
+              video.pause();
+            }
+            const buffered = Array.from({length: video.buffered.length}, (_, i) => i).some(
+              i => video.buffered.start(i) <= request.time && request.time < video.buffered.end(i)
+            );
+            if (!currentSession.streaming || buffered) video.currentTime = request.time;
+            else await player.load(mediaUri, request.time, currentSession.media_type || undefined);
+            if (!seekCurrent()) return;
+            settled = await waitForSeek(video, request.time);
+            if (!seekCurrent()) return;
+            if (pendingSeek !== request) continue;
+            pendingSeek = null;
+            if (!settled) {
+              status.textContent = 'Could not reach that position. Try seeking again.';
+              return;
+            }
+            status.textContent = resume ? 'Playing' : 'Paused';
+          }
+        } catch (error) {
+          if (seekCurrent()) showError(error);
+        } finally {
+          seeking = false;
+          if (activeSeekSession === currentSession) {
+            activeSeekSession = null;
+            seekOrigin = null;
+            if (seekCurrent()) {
+              if (settled) capture('seek', false, false);
+              if (resume) video.play().catch(() => {});
+            }
+          }
+          if (seekCurrent()) {
+            timeline.render();
+            if (pendingSeek) scheduleSeek(250);
+          }
+        }
+      }
+      seekTo = time => {
+        if (!seekCurrent()) return;
+        pendingSeek = {time, deadline: Date.now() + 45000};
+        status.textContent = 'Seeking to ' + playbackTime(time) + '…';
+        timeline.render();
+        if (!seeking) scheduleSeek(180);
+      };
       timeline = new SmoothTimeline(video, find('timeline'), {
         request: callback => window.requestAnimationFrame(callback), cancel: id => window.cancelAnimationFrame(id),
         document, reducedMotion: () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-      }, (position, duration) => {
+      }, (_position, duration) => {
         const clock = find('clock');
-        const label = playbackTime(position) + ' / ' + playbackTime(duration);
+        const label = playbackTime(video.currentTime) + ' / ' + playbackTime(duration);
         if (clock.textContent !== label) clock.textContent = label;
-        const marker = ready && !failed && !video.seeking ? activeSkipSegment(validatedSkipSegments(session), video.currentTime) : null;
+        const marker = ready && !failed && !pendingSeek && !video.seeking ? activeSkipSegment(validatedSkipSegments(session), video.currentTime) : null;
         find('skip').hidden = !marker;
         if (marker) find('skip').textContent = marker.kind === 'intro' ? 'Skip Intro' : 'Skip Credits';
       }, {
         // An event playlist grows as segments publish. The exact session duration
         // defines the control scale while the video element reports buffer state.
         duration: () => session.duration_seconds,
-        seek: time => {
-          const intent = ++seekIntent;
-          const currentSession = session;
-          const seekEnd = player.seekRange().end;
-          if (session.streaming && Number.isFinite(seekEnd) && time > seekEnd + 2) {
-            status.textContent = 'That part of the episode is still preparing. Try again in a moment.';
-            return;
-          }
-          const wasPlaying = !video.paused;
-          const isCurrent = () => intent === seekIntent && session === currentSession && ready && !failed && !leaving;
-          video.currentTime = time;
-          window.setTimeout(() => {
-            if (!isCurrent() || !mediaUri || !Number.isFinite(video.currentTime) || Math.abs(video.currentTime - time) <= 2) return;
-            player.load(mediaUri, time, currentSession.media_type || undefined)
-              .then(() => { if (wasPlaying && isCurrent()) video.play().catch(() => {}); })
-              .catch(() => {});
-          }, 250);
-        },
+        requested: () => pendingSeek?.time,
+        seek: seekTo,
       });
       find('ass-select').disabled = false;
       refreshBarControls();
@@ -1095,15 +1178,15 @@
   });
   find('next').addEventListener('click', event => { if (find('next').getAttribute('aria-disabled') === 'true' || !find('next').hasAttribute('href')) event.preventDefault(); event.stopPropagation(); });
   find('next').addEventListener('keydown', event => { if (['Enter', ' '].includes(event.key)) event.stopPropagation(); });
-  restart.addEventListener('click', () => { if (ready) { video.currentTime = 0; status.textContent = 'Restarted from the beginning.'; } });
+  restart.addEventListener('click', () => { seekTo?.(0); });
   find('skip').addEventListener('click', event => {
     event.stopPropagation();
     const marker = ready && !failed && !video.seeking ? activeSkipSegment(validatedSkipSegments(session), video.currentTime) : null;
-    if (marker) { video.currentTime = marker.end_seconds; find('skip').hidden = true; }
+    if (marker) { seekTo?.(marker.end_seconds); find('skip').hidden = true; }
   });
   video.addEventListener('playing', () => {
     if (!enforcePlayback(video, playbackState())) return;
-    status.textContent = 'Playing'; capture('play');
+    if (activeSeekSession !== session) { status.textContent = 'Playing'; capture('play'); }
   });
   video.addEventListener('play', () => { enforcePlayback(video, playbackState()); });
   function unsupportedCaptionMode() {
@@ -1113,8 +1196,8 @@
   video.addEventListener('enterpictureinpicture', () => {
     if (document.pictureInPictureElement) void document.exitPictureInPicture().catch(() => {});
   });
-  video.addEventListener('pause', () => { if (ready && !leaving && !video.ended) { status.textContent = 'Paused'; capture('pause'); } });
-  video.addEventListener('waiting', () => { if (ready) { status.textContent = 'Buffering…'; capture('pause'); } });
+  video.addEventListener('pause', () => { if (ready && activeSeekSession !== session && !leaving && !video.ended) { status.textContent = 'Paused'; capture('pause'); } });
+  video.addEventListener('waiting', () => { if (ready && activeSeekSession !== session) { status.textContent = 'Buffering…'; capture('pause'); } });
   video.addEventListener('seeking', () => capture('seek'));
   video.addEventListener('seeked', () => capture(video.paused ? 'seek' : 'play'));
   video.addEventListener('ratechange', () => {
@@ -1128,11 +1211,11 @@
     if (leaving) return;
     leaving = true;
     if (ready && queue && session) {
-      const snapshot = playbackSnapshot('pause');
+      const snapshot = activeSeekSession === session ? seekOrigin : playbackSnapshot('pause');
       if (snapshot) {
         // A single immediate request owns the paced terminal save on the server;
         // no document timer or queued callback is required after navigation.
-        const final_event = queue.seal(exitSnapshot(snapshot, queue, video.seeking, video.ended));
+        const final_event = queue.seal(exitSnapshot(snapshot, queue, video.seeking || activeSeekSession === session, video.ended));
         const closePath = sessionPath('/close');
         const checkpoint = terminalCheckpoint.write(session.session_id, final_event);
         ready = false;

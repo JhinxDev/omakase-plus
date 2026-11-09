@@ -2,6 +2,7 @@
 {% from "_movie_components.html" import movie_poster, movie_quality %}
 {% block title %}{{ card.title }} · Omakase{% endblock %}
 {% block masthead %}{% endblock %}
+{% block extra_head %}<script src="/plus/static/movie-plex-review.js?v={{ asset_version }}" defer></script>{% endblock %}
 {% block content %}
 {% set history = card.history or {} %}
 {% set status_known = history.status_source and history.status_source != 'none' %}
@@ -61,11 +62,12 @@
         <section class="movie-after-watch" id="movie-after-watch" aria-labelledby="movie-after-watch-heading" tabindex="-1">
           <h3 id="movie-after-watch-heading">Plex after watching</h3>
           {% if notice == 'saved' %}<p role="status">Your viewing changes were saved. The Plex library was left as it was.</p>{% endif %}
-          <p>Check for the exact movie in Plex before deciding whether to keep it. Your Omakase watch history and rating stay saved.</p>
-          <form method="post" action="/plus/movies/{{ card.imdb_id }}/plex-review" data-busy-form data-single-flight>
+          <p>Your watch history and rating stay saved when you manage this copy.</p>
+          <form method="post" action="/plus/movies/{{ card.imdb_id }}/plex-review" data-movie-plex-review>
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="button button-secondary" type="submit" data-busy-label="Looking in Plex…">Review Plex copy</button>
+            <button class="button button-secondary" type="submit">Find in Plex</button>
           </form>
+          <div class="movie-plex-result" aria-live="polite" data-movie-plex-result></div>
         </section>
         {% endif %}
       </section>

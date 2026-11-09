@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from collections import Counter, OrderedDict
@@ -15,6 +16,7 @@ from omakase.plus.connections import movie_connections
 from omakase.plus.movie_discovery import MovieDiscoveryService
 from omakase.plus.movies import MovieError, MovieService, _art
 from omakase.plus.product_views import plex_visible_counts
+from omakase.plus.secrets import read_secret
 
 _QUERY = """
 query {
@@ -46,6 +48,16 @@ _catalog_due = 0.0
 _catalog_task: asyncio.Task | None = None
 _screen_rows = OrderedDict()
 _screen_tasks: dict[int, asyncio.Task] = {}
+_history = OrderedDict()
+_history_tasks: dict[tuple[int, str], asyncio.Task] = {}
+_HISTORY_QUERY = """
+query ($name: String, $id: Int, $chunk: Int) {
+  MediaListCollection(userName: $name, userId: $id, type: ANIME, chunk: $chunk, perChunk: 500) {
+    hasNextChunk
+    lists { entries { mediaId status progress } }
+  }
+}
+"""
 
 
 def _json_list(value):
@@ -133,7 +145,7 @@ def continue_shelf(monitors):
     return _shelf("continue", "Continue Watching", map(_from_monitor, current))
 
 
-def anime_shelves(db, user_id, catalog, monitors):
+def anime_shelves(db, user_id, catalog, monitors, tracker_watched=()):
     owned = {row["anilist_id"]: row for row in monitors}
     saved = {
         row[0]
@@ -149,7 +161,23 @@ def anime_shelves(db, user_id, catalog, monitors):
             "AND feedback_type IN ('not_for_me','already_watched','wrong_sequel')",
             (user_id,),
         )
-    } | {row["anilist_id"] for row in monitors if row["status"] == "completed"}
+    }
+    excluded.update(tracker_watched)
+    excluded.update(
+        row[0]
+        for row in db.execute(
+            """SELECT anilist_id FROM watch_entries
+                 WHERE user_id=? AND (status IN ('watching','completed') OR progress_episodes>0)
+               UNION SELECT anilist_id FROM web_playback_watch
+                 WHERE user_id=? AND covered_seconds>0
+               UNION SELECT anilist_id FROM anilist_plannings
+                 WHERE user_id=? AND status IN ('COMPLETED','CURRENT','REPEATING')""",
+            (user_id, user_id, user_id),
+        )
+    )
+    excluded.update(
+        row["anilist_id"] for row in monitors if row["status"] in {"watching", "completed"}
+    )
     genres = Counter()
     anchors = []
     by_id = {item["id"]: item for item in catalog}
@@ -247,21 +275,98 @@ def anime_shelves(db, user_id, catalog, monitors):
     return [row for row, _ in lanes if row["cards"]]
 
 
+async def _anilist_query(client, query, variables=None, token=None):
+    headers = {"User-Agent": USER_AGENT}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    async with client.stream(
+        "POST", API_URL, headers=headers, json={"query": query, "variables": variables or {}}
+    ) as response:
+        response.raise_for_status()
+        body = bytearray()
+        async for chunk in response.aiter_bytes():
+            body.extend(chunk)
+            if len(body) > 512 * 1024:
+                raise ValueError("AniList response too large")
+    payload = json.loads(body)
+    if payload.get("errors") or not isinstance(payload.get("data"), dict):
+        raise ValueError("AniList returned an incomplete response")
+    return payload["data"]
+
+
+async def _read_watch_history(token, username):
+    async with asyncio.timeout(7), httpx.AsyncClient(timeout=5) as client:
+        variables = {"name": username}
+        if token:
+            identity = await _anilist_query(client, "query { Viewer { id } }", token=token)
+            viewer = identity["Viewer"]["id"]
+            if type(viewer) is not int or viewer <= 0:
+                raise ValueError("AniList viewer unavailable")
+            variables = {"id": viewer}
+        watched = set()
+        for chunk in range(1, 11):
+            data = await _anilist_query(
+                client, _HISTORY_QUERY, {**variables, "chunk": chunk}, token=token
+            )
+            collection = data["MediaListCollection"]
+            watched.update(
+                entry["mediaId"]
+                for group in collection["lists"]
+                for entry in group["entries"]
+                if type(entry["mediaId"]) is int
+                and entry["mediaId"] > 0
+                and (
+                    entry["status"] in {"CURRENT", "COMPLETED", "REPEATING"}
+                    or (type(entry["progress"]) is int and entry["progress"] > 0)
+                )
+            )
+            if collection["hasNextChunk"] is False:
+                return frozenset(watched)
+        raise ValueError("AniList history is incomplete")
+
+
+async def _refresh_watch_history(key, token, username):
+    try:
+        ids = await _read_watch_history(token, username)
+        lifetime = 120
+    except (ValueError, KeyError, TimeoutError, httpx.HTTPError, TypeError, AttributeError):
+        ids = None
+        lifetime = 20
+    _history[key] = (time.monotonic() + lifetime, ids)
+    _history.move_to_end(key)
+    if len(_history) > 64:
+        _history.popitem(last=False)
+    return ids
+
+
+async def tracker_watched_ids(db, user_id):
+    token = read_secret(db, user_id, "anilist_oauth_token")
+    username = None if token else read_secret(db, user_id, "anilist_username")
+    if not token and not username:
+        return frozenset()
+    binding = hashlib.sha256(
+        (("oauth:" + token) if token else ("name:" + username)).encode()
+    ).hexdigest()
+    key = (user_id, binding)
+    cached = _history.get(key)
+    if cached and cached[0] > time.monotonic():
+        return cached[1]
+    task = _history_tasks.get(key)
+    if task is None:
+        if len(_history_tasks) >= 4:
+            return None
+        task = asyncio.create_task(_refresh_watch_history(key, token, username))
+        _history_tasks[key] = task
+        task.add_done_callback(lambda _: _history_tasks.pop(key, None))
+    return await asyncio.shield(task)
+
+
 async def _refresh_catalog():
     global _catalog, _catalog_due
     _catalog_due = time.monotonic() + 60
     try:
         async with asyncio.timeout(6), httpx.AsyncClient(timeout=5) as client:
-            async with client.stream(
-                "POST", API_URL, headers={"User-Agent": USER_AGENT}, json={"query": _QUERY}
-            ) as response:
-                response.raise_for_status()
-                body = bytearray()
-                async for chunk in response.aiter_bytes():
-                    body.extend(chunk)
-                    if len(body) > 512 * 1024:
-                        return
-        pages = json.loads(body).get("data") or {}
+            pages = await _anilist_query(client, _QUERY)
         cards = {}
         for name in ("trending", "finishedPopular", "finishedRated", "airing", "films"):
             for item in (pages.get(name) or {}).get("media", [])[:50]:

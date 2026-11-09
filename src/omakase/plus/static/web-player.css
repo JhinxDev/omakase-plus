@@ -174,3 +174,18 @@ body.product-body .web-player input[data-player-timeline] { --played: 0%; --buff
 .web-player-stage:has(> .web-player-start:not([hidden])) > .web-player-start > * { box-sizing: border-box; min-width: 0; max-width: 100%; }
 .web-player-stage:has(> .web-player-start:not([hidden])) > .web-player-start :is(button, h2, p) { white-space: normal; overflow-wrap: anywhere; }
 .web-player-stage:has(> .web-player-start:not([hidden])) > :is(.web-player-timeline, .web-player-skip, .shaka-controls-container) { visibility: hidden; }
+
+/* Keep transport tooltips in the picture area above the separate timeline. */
+.web-player .shaka-controls-button-panel.shaka-tooltips-on > .shaka-tooltip::after {
+  bottom: calc(100% + 52px);
+  pointer-events: none;
+}
+.web-player .shaka-controls-button-panel.shaka-tooltips-on > .shaka-tooltip:first-child::after {
+  left: 0;
+  transform: none;
+}
+.web-player .shaka-controls-button-panel.shaka-tooltips-on > .shaka-tooltip:last-child::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}

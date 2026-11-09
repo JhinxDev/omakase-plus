@@ -5,6 +5,7 @@ Mounted at ``/plus`` via an ``APIRouter``.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -234,6 +235,7 @@ _STATIC_ASSETS = {
     "hero-quality.js": "application/javascript",
     "shelves.js": "application/javascript",
     "discover-hub.js": "application/javascript",
+    "movie-plex-review.js": "application/javascript",
     "profile.js": "application/javascript",
     "search.js": "application/javascript",
     "geist-variable.woff2": "font/woff2",
@@ -1947,6 +1949,7 @@ async def remove_title_media(
 async def discover_page(
     request: Request,
     mode: str = "browse",
+    kind: Literal["anime", "movies", "tv"] = "anime",
     run: int | None = None,
     message: str = "",
     user=Depends(require_user),
@@ -1957,13 +1960,14 @@ async def discover_page(
     if mode == "browse" and run is None:
         from omakase.plus.discover_hub import continue_shelf, viewer_monitors
 
-        continuing = continue_shelf(viewer_monitors(db, user.id))
+        continuing = continue_shelf(viewer_monitors(db, user.id)) if kind == "anime" else None
         return templates.TemplateResponse(
             request,
             "discover_hub.html",
             {
                 **_product_context(request, user, active_page="discover"),
                 "continue_shelf": continuing,
+                "discover_kind": kind,
                 "message": message,
             },
             headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
@@ -2009,21 +2013,36 @@ async def discover_page(
 @router.get("/discover/rows", response_class=HTMLResponse)
 async def discover_rows(
     request: Request,
-    kind: Literal["anime", "screen"] = "anime",
+    kind: Literal["anime", "movies", "tv", "screen"] = "anime",
     user=Depends(require_user),
     db=Depends(get_db),
 ):
     from omakase.plus import discover_hub as hub
 
+    history_unavailable = False
     if kind == "anime":
-        catalog = await hub.anime_catalog()
-        rows = hub.anime_shelves(db, user.id, catalog, hub.viewer_monitors(db, user.id))
+        catalog, watched = await asyncio.gather(
+            hub.anime_catalog(), hub.tracker_watched_ids(db, user.id)
+        )
+        history_unavailable = watched is None
+        rows = (
+            []
+            if history_unavailable
+            else hub.anime_shelves(db, user.id, catalog, hub.viewer_monitors(db, user.id), watched)
+        )
     else:
         rows = await hub.screen_shelves(db, user.id)
+        if kind != "screen":
+            rows = [row for row in rows if row["key"] == kind]
     return templates.TemplateResponse(
         request,
         "_discover_rows.html",
-        {"rows": rows, "kind": kind, "csrf_token": _csrf_token(request)},
+        {
+            "rows": rows,
+            "kind": kind,
+            "history_unavailable": history_unavailable,
+            "csrf_token": _csrf_token(request),
+        },
         headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
     )
 

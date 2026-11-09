@@ -23,3 +23,8 @@
 .hub-options .text-action { text-align: left; white-space: normal; width: 100%; }
 .hub-unavailable p { margin-top: .55rem; }
 .hub-unavailable a { color: #ddceff; }
+
+.hub-divisions { display: flex; flex-wrap: wrap; gap: .3rem 1.2rem; margin-bottom: 1.5rem; border-bottom: 1px solid #303547; }
+.hub-divisions a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 .3rem; border-bottom: 3px solid transparent; color: #b5bfd0; text-decoration: none; }
+.hub-divisions a:is(:hover, :focus-visible) { color: #f0edf8; }
+.hub-divisions a[aria-current="page"] { border-color: var(--stream-accent, #c3b1ff); color: #f0edf8; }
