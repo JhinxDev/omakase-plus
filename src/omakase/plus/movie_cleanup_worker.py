@@ -16,6 +16,7 @@ from omakase.plus.movie_cleanup import (
     _matches,
     _owned_acquisition,
     _owner_movie,
+    _plex_binding,
     _rd_client,
     _torrent_matches,
     movie_cleanup_enabled,
@@ -141,6 +142,7 @@ def _riven_paths(job, receipt):
     return "/api/v1/items/movie-removal-binding/" + _imdb(imdb_id), {
         "omakase_acquisition_tag": tag,
         "riven_id": receipt.copy.riven_id,
+        "tmdb_id": receipt.tmdb_id,
         "torrent_id": receipt.copy.torrent_id,
         "torrent_hash": receipt.copy.torrent_hash,
     }
@@ -157,27 +159,37 @@ async def _withdrawal(service, path, params):
         receipt.get("schema") != "riven-movie-withdrawal-v1"
         or receipt.get("acquisition_tag") != params["omakase_acquisition_tag"]
         or receipt.get("riven_id") != params["riven_id"]
+        or type(receipt.get("tmdb_id")) is not int
+        or receipt["tmdb_id"] != params["tmdb_id"]
         or receipt.get("torrent_id") != params["torrent_id"]
         or receipt.get("torrent_hash") != params["torrent_hash"]
-        or receipt.get("state") not in ("present", "withdrawn")
+        or receipt.get("state") not in ("present", "withdrawing", "withdrawn")
     ):
         raise MovieCleanupUnavailable("guarded_removal_receipt_invalid")
     return receipt["state"]
 
 
-async def _confirm_plex_absent(service, movie, receipt):
+async def _check_plex_withdrawal(service, movie, receipt, *, allow_original=False):
     copy = receipt.copy
     section, _ = await service._sections()
     if section != copy.plex_section or await _plex_machine(service) != receipt.machine:
         raise MovieCleanupUnavailable("plex_server_changed")
+    original_present = False
     try:
         await service._xml("/library/metadata/" + copy.plex_key)
     except MovieError as error:
         if error.http_status != 404:
             raise
     else:
-        raise _Wait("waiting_for_plex")
+        if not allow_original:
+            raise _Wait("waiting_for_plex")
+        current = await _plex_binding(service, movie, {"publication": list(copy.publication)})
+        if current != (copy.plex_key, copy.plex_section, copy.file_size):
+            raise MovieCleanupUnavailable("copy_changed")
+        original_present = True
     for video in await service._videos(section, require_complete=True):
+        if original_present and video.get("ratingKey") == copy.plex_key:
+            continue
         if (
             service._guids(video, "imdb") & {movie["imdb_id"]}
             or service._guids(video, "tmdb") & {str(movie["tmdb_id"])}
@@ -234,6 +246,18 @@ async def _step(db, job, heartbeat, service_factory):
             current = await verify_movie_cleanup_copy(service, user_id, imdb_id)
             if current != copy or await _plex_machine(service) != receipt.machine:
                 raise MovieCleanupUnavailable("copy_changed")
+        elif withdrawal == "withdrawing":
+            # A committed native intent may already have unpublished the link.
+            # Check the original Plex copy or its absence before resuming it.
+            await _check_plex_withdrawal(service, movie, receipt, allow_original=True)
+            torrent = await _rd_client(service, user_id, key).get_torrent(
+                copy.torrent_id, require_definite_absence=True
+            )
+            if torrent is not None and not _torrent_matches(
+                torrent, copy.torrent_id, copy.torrent_hash, copy.file_name, copy.file_size
+            ):
+                raise MovieCleanupUnavailable("real_debrid_binding_changed")
+        if withdrawal != "withdrawn":
             confirm_authorized(copy)
             await service._bytes("riven", "DELETE", path, params=params)
             withdrawal = await _withdrawal(service, path, params)
@@ -244,7 +268,7 @@ async def _step(db, job, heartbeat, service_factory):
 
     if withdrawal != "withdrawn":
         raise MovieCleanupUnavailable("withdrawal_changed")
-    await _confirm_plex_absent(service, movie, receipt)
+    await _check_plex_withdrawal(service, movie, receipt)
     rd = _rd_client(service, user_id, key)
     torrent = await rd.get_torrent(copy.torrent_id, require_definite_absence=True)
     if torrent is None:

@@ -243,6 +243,7 @@ def cleanup_job(copy, monkeypatch):
         withdrawal="present",
         plex_present=True,
         lose_riven_response=False,
+        interrupt_riven_withdrawal=False,
         lose_rd_response=False,
         receipt_overrides={},
         events=[],
@@ -261,6 +262,7 @@ def cleanup_job(copy, monkeypatch):
         assert params == {
             "omakase_acquisition_tag": ACQUISITION_TAG,
             "riven_id": binding["riven_id"],
+            "tmdb_id": TMDB,
             "torrent_id": TICKET,
             "torrent_hash": TORRENT_HASH,
         }
@@ -268,6 +270,7 @@ def cleanup_job(copy, monkeypatch):
             "schema": "riven-movie-withdrawal-v1",
             "acquisition_tag": ACQUISITION_TAG,
             "riven_id": binding["riven_id"],
+            "tmdb_id": TMDB,
             "torrent_id": TICKET,
             "torrent_hash": TORRENT_HASH,
             "state": state.withdrawal,
@@ -279,6 +282,11 @@ def cleanup_job(copy, monkeypatch):
         riven_json(provider, path + "/withdrawal", params=params)
         assert job()["stage"] == "withdrawal_intent"
         state.events.append("riven_delete")
+        if state.interrupt_riven_withdrawal:
+            state.interrupt_riven_withdrawal = False
+            state.withdrawal = "withdrawing"
+            state.plex_present = False
+            raise MovieError("transport_timeout")
         state.withdrawal = "withdrawn"
         if state.lose_riven_response:
             raise MovieError("transport_timeout")
@@ -362,6 +370,48 @@ def test_worker_recovers_after_lost_delete_responses(cleanup_job):
         "riven_delete",
         "rd_delete",
     ]
+
+
+def test_worker_resumes_a_native_intent_when_the_plex_link_is_already_unpublished(cleanup_job):
+    service, state, tick = cleanup_job
+    assert tick()["stage"] == "withdrawal_intent"
+    state.interrupt_riven_withdrawal = True
+    assert tick()["stage"] == "withdrawal_intent"
+    assert state.withdrawal == "withdrawing"
+    service._plex_movie.side_effect = AssertionError("The original copy is no longer indexed")
+    assert tick()["stage"] == "awaiting_plex"
+    assert tick()["stage"] == "provider_intent"
+    assert tick()["stage"] == "complete"
+    assert state.events.count("riven_delete") == 2
+    assert state.events.count("rd_delete") == 1
+
+
+def test_worker_protects_a_new_plex_copy_after_partial_native_withdrawal(cleanup_job):
+    service, state, tick = cleanup_job
+    assert tick()["stage"] == "withdrawal_intent"
+    state.interrupt_riven_withdrawal = True
+    assert tick()["stage"] == "withdrawal_intent"
+    service._videos.return_value = [
+        ElementTree.fromstring('<Video ratingKey="9"><Guid id="imdb://tt0123456"/></Video>')
+    ]
+    job = tick()
+    assert (job["stage"], job["reason"]) == ("withdrawal_intent", "waiting_for_plex")
+    service._bytes.assert_awaited_once()
+    state.rd_delete.assert_not_awaited()
+
+
+def test_worker_waits_for_an_active_plex_session_after_partial_native_withdrawal(cleanup_job):
+    service, state, tick = cleanup_job
+    assert tick()["stage"] == "withdrawal_intent"
+    state.interrupt_riven_withdrawal = True
+    assert tick()["stage"] == "withdrawal_intent"
+    service.responses["/status/sessions"] = ElementTree.fromstring(
+        '<MediaContainer><Video ratingKey="7"/></MediaContainer>'
+    )
+    job = tick()
+    assert (job["stage"], job["reason"]) == ("withdrawal_intent", "movie_is_playing")
+    service._bytes.assert_awaited_once()
+    state.rd_delete.assert_not_awaited()
 
 
 def test_worker_refuses_withdrawal_receipts_for_a_different_copy(cleanup_job):
