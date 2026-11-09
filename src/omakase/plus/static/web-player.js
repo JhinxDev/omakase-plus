@@ -691,6 +691,7 @@
       styled_subtitles_unsupported: 'This browser cannot display the styled subtitles on this version.',
       stream_start_timeout: 'The media server took too long to open this episode.',
       stream_start_failed: 'The media server could not start the episode stream.',
+      saved_position_unavailable: 'The stream did not reach your saved position. Try again in a moment.',
       stream_worker_unavailable: 'The streaming worker is temporarily unavailable.',
       stream_cache_unavailable: 'The server could not open its streaming cache.',
       publication_read_conflict: 'The library was updating while this episode opened.',
@@ -1002,6 +1003,26 @@
       video.preload = 'metadata';
       await player.load(media.href, position, session.media_type || undefined);
       if (failed || leaving) return;
+      if (session.streaming && position > 0 && !seekLanded(video, position)) {
+        find('start-heading').textContent = 'Opening your saved position';
+        find('start-copy').textContent = 'Playback starts when your saved position is ready.';
+        status.textContent = 'Preparing your saved position…';
+        const deadline = Date.now() + 45000;
+        const unavailable = Object.assign(new Error('Saved position unavailable'), { code: 'saved_position_unavailable' });
+        for (;;) {
+          if (currentAttempt !== attempt || failed || leaving) return;
+          const range = player.seekRange();
+          if (position >= range.start - 1 && position <= range.end + 1) break;
+          if (Date.now() >= deadline) throw unavailable;
+          await new Promise(resolve => window.setTimeout(resolve, 250));
+        }
+        if (!seekLanded(video, position)) {
+          await player.load(media.href, position, session.media_type || undefined);
+          if (currentAttempt !== attempt || failed || leaving) return;
+          if (!(await waitForSeek(video, position))) throw unavailable;
+        }
+      }
+      if (currentAttempt !== attempt || failed || leaving) return;
       await prepareTracks();
       if (failed || leaving) return;
       queue = new EventQueue(

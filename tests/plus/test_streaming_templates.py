@@ -228,7 +228,8 @@ def test_readiness_count_requires_both_usable_files_and_plex_visibility(
     title.update(usable=usable, plex_visible=plex_visible, state=state)
     context["titles"] = [title]
     parsed = MediaSemantics()
-    parsed.feed(render("library.html", **context))
+    html = render("library.html", **context)
+    parsed.feed(html)
 
     assert len(parsed.badges) == 1
     badge = parsed.badges[0]
@@ -244,6 +245,8 @@ def test_readiness_count_requires_both_usable_files_and_plex_visibility(
         f"Example anime: {ready} of 24 required episodes available"
     )
     assert not badge["hidden"], "availability must remain accessible beside poster artwork"
+    row = html.split('<div class="media-progress-meta">', 1)[1].split("</div>", 1)[0]
+    assert "watched-count" in row and "ready-count" in row
 
 
 def test_ready_unstarted_title_keeps_full_title_without_empty_watched_progress():

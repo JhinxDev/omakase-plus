@@ -20,10 +20,15 @@
 {% for card in cards %}
   <article class="catalog-result-card">
     {% if card.url %}<a href="{{ card.url }}" class="catalog-result-link" aria-label="View {{ card.title }}{% if card.year %}, {{ card.year }}{% endif %}">{% endif %}
-    <div class="catalog-result-art poster-frame">{% if card.poster_url %}<img src="{{ card.poster_url }}" alt="" loading="lazy" data-poster>{% else %}<span class="movie-poster-fallback" aria-hidden="true">{{ card.title }}</span>{% endif %}{% if card.library_id %}<span class="ready-count is-ready">In your library</span>{% elif card.watch_status == 'completed' %}<span class="ready-count">Watched</span>{% endif %}</div>
+    <div class="catalog-result-art poster-frame">{% if card.poster_url %}<img src="{{ card.poster_url }}" alt="" loading="lazy" data-poster>{% else %}<span class="movie-poster-fallback" aria-hidden="true">{{ card.title }}</span>{% endif %}</div>
     <h2 title="{{ card.title }}">{{ card.title }}</h2><div class="movie-meta"><span>{{ {"anime":"Anime","movie":"Movie","tv":"TV"}.get(card.media_type, "Anime") }}</span>{% if card.year %}<span>{{ card.year }}</span>{% endif %}{% if card.format %}<span>{{ card.format | replace('_',' ') | title }}</span>{% endif %}{% if card.rating %}<span class="movie-card-rating">Your rating {{ card.rating }}/10</span>{% endif %}</div>
     {% if card.url %}</a>{% endif %}
-    {% if card.progress %}<p class="watched-count">Watched {{ card.progress }}{% if card.episode_total %}/{{ card.episode_total }}{% endif %}</p>{% endif %}
+    {% if card.library_id or card.progress or card.watch_status == 'completed' %}
+    <div class="media-progress-meta catalog-result-status">
+      <span class="watched-count">{% if card.progress or card.watch_status == 'completed' %}Watched{% if card.progress %} {{ card.progress }}{% if card.episode_total %}/{{ card.episode_total }}{% endif %}{% endif %}{% else %}No watch progress{% endif %}</span>
+      {% if card.library_id %}<span class="ready-count is-ready">In your library</span>{% endif %}
+    </div>
+    {% endif %}
   </article>
 {% endfor %}
 </div>

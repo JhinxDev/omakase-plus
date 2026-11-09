@@ -1,26 +1,26 @@
-{% macro progress_bar(item, compact=false, availability='') -%}
+{% macro progress_bar(item, compact=false, show_availability=true) -%}
 <div class="media-progress{% if compact %} media-progress-compact{% endif %}">
-  {% if availability %}<div class="media-progress-meta">{% endif %}
+  {% if show_availability %}<div class="media-progress-meta">{% endif %}
   {% if item.progress_episodes or item.watch_status == 'completed' %}
   <span class="watched-count">Watched <b>{{ item.progress_episodes }}{% if item.episode_total %}/{{ item.episode_total }}{% endif %}</b></span>
   {% elif item.partial_playback %}<span class="not-started">Episode in progress</span>
   {% else %}<span class="not-started">{{ "Not started" if item.last_source_label | default("Not tracked yet") not in ["Not tracked yet", "", "Imported"] else "Not watched" }}</span>{% endif %}
-  {% if availability %}{{ availability }}</div>{% endif %}
+  {% if show_availability %}{{ ready_badge(item) }}</div>{% endif %}
   {% if item.progress_episodes or item.watch_status == 'completed' %}
   <progress max="100" value="{{ item.progress_percent }}" aria-label="{{ item.title }}: {{ item.progress_episodes }}{% if item.episode_total %} of {{ item.episode_total }}{% endif %} episodes watched"></progress>
   {% endif %}
 </div>
 {%- endmacro %}
 
-{% macro ready_badge(item, neutral=false) -%}
+{% macro ready_badge(item) -%}
 {% if item.resurfaced %}
 <span role="status" class="ready-count is-partial" aria-label="New episode {{ item.next_episode }} found. Plex availability is unconfirmed.">Episode {{ item.next_episode }} found</span>
 {% else %}
 {% set usable = item.usable | default(0, true) | int %}
 {% set visible = item.plex_visible | default(0, true) | int %}
-{% set ready = [[usable, visible] | min, 1 if neutral and item.play_url else 0] | max %}
+{% set ready = [[usable, visible] | min, 1 if item.play_url else 0] | max %}
 {% set required = item.required | default(0, true) | int %}
-<span role="status" class="ready-count {% if ready >= required and required > 0 and item.state == 'ready' %}is-ready{% elif ready %}is-partial{% else %}is-waiting{% endif %}" aria-label="{{ item.title }}: {{ ready }} of {{ required if required else 'unknown' }} required episodes {{ 'available' if neutral else 'verified and in Plex' }}">{% if required and ready >= required and item.state == 'ready' %}{{ 'Available' if neutral else 'In Plex' }} <b>{{ ready }}/{{ required }}</b>{% elif required and ready %}Partial <b>{{ ready }}/{{ required }}</b>{% elif required %}Missing {{ required }} {{ 'episode' if required == 1 else 'episodes' }}{% else %}Availability unknown{% endif %}</span>
+<span role="status" class="ready-count {% if ready >= required and required > 0 and item.state == 'ready' %}is-ready{% elif ready %}is-partial{% else %}is-waiting{% endif %}" aria-label="{{ item.title }}: {{ ready }} of {{ required if required else 'unknown' }} required episodes available">{% if required and ready >= required and item.state == 'ready' %}Available <b>{{ ready }}/{{ required }}</b>{% elif required and ready %}Partial <b>{{ ready }}/{{ required }}</b>{% elif required %}Missing {{ required }} {{ 'episode' if required == 1 else 'episodes' }}{% else %}Availability unknown{% endif %}</span>
 {% endif %}
 {%- endmacro %}
 
@@ -43,7 +43,7 @@
 <a class="playback-link playback-link--{{ style }}{% if style == 'primary' %} button button-primary{% endif %}" href="{{ href }}" aria-label="{{ accessible_name }}">{{ play_icon() }}<span{% if style == 'episode' %} class="sr-only"{% endif %}>{{ label }}</span></a>
 {%- endmacro %}
 
-{% macro media_card(item, badge='', compact=false, inline_availability=false) -%}
+{% macro media_card(item, badge='', compact=false) -%}
 {% set detail = item.detail_url | default('/plus/library/' ~ item.id, true) %}
 <article class="media-card{% if compact %} media-card-compact{% endif %}">
   <a class="media-card-cover" href="{{ item.play_url or detail }}" aria-label="{% if item.play_url %}{{ item.play_label }} {{ item.title }}, episode {{ item.play_episode }}{% else %}Open {{ item.title }}{% endif %}">
@@ -53,20 +53,15 @@
   <div class="media-card-body">
     {% if badge %}<span class="media-kicker">{{ badge }}</span>{% endif %}
     <h3 title="{{ item.title }}">{% if item.play_url %}<a class="media-card-detail" href="{{ detail }}">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}</h3>
-    {% if inline_availability %}
-    {{ progress_bar(item, true, ready_badge(item, neutral=true)) }}
-    {% else %}
     {{ progress_bar(item, true) }}
-    <div class="collection-card-availability">{{ ready_badge(item, neutral=true) }}</div>
-    {% endif %}
     {{ source_badge(item) }}
   </div>
 </article>
 {%- endmacro %}
 
-{% macro media_rail(items, label, badge='', inline_availability=false) -%}
+{% macro media_rail(items, label, badge='') -%}
 <div class="media-rail" role="list" aria-label="{{ label }}">
-  {% for item in items %}<div role="listitem">{{ media_card(item, badge, inline_availability=inline_availability) }}</div>{% endfor %}
+  {% for item in items %}<div role="listitem">{{ media_card(item, badge) }}</div>{% endfor %}
 </div>
 {%- endmacro %}
 

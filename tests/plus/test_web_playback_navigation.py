@@ -207,11 +207,11 @@ def test_home_resume_hero_shows_episode_and_watched_count_once():
     html = render(
         "home.html",
         continue_watching=[card],
-        ready_to_watch=[],
+        ready_to_watch=[{**card, "progress_episodes": 0, "partial_playback": False}],
         confirmation_needed=[],
         attention=[],
         recent_activity=[],
-        new_episodes=[],
+        new_episodes=[card],
     )
     hero = html.split('<section class="cinema-hero"', 1)[1].split("</section>", 1)[0]
     assert "Resume episode 11" in hero
@@ -221,6 +221,7 @@ def test_home_resume_hero_shows_episode_and_watched_count_once():
     progress_row = rail.split('<div class="media-progress-meta">', 1)[1].split("</div>", 1)[0]
     assert "Watched <b>10/13</b>" in progress_row
     assert "Available <b>13/13</b>" in progress_row
+    assert html.count('<div class="media-progress-meta">') == 3
 
 
 @pytest.mark.parametrize(

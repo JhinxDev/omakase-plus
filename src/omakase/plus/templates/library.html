@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_collection_search.html" import collection_search, collection_tabs %}
-{% from "_media_components.html" import ready_badge, progress_bar %}
+{% from "_media_components.html" import progress_bar %}
 {% block title %}Anime · Omakase{% endblock %}
 {% block eyebrow %}Saved for your next watch{% endblock %}
 {% block page_title %}Your anime{% endblock %}
@@ -91,13 +91,13 @@
       <div class="library-card-copy">
         <h2 title="{{ item.title }}">{{ item.title }}</h2>
         <div class="card-meta-line">{% if item.year %}<span>{{ item.year }}</span>{% endif %}{% if item.format %}<span>{{ 'Movie' if item.format == 'MOVIE' else 'Series' }}</span>{% endif %}</div>
-        {{ progress_bar(item, true) }}
       </div>
     </a>
-    <div class="collection-card-availability">{{ ready_badge(item, neutral=true) }}{% if item.publication_pending %}<span>Preparing for your library</span>{% endif %}</div>
+    {{ progress_bar(item, true) }}
     {% if item.release_qualities %}<div class="release-quality" role="group" aria-label="Verified release quality">{% for quality in item.release_qualities %}<span class="{{ 'quality-fallback' if quality == '720p' else '' }}">{{ quality }}{{ ' fallback' if quality == '720p' else ' release' }}</span>{% endfor %}</div>{% endif %}
     <details class="watchlist-coverage">
       <summary>Availability details</summary>
+    {% if item.publication_pending %}<p>Preparing for your library.</p>{% endif %}
     <div class="coverage-triptych" role="group" aria-label="Coverage for {{ item.title }}">
       <div><span>Required</span><strong>{{ item.required }}</strong></div>
       <div><span>Usable</span><strong>{{ item.usable }}</strong></div>

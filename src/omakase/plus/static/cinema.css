@@ -277,18 +277,36 @@ body.product-body .streaming-title-hero,.movie-detail-hero{grid-template-columns
 .media-card-detail:hover { text-decoration: underline; }
 .media-card-detail:focus-visible { outline-offset: -2px; }
 .media-progress-meta {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) fit-content(55%);
   align-items: center;
-  justify-content: space-between;
-  gap: .3rem .45rem;
+  gap: .4rem;
 }
-.media-progress-meta .ready-count {
-  margin-inline-start: auto;
-  padding: .2rem .35rem;
+.media-progress-meta > :is(.ready-count, .collection-card-availability) {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+  text-align: end;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
 }
+.media-progress-meta > .ready-count, .cinema-meta > .ready-count {
+  display: block;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+.cinema-meta > .ready-count.is-ready, .media-progress-meta > .ready-count.is-ready {
+  color: var(--stream-success, #a5d9c1);
+}
+.watchlist-card > .media-progress { margin: .55rem 0 0; }
+.catalog-personal-state { display:grid; gap:.6rem; width:min(100%, 440px); }
+.movie-card-status, .catalog-result-status { margin-top: .55rem; }
+.movie-card-status > p, .catalog-result-status > .watched-count,
+.tv-card-facts .media-progress-meta > .collection-card-availability { margin: 0; }
 @media (max-width: 700px) {
-  .continue-section .media-rail { grid-auto-columns: 176px; }
+  .home-section .media-rail:not(.history-shelf) { grid-auto-columns: 176px; }
 }
 .playback-link svg { flex: none; }
 .playback-link--primary { gap: .45rem; }

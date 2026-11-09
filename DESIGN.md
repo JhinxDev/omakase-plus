@@ -28,6 +28,8 @@ video shortcuts. Hidden, paused and reduced-motion playback use event updates
 without continuous animation. A queued seek keeps the newest requested position
 visible while its stream prepares. Playback evidence uses the last stable
 position while the transport moves, then anchors at the confirmed destination.
+Startup waits for the saved position in a growing stream before playing or
+recording progress.
 Transport tooltips sit above the timeline in the picture area. The existing
 semantic watch events and five-second progress sampler still record playback.
 `--stream-accent` supplies played range,
@@ -68,8 +70,8 @@ disclosures retain visible focus, with no action on focus alone.
 Anime, Movies and TV Shows share Collection, Watching, Watched and Available.
 Available describes confirmed library presence or a qualified in-app episode
 source. A Play or Resume action still needs its own playback evidence. Provider
-and request details live in secondary controls. Continue Watching aligns the
-watched count and availability above the progress bar, and the featured title
+and request details live in secondary controls. Shelves and collections align
+viewing status and availability above any progress bar, and the featured title
 shows the resume episode once. Home Library updates surfaces changes and issues,
 with routine checks in the full activity log.
 

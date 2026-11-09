@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_media_components.html" import artwork, playback_link, ready_badge, progress_bar %}
+{% from "_media_components.html" import artwork, playback_link, progress_bar %}
 {% block title %}{{ title.title }} · Omakase{% endblock %}
 {% block masthead %}{% endblock %}
 {% block eyebrow %}From your watchlist{% endblock %}
@@ -90,9 +90,11 @@
     <p class="title-progress-source">No synopsis is available from AniList yet.</p>
     {% endif %}
     <h2 id="watch-progress-heading" class="sr-only">Availability and viewing progress</h2>
-    {% if title.state == 'archived' %}<p>{{ title.status_label }} · Your watch history and rating are saved.</p>{% elif title.removal and title.removal.scope == 'plex_only' %}<p>{{ 'Removed from Plex' if title.removal.status == 'complete' else 'Removing from Plex' }}</p>{% else %}<div class="detail-availability">{{ ready_badge(title) }}{% if title.publication_pending %}<span>Publishing to Plex</span>{% endif %}</div>{% endif %}
+    {% set plex_removal = title.removal and title.removal.scope == 'plex_only' %}
+    {% if title.state == 'archived' %}<p>{{ title.status_label }} · Your watch history and rating are saved.</p>{% elif plex_removal %}<p>{{ 'Removed from Plex' if title.removal.status == 'complete' else 'Removing from Plex' }}</p>{% endif %}
+    {{ progress_bar(title, show_availability=title.state != 'archived' and not plex_removal) }}
+    {% if title.publication_pending and title.state != 'archived' and not plex_removal %}<p class="title-availability-copy">Preparing for your library.</p>{% endif %}
     {% if title.fallback_episodes %}<p class="title-availability-copy">{{ title.fallback_episodes | length }} episode{{ 's' if title.fallback_episodes | length != 1 else '' }} use a 720p fallback. <a href="#episode-heading">See episode quality</a>.</p>{% endif %}
-    {{ progress_bar(title) }}
     <div class="title-primary-actions">
       {% if title.play_url %}{{ playback_link(title.play_url, title.play_label ~ ' episode ' ~ title.play_episode, title.play_label ~ ' ' ~ title.title ~ ', episode ' ~ title.play_episode) }}{% endif %}
       <a class="button {{ 'button-secondary' if title.play_url else 'button-primary' }}" href="#episode-heading">{{ "View episode history" if title.state == "archived" else "View episodes" }}</a>
