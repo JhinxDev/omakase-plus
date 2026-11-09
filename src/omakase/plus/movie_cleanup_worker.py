@@ -163,10 +163,16 @@ async def _withdrawal(service, path, params):
         or receipt["tmdb_id"] != params["tmdb_id"]
         or receipt.get("torrent_id") != params["torrent_id"]
         or receipt.get("torrent_hash") != params["torrent_hash"]
-        or receipt.get("state") not in ("present", "withdrawing", "withdrawn")
+        or receipt.get("state") not in ("present", "withdrawing", "withdrawn", "released")
     ):
         raise MovieCleanupUnavailable("guarded_removal_receipt_invalid")
     return receipt["state"]
+
+
+async def _release_withdrawal(service, path, params):
+    await service._bytes("riven", "POST", path + "/withdrawal/release", params=params)
+    if await _withdrawal(service, path, params) != "released":
+        raise _Wait("waiting_for_riven")
 
 
 async def _check_plex_withdrawal(service, movie, receipt, *, allow_original=False):
@@ -241,6 +247,13 @@ async def _step(db, job, heartbeat, service_factory):
     confirm_authorized(copy)
     path, params = _riven_paths(job, receipt)
     withdrawal = await _withdrawal(service, path, params)
+    rd = _rd_client(service, user_id, key)
+    if withdrawal == "released":
+        if await rd.get_torrent(copy.torrent_id, require_definite_absence=True) is not None:
+            raise MovieCleanupUnavailable("released_provider_item_reappeared")
+        confirm_authorized(copy)
+        _update(db, job, stage="complete")
+        return
     if stage == "withdrawal_intent":
         if withdrawal == "present":
             current = await verify_movie_cleanup_copy(service, user_id, imdb_id)
@@ -250,9 +263,7 @@ async def _step(db, job, heartbeat, service_factory):
             # A committed native intent may already have unpublished the link.
             # Check the original Plex copy or its absence before resuming it.
             await _check_plex_withdrawal(service, movie, receipt, allow_original=True)
-            torrent = await _rd_client(service, user_id, key).get_torrent(
-                copy.torrent_id, require_definite_absence=True
-            )
+            torrent = await rd.get_torrent(copy.torrent_id, require_definite_absence=True)
             if torrent is not None and not _torrent_matches(
                 torrent, copy.torrent_id, copy.torrent_hash, copy.file_name, copy.file_size
             ):
@@ -269,9 +280,10 @@ async def _step(db, job, heartbeat, service_factory):
     if withdrawal != "withdrawn":
         raise MovieCleanupUnavailable("withdrawal_changed")
     await _check_plex_withdrawal(service, movie, receipt)
-    rd = _rd_client(service, user_id, key)
     torrent = await rd.get_torrent(copy.torrent_id, require_definite_absence=True)
     if torrent is None:
+        confirm_authorized(copy)
+        await _release_withdrawal(service, path, params)
         _update(db, job, stage="complete")
         return
     if not _torrent_matches(
@@ -292,6 +304,8 @@ async def _step(db, job, heartbeat, service_factory):
         raise _Wait("provider_removal_unconfirmed")
     if await rd.get_torrent(copy.torrent_id, require_definite_absence=True) is not None:
         raise _Wait("provider_removal_unconfirmed")
+    confirm_authorized(copy)
+    await _release_withdrawal(service, path, params)
     _update(db, job, stage="complete")
 
 

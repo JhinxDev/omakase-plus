@@ -245,6 +245,7 @@ def cleanup_job(copy, monkeypatch):
         lose_riven_response=False,
         interrupt_riven_withdrawal=False,
         lose_rd_response=False,
+        lose_release_response=False,
         receipt_overrides={},
         events=[],
     )
@@ -278,6 +279,15 @@ def cleanup_job(copy, monkeypatch):
         }
 
     def riven_delete(provider, method, requested, *, params):
+        if method == "POST":
+            assert (provider, requested) == ("riven", path + "/withdrawal/release")
+            riven_json(provider, path + "/withdrawal", params=params)
+            assert state.withdrawal == "withdrawn" and get_torrent.return_value is None
+            state.events.append("riven_release")
+            state.withdrawal = "released"
+            if state.lose_release_response:
+                raise MovieError("transport_timeout")
+            return
         assert (provider, method, requested) == ("riven", "DELETE", path)
         riven_json(provider, path + "/withdrawal", params=params)
         assert job()["stage"] == "withdrawal_intent"
@@ -349,7 +359,14 @@ def test_worker_waits_for_plex_and_verifies_both_provider_removals(cleanup_job):
     assert tick()["stage"] == "provider_intent"
     assert tick()["stage"] == "complete"
     assert tick()["stage"] == "complete"
-    assert state.events == ["riven_delete", "plex_check", "plex_check", "plex_check", "rd_delete"]
+    assert state.events == [
+        "riven_delete",
+        "plex_check",
+        "plex_check",
+        "plex_check",
+        "rd_delete",
+        "riven_release",
+    ]
     assert tuple(service.db.execute("SELECT status, rating FROM movie_history").fetchone()) == (
         "completed",
         8,
@@ -383,6 +400,20 @@ def test_worker_resumes_a_native_intent_when_the_plex_link_is_already_unpublishe
     assert tick()["stage"] == "provider_intent"
     assert tick()["stage"] == "complete"
     assert state.events.count("riven_delete") == 2
+    assert state.events.count("rd_delete") == 1
+
+
+def test_worker_reads_back_a_release_when_the_response_is_lost(cleanup_job):
+    _, state, tick = cleanup_job
+    assert tick()["stage"] == "withdrawal_intent"
+    assert tick()["stage"] == "awaiting_plex"
+    state.plex_present = False
+    assert tick()["stage"] == "provider_intent"
+    state.lose_release_response = True
+    assert tick()["stage"] == "provider_intent"
+    assert state.withdrawal == "released"
+    assert tick()["stage"] == "complete"
+    assert state.events.count("riven_release") == 1
     assert state.events.count("rd_delete") == 1
 
 
