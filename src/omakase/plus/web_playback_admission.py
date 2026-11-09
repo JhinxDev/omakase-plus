@@ -38,7 +38,7 @@ class Admission:
         rate_key = (kind, viewer)
         if kind == "start":
             limits, rate_limit = [((kind,), 4), ((kind, viewer), 1)], 6
-        elif kind in {"close", "close_replay"}:
+        elif kind in {"close", "close_replay", "seek"}:
             limits, rate_limit = (
                 [((kind,), 16), ((kind, viewer), 2), ((kind, viewer, session), 1)],
                 30,

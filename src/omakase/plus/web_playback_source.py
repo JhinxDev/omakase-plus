@@ -121,6 +121,7 @@ class ResolvedAnimeSource:
     catalog_id: str = ""
     _file_path: str = field(default="", repr=False)
     _series_key: str = field(default="", repr=False)
+    _single_plex_part: bool = field(default=False, repr=False)
 
     @property
     def canonical_id(self):
@@ -558,6 +559,7 @@ def _resolved_part(
         catalog_id=catalog_id,
         _file_path=file_path,
         _series_key=series_key,
+        _single_plex_part=len(video.findall("Media")) == 1 and len(media.findall("Part")) == 1,
     )
 
 

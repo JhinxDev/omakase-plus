@@ -39,7 +39,7 @@ plain BYOK/Lite deployment into the authenticated Plus product.
 | `OMAKASE_PLUS_APPLE_TV_WATCH_ENABLED` | `false` | Enables the optional Apple TV watch bridge. |
 | `OMAKASE_PLUS_PLEX_MANAGED_ROOT` | empty | Managed symlink root used by supported web playback; empty disables the managed source. |
 | `OMAKASE_PLAYBACK_CACHE_ROOT` | `/run/omakase-playback` | Dedicated bounded playback cache directory. Do not point it at originals, the database or general storage. |
-| `OMAKASE_PLAYBACK_STREAMING` | `false` | Enables direct-stream HLS playback for MKV sources in supported browsers. |
+| `OMAKASE_PLAYBACK_STREAMING` | `false` | Enables MKV streaming and the Plex audio compatibility path for qualified films and TV episodes. |
 | `OMAKASE_PLAYBACK_STREAM_CACHE_ROOT` | `/home/omakase/data/playback-streams` | Disk-backed cache directory for direct-stream HLS segments. |
 | `OMAKASE_PLAYBACK_STREAM_CACHE_MAX_BYTES` | `6442450944` (6 GiB) | Maximum stream-cache size; oldest inactive sessions are pruned above it. |
 | `OMAKASE_LIBRARY_MANIFEST_TOKEN` | empty | Bearer token for the curator manifest endpoints. |

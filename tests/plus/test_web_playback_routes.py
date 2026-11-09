@@ -29,9 +29,11 @@ def run_async(function):
 
 
 @pytest.fixture
-def setup(monkeypatch, tmp_path):
+def setup(monkeypatch, tmp_path, request):
     monkeypatch.setenv("OMAKASE_PLUS_PRIVATE", "true")
     monkeypatch.setenv("OMAKASE_PLUS_WEB_PLAYER_ENABLED", "true")
+    if getattr(request, "param", False):
+        monkeypatch.setenv("OMAKASE_PLAYBACK_STREAMING", "true")
     db = sqlite3.connect(":memory:", check_same_thread=False)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
@@ -848,15 +850,18 @@ def test_skip_marker_contract_requires_matching_identity_and_finite_nonoverlap()
         assert normalize_skip_segments(source, bad)["segments"] == []
 
 
+@pytest.mark.parametrize("setup", [False, True], indirect=True, ids=["direct", "compatible"])
 @pytest.mark.parametrize("domain", ["movie", "tv"])
 def test_catalog_plays_exact_personal_copy_and_saves_resume(setup, monkeypatch, domain):
     import hashlib
     import json
+    import os
     import secrets
 
     from omakase.plus.web_playback_catalog import connections
 
     app, db, sessions, calls, _ = setup
+    compatible = os.getenv("OMAKASE_PLAYBACK_STREAMING") == "true"
     base_url = "https://plex.invalid"
     fixture_auth = secrets.token_urlsafe(24)
     monkeypatch.setattr(connections, "_values", lambda *args: (base_url, fixture_auth))
@@ -893,16 +898,25 @@ def test_catalog_plays_exact_personal_copy_and_saves_resume(setup, monkeypatch, 
         section = "3"
     moved = [False]
     provider_reads = []
+    stopped = []
+
+    class Bytes(httpx.AsyncByteStream):
+        def __init__(self, data):
+            self.data = data
+
+        async def __aiter__(self):
+            yield self.data
 
     def plex(request):
         provider_reads.append(request.url.path)
         assert request.headers["x-plex-token"] == fixture_auth
         path = request.url.path
         filename = "other" if moved[0] else "synthetic"
+        container, audio = ("mkv", "dca") if compatible else ("mp4", "aac")
         video = (
             f'<Video ratingKey="12" librarySectionID="{section}" {video_attrs} duration="30000">'
             + ids
-            + '<Media id="10" container="mp4" videoCodec="h264" audioCodec="aac" width="1920" height="1080">'
+            + f'<Media id="10" container="{container}" videoCodec="h264" audioCodec="{audio}" width="1920" height="1080">'
             + f'<Part id="1" size="100000" key="/library/parts/1/123/file.mp4" file="/media/{filename}.mp4"/>'
             + "</Media></Video>"
         )
@@ -933,16 +947,46 @@ def test_catalog_plays_exact_personal_copy_and_saves_resume(setup, monkeypatch, 
                 200,
                 text=f'<MediaContainer librarySectionID="{section}" totalSize="1">{video}</MediaContainer>',
             )
+        prefix = "/video/:/transcode/universal/"
+        if path.startswith(prefix) and compatible:
+            session_id = request.headers["x-plex-session-identifier"]
+            if path == prefix + "decision":
+                assert request.url.params["path"] == "/library/metadata/12"
+                data = (
+                    '<MediaContainer><Video ratingKey="12"><Media><Part id="1">'
+                    '<Stream streamType="1" decision="copy" codec="h264"/>'
+                    '<Stream streamType="2" decision="transcode" codec="aac"/>'
+                    "</Part></Media></Video></MediaContainer>"
+                )
+            elif path == prefix + "start.mpd":
+                resource = f"session/{session_id}/$RepresentationID$/"
+                template = (
+                    '<SegmentTemplate timescale="1" duration="5" startNumber="0" '
+                    f'initialization="{resource}header" media="{resource}$Number$.m4s"/>'
+                )
+                data = (
+                    '<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT30S">'
+                    '<Period start="PT0S" duration="PT30S">'
+                    f'<AdaptationSet>{template}<Representation id="0" mimeType="video/mp4" '
+                    'codecs="avc1.640029" width="1920" height="1080" bandwidth="28000000"/></AdaptationSet>'
+                    f'<AdaptationSet>{template}<Representation id="1" mimeType="audio/mp4" '
+                    'codecs="mp4a.40.2" audioSamplingRate="48000" bandwidth="256000"/></AdaptationSet>'
+                    "</Period></MPD>"
+                )
+            elif path == prefix + "stop":
+                assert request.url.params["session"] == session_id
+                stopped.append(session_id)
+                return httpx.Response(200)
+            else:
+                assert path == prefix + f"session/{session_id}/0/header"
+                data = "synthetic init"
+            return httpx.Response(200, stream=Bytes(data.encode()))
         assert path == "/library/parts/1/123/file.mp4"
         assert request.headers["range"] == "bytes=0-9"
 
-        class Bytes(httpx.AsyncByteStream):
-            async def __aiter__(self):
-                yield b"0123456789"
-
         return httpx.Response(
             206,
-            stream=Bytes(),
+            stream=Bytes(b"0123456789"),
             headers={"Content-Range": "bytes 0-9/100000", "Content-Length": "10"},
         )
 
@@ -960,7 +1004,8 @@ def test_catalog_plays_exact_personal_copy_and_saves_resume(setup, monkeypatch, 
     assert viewer.post(start, json={"target": target | {"source_url": base_url}}).status_code == 422
     assert stranger.post(start, json={"target": target}).status_code == 409
     assert not provider_reads
-    response = viewer.post(start, json={"target": target})
+    payload = {"target": target, "codecs": ["h264", "aac"]}
+    response = viewer.post(start, json=payload)
     assert response.status_code == 201, response.text
     session = response.json()
     assert session["domain"] == domain
@@ -970,10 +1015,27 @@ def test_catalog_plays_exact_personal_copy_and_saves_resume(setup, monkeypatch, 
 
     media_url = session["media_url"]
     assert stranger.get(media_url, headers={"range": "bytes=0-9"}).status_code == 404
-    assert viewer.get(media_url, headers={"range": "bytes=0-9"}).content == b"0123456789"
-    moved[0] = True
-    assert viewer.get(media_url, headers={"range": "bytes=0-9"}).status_code == 409
-    moved[0] = False
+    if compatible:
+        import re
+
+        manifest = viewer.get(media_url)
+        assert manifest.status_code == 200
+        resource = re.search(r'initialization="([^"]+)"', manifest.text)[1]
+        resource = media_url.rsplit("/", 1)[0] + "/" + resource.replace("$RepresentationID$", "0")
+        assert stranger.get(resource).status_code == 404
+        assert viewer.get(resource).content == b"synthetic init"
+        moved[0] = True
+        assert viewer.post(session["seek_url"], json={"position_seconds": 20}).status_code == 409
+        assert not stopped
+        moved[0] = False
+        assert viewer.post(session["seek_url"], json={"position_seconds": 20}).status_code == 200
+        assert viewer.get(resource).status_code == 404
+        assert len(stopped) == 1
+    else:
+        assert viewer.get(media_url, headers={"range": "bytes=0-9"}).content == b"0123456789"
+        moved[0] = True
+        assert viewer.get(media_url, headers={"range": "bytes=0-9"}).status_code == 409
+        moved[0] = False
 
     close = viewer.post(
         f"/plus/api/playback/sessions/{session['session_id']}/close",
@@ -988,7 +1050,9 @@ def test_catalog_plays_exact_personal_copy_and_saves_resume(setup, monkeypatch, 
         },
     )
     assert close.status_code == 204, close.text
-    resumed = viewer.post(start, json={"target": target})
+    if compatible:
+        assert len(stopped) == 2
+    resumed = viewer.post(start, json=payload)
     assert resumed.status_code == 201, resumed.text
     assert resumed.json()["position_seconds"] == 7
     assert db.execute("SELECT COUNT(*) FROM web_playback_watch").fetchone()[0] == 0

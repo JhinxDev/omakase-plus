@@ -32,20 +32,29 @@ above existing explicit progress. Original events and tracker consent remain. Fo
 and TV episodes, the player saves the resume position. Use the title's watch
 status controls to mark those titles watched.
 
-MP4/WebM use authenticated ranged delivery. Eligible MKV files use a full copy-only
-static DASH preparation: at most 256 MiB, 40 minutes and 45 seconds. No video/audio
-encoder or subtitle burn is a fallback. Preparation offers Cancel and the exact
+Compatible MP4 and WebM files use authenticated ranged delivery. With streaming
+disabled, eligible MKV files use copy-only static DASH preparation, bounded to
+256 MiB, 40 minutes of media and 45 seconds of preparation. Preparation offers Cancel and the exact
 Plex action as soon as resolution finishes. It can take tens of seconds; this is
 prepared playback rather than immediate streaming. A resource/format failure
 keeps the external action and does not retry or increase a limit automatically.
 
-Installations that enable \`OMAKASE_PLAYBACK_STREAMING=true\` use authenticated
+Installations that enable `OMAKASE_PLAYBACK_STREAMING=true` use authenticated
 copy-only HLS for qualified MKV sources. A transient startup timeout gets one
 bounded retry. Preparation, source-access and codec failures have separate
 messages. Styled ASS extraction runs after video is ready. The subtitle menu
 shows preparation or unavailability without interrupting video playback. For
 movies, TV and anime films, the copy is opened in this mode only when the
 stream cache has room for the expected output.
+
+For a movie, TV episode or anime film with a single verified Plex copy, the
+player can request a compatible stream when the original audio is unsupported
+or the MKV is too large for the stream cache. The browser must support H.264
+video and AAC audio. Plex copies the original video and supplies compatible
+stereo AAC audio. Omakase relays segments as needed, and a seek outside the
+buffer starts at the requested position. The compatibility stream uses one
+audio track and supports eligible ASS, SSA and SRT subtitles. Image-based
+subtitles and copies that require video conversion can be opened in Plex.
 
 ASS/SSA uses the original script and admitted embedded fonts in a derived JASSUB
 renderer. It requires the isolated player document, shared WASM memory,
@@ -98,8 +107,10 @@ also protects source cleanup until worker absence is proved. Periodic maintenanc
 runs under the existing media-sync lease. Unknown files/directories are preserved.
 Busy capacity returns the external route. GET/HEAD and metadata never start work.
 
-Each byte, segment, subtitle and font checks the current login, library policy,
-source generation and personal Plex entitlement. Long transfers revalidate.
+Each playback resource checks the current login, library policy and source
+generation. Personal Plex access is checked when opening playback and when
+starting a compatibility stream at a new position. The Plex server also
+authenticates each compatibility segment request.
 Starts/preparations have immediate global/per-viewer admission; reads have
 global/per-viewer/per-session limits and bounded rate records. This in-process
 admission contract requires a single ASGI worker; do not multiply workers without

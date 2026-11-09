@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from omakase.plus import households
+from omakase.plus import web_playback_compatible as compatibility
 from omakase.plus import web_playback_remux as remux
 from omakase.plus import web_playback_store as store
 from omakase.plus.auth import authenticate_session
@@ -151,6 +152,7 @@ class StartOptions(BaseModel):
     )
     ass_supported: StrictBool = False
     defer_prepare: StrictBool = False
+    resume: StrictBool = True
 
 
 class Start(StartOptions):
@@ -202,6 +204,11 @@ def _catalog_neighbor(db, scope, target, offset):
 
 class Prepare(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class CompatibilitySeek(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    position_seconds: float = Field(strict=True, ge=0, le=86400)
 
 
 class Event(BaseModel):
@@ -374,6 +381,8 @@ def create_player_router(
     def cleanup_stream(item):
         if not item:
             return
+        if stream := item.pop("compatible_stream", None):
+            asyncio.create_task(stream.close())
         _stop_process(item.get("stream_process"))
         _stop_process(item.get("subtitle_process"))
         if task := item.get("subtitle_task"):
@@ -383,6 +392,8 @@ def create_player_router(
             shutil.rmtree(folder, ignore_errors=True)
 
     async def stop_stream(item):
+        if stream := item.pop("compatible_stream", None):
+            await stream.close()
         if task := item.pop("subtitle_task", None):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -452,6 +463,19 @@ def create_player_router(
         # MPEG-TS framing and per-segment headers add overhead to copied streams.
         return (source.part_size * 5) // 4 + 16 * 1024**2
 
+    def ffmpeg_input(source):
+        return [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-headers",
+            f"X-Plex-Token: {source.token}\r\n",
+            "-i",
+            source.base_url + source.part_key,
+        ]
+
     async def spawn_stream(source, sid, item):
         inventory = prune_stream_cache()
         try:
@@ -479,18 +503,7 @@ def create_player_router(
             folder.mkdir(mode=0o700)
         except OSError:
             raise remux.RemuxError("stream_cache_unavailable") from None
-        url = source.base_url + source.part_key
-        base = [
-            "ffmpeg",
-            "-hide_banner",
-            "-nostdin",
-            "-loglevel",
-            "error",
-            "-headers",
-            f"X-Plex-Token: {source.token}\r\n",
-            "-i",
-            url,
-        ]
+        base = ffmpeg_input(source)
         playlist = folder / "index.m3u8"
         command = base + [
             "-map",
@@ -538,33 +551,48 @@ def create_player_router(
                 _worker_diagnostics("hls", "stream_start_timeout", process, tail)
                 raise remux.RemuxError("stream_start_timeout")
             await asyncio.sleep(0.1)
-        if item["allow_subtitles"]:
-            subtitles = [track for track in source.streams if track.kind == "subtitle"]
-            candidates = [
-                (index, track)
-                for index, track in enumerate(subtitles)
-                if track.codec in {"ass", "ssa"}
-            ]
-            if candidates:
-                index, track = max(candidates, key=lambda pair: (pair[1].selected, pair[1].default))
-                item["stream_subtitle"] = folder / "subtitle.ass"
-                item["subtitle_track"] = {
-                    "plex_stream_id": track.stream_id,
-                    "codec": track.codec,
-                    "language": track.language,
-                    "default": track.default,
-                    "forced": track.forced,
-                    "selected": track.selected,
-                }
-                item["subtitle_task"] = asyncio.create_task(extract_subtitle(base, item, index))
+        prepare_stream_subtitle(source, sid, item, codecs={"ass", "ssa"})
 
-    async def extract_subtitle(base, item, index):
+    def prepare_stream_subtitle(source, sid, item, *, codecs):
+        if not item["allow_subtitles"]:
+            return
+        subtitles = [track for track in source.streams if track.kind == "subtitle"]
+        candidates = [
+            (index, track) for index, track in enumerate(subtitles) if track.codec in codecs
+        ]
+        if not candidates:
+            return
+        index, track = max(candidates, key=lambda pair: (pair[1].selected, pair[1].default))
+        folder = item.get("stream_dir")
+        if folder is None:
+            folder = stream_cache_root / sid
+            try:
+                stream_cache_root.mkdir(parents=True, exist_ok=True)
+                folder.mkdir(mode=0o700)
+            except OSError:
+                return
+            item["stream_dir"] = folder
+        item["stream_subtitle"] = folder / "subtitle.ass"
+        item["subtitle_track"] = {
+            "plex_stream_id": track.stream_id,
+            "codec": "ass" if track.codec == "srt" else track.codec,
+            "language": track.language,
+            "default": track.default,
+            "forced": track.forced,
+            "selected": track.selected,
+        }
+        codec = "ass" if track.codec == "srt" else "copy"
+        item["subtitle_task"] = asyncio.create_task(
+            extract_subtitle(ffmpeg_input(source), item, index, codec)
+        )
+
+    async def extract_subtitle(base, item, index, codec):
         subtitle = item["stream_subtitle"]
         command = base + [
             "-map",
             f"0:s:{index}",
             "-c",
-            "copy",
+            codec,
             "-fs",
             str(_SUBTITLE_LIMIT),
             "-f",
@@ -639,6 +667,32 @@ def create_player_router(
                 "preparation_required": False,
                 "prepare_url": None,
                 "streaming": True,
+                "subtitle_url": prefix + "subtitle.ass" if item.get("stream_subtitle") else None,
+                "subtitle_track": item.get("subtitle_track"),
+            },
+            status_code=201,
+            headers=HEADERS,
+        )
+
+    def compatible_response(db, item, state):
+        source = item["source"]
+        sid = state["session_id"]
+        prefix = f"/plus/api/playback/sessions/{sid}/"
+        return JSONResponse(
+            state
+            | {
+                "source": public_projection(source) | {"mode": "stream"},
+                "skip_segments": normalize_skip_segments(source),
+                "media_url": prefix + "compatible.mpd",
+                "media_type": "application/dash+xml",
+                "seek_url": prefix + "compatible-seek",
+                "next_url": next_url(db, item),
+                "subtitles": [],
+                "fonts": [],
+                "track_map": [],
+                "resume_version_changed": item["version_changed"],
+                "preparation_required": False,
+                "streaming": False,
                 "subtitle_url": prefix + "subtitle.ass" if item.get("stream_subtitle") else None,
                 "subtitle_track": item.get("subtitle_track"),
             },
@@ -947,7 +1001,20 @@ def create_player_router(
             projection = public_projection(source)
             copied = source.container not in {"mp4", "webm"}
             stream_mode = False
-            if copied:
+            compatible_mode = (
+                streaming_enabled
+                and compatibility.eligible(source, body.codecs)
+                and (
+                    source.audio_codec not in body.codecs
+                    or (copied and stream_budget(source) > stream_cache_max_bytes)
+                )
+            )
+            if (
+                compatible_mode
+                and sum("compatible_stream" in value for value in handles.values()) >= 2
+            ):
+                raise HTTPException(429, "The compatible player is busy. Try after a stream ends.")
+            if copied and not compatible_mode:
                 if streaming_enabled and source.container == "mkv":
                     stream_checks(source, body)
                     stream_mode = True
@@ -1033,7 +1100,19 @@ def create_player_router(
                 "allow_subtitles": body.ass_supported,
             }
             handles[state["session_id"]] = item
-            if stream_mode:
+            if compatible_mode:
+                sid = state["session_id"]
+                compatible = compatibility.CompatibleStream(source, transport)
+                item["compatible_stream"] = compatible
+
+                async def authorize():
+                    current(db, request, user.id, sid)
+
+                position = state["position_seconds"] if body.resume and not version_changed else 0
+                await compatible.open(position, authorize)
+                prepare_stream_subtitle(source, sid, item, codecs={"ass", "ssa", "srt"})
+                response = compatible_response(db, item, state)
+            elif stream_mode:
                 await start_stream(source, state["session_id"], item)
                 current(db, request, user.id, state["session_id"])
                 response = stream_response(db, item, state)
@@ -1046,6 +1125,10 @@ def create_player_router(
             return response
         except remux.RemuxError as error:
             return _remux_failure(error, projection)
+        except DeliveryError as error:
+            return _failure(
+                "compatible_stream_unavailable", error.status, str(error), source=projection
+            )
         except PlaybackSourceError as error:
             _LOG.warning("playback_start_failed reason=%s", error.code)
             retryable = error.code == "publication_read_conflict"
@@ -1282,6 +1365,73 @@ def create_player_router(
             if not future.done():
                 future.set_result(None)
             release()
+
+    @router.get("/api/playback/sessions/{sid}/compatible.mpd")
+    async def compatible_manifest(
+        request: Request, sid: str, user=Depends(require_user), db=Depends(get_db)
+    ):
+        current(db, request, user.id, sid)
+        stream = handles[sid].get("compatible_stream")
+        if stream is None or stream.generation is None:
+            raise HTTPException(404, "Manifest unavailable")
+        return Response(
+            stream.generation.manifest, media_type="application/dash+xml", headers=HEADERS
+        )
+
+    @router.post("/api/playback/sessions/{sid}/compatible-seek")
+    async def compatible_seek(
+        request: Request,
+        sid: str,
+        body: CompatibilitySeek,
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        require_csrf(request, request.headers.get("x-csrf-token", ""))
+        source, _ = current(db, request, user.id, sid)
+        stream = handles[sid].get("compatible_stream")
+        if stream is None or body.position_seconds > source.duration_ms / 1000:
+            raise HTTPException(404, "Playback position unavailable")
+        release = admit("seek", user.id, sid)
+        try:
+
+            async def authorize():
+                current(db, request, user.id, sid)
+
+            await authorized_bytes(db, request, user.id, sid)
+            await stream.open(body.position_seconds, authorize)
+            return JSONResponse(
+                {"media_url": f"/plus/api/playback/sessions/{sid}/compatible.mpd"}, headers=HEADERS
+            )
+        except DeliveryError as error:
+            return _failure("compatible_stream_unavailable", error.status, str(error))
+        finally:
+            release()
+
+    @router.get("/api/playback/sessions/{sid}/compatible/{generation}/{representation}/{asset}")
+    async def compatible_segment(
+        request: Request,
+        sid: str,
+        generation: str,
+        representation: str,
+        asset: str,
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        current(db, request, user.id, sid)
+        stream = handles[sid].get("compatible_stream")
+        active = stream.generation if stream else None
+        if active is None or active.key != generation:
+            raise HTTPException(404, "Media resource unavailable")
+        release = admit("read", user.id, sid)
+        try:
+
+            async def authorize():
+                current(db, request, user.id, sid)
+
+            return await stream.resource(active, representation, asset, authorize, release)
+        except DeliveryError as error:
+            release()
+            raise HTTPException(error.status, str(error)) from None
 
     @router.get("/api/playback/sessions/{sid}/playlist.m3u8")
     async def stream_playlist(

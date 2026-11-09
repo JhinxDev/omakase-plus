@@ -713,6 +713,7 @@
       stream_worker_unavailable: 'The streaming worker is temporarily unavailable.',
       stream_cache_unavailable: 'The server could not open its streaming cache.',
       stream_capacity: 'This copy is too large to prepare here. You can open it in Plex from Playback options.',
+      compatible_stream_unavailable: 'The media server could not open this copy in the player. Try again or open it in Plex.',
       publication_read_conflict: 'The library was updating while this title opened.',
     };
     find('error-text').textContent = blocked
@@ -874,7 +875,7 @@
     return task;
   }
   async function watchStreamSubtitles(target) {
-    if (!target?.streaming || !target.subtitle_url || !target.subtitle_track) return;
+    if (!target?.subtitle_url || !target.subtitle_track) return;
     const current = () => !leaving && !failed && session === target;
     find('subtitle-unavailable').hidden = true;
     find('ass-status').textContent = 'Subtitles are still preparing.';
@@ -994,7 +995,9 @@
       if (currentAttempt !== attempt || leaving) return;
       status.textContent = `Opening your ${mediaLabel}…`;
       const startUrl = config.catalog_target ? '/plus/api/playback/catalog-sessions' : '/plus/api/playback/sessions';
-      const opened = await post(startUrl, startPayload(config, browserCapabilities(window, video)), false, 40000);
+      const payload = startPayload(config, browserCapabilities(window, video));
+      if (!find('resume').checked) payload.resume = false;
+      const opened = await post(startUrl, payload, false, 40000);
       if (!opened || typeof opened.session_id !== 'string' || !opened.session_id) throw new Error('Invalid playback session');
       if (currentAttempt !== attempt || leaving) {
         void post(`/plus/api/playback/sessions/${encodeURIComponent(opened.session_id)}/close`, {}, true).catch(() => {});
@@ -1032,7 +1035,9 @@
       player.getNetworkingEngine().registerRequestFilter((_type, request) => {
         if (request.uris.some(uri => new URL(uri, media).origin !== window.location.origin)) throw new Error('External playback request blocked');
       });
-      player.addEventListener('error', () => { if (!leaving) showError(new Error('Unsupported stream')); });
+      player.addEventListener('error', () => {
+        if (!leaving && (!session?.seek_url || activeSeekSession !== session)) showError(new Error('Unsupported stream'));
+      });
       const position = find('resume').checked && !session.resume_version_changed ? Math.max(0, Number(session.position_seconds) || 0) : 0;
       find('version-note').hidden = !session.resume_version_changed;
       video.preload = 'metadata';
@@ -1066,7 +1071,7 @@
         275,
       );
       ready = true;
-      if (session.streaming) void watchStreamSubtitles(session);
+      if (session.subtitle_url) void watchStreamSubtitles(session);
       find('timeline').disabled = false;
       const currentSession = session;
       let pendingSeek = null;
@@ -1106,7 +1111,15 @@
             const buffered = Array.from({length: video.buffered.length}, (_, i) => i).some(
               i => video.buffered.start(i) <= request.time && request.time < video.buffered.end(i)
             );
-            if (!currentSession.streaming || buffered) video.currentTime = request.time;
+            if (currentSession.seek_url && !buffered) {
+              await player.unload();
+              if (!seekCurrent()) return;
+              if (pendingSeek !== request) continue;
+              await post(sessionPath('/compatible-seek'), {position_seconds: request.time}, false, 35000);
+              if (!seekCurrent()) return;
+              if (pendingSeek !== request) continue;
+              await player.load(mediaUri, request.time, currentSession.media_type);
+            } else if (!currentSession.streaming || buffered) video.currentTime = request.time;
             else await player.load(mediaUri, request.time, currentSession.media_type || undefined);
             if (!seekCurrent()) return;
             settled = await waitForSeek(video, request.time);
