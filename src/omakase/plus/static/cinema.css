@@ -345,3 +345,9 @@ body.product-body .streaming-title-hero,.movie-detail-hero{grid-template-columns
 .movie-plex-result-panel { padding: clamp(1rem, 3vw, 1.75rem); max-width: 42rem; }
 .movie-plex-result-panel h2 { margin-top: 0; }
 .movie-plex-result-panel p { line-height: 1.55; }
+.movie-removal-actions { justify-content: flex-end; }
+.movie-removal-actions .button { min-height: 44px; white-space: normal; text-align: center; }
+
+@media (max-width: 32rem) {
+  .movie-removal-actions .button { width: 100%; }
+}

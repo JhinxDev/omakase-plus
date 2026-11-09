@@ -60,14 +60,38 @@
         </form>
         {% if history.status == 'completed' and status_known %}
         <section class="movie-after-watch" id="movie-after-watch" aria-labelledby="movie-after-watch-heading" tabindex="-1">
-          <h3 id="movie-after-watch-heading">Plex after watching</h3>
-          {% if notice == 'saved' %}<p role="status">Your viewing changes were saved. The Plex library was left as it was.</p>{% endif %}
-          <p>Your watch history and rating stay saved when you manage this copy.</p>
+          <h3 id="movie-after-watch-heading">{{ 'Library copy' if cleanup_enabled else 'Plex after watching' }}</h3>
+          {% if notice == 'saved' %}<p role="status">Your viewing changes were saved.</p>{% endif %}
+          {% set removal_messages = {
+            'queued': 'Removal queued. Omakase will check this copy before removing it.',
+            'playing': 'Removal is waiting for playback to finish.',
+            'waiting': 'Waiting for Plex to update before removing the Real-Debrid copy.',
+            'removed': 'Removed from Plex and Real-Debrid. Your watch history and rating are saved.',
+            'changed': 'The copy changed after you confirmed. Review the current copy to try again.',
+            'attention': 'Omakase could not confirm removal. Check your library connections.',
+            'cancelled': 'Removal was cancelled.',
+            'paused': 'Removal was stopped. Check which copies are still available.'
+          } %}
+          {% if cleanup_status in removal_messages %}<p role="status">{{ removal_messages[cleanup_status] }}</p>{% endif %}
+          {% if cleanup_status in ['queued', 'playing', 'waiting'] %}
+          <form method="get" action="/plus/movies/{{ card.imdb_id }}#movie-after-watch">
+            <input type="hidden" name="removal_refresh" value="{{ 1 if removal_refresh else 0 }}">
+            <button class="button button-secondary" type="submit">Refresh removal status</button>
+          </form>
+          {% elif cleanup_enabled and cleanup_status in [none, 'cancelled', 'changed'] %}
+          <p>Your watch history and rating stay saved when you remove a copy.</p>
+          <form method="post" action="/plus/movies/{{ card.imdb_id }}/plex-review" data-busy-form>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="mode" value="removal">
+            <button class="button button-secondary" type="submit" data-busy-label="Checking copy…">Review removal</button>
+          </form>
+          {% elif cleanup_status != 'removed' %}
           <form method="post" action="/plus/movies/{{ card.imdb_id }}/plex-review" data-movie-plex-review>
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="button button-secondary" type="submit">Find in Plex</button>
           </form>
           <div class="movie-plex-result" aria-live="polite" data-movie-plex-result></div>
+          {% endif %}
         </section>
         {% endif %}
       </section>

@@ -502,3 +502,70 @@ def test_worker_cannot_mutate_without_guarded_riven_endpoint(cleanup_job):
     assert (job["stage"], job["reason"]) == ("blocked", "guarded_removal_unavailable")
     service._bytes.assert_not_awaited()
     state.rd_delete.assert_not_awaited()
+
+
+def _confirm_fixture_copy(service):
+    from omakase.plus.movie_cleanup_confirmation import (
+        confirm_movie_cleanup,
+        issue_movie_confirmation,
+    )
+    from omakase.plus.movie_cleanup_worker import verify_manual_cleanup_selection
+
+    proof = asyncio.run(movie_cleanup.verify_movie_cleanup_copy(service, 1, IMDB))
+    tag, selection = asyncio.run(verify_manual_cleanup_selection(service, 1, IMDB, proof))
+    nonce = issue_movie_confirmation(
+        service.db,
+        user_id=1,
+        imdb_id=IMDB,
+        scope=service._scope,
+        tag=tag,
+        selection_digest=selection,
+    )
+    confirm_movie_cleanup(service, 1, IMDB, nonce)
+
+
+@pytest.fixture
+def manual_job(cleanup_job):
+    _confirm_fixture_copy(cleanup_job[0])
+    return cleanup_job
+
+
+def test_manual_confirmation_survives_automatic_opt_out_and_optional_rating(manual_job):
+    service, state, tick = manual_job
+    with service.db:
+        movie_cleanup.set_movie_cleanup_preference(service.db, 1, False)
+        before = service.db.execute("SELECT * FROM movie_history").fetchone()
+        service.db.execute("UPDATE movie_history SET rating=NULL")
+        after = service.db.execute("SELECT * FROM movie_history").fetchone()
+        movie_cleanup.record_movie_cleanup_intent(
+            service.db,
+            user_id=1,
+            imdb_id=IMDB,
+            backend_scope=service._scope,
+            before=before,
+            after=after,
+            now="2026-11-09T09:00:00Z",
+        )
+    assert tick()["stage"] == "withdrawal_intent"
+    assert tick()["stage"] == "awaiting_plex"
+    state.plex_present = False
+    assert tick()["stage"] == "provider_intent"
+    assert tick()["stage"] == "complete"
+    assert state.events.count("rd_delete") == 1
+    assert tuple(service.db.execute("SELECT status,rating FROM movie_history").fetchone()) == (
+        "completed",
+        None,
+    )
+
+
+def test_manual_confirmation_refuses_a_replacement_plex_copy(manual_job):
+    service, state, tick = manual_job
+    video, _ = service._plex_movie.return_value
+    video.set("ratingKey", "42")
+    job = tick()
+    assert (job["stage"], job["reason"]) == ("blocked", "confirmed_copy_changed")
+    service._bytes.assert_not_awaited()
+    state.rd_delete.assert_not_awaited()
+    _confirm_fixture_copy(service)
+    assert tick()["stage"] == "withdrawal_intent"
+    service._bytes.assert_not_awaited()

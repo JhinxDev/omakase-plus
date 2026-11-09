@@ -112,6 +112,7 @@ def test_all_tables_exist(_fresh_db):
         "watch_events",
         "watch_integrations",
         "movie_catalog",
+        "movie_cleanup_confirmations",
         "movie_cleanup_jobs",
         "movie_cleanup_preferences",
         "movie_requests",

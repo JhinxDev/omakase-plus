@@ -14,6 +14,8 @@ from omakase.plus.connections import movie_connections
 from omakase.plus.deps import get_db
 from omakase.plus.middleware import require_user
 from omakase.plus.movie_artwork import movie_artwork
+from omakase.plus.movie_cleanup import MovieCleanupUnavailable, movie_cleanup_enabled
+from omakase.plus.movie_cleanup_confirmation import cleanup_status
 from omakase.plus.movie_presentation import present_movie
 from omakase.plus.movies import MovieError, MovieService
 from omakase.plus.movies_store import get_movie
@@ -339,6 +341,9 @@ def create_movies_router(
                 }
                 else "",
                 "movies_error": "",
+                "cleanup_enabled": movie_cleanup_enabled(),
+                "cleanup_status": cleanup_status(db, user.id, imdb_id),
+                "removal_refresh": request.query_params.get("removal_refresh") != "1",
             },
             headers={"Cache-Control": "private, no-store"},
         )
@@ -398,23 +403,32 @@ def create_movies_router(
         require_csrf(request, csrf)
         return await action(request, user, db, "refresh", imdb_id=imdb_id)
 
+    def guard_personal_removal(db, user):
+        if households_enabled() if callable(households_enabled) else households_enabled:
+            from omakase.plus.households import selected_scope
+
+            if selected_scope(db, viewer_id=user.id).kind == "household":
+                raise HTTPException(409, "Movie removal is available from your personal library.")
+
     @router.post("/movies/{imdb_id}/plex-review", response_class=HTMLResponse)
     async def plex_review(
         request: Request,
         imdb_id: str,
+        mode: str = Form("lookup"),
         csrf: str = Form("", alias="csrf_token"),
         user=Depends(require_user),
         db=Depends(get_db),
     ):
         require_csrf(request, csrf)
-        from omakase.plus.movie_cleanup import (
-            MovieCleanupUnavailable,
-            movie_cleanup_enabled,
-            verify_movie_cleanup_copy,
-        )
+        from omakase.plus.movie_cleanup import verify_movie_cleanup_copy
+        from omakase.plus.movie_cleanup_confirmation import issue_movie_confirmation
+        from omakase.plus.movie_cleanup_worker import verify_manual_cleanup_selection
         from omakase.plus.movie_history import MovieHistoryService
         from omakase.plus.provider_limits import ProviderRateLimit
 
+        removal = mode == "removal"
+        if removal:
+            guard_personal_removal(db, user)
         svc = service(db, user)
         movie = get_movie(db, user.id, imdb_id)
         history = MovieHistoryService(svc).get(user.id, imdb_id) if movie else None
@@ -425,18 +439,33 @@ def create_movies_router(
             link = await svc.plex_review(user.id, imdb_id)
         except MovieError as exc:
             result = "absent" if exc.code == "plex_not_found" else "unknown"
-        cleanup = None
+        cleanup = confirmation = None
         if link and movie_cleanup_enabled():
             try:
-                proof = await asyncio.wait_for(
-                    verify_movie_cleanup_copy(svc, user.id, imdb_id), timeout=7
-                )
-                cleanup = "verified" if proof.owned else "protected"
-            except (MovieCleanupUnavailable, MovieError, ProviderRateLimit, TimeoutError):
+                async with asyncio.timeout(10):
+                    proof = await verify_movie_cleanup_copy(svc, user.id, imdb_id)
+                    cleanup = "verified" if proof.owned else "protected"
+                    if removal and proof.owned:
+                        tag, selection = await verify_manual_cleanup_selection(
+                            svc, user.id, imdb_id, proof
+                        )
+                        confirmation = issue_movie_confirmation(
+                            db,
+                            user_id=user.id,
+                            imdb_id=imdb_id,
+                            scope=svc._scope,
+                            tag=tag,
+                            selection_digest=selection,
+                        )
+            except MovieCleanupUnavailable as exc:
+                cleanup = "protected" if str(exc) == "movie_in_shared_library" else "unverified"
+            except (MovieError, ProviderRateLimit, TimeoutError):
                 cleanup = "unverified"
         payload = {"result": result, "plex_url": link}
         if cleanup:
             payload["cleanup"] = cleanup
+        if confirmation:
+            payload["confirmation"] = confirmation
         if request.headers.get("accept") == "application/json":
             return JSONResponse(
                 payload,
@@ -445,8 +474,59 @@ def create_movies_router(
         return templates.TemplateResponse(
             request,
             "movie_plex_review.html",
-            {**context(request, user), "movie": movie, **payload},
+            {**context(request, user), "movie": movie, "reviewing_removal": removal, **payload},
             headers={"Cache-Control": "private, no-store"},
+        )
+
+    @router.get("/movies/{imdb_id}/removal")
+    async def removal_status(imdb_id: str, user=Depends(require_user), db=Depends(get_db)):
+        guard_personal_removal(db, user)
+        if not get_movie(db, user.id, imdb_id):
+            raise HTTPException(404, "Movie not found")
+        return JSONResponse(
+            {"status": cleanup_status(db, user.id, imdb_id) or "idle"},
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @router.post("/movies/{imdb_id}/removal", response_class=HTMLResponse)
+    async def remove_copy(
+        request: Request,
+        imdb_id: str,
+        confirmation: str = Form("", max_length=64),
+        csrf: str = Form("", alias="csrf_token"),
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        from omakase.plus.movie_cleanup_confirmation import confirm_movie_cleanup
+
+        require_csrf(request, csrf)
+        guard_personal_removal(db, user)
+        movie = get_movie(db, user.id, imdb_id)
+        if not movie:
+            raise HTTPException(404, "Movie not found")
+        headers = {"Cache-Control": "private, no-store"}
+        json_reply = request.headers.get("accept") == "application/json"
+        try:
+            confirm_movie_cleanup(service(db, user), user.id, imdb_id, confirmation)
+        except (MovieCleanupUnavailable, MovieError):
+            if json_reply:
+                return JSONResponse({"result": "review_required"}, status_code=409, headers=headers)
+            return templates.TemplateResponse(
+                request,
+                "movie_plex_review.html",
+                {
+                    **context(request, user),
+                    "movie": movie,
+                    "reviewing_removal": True,
+                    "result": "review_required",
+                },
+                status_code=409,
+                headers=headers,
+            )
+        if json_reply:
+            return JSONResponse({"result": "queued"}, status_code=202, headers=headers)
+        return RedirectResponse(
+            f"/plus/movies/{imdb_id}#movie-after-watch", status_code=303, headers=headers
         )
 
     @router.post("/movies/history")

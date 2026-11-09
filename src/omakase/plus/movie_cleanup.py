@@ -47,7 +47,8 @@ def set_movie_cleanup_preference(db, user_id: int, enabled: bool) -> None:
     if not enabled:
         db.execute(
             """UPDATE movie_cleanup_jobs SET state='cancelled'
-               WHERE user_id=? AND state='queued' AND stage NOT IN ('complete', 'blocked')""",
+               WHERE user_id=? AND intent='automatic' AND state='queued'
+                 AND stage NOT IN ('complete', 'blocked')""",
             (user_id,),
         )
 
@@ -68,8 +69,9 @@ def record_movie_cleanup_intent(db, *, user_id, imdb_id, backend_scope, before, 
         db.execute(
             """UPDATE movie_cleanup_jobs SET state='cancelled'
                WHERE user_id=? AND imdb_id=? AND state='queued'
+                 AND (intent='automatic' OR ?)
                  AND stage NOT IN ('complete', 'blocked')""",
-            (user_id, imdb_id),
+            (user_id, imdb_id, not after or after["status"] != "completed"),
         )
         return
     if watched_and_rated_manually(before) or not movie_cleanup_enabled():
@@ -82,7 +84,8 @@ def record_movie_cleanup_intent(db, *, user_id, imdb_id, backend_scope, before, 
            WHERE s.cleanup_owner_id=? AND s.imdb_id=? AND s.backend_scope=?
              AND s.cleanup_tag IS NOT NULL AND p.enabled=1
            ON CONFLICT (user_id, imdb_id, cleanup_tag) DO UPDATE
-             SET queued_at=excluded.queued_at, state='queued', attempts=0, retry_at=NULL, reason=NULL
+             SET queued_at=excluded.queued_at, state='queued', attempts=0, retry_at=NULL,
+                 reason=NULL, intent='automatic', selection_digest=NULL
              WHERE movie_cleanup_jobs.state='cancelled' AND movie_cleanup_jobs.stage='prepare'""",
         (now, user_id, imdb_id, backend_scope),
     )

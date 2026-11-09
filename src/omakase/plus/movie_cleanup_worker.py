@@ -25,6 +25,7 @@ from omakase.plus.movie_cleanup import (
     watched_and_rated_manually,
 )
 from omakase.plus.movies import MovieError, MovieService, _imdb
+from omakase.plus.movies_store import get_submission
 from omakase.plus.provider_limits import ProviderRateLimit
 from omakase.plus.secrets import read_secret
 
@@ -53,8 +54,19 @@ def _update(db, job, *, stage, proof=None, attempts=0, retry_at=None, reason=Non
     db.execute(
         """UPDATE movie_cleanup_jobs
            SET stage=?, proof_json=COALESCE(?, proof_json), attempts=?, retry_at=?, reason=?
-           WHERE user_id=? AND imdb_id=? AND cleanup_tag=? AND state='queued' AND stage=?""",
-        (stage, proof, attempts, retry_at, reason, *_job_key(job), job["stage"]),
+           WHERE user_id=? AND imdb_id=? AND cleanup_tag=? AND state='queued' AND stage=?
+             AND intent=? AND selection_digest IS ?""",
+        (
+            stage,
+            proof,
+            attempts,
+            retry_at,
+            reason,
+            *_job_key(job),
+            job["stage"],
+            job["intent"],
+            job["selection_digest"],
+        ),
     )
     db.commit()
 
@@ -77,20 +89,21 @@ def _authorize(service, job, *, riven_id=None):
     user_id, imdb_id, tag = _job_key(job)
     pending = db.execute(
         """SELECT 1 FROM movie_cleanup_jobs
-           WHERE user_id=? AND imdb_id=? AND cleanup_tag=? AND state='queued' AND stage=?""",
-        (user_id, imdb_id, tag, job["stage"]),
+           WHERE user_id=? AND imdb_id=? AND cleanup_tag=? AND state='queued' AND stage=?
+             AND intent=? AND selection_digest IS ?""",
+        (user_id, imdb_id, tag, job["stage"], job["intent"], job["selection_digest"]),
     ).fetchone()
     history = db.execute(
         """SELECT status, status_source, rating, rating_source FROM movie_history
            WHERE user_id=? AND imdb_id=?""",
         (user_id, imdb_id),
     ).fetchone()
-    if (
-        pending is None
-        or not movie_cleanup_enabled()
-        or not movie_cleanup_preference(db, user_id)
-        or not watched_and_rated_manually(history)
-    ):
+    allowed = (
+        history is not None and history["status"] == "completed"
+        if job["intent"] == "manual"
+        else movie_cleanup_preference(db, user_id) and watched_and_rated_manually(history)
+    )
+    if pending is None or not movie_cleanup_enabled() or not allowed:
         raise _Revoked()
     movie = _owner_movie(service, user_id, imdb_id)
     if service._scope != job["backend_scope"] or not _owned_acquisition(
@@ -146,6 +159,35 @@ def _riven_paths(job, receipt):
         "torrent_id": receipt.copy.torrent_id,
         "torrent_hash": receipt.copy.torrent_hash,
     }
+
+
+def _selection_digest(receipt):
+    return hashlib.sha256(json.dumps(asdict(receipt), sort_keys=True).encode()).hexdigest()
+
+
+async def verify_manual_cleanup_selection(service, user_id, imdb_id, copy):
+    movie = _owner_movie(service, user_id, imdb_id)
+    submission = get_submission(service.db, service._scope, imdb_id)
+    tag = submission["cleanup_tag"] if submission else None
+    if not copy.owned or not _owned_acquisition(
+        service, user_id, movie, {"acquisition_tag": tag, "riven_id": copy.riven_id}
+    ):
+        raise MovieCleanupUnavailable("acquisition_unverified")
+    key = read_secret(service.db, user_id, "realdebrid_api_key")
+    if not key:
+        raise MovieCleanupUnavailable("real_debrid_disconnected")
+    receipt = _Receipt(
+        copy,
+        _connection_stamp(service.connections, key),
+        await _plex_machine(service),
+        movie["tmdb_id"],
+    )
+    path, params = _riven_paths(
+        {"user_id": user_id, "imdb_id": imdb_id, "cleanup_tag": tag}, receipt
+    )
+    if await _withdrawal(service, path, params) != "present":
+        raise MovieCleanupUnavailable("copy_changed")
+    return tag, _selection_digest(receipt)
 
 
 async def _withdrawal(service, path, params):
@@ -236,6 +278,8 @@ async def _step(db, job, heartbeat, service_factory):
         if not copy.owned:
             raise MovieCleanupUnavailable("acquisition_unverified")
         receipt = _Receipt(copy, stamp, await _plex_machine(service), movie["tmdb_id"])
+        if job["intent"] == "manual" and job["selection_digest"] != _selection_digest(receipt):
+            raise MovieCleanupUnavailable("confirmed_copy_changed")
         confirm_authorized(copy)
         _update(db, job, stage="withdrawal_intent", proof=json.dumps(asdict(receipt)))
         return

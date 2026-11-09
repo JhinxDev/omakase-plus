@@ -489,3 +489,99 @@ def test_inline_movie_review_keeps_the_current_page_and_history(browser, monkeyp
         "completed",
         8.0,
     )
+
+
+def test_manual_movie_removal_requires_a_current_confirmation_and_preserves_history(
+    browser, monkeypatch
+):
+    from omakase.plus import movie_cleanup, movie_cleanup_worker
+    from omakase.plus.movies_store import claim_submission, upsert_movie
+
+    client, svc, csrf = browser
+    monkeypatch.setenv("OMAKASE_PLUS_MOVIE_CLEANUP_ENABLED", "1")
+    client.templates.env.loader = FileSystemLoader(
+        Path(__file__).resolve().parents[2] / "src/omakase/plus/templates"
+    )
+    svc._scope = "e" * 64
+    svc._guard = lambda user_id: None
+    imdb = "tt0084787"
+    now = "2026-11-09T08:00:00Z"
+    tag, selection = "a" * 32, "f" * 64
+    upsert_movie(svc.db, 1, {"imdb_id": imdb, "tmdb_id": 1091, "title": "The Thing"}, now=now)
+    assert claim_submission(svc.db, svc._scope, imdb, 1091, now=now, user_id=1, cleanup_tag=tag)
+    svc.db.execute(
+        """INSERT INTO movie_history
+           (user_id,imdb_id,tmdb_id,status,rating,status_source,rating_source,created_at,updated_at)
+           VALUES (1,?,1091,'completed',8,'manual','manual',?,?)""",
+        (imdb, now, now),
+    )
+    svc.db.commit()
+
+    async def plex_review(user_id, imdb_id):
+        assert (user_id, imdb_id) == (1, imdb)
+        return "https://app.plex.tv/desktop/#!/server/fixture/details"
+
+    async def verify_copy(service, user_id, imdb_id):
+        assert service is svc and (user_id, imdb_id) == (1, imdb)
+        return SimpleNamespace(owned=True)
+
+    async def review_selection(service, user_id, imdb_id, copy):
+        assert service is svc and (user_id, imdb_id) == (1, imdb) and copy.owned
+        return tag, selection
+
+    svc.plex_review = plex_review
+    monkeypatch.setattr(movie_cleanup, "verify_movie_cleanup_copy", verify_copy)
+    monkeypatch.setattr(movie_cleanup_worker, "verify_manual_cleanup_selection", review_selection)
+
+    review_path = f"/plus/movies/{imdb}/plex-review"
+    action_path = f"/plus/movies/{imdb}/removal"
+    headers = {"Accept": "application/json"}
+    review_data = {"csrf_token": csrf, "mode": "removal"}
+    assert client.get(action_path).json() == {"status": "idle"}
+    review = client.post(review_path, data=review_data)
+    assert review.status_code == 200 and "Remove this copy?" in review.text
+    assert "Remove from Plex and Real-Debrid" in review.text and "Keep copy" in review.text
+    assert "fixture/details" not in review.text
+    assert svc.db.execute("SELECT count(*) FROM movie_cleanup_jobs").fetchone()[0] == 0
+
+    pending = client.post(review_path, data=review_data, headers=headers).json()
+    assert set(pending) == {"result", "plex_url", "cleanup", "confirmation"}
+    nonce = pending["confirmation"]
+    assert len(nonce) == 64
+    assert (
+        client.post(action_path, data={"confirmation": nonce}, headers=headers).status_code == 403
+    )
+    assert (
+        client.post(
+            action_path, data={"csrf_token": csrf, "confirmation": "0" * 64}, headers=headers
+        ).status_code
+        == 409
+    )
+    svc.db.execute("UPDATE movie_cleanup_confirmations SET expires_at=0")
+    svc.db.commit()
+    assert (
+        client.post(
+            action_path, data={"csrf_token": csrf, "confirmation": nonce}, headers=headers
+        ).status_code
+        == 409
+    )
+
+    nonce = client.post(review_path, data=review_data, headers=headers).json()["confirmation"]
+    confirm_data = {"csrf_token": csrf, "confirmation": nonce}
+    queued = client.post(action_path, data=confirm_data)
+    assert queued.status_code == 303 and queued.headers["location"].endswith("#movie-after-watch")
+    assert client.get(action_path).json() == {"status": "queued"}
+    assert "Removal queued." in client.get(queued.headers["location"]).text
+    assert client.post(action_path, data=confirm_data, headers=headers).status_code == 409
+    assert tuple(
+        svc.db.execute("SELECT intent,selection_digest,state FROM movie_cleanup_jobs").fetchone()
+    ) == ("manual", selection, "queued")
+
+    svc.db.execute("UPDATE movie_cleanup_jobs SET stage='complete'")
+    svc.db.commit()
+    assert client.get(action_path).json() == {"status": "removed"}
+    assert "Removed from Plex and Real-Debrid." in client.get(queued.headers["location"]).text
+    assert tuple(svc.db.execute("SELECT status,rating FROM movie_history").fetchone()) == (
+        "completed",
+        8.0,
+    )
