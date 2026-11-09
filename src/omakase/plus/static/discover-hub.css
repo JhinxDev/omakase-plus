@@ -1,5 +1,5 @@
-.discover-hub { display: grid; gap: clamp(1.7rem, 4vw, 3.1rem); }
-.hub-shelf { min-width: 0; }
+.discover-hub { display: grid; grid-template-columns: minmax(0, 1fr); gap: clamp(1.7rem, 4vw, 3.1rem); }
+[data-hub-rows], .hub-shelf { min-width: 0; }
 .hub-shelf h2 { margin: 0; font-size: clamp(1.35rem, 2.6vw, 2rem); letter-spacing: -.025em; }
 .hub-shelf-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: .35rem 1.1rem; margin-bottom: .85rem; }
 .hub-shelf-heading p, .hub-meta, .hub-unavailable p { margin: 0; color: #b7bed0; font-size: .875rem; }
