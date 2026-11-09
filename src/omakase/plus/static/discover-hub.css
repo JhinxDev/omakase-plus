@@ -1,0 +1,25 @@
+.discover-hub { display: grid; gap: clamp(1.7rem, 4vw, 3.1rem); }
+.hub-shelf { min-width: 0; }
+.hub-shelf h2 { margin: 0; font-size: clamp(1.35rem, 2.6vw, 2rem); letter-spacing: -.025em; }
+.hub-shelf-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: .35rem 1.1rem; margin-bottom: .85rem; }
+.hub-shelf-heading p, .hub-meta, .hub-unavailable p { margin: 0; color: #b7bed0; font-size: .875rem; }
+.hub-rail { grid-auto-columns: clamp(8.5rem, 16vw, 12rem); align-items: start; gap: clamp(.75rem, 1.5vw, 1.25rem); }
+.hub-rail-featured { grid-auto-columns: clamp(10rem, 19vw, 15rem); }
+.hub-poster, .hub-skeleton { aspect-ratio: 2 / 3; width: 100%; border-radius: .65rem; background: #151c2e; }
+.hub-skeleton { background: linear-gradient(145deg, #1c253b, #101726); }
+.hub-poster { position: relative; overflow: hidden; }
+.hub-poster img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.hub-poster img[hidden] { display: none; }
+.hub-card-link { display: block; text-decoration: none; color: inherit; }
+.hub-card-link:hover h3 { text-decoration: underline; text-underline-offset: .22em; }
+.hub-card h3 { margin: .6rem 0 .26rem; font-size: 1rem; line-height: 1.25; overflow-wrap: anywhere; }
+.hub-meta { line-height: 1.45; }
+.hub-badge { position: absolute; inset: auto auto .45rem .45rem; border-radius: .4rem; padding: .26rem .48rem; background: #0b1022ed; color: #eff3ff; font-size: .72rem; font-weight: 650; }
+.hub-options summary { display: flex; min-height: 44px; align-items: center; gap: .38rem; color: #d8cfff; cursor: pointer; width: fit-content; }
+.hub-options summary::-webkit-details-marker { display: none; }
+.hub-options summary span { font-size: 1.12em; }
+.hub-options[open] summary span { rotate: 45deg; }
+.hub-options .feedback-actions { display: grid; padding: .18rem .35rem .35rem; border: 1px solid #343c52; border-radius: .5rem; background: #13192a; }
+.hub-options .text-action { text-align: left; white-space: normal; width: 100%; }
+.hub-unavailable p { margin-top: .55rem; }
+.hub-unavailable a { color: #ddceff; }

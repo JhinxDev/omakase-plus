@@ -25,3 +25,17 @@ Example after preparing the Python and QA environments:
 ```sh
 node scripts/check_title_details.cjs
 ```
+
+## Navigation performance
+
+From Home, use the actual Anime and For You navigation links. Compare at least
+five paired runs on the same account, browser, connection and cache state. Record
+median navigation TTFB and LCP for each destination. For You also needs a separate
+time to usable recommendations because its first paint and catalog reads are
+independent. Compare warm and cold catalog runs separately.
+
+Use 2 seconds median TTFB for Anime and 1 second for the For You shell as
+production regression budgets. Aim for 2.5 seconds median LCP on both with warm
+artwork, and keep third-party catalog work outside the initial For You response.
+For local changes, the regression tests enforce one rich Anime projection and
+zero catalog or AI calls in the initial For You request.

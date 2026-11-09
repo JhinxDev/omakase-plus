@@ -734,6 +734,49 @@ def create_showcase(data: Path, catalog, *, library_state="personal"):
 
     MovieDiscoveryService.options, MovieDiscoveryService.discover = movie_options, movie_discover
 
+    from omakase.plus import discover_hub as hub
+
+    async def demo_anime_catalog():
+        return tuple(
+            hub._anime_card(aid, row["title"], episodes=row.get("episodes"))
+            | {"genres": tuple(row.get("genres", []))}
+            for aid, row in catalog["anime"].items()
+        )
+
+    async def demo_screen_rows(db, user_id):
+        movies_store.require_user(db, user_id)
+        return [
+            hub._shelf(
+                "movies",
+                "Movies for You",
+                (
+                    {
+                        "title": row["title"],
+                        "href": f"/plus/movies/{imdb}",
+                        "poster": f"/plus/movies/{imdb}/artwork",
+                        "format": "Movie",
+                    }
+                    for imdb, row in catalog["movies"].items()
+                ),
+            ),
+            hub._shelf(
+                "tv",
+                "TV Shows for You",
+                (
+                    {
+                        "title": row["title"],
+                        "href": f"/plus/tv/{tmdb}",
+                        "poster": f"/plus/tv/{tmdb}/artwork",
+                        "format": "TV show",
+                    }
+                    for tmdb, row in catalog["tv"].items()
+                ),
+            ),
+        ]
+
+    hub.anime_catalog = demo_anime_catalog
+    hub.screen_shelves = demo_screen_rows
+
     sample_user = SimpleNamespace(id=uid, email="alex.morgan@example.com")
     first_anime = next(iter(catalog["anime"]))
     sample_title = catalog["anime"][first_anime]["title"]
@@ -767,6 +810,7 @@ def create_showcase(data: Path, catalog, *, library_state="personal"):
             "/plus/search",
             "/plus/discover",
             "/plus/discover/movies",
+            "/plus/discover/rows",
             "/plus/add",
             "/plus/login",
             "/plus/signup",
@@ -1084,6 +1128,7 @@ def create_showcase(data: Path, catalog, *, library_state="personal"):
             "/plus/search/suggestions",
             "/plus/discover",
             "/plus/discover/movies",
+            "/plus/discover/rows",
             "/plus/add",
             "/plus/login",
             "/plus/signup",
@@ -1195,7 +1240,7 @@ def check(app, catalog):
             "No sync runs yet" not in populated
             and "A provider has not produced a candidate yet" not in populated
         )
-        assert "8.4" in client.get("/plus/discover").text
+        assert "8.4" in client.get("/plus/discover?mode=recommend").text
         assert '<article class="movie-card">' not in client.get("/plus/discover/movies").text
         assert (
             '<article class="movie-card">'

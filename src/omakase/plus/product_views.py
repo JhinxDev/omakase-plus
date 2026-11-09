@@ -307,6 +307,15 @@ def library_titles(
         for row in watch_rows
         if row["monitor_id"] is None
     }
+    removed = {
+        (row["canonical_id"], row["season_number"])
+        for row in db.execute(
+            """SELECT i.canonical_id, i.season_number
+               FROM library_items i JOIN personal_libraries p ON p.library_id=i.library_id
+               WHERE p.user_id=? AND i.domain='anime' AND i.state='removed'""",
+            (user_id,),
+        )
+    }
     monitors = db.execute(
         """SELECT * FROM media_monitors
            WHERE user_id = ?
@@ -315,11 +324,7 @@ def library_titles(
     ).fetchall()
     titles: list[dict[str, Any]] = []
     for monitor in monitors:
-        from omakase.plus.local_list import local_removed
-
-        excluded = local_removed(
-            db, user_id=user_id, anilist_id=monitor["anilist_id"], season=monitor["season_number"]
-        )
+        excluded = (str(monitor["anilist_id"]), monitor["season_number"] or 0) in removed
         if excluded and not include_removed:
             continue
         if text and text not in str(monitor["title"]).casefold():
@@ -348,16 +353,17 @@ def library_titles(
         if provider != "all" and provider not in provider_kinds:
             continue
         required = _required_count(monitor)
-        coverage = covered_episodes(db, int(monitor["id"]))
-        usable = len(coverage & set(range(1, required + 1))) if required else len(coverage)
+        coverage = set()
         quality_coverage: dict[str, set[int]] = {}
         for asset in assets:
             episodes = verified_asset_coverage(asset)
+            coverage.update(episodes)
             if required:
-                episodes &= set(range(1, required + 1))
+                episodes = {episode for episode in episodes if episode <= required}
             quality = str(asset["quality"] or "").lower()
             if episodes and quality in {"1080p", "2160p", "720p"}:
                 quality_coverage.setdefault(quality, set()).update(episodes)
+        usable = sum(episode <= required for episode in coverage) if required else len(coverage)
         qualities = [
             quality for quality in ("1080p", "2160p", "720p") if quality in quality_coverage
         ]

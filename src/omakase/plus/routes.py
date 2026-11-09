@@ -20,6 +20,7 @@ from collections import defaultdict, deque
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote
 
 import httpx
@@ -209,6 +210,7 @@ _STATIC_ASSETS = {
     "atmosphere.css": "text/css",
     "cinema.css": "text/css",
     "interface.css": "text/css",
+    "discover-hub.css": "text/css",
     "connections.css": "text/css",
     "refinement.css": "text/css",
     "status-clarity.css": "text/css",
@@ -231,6 +233,7 @@ _STATIC_ASSETS = {
     "episode-states.css": "text/css",
     "hero-quality.js": "application/javascript",
     "shelves.js": "application/javascript",
+    "discover-hub.js": "application/javascript",
     "profile.js": "application/javascript",
     "search.js": "application/javascript",
     "geist-variable.woff2": "font/woff2",
@@ -1136,6 +1139,7 @@ async def library_page(
     user=Depends(require_user),
     db=Depends(get_db),
 ):
+    selected = None
     if households.feature_enabled():
         selected = households.selected_scope(db, viewer_id=user.id)
         if selected.kind == "household":
@@ -1157,9 +1161,7 @@ async def library_page(
         titles = library_titles(
             db,
             user_id=user.id,
-            library_scope=households.selected_scope(db, viewer_id=user.id)
-            if households.feature_enabled()
-            else None,
+            library_scope=selected,
             lifecycle=lifecycle,
             state=state,
             provider=provider,
@@ -1167,14 +1169,17 @@ async def library_page(
             query=query,
         )
         title_suggestions = [
-            item["title"]
-            for item in library_titles(
-                db,
-                user_id=user.id,
-                library_scope=households.selected_scope(db, viewer_id=user.id)
-                if households.feature_enabled()
-                else None,
-                lifecycle="all",
+            row["title"]
+            for row in db.execute(
+                """SELECT m.title FROM media_monitors m
+                   WHERE m.user_id=? AND NOT EXISTS (
+                       SELECT 1 FROM library_items i JOIN personal_libraries p
+                       ON p.library_id=i.library_id WHERE p.user_id=m.user_id
+                       AND i.domain='anime' AND i.state='removed'
+                       AND i.canonical_id=CAST(m.anilist_id AS TEXT)
+                       AND i.season_number=COALESCE(m.season_number,0))
+                   ORDER BY m.active DESC, m.title COLLATE NOCASE, m.id LIMIT 150""",
+                (user.id,),
             )
         ]
     except ProductViewError as exc:
@@ -1941,14 +1946,30 @@ async def remove_title_media(
 @router.get("/discover", response_class=HTMLResponse)
 async def discover_page(
     request: Request,
-    mode: str = "recommend",
+    mode: str = "browse",
     run: int | None = None,
     message: str = "",
     user=Depends(require_user),
     db=Depends(get_db),
 ):
-    if mode not in {"recommend", "add"}:
+    if mode not in {"browse", "recommend", "add"}:
         raise HTTPException(status_code=422, detail="Discover mode is unsupported")
+    if mode == "browse" and run is None:
+        from omakase.plus.discover_hub import continue_shelf, viewer_monitors
+
+        continuing = continue_shelf(viewer_monitors(db, user.id))
+        return templates.TemplateResponse(
+            request,
+            "discover_hub.html",
+            {
+                **_product_context(request, user, active_page="discover"),
+                "continue_shelf": continuing,
+                "message": message,
+            },
+            headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+        )
+    if mode == "browse":
+        mode = "recommend"
     try:
         recommendations = discover_view(db, user_id=user.id, run_id=run)
     except ProductViewError as error:
@@ -1982,6 +2003,48 @@ async def discover_page(
             "discover_mode": mode,
             "message": message,
         },
+    )
+
+
+@router.get("/discover/rows", response_class=HTMLResponse)
+async def discover_rows(
+    request: Request,
+    kind: Literal["anime", "screen"] = "anime",
+    user=Depends(require_user),
+    db=Depends(get_db),
+):
+    from omakase.plus import discover_hub as hub
+
+    if kind == "anime":
+        catalog = await hub.anime_catalog()
+        rows = hub.anime_shelves(db, user.id, catalog, hub.viewer_monitors(db, user.id))
+    else:
+        rows = await hub.screen_shelves(db, user.id)
+    return templates.TemplateResponse(
+        request,
+        "_discover_rows.html",
+        {"rows": rows, "kind": kind, "csrf_token": _csrf_token(request)},
+        headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+    )
+
+
+@router.get("/discover/tv-art/{tmdb_id}")
+async def discover_tv_artwork(tmdb_id: int, user=Depends(require_user)):
+    from omakase.plus.discover_hub import television_artwork
+    from omakase.plus.movie_artwork import movie_artwork
+
+    url = television_artwork(user.id, tmdb_id)
+    if url is None:
+        raise HTTPException(404, "Artwork unavailable")
+    try:
+        payload, kind = await movie_artwork(url)
+        payload, kind = await run_in_threadpool(optimized_artwork, payload, kind="poster")
+    except PosterUnavailable:
+        raise HTTPException(404, "Artwork unavailable") from None
+    return Response(
+        payload,
+        media_type=kind,
+        headers={"Cache-Control": "private, max-age=3600", "Vary": "Cookie"},
     )
 
 
@@ -2281,7 +2344,11 @@ async def dashboard_profile(
             (user.id, profile),
         )
     db.commit()
-    destination = "/plus/discover" if return_to == "/plus/discover" else "/plus/dashboard"
+    destination = (
+        return_to
+        if return_to in {"/plus/discover", "/plus/discover?mode=recommend"}
+        else "/plus/dashboard"
+    )
     return RedirectResponse(url=destination, status_code=302)
 
 

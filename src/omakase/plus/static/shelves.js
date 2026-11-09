@@ -17,12 +17,13 @@
       nav.scrollLeft = Math.max(0, active.offsetLeft - nav.offsetLeft - (nav.clientWidth - active.clientWidth) / 2);
     }
   });
-  document.querySelectorAll('.media-rail').forEach((rail, index) => {
+  let nextId = 0;
+  function enhanceRail(rail) {
     const shelf = document.createElement('div');
     shelf.className = 'media-shelf';
     rail.before(shelf);
     shelf.append(rail);
-    rail.id ||= `media-shelf-${index + 1}`;
+    rail.id ||= `media-shelf-${++nextId}`;
     const title = rail.getAttribute('aria-label') || 'titles';
     const move = direction => {
       const cards = [...rail.children];
@@ -61,5 +62,10 @@
     new ResizeObserver(update).observe(rail);
     rail.classList.add('shelf-enhanced');
     update();
-  });
+  }
+  function enhance(root) {
+    root.querySelectorAll('.media-rail:not(.shelf-enhanced):not([aria-hidden="true"])').forEach(enhanceRail);
+  }
+  enhance(document);
+  document.addEventListener('omakase:rows-ready', event => enhance(event.detail));
 })();

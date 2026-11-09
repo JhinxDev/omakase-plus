@@ -202,25 +202,34 @@ def _trusted_skip_evidence(source, video):
     return evidence | {"segments": normalize_skip_segments(source, evidence)["segments"]}
 
 
+def qualified_publication(db):
+    row = db.execute("SELECT * FROM media_curator_receipt_latest WHERE id=1").fetchone()
+    _require(row is not None)
+    _require(len(row["receipt_json"]) <= 2 * 1024 * 1024)
+    receipt = json.loads(row["receipt_json"])
+    _require(receipt.get("schema_version") == "curator-receipt-v4")
+    _require(
+        receipt.get("mode") == "live"
+        and receipt.get("topology_converged") is True
+        and receipt.get("selection_applied") is True
+        and receipt.get("outcome") in {"success", "degraded"}
+    )
+    manifest = quality_publication.validate_current_selection(db, receipt)
+    return receipt, manifest
+
+
+def publication_identity(item, asset_id, file, policy):
+    return digest([item["id"], item["resource_id"], item["legacy_id"], asset_id, file, policy])
+
+
 def _publication(db, scope, anilist_id, season_number, episode_number):
     item = db.execute(
         "SELECT i.id,i.resource_id,r.legacy_id FROM library_items i JOIN library_resources r ON r.id=i.resource_id JOIN media_monitors m ON m.id=r.legacy_id WHERE i.library_id=? AND i.domain='anime' AND i.canonical_id=? AND i.season_number=? AND i.state='active' AND r.owner_user_id=? AND r.domain=i.domain AND r.canonical_id=i.canonical_id AND r.season_number=i.season_number AND m.user_id=r.owner_user_id AND m.anilist_id=CAST(r.canonical_id AS INTEGER) AND m.season_number=r.season_number",
         (scope.library_id, str(anilist_id), season_number, scope.operational_owner_id),
     ).fetchone()
     _require(item is not None)
-    row = db.execute("SELECT * FROM media_curator_receipt_latest WHERE id=1").fetchone()
-    _require(row is not None)
     try:
-        _require(len(row["receipt_json"]) <= 2 * 1024 * 1024)
-        receipt = json.loads(row["receipt_json"])
-        _require(receipt.get("schema_version") == "curator-receipt-v4")
-        _require(
-            receipt.get("mode") == "live"
-            and receipt.get("topology_converged") is True
-            and receipt.get("selection_applied") is True
-            and receipt.get("outcome") in {"success", "degraded"}
-        )
-        manifest = quality_publication.validate_current_selection(db, receipt)
+        receipt, manifest = qualified_publication(db)
         titles = [t for t in manifest["titles"] if t["anilist_id"] == anilist_id]
         _require(len(titles) == 1)
         title = titles[0]["canonical_title"]
@@ -268,16 +277,7 @@ def _publication(db, scope, anilist_id, season_number, episode_number):
         suffix = PurePosixPath(file["source"]).suffix.lower()
         _require(suffix in {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".webm", ".ts"})
         relative = f"Anime/{title}/Season {season_number:02d}/{title} - S{season_number:02d}E{episode_number:02d}{suffix}"
-        identity = digest(
-            [
-                item["id"],
-                item["resource_id"],
-                item["legacy_id"],
-                asset["id"],
-                file,
-                publication_policy,
-            ]
-        )
+        identity = publication_identity(item, asset["id"], file, publication_policy)
         return relative, file["stat"]["size"], identity
     except (KeyError, TypeError, ValueError, RecursionError):
         raise PlaybackSourceError(

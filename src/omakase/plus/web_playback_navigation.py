@@ -8,7 +8,7 @@ from pathlib import PurePosixPath
 from urllib.parse import urlencode
 
 from omakase.plus import households, quality_publication
-from omakase.plus.web_playback_source import PlaybackSourceError, _publication
+from omakase.plus.web_playback_source import publication_identity, qualified_publication
 from omakase.plus.web_playback_store import watch_barrier
 
 
@@ -42,7 +42,7 @@ def _monitor(db, scope, card):
     ).fetchone()
 
 
-def _candidates(db, scope, monitor):
+def _candidates(db, scope, monitor, publication=None):
     """Strict current single-file selection, including unbound personal legacy rows.
 
     Legacy candidates do not create resources or bypass the full source resolver.
@@ -52,19 +52,10 @@ def _candidates(db, scope, monitor):
         "format" in monitor.keys() and str(monitor["format"] or "").upper() == "MOVIE"
     ):
         return {}
-    row = db.execute("SELECT receipt_json FROM media_curator_receipt_latest WHERE id=1").fetchone()
-    if not row or len(row[0]) > 2 * 1024 * 1024:
+    try:
+        receipt, manifest = publication() if publication is not None else qualified_publication(db)
+    except (ValueError, KeyError, TypeError, RecursionError):
         return {}
-    receipt = json.loads(row[0])
-    if not (
-        receipt.get("schema_version") == "curator-receipt-v4"
-        and receipt.get("mode") == "live"
-        and receipt.get("topology_converged") is True
-        and receipt.get("selection_applied") is True
-        and receipt.get("outcome") in {"success", "degraded"}
-    ):
-        return {}
-    manifest = quality_publication.validate_current_selection(db, receipt)
     titles = [t for t in manifest["titles"] if t["anilist_id"] == monitor["anilist_id"]]
     if len(titles) != 1:
         return {}
@@ -76,7 +67,7 @@ def _candidates(db, scope, monitor):
     ):
         return {}
     bindings = db.execute(
-        "SELECT i.id FROM library_items i JOIN library_resources r ON r.id=i.resource_id WHERE i.library_id=? AND i.state='active' AND i.domain='anime' AND r.owner_user_id=? AND r.legacy_id=? AND i.canonical_id=? AND i.season_number=? AND r.domain=i.domain AND r.canonical_id=i.canonical_id AND r.season_number=i.season_number",
+        "SELECT i.id,i.resource_id,r.legacy_id FROM library_items i JOIN library_resources r ON r.id=i.resource_id WHERE i.library_id=? AND i.state='active' AND i.domain='anime' AND r.owner_user_id=? AND r.legacy_id=? AND i.canonical_id=? AND i.season_number=? AND r.domain=i.domain AND r.canonical_id=i.canonical_id AND r.season_number=i.season_number",
         (
             scope.library_id,
             scope.operational_owner_id,
@@ -134,14 +125,13 @@ def _candidates(db, scope, monitor):
             ".ts",
         }:
             continue
-        identity = None
-        if bindings:
-            try:
-                _, _, identity = _publication(
-                    db, scope, monitor["anilist_id"], monitor["season_number"], episode
-                )
-            except PlaybackSourceError:
-                continue
+        identity = (
+            publication_identity(
+                bindings[0], asset["id"], file, published[0].get("language_contract")
+            )
+            if bindings
+            else None
+        )
         candidates[episode] = identity
     return candidates
 
@@ -155,6 +145,29 @@ def attach_navigation(db, cards, *, user_id, library_scope=None):
         households.revalidate_scope(db, scope)
     except households.HouseholdError:
         return cards
+    # Share the qualified publication only within one SQLite read snapshot.
+    # Actual playback still resolves and revalidates independently on each request.
+    own_snapshot = not db.in_transaction
+    if own_snapshot:
+        db.execute("BEGIN")
+    try:
+        return _attach_navigation(db, cards, user_id, scope)
+    finally:
+        if own_snapshot:
+            db.rollback()
+
+
+def _attach_navigation(db, cards, user_id, scope):
+    from functools import lru_cache
+
+    @lru_cache(maxsize=1)
+    def publication():
+        try:
+            return qualified_publication(db)
+        except (ValueError, KeyError, TypeError, RecursionError):
+            return None
+
+    player_enabled = enabled()
     for card in cards:
         activity = db.execute(
             "SELECT * FROM web_playback_watch WHERE user_id=? AND library_id=? AND anilist_id=? AND season_number=? AND covered_seconds>0 ORDER BY last_played_at DESC,id DESC",
@@ -192,7 +205,7 @@ def attach_navigation(db, cards, *, user_id, library_scope=None):
         card["partial_playback"] = bool(partial) and card.get("watch_status") != "completed"
         if card["partial_playback"]:
             card["lifecycle"] = "in_progress"
-        if not enabled():
+        if not player_enabled:
             continue
         card.update(
             play_url=None,
@@ -203,7 +216,7 @@ def attach_navigation(db, cards, *, user_id, library_scope=None):
             monitor = _monitor(db, scope, card)
             if monitor is None or card.get("state") == "archived":
                 continue
-            candidates = _candidates(db, scope, monitor)
+            candidates = _candidates(db, scope, monitor, publication)
             card["episode_play_urls"] = {ep: _url(scope, monitor["id"], ep) for ep in candidates}
             episode = card.get("next_episode") or 1
             resumed = False

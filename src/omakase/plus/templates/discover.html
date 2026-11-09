@@ -5,7 +5,7 @@
 {% block page_intro %}<p class="page-intro">{% if discover_mode == 'add' %}Confirm the exact title and season, then check your options.{% else %}Your ratings, your taste, and a reason behind every pick.{% endif %}</p>{% endblock %}
 {% block page_actions %}{% if latest and latest.picks %}<a class="button button-primary" href="#recommendation-controls" data-open-details>Make a new menu</a>{% endif %}<a class="button button-secondary" href="/plus/search">Search titles</a>{% endblock %}
 {% block content %}
-{% if movies_enabled %}<nav class="movie-tabs" aria-label="Discover media"><a href="/plus/discover" aria-current="page">Anime</a><a href="/plus/discover/movies">Movies</a></nav>{% endif %}
+{% if movies_enabled %}<nav class="movie-tabs" aria-label="Discover media"><a href="/plus/discover">For You</a><a href="/plus/discover?mode=recommend" aria-current="page">AI menu</a><a href="/plus/discover/movies">Movies</a></nav>{% endif %}
 {% if discover_mode == 'add' %}<nav class="discover-mode-switch" aria-label="Discover mode">
   <a href="/plus/discover" {% if discover_mode == 'recommend' %}aria-current="page"{% endif %}>For you</a>
   <a href="/plus/discover?mode=add" {% if discover_mode == 'add' %}aria-current="page"{% endif %}>Find a specific anime</a>
@@ -29,7 +29,7 @@
       <summary><div><strong>A menu made for you</strong><small>Choose a mood. Let your taste lead the way.</small></div><span>Customize <span aria-hidden="true">+</span></span></summary>
     <section class="editorial-panel discover-control" aria-labelledby="discover-control-heading">
       <header class="panel-heading"><div><span class="section-index">Your next watch</span><h2 id="discover-control-heading">Make it personal</h2></div></header>
-      <form id="run-form" class="product-form" data-success-url="/plus/discover" data-active-job="{{ active_job_id or '' }}">
+      <form id="run-form" class="product-form" data-success-url="/plus/discover?mode=recommend" data-active-job="{{ active_job_id or '' }}">
         <fieldset class="lane-selector">
           <legend>Where should we look?</legend>
           {% for value, title, copy in [

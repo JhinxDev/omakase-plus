@@ -298,3 +298,18 @@ including at200% root text. The video remains absolutely sized underneath during
 setup, and initial timeline/transport layers stay hidden. Hiding the panel removes
 these conditional rules and restores the already-qualified video/controls layout;
 no renderer, watch sampling or playback JavaScript changes are involved.
+
+## For You recommendations
+
+For You uses artwork-first, horizontally scrollable shelves. Top Picks uses a
+larger portrait rail. Continue Watching uses local viewing evidence. Genres,
+liked-title matches, airing anime and films use bounded AniList candidates
+ranked with local history. Movies and TV use the optional Seerr connection.
+Source scores, library availability and personal viewing state use distinct
+labels. One disclosure holds anime watchlist, library and feedback actions.
+
+Render the page shell immediately. Standard shelves load independently of the
+AI menu, use static skeletons during loading, and show a separate unavailable
+state if their catalog cannot be reached. Ask for a menu opens the existing AI
+workflow. Shelves keep native scrolling, keyboard controls and reduced-motion
+behavior. Off-screen artwork loads lazily.

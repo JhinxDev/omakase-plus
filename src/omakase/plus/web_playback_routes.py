@@ -411,7 +411,7 @@ def create_player_router(
             "-hls_playlist_type",
             "event",
             "-hls_flags",
-            "independent_segments",
+            "independent_segments+temp_file",
             "-hls_list_size",
             "0",
             "-hls_base_url",

@@ -210,8 +210,8 @@
     }
   }
 
-  function setupFeedback() {
-    document.querySelectorAll(".btn-feedback").forEach((button) => {
+  function setupFeedback(root = document) {
+    root.querySelectorAll(".btn-feedback").forEach((button) => {
       button.addEventListener("click", async () => {
         const group = button.closest(".feedback-actions");
         if (!group) return;
@@ -253,8 +253,18 @@
             resultArea.setAttribute("role", "status");
             resultArea.textContent = confirmation;
           }
-          group.closest("article")?.remove();
-          if (!resultArea) showActionStatus(group, confirmation, "success");
+          const hub = group.closest(".discover-hub");
+          if (hub) {
+            const status = hub.querySelector("[data-hub-status]");
+            for (const card of hub.querySelectorAll("[data-hub-anime]")) {
+              if (card.dataset.hubAnime === group.dataset.mediaId) card.remove();
+            }
+            status.textContent = confirmation;
+            status.focus({ preventScroll: true });
+          } else {
+            group.closest("article")?.remove();
+            if (!resultArea) showActionStatus(group, confirmation, "success");
+          }
         } catch {
           clearButtonBusy(button);
           button.disabled = false;
@@ -344,8 +354,8 @@
     });
   }
 
-  function setupPlanButtons() {
-    document.querySelectorAll(".btn-plan").forEach((button) => {
+  function setupPlanButtons(root = document) {
+    root.querySelectorAll(".btn-plan").forEach((button) => {
       button.addEventListener("click", async () => {
         const original = button.textContent;
         const group = button.closest(".feedback-actions, .pick-actions");
@@ -382,8 +392,8 @@
     });
   }
 
-  function setupBusyForms() {
-    document.querySelectorAll("[data-busy-form]").forEach((form) => {
+  function setupBusyForms(root = document) {
+    root.querySelectorAll("[data-busy-form]").forEach((form) => {
       form.addEventListener("submit", (event) => {
         if (event.defaultPrevented) return;
         const button = form.querySelector("button[type='submit']");
@@ -407,12 +417,14 @@
     });
   }
 
-  function setupPosterFallbacks() {
-    document.querySelectorAll("[data-poster]").forEach((image) => {
-      image.addEventListener("error", () => {
+  function setupPosterFallbacks(root = document) {
+    root.querySelectorAll("[data-poster]").forEach((image) => {
+      const unavailable = () => {
         image.hidden = true;
         image.closest(".poster-frame")?.classList.add("poster-unavailable");
-      });
+      };
+      image.addEventListener("error", unavailable);
+      if (image.complete && !image.naturalWidth) unavailable();
     });
   }
 
@@ -513,6 +525,13 @@
     setupCompletedSelection();
     setupBulkChoices();
     setupLocalDateTimes();
+  });
+
+  document.addEventListener('omakase:rows-ready', event => {
+    setupFeedback(event.detail);
+    setupPlanButtons(event.detail);
+    setupBusyForms(event.detail);
+    setupPosterFallbacks(event.detail);
   });
 
   window.runRecs = runRecs;

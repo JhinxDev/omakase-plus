@@ -152,7 +152,7 @@ def test_preferences_and_controls_reach_pipeline_without_changing_list_account(c
         prefs = saved_preferences(db, _user_id(client))
     assert prefs["lane"] == "hidden_gems" and prefs["max_episodes"] == 13
     assert prefs["username"] == ""
-    page = client.get("/plus/discover")
+    page = client.get("/plus/discover?mode=recommend")
     assert 'value="13" selected' in page.text
     assert 'name="completed_only" checked' in page.text
     assert "A warm mystery" in page.text
@@ -185,7 +185,7 @@ def test_completed_run_survives_leaving_before_any_poll(client):
                 ).fetchone()[0]
                 == 1
             )
-        assert f'data-active-job="{job_id}"' in client.get("/plus/discover").text
+        assert f'data-active-job="{job_id}"' in client.get("/plus/discover?mode=recommend").text
         status = client.get(f"/plus/api/run/status/{job_id}").json()
         assert status["status"] == "ok"
         assert status["run_id"] is not None
@@ -219,7 +219,7 @@ def test_offline_codex_is_explicit_and_never_calls_paid_provider(client):
         assert response.status_code == 503
         assert "offline" in response.json()["detail"]
         pipeline.assert_not_called()
-    page = client.get("/plus/discover")
+    page = client.get("/plus/discover?mode=recommend")
     assert '<option value="codex" disabled' in page.text
 
 
@@ -306,7 +306,7 @@ def test_taste_editor_returns_to_discovery_and_refuses_open_redirect(client):
         follow_redirects=False,
     )
     assert response.headers["location"] == "/plus/discover"
-    assert "Patient storytelling" in client.get("/plus/discover").text
+    assert "Patient storytelling" in client.get("/plus/discover?mode=recommend").text
     response = client.post(
         "/plus/dashboard/profile",
         data={"profile": "Updated", "return_to": "https://example.invalid", "csrf_token": csrf},
@@ -319,3 +319,60 @@ def test_taste_editor_returns_to_discovery_and_refuses_open_redirect(client):
         ).status_code
         == 422
     )
+
+
+def test_for_you_shell_defers_catalog_and_ai_work(client):
+    _signup_and_login(client)
+    with (
+        patch("omakase.plus.routes.discover_view") as legacy_menu,
+        patch("omakase.plus.discover_hub.anime_catalog") as catalog,
+        patch("omakase.plus.routes.get_worker_status") as worker,
+    ):
+        page = client.get("/plus/discover")
+    assert page.status_code == 200
+    assert "Top Picks for You" in page.text
+    assert 'href="/plus/discover?mode=recommend">Ask for a menu' in page.text
+    assert 'data-hub-rows="anime"' in page.text
+    assert 'id="run-form"' not in page.text
+    legacy_menu.assert_not_called()
+    catalog.assert_not_called()
+    worker.assert_not_called()
+    for name in ("discover-hub.js", "discover-hub.css"):
+        assert client.get(f"/plus/static/{name}").status_code == 200
+
+
+def test_for_you_rows_apply_account_feedback_and_expose_catalog_sections(client):
+    from omakase.plus import discover_hub as hub
+
+    _signup_and_login(client)
+    with _connect_client_db(client) as db:
+        db.execute(
+            "INSERT INTO recommendation_feedback(user_id,source,media_id,title,feedback_type) "
+            "VALUES (?,'anilist',2,'Dismissed title','not_for_me')",
+            (_user_id(client),),
+        )
+        db.commit()
+    anime = (
+        hub._anime_card(1, "Current show", status="RELEASING") | {"genres": ("Drama",)},
+        hub._anime_card(2, "Dismissed title") | {"genres": ("Drama",)},
+        hub._anime_card(3, "Animated film", format="MOVIE") | {"genres": ("Adventure",)},
+    )
+    with patch.object(hub, "anime_catalog", return_value=anime):
+        response = client.get("/plus/discover/rows?kind=anime")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    assert "Currently Airing" in response.text
+    assert "Anime Movies for You" in response.text
+    assert "Dismissed title" not in response.text
+    assert "Add to library" in response.text
+    assert "Save to watchlist" in response.text
+    assert "Already watched" in response.text
+
+
+def test_library_builds_rich_projection_once(client):
+    from omakase.plus import routes
+
+    _signup_and_login(client)
+    with patch.object(routes, "library_titles", wraps=routes.library_titles) as build:
+        assert client.get("/plus/library").status_code == 200
+    build.assert_called_once()

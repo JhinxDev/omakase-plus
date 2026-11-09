@@ -1958,7 +1958,10 @@ class TestProductShell:
             assert ">Series</option>" in library
             assert ">Movies</option>" in library
             assert "No titles match these filters." in library
-            assert "<legend>Where should we look?</legend>" in client.get("/plus/discover").text
+            assert (
+                "<legend>Where should we look?</legend>"
+                in client.get("/plus/discover?mode=recommend").text
+            )
         finally:
             os.environ.pop("OMAKASE_PLUS_INVITE", None)
 
