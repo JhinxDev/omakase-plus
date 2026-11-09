@@ -105,6 +105,23 @@ of its highest watched episode, so those snapshots are labelled **Recorded**.
 Acquisition, delivery, ratings and bulk tracker imports do not create invented
 episode watch dates.
 
+## Remove a finished movie
+
+On a deployment with guarded movie removal enabled, open a watched movie and
+choose **Review removal**. Omakase checks that the exact copy came from your
+account's request and can be removed safely. The confirmation offers **Keep
+copy** or **Remove from Plex and Real-Debrid**. Shared, imported and externally
+managed copies are protected.
+
+To opt in for future completions, go to **Settings → Watch history** and change
+**Remove watched and rated movies**. The default is **Keep movies after
+watching**. Opting in acts when you newly mark an eligible movie watched and
+give it a rating. Your viewing history and score stay saved after removal.
+
+Check the movie's detail page for the result. Removal can wait for playback to
+finish or for Plex to update. After successful removal, Availability shows
+**Copy removed**.
+
 ## Account and profile
 
 Ordinary Google sign-in returns Home; linking/removing Google is under sign-in

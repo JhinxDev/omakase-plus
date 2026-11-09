@@ -80,6 +80,34 @@ def test_idle_availability_never_claims_an_active_check_or_changes_history(expir
         assert "Previous Plex verification" in html and 'datetime="2026-10-27T09:30:05Z"' in html
 
 
+@pytest.mark.parametrize("plex_present", [False, True])
+def test_removed_copy_only_offers_review_if_a_replacement_exists(plex_present):
+    templates = Path(__file__).resolve().parents[2] / "src/omakase/plus/templates"
+    env = Environment(loader=FileSystemLoader(templates), autoescape=select_autoescape())
+    card = present_movie(
+        dict(
+            imdb_id="tt3289956",
+            tmdb_id=397243,
+            title="Sample Film",
+            code="copy_removed",
+            plex_present=plex_present,
+            history=dict(status_source="manual", status="completed", rating=8.0),
+        )
+    )
+    html = env.get_template("movie_detail.html").render(
+        card=card,
+        csrf_token="fixture-csrf",
+        email="sample@example.test",
+        notice="saved",
+        cleanup_enabled=True,
+        cleanup_status=None,
+    )
+    assert ("Review removal" in html) is plex_present
+    assert ("Removed from Plex and Real-Debrid." in html) is not plex_present
+    assert "Your rating 8.0/10" in html and "Your viewing changes were saved." in html
+    assert 'id="movie-after-watch"' in html
+
+
 def test_specific_availability_failure_keeps_its_actionable_reason():
     env = Environment(
         loader=FileSystemLoader(Path(__file__).resolve().parents[2] / "src/omakase/plus/templates"),

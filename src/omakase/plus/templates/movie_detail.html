@@ -7,6 +7,9 @@
 {% set history = card.history or {} %}
 {% set status_known = history.status_source and history.status_source != 'none' %}
 {% set display = card.display %}
+{% if not cleanup_status and card.code == 'copy_removed' and not card.plex_present %}
+  {% set cleanup_status = 'removed' %}
+{% endif %}
 {% if notice == 'saved' and history.status != 'completed' %}<p class="product-notice" role="status">Your viewing changes were saved.</p>
 {% elif notice == 'updated' %}<p class="product-notice" role="status">Check finished. Review the current result below.</p>
 {% elif notice == 'request_updated' %}<p class="product-notice" role="status">Request checked. The reported state changed.</p>
