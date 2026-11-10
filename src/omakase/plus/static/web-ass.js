@@ -70,6 +70,12 @@ async function readBounded(url, maximum, kind, signal, deadline) {
   return result;
 }
 
+async function readScript(url, signal, deadline) {
+  const script = new TextDecoder('utf-8', {fatal: true}).decode(await readBounded(url, 8 * MiB, 'ass', signal, deadline));
+  if (!/^\s*\[Script Info\]/im.test(script) || !/^\s*\[Events\]/im.test(script)) throw new Error('Invalid ASS script.');
+  return script;
+}
+
 export class OmakaseASS {
   constructor({video, container, onError = () => {}}) {
     if (!video || !container) throw new Error('ASS needs video and overlay container.');
@@ -126,8 +132,7 @@ export class OmakaseASS {
         if (!Array.isArray(fonts) || fonts.length > 16 || !Number.isFinite(timeOffset)) throw new Error('Invalid ASS track configuration.');
         localURL(url);
         fonts.forEach(localURL);
-        const script = new TextDecoder('utf-8', {fatal: true}).decode(await readBounded(url, 8 * MiB, 'ass', abort.signal, deadline));
-        if (!/^\s*\[Script Info\]/im.test(script) || !/^\s*\[Events\]/im.test(script)) throw new Error('Invalid ASS script.');
+        const script = await readScript(url, abort.signal, deadline);
         // JASSUB lazy availableFonts loading can leave a paused first frame blank.
         // Admit the bundled fallback in the awaited initial-font set as well.
         const fallback = await readBounded(new URL('default.woff2', assets), MiB, 'font', abort.signal, deadline);
@@ -177,6 +182,15 @@ export class OmakaseASS {
     const result = this.serial.then(task, task);
     this.serial = result.catch(() => {});
     return result;
+  }
+
+  async replaceTrack(url, current) {
+    const renderer = this.renderer;
+    if (!renderer) return;
+    const script = await readScript(url, AbortSignal.timeout(8000), performance.now() + 8000);
+    if (this.renderer !== renderer || !current()) return;
+    await renderer.renderer.setTrack(script);
+    await this.repaint();
   }
 
   async repaint() {

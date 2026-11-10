@@ -224,21 +224,33 @@ def test_exact_anime_resume_uses_on_demand_stream_with_hls_fallback(
     )
 
 
-def test_subtitles_start_while_the_on_demand_manifest_is_preparing(setup, monkeypatch):
+def test_subtitles_publish_early_cues_while_the_full_track_is_still_preparing(setup, monkeypatch):
     app, _, sessions, _, _ = setup
     app.state.single_plex_part = True
     started = asyncio.Event()
+    stdout = None
+    header = b"[Script Info]\nTitle: synthetic\n[Events]\n"
+    early_cue = b"Dialogue: 0,0:00:02.00,0:00:05.00,Default,,0,0,0,,Early\n"
+    lead_cue = b"Dialogue: 0,0:00:16.00,0:00:19.00,Default,,0,0,0,,Lead\n"
+    late_cue = b"Dialogue: 0,0:01:02.00,0:01:05.00,Default,,0,0,0,,Late\n"
 
     async def complete():
         return 0
 
     async def extract(*command, **_options):
-        assert command[-2] == "ass"
-        Path(command[-1]).write_text("[Script Info]\nTitle: synthetic\n", encoding="utf-8")
+        nonlocal stdout
+        assert command[-5:] == ("-flush_packets", "1", "-f", "ass", "pipe:1")
+        stdout = asyncio.StreamReader()
         stderr = asyncio.StreamReader()
         stderr.feed_eof()
         started.set()
-        return SimpleNamespace(returncode=0, stderr=stderr, wait=complete)
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr=stderr, wait=complete)
+
+    async def feed(data, *, eof=False):
+        stdout.feed_data(data)
+        if eof:
+            stdout.feed_eof()
+        await asyncio.sleep(0)
 
     async def open_manifest(self, _position, authorize):
         await authorize()
@@ -251,7 +263,28 @@ def test_subtitles_start_while_the_on_demand_manifest_is_preparing(setup, monkey
         assert response.status_code == 201, response.text
         payload = response.json()
         assert payload["media_url"].endswith("/compatible.mpd")
-        assert payload["subtitle_url"].endswith("/subtitle.ass")
+        url = payload["subtitle_url"]
+        assert url.endswith("/subtitle.ass")
+        assert owner.head(url).status_code == 202
+        owner.portal.call(feed, header + early_cue + lead_cue[:20])
+        assert owner.head(url).status_code == 202
+        owner.portal.call(feed, lead_cue[20:] + late_cue[:20])
+        status = owner.head(url)
+        assert status.status_code == 200
+        assert status.headers["X-Omakase-Subtitle-Complete"] == "0"
+        assert status.content == b""
+        assert owner.get(url).content == header + early_cue + lead_cue
+        assert owner.head(url + "?complete=true").status_code == 202
+        assert client(app, sessions[2]).head(url).status_code == 404
+
+        async def finish():
+            await feed(late_cue[20:], eof=True)
+
+        owner.portal.call(finish)
+        full = owner.get(url + "?complete=true")
+        assert full.status_code == 200
+        assert full.headers["X-Omakase-Subtitle-Complete"] == "1"
+        assert full.content == header + early_cue + lead_cue + late_cue
         assert (
             owner.post(
                 f"/plus/api/playback/sessions/{payload['session_id']}/close", json={}

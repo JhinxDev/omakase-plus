@@ -62,6 +62,8 @@ _FORMAT_ERRORS = {
 }
 _STREAM_TIMEOUT = 10
 _SUBTITLE_LIMIT = 8 * 1024**2
+_SUBTITLE_LEAD_SECONDS = 15
+_ASS_DIALOGUE = re.compile(rb"(?m)^Dialogue: [^,]*,(\d+):(\d{2}):(\d{2}\.\d{2}),")
 
 
 def _failure(code, status, detail, *, source=None, retry_after=None):
@@ -391,6 +393,7 @@ def create_player_router(
         folder = item.pop("stream_dir", None)
         item.pop("stream_subtitle", None)
         item.pop("subtitle_track", None)
+        item.pop("subtitle_preview_bytes", None)
         if folder:
             shutil.rmtree(folder, ignore_errors=True)
 
@@ -607,15 +610,15 @@ def create_player_router(
             f"0:s:{index}",
             "-c",
             codec,
-            "-fs",
-            str(_SUBTITLE_LIMIT),
+            "-flush_packets",
+            "1",
             "-f",
             "ass",
-            str(subtitle),
+            "pipe:1",
         ]
         try:
             process = await asyncio.create_subprocess_exec(
-                *command, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+                *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
         except OSError:
             _LOG.warning("playback_worker phase=ass reason=subtitle_worker_unavailable")
@@ -624,9 +627,30 @@ def create_player_router(
         tail = bytearray()
         reader = asyncio.create_task(_stderr_tail(process, tail))
         try:
-            await asyncio.wait_for(process.wait(), 120)
+            async with asyncio.timeout(120):
+                size = 0
+                pending = b""
+                preview_until = item["subtitle_preview_until"]
+                with subtitle.open("wb", buffering=0) as script:
+                    while chunk := await process.stdout.read(65536):
+                        size += len(chunk)
+                        if size >= _SUBTITLE_LIMIT:
+                            return False
+                        script.write(chunk)
+                        if "subtitle_preview_bytes" not in item:
+                            lines, separator, pending = (pending + chunk).rpartition(b"\n")
+                            if separator:
+                                for cue in _ASS_DIALOGUE.finditer(lines):
+                                    hours, minutes, seconds = map(float, cue.groups())
+                                    if hours * 3600 + minutes * 60 + seconds >= preview_until:
+                                        item["subtitle_preview_bytes"] = size - len(pending)
+                                        break
+                await process.wait()
         except TimeoutError:
             _worker_diagnostics("ass", "subtitle_timeout", process, tail)
+            return False
+        except OSError:
+            _LOG.warning("playback_worker phase=ass reason=subtitle_output_unavailable")
             return False
         finally:
             if process.returncode is None:
@@ -634,6 +658,8 @@ def create_player_router(
                     process.kill()
                 except ProcessLookupError:
                     pass
+            # A cancelled or size-limited reader may leave the stdout pipe paused.
+            await process.stdout.read()
             await reader
             await process.wait()
         if (
@@ -1118,8 +1144,10 @@ def create_player_router(
                 state = store.create_session(
                     db, target=target, binding_digest=_binding(request), snapshot=_snapshot(source)
                 )
+            position = state["position_seconds"] if body.resume and not version_changed else 0
             item = {
                 "source": source,
+                "subtitle_preview_until": position + _SUBTITLE_LEAD_SECONDS,
                 "expires_at": state["expires_at"],
                 "artifact": None,
                 "reads": 0,
@@ -1139,7 +1167,6 @@ def create_player_router(
                 async def authorize():
                     current(db, request, user.id, sid)
 
-                position = state["position_seconds"] if body.resume and not version_changed else 0
                 try:
                     if fast_anime:
                         async with asyncio.timeout(5):
@@ -1515,14 +1542,31 @@ def create_player_router(
 
     @router.api_route("/api/playback/sessions/{sid}/subtitle.ass", methods=["GET", "HEAD"])
     async def stream_subtitle(
-        request: Request, sid: str, user=Depends(require_user), db=Depends(get_db)
+        request: Request,
+        sid: str,
+        complete: bool = False,
+        user=Depends(require_user),
+        db=Depends(get_db),
     ):
         current(db, request, user.id, sid)
         item = handles.get(sid)
         subtitle = item.get("stream_subtitle") if item else None
         task = item.get("subtitle_task") if item else None
+        media_type = "text/plain; charset=utf-8"
+        headers = HEADERS | {"Cache-Control": "private, no-store"}
         if task is not None and not task.done():
-            return Response(status_code=202, headers=HEADERS | {"Retry-After": "2"})
+            if complete or not (preview_bytes := item.get("subtitle_preview_bytes")):
+                return Response(status_code=202, headers=headers | {"Retry-After": "1"})
+            content = b""
+            if request.method == "GET":
+                with subtitle.open("rb") as script:
+                    content = script.read(preview_bytes)
+            return Response(
+                content,
+                media_type=media_type,
+                headers=headers
+                | {"X-Omakase-Subtitle-Complete": "0", "Content-Length": str(preview_bytes)},
+            )
         if task is not None and (
             task.cancelled() or task.exception() is not None or not task.result()
         ):
@@ -1531,8 +1575,8 @@ def create_player_router(
             raise HTTPException(404, "Subtitles unavailable")
         return FileResponse(
             subtitle,
-            media_type="text/plain; charset=utf-8",
-            headers=HEADERS | {"Cache-Control": "private, no-store"},
+            media_type=media_type,
+            headers=headers | {"X-Omakase-Subtitle-Complete": "1"},
         )
 
     return router

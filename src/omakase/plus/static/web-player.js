@@ -967,6 +967,36 @@
     captionTasks = task;
     return task;
   }
+  async function pollStreamSubtitles(url, current, maxDelay) {
+    const deadline = performance.now() + 130000;
+    let delay = 300;
+    while (current() && performance.now() < deadline) {
+      try {
+        const response = await fetch(url, {
+          method: 'HEAD', credentials: 'same-origin', cache: 'no-store',
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!current()) return null;
+        if (response.status === 200) return response;
+        if (![202, 429, 503].includes(response.status)) return null;
+      } catch { /* A timed-out status check can be retried. */ }
+      await new Promise(resolve => window.setTimeout(resolve, delay));
+      delay = Math.min(delay * 2, maxDelay);
+    }
+    return null;
+  }
+  async function finishStreamSubtitles(target, current) {
+    const complete = new URL(target.subtitle_url, window.location.origin);
+    complete.searchParams.set('complete', 'true');
+    if (!await pollStreamSubtitles(complete.href, current, 2000) || !ready) return;
+    const id = 'ass:' + target.subtitle_track.plex_stream_id;
+    const intent = captionIntent;
+    const selected = () => current() && captionIntent === intent && customTextId === id;
+    // Keep the current canvas and fonts. The full script includes the early cues.
+    captionTasks = captionTasks.catch(() => {}).then(async () => {
+      if (selected()) await captions?.replaceTrack(complete.href, selected);
+    }).catch(() => { /* Keep the early cues if the upgrade fails. */ });
+  }
   async function watchStreamSubtitles(target) {
     if (!target?.subtitle_url || !target.subtitle_track) return;
     const current = () => !leaving && !failed && session === target;
@@ -974,30 +1004,19 @@
     refreshBarControls();
     find('subtitle-unavailable').hidden = true;
     find('ass-status').textContent = 'Subtitles are still preparing.';
-    const deadline = performance.now() + 130000;
-    let delay = 750;
-    while (current() && performance.now() < deadline) {
-      try {
-        const response = await fetch(target.subtitle_url, {
-          method: 'HEAD', credentials: 'same-origin', cache: 'no-store',
-          signal: AbortSignal.timeout(5000),
-        });
-        if (!current()) return;
-        if (response.status === 200) {
-          subtitlePending = false;
-          target.subtitles = [{ ...target.subtitle_track, url: target.subtitle_url }];
-          if (ready) await prepareTracks();
-          return;
-        }
-        if (![202, 429, 503].includes(response.status)) break;
-      } catch { /* A timed-out status check can be retried. */ }
-      await new Promise(resolve => window.setTimeout(resolve, delay));
-      delay = Math.min(delay * 2, 5000);
-    }
-    if (current()) {
-      subtitlePending = false;
-      if (ready && !player.getTextTracks().length && subtitleOverride !== 'off') captionUnavailable();
-      else refreshBarControls();
+    const response = await pollStreamSubtitles(target.subtitle_url, current, 1000);
+    if (!current()) return;
+    subtitlePending = false;
+    if (response) {
+      target.subtitles = [{ ...target.subtitle_track, url: target.subtitle_url }];
+      if (ready) await prepareTracks();
+      if (response.headers.get('X-Omakase-Subtitle-Complete') === '0') {
+        void finishStreamSubtitles(target, current);
+      }
+    } else if (ready && !player.getTextTracks().length && subtitleOverride !== 'off') {
+      captionUnavailable();
+    } else {
+      refreshBarControls();
     }
   }
   function subtitlePolicy() {

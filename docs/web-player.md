@@ -11,7 +11,9 @@ ambiguous copies still use the external playback action.
 
 Choose Play or Resume to open the exact title in a black player with a loading
 indicator. Playback starts when the source and saved position are ready, with
-up to 2.5 extra seconds for enabled subtitles to catch up.
+up to 2.5 extra seconds for enabled subtitles to catch up. For styled subtitles,
+the player can show cues around your starting position while the rest of the track
+is still preparing.
 If your browser blocks autoplay, press Play in the player to continue.
 Subtitles start on for anime when a supported track is available. Under
 Playback options & credits, set the subtitle default for this browser to On for
