@@ -7,7 +7,17 @@
 {% block eyebrow %}Your private cinema{% endblock %}
 {% block page_title %}Watch{% endblock %}
 {% block page_intro %}{% endblock %}
-{% block page_actions %}<a class="web-player-back" href="{{ overview_url }}"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5m7 7-7-7 7-7"/></svg>Back to title</a>{% endblock %}
+{% block page_actions %}
+<a class="web-player-back" href="{{ overview_url }}"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5m7 7-7-7 7-7"/></svg>Back to title</a>
+{% if native_tv_test_enabled %}
+<form method="post" action="/plus/native-tv-test">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="watch_path" value="{{ request.url.path }}">
+  <input type="hidden" name="library_id" value="{{ library_id }}">
+  <button class="web-player-back" type="submit">Test on Apple TV</button>
+</form>
+{% endif %}
+{% endblock %}
 {% block content %}
 {% set episodic = episode_number > 0 %}
 {% set media = "episode" if episodic else "movie" %}

@@ -102,6 +102,7 @@ from omakase.plus.media_sync import reconcile_curator_blocked_assets, run_media_
 from omakase.plus.media_types import MediaRecheckIntent
 from omakase.plus.middleware import require_user
 from omakase.plus.movies_routes import create_movies_router
+from omakase.plus.native_tv_test import create_native_tv_test_router, native_tv_test_enabled
 from omakase.plus.notifications_routes import create_notifications_router
 from omakase.plus.oauth_flows import consume_oauth_flow, create_oauth_flow
 from omakase.plus.onboarding_routes import create_onboarding_router
@@ -1013,6 +1014,7 @@ def _product_context(request: Request, user, *, active_page: str) -> dict[str, o
         **getattr(request.state, "account_avatar", {}),
         "active_page": active_page,
         "csrf_token": _csrf_token(request),
+        "native_tv_test_enabled": native_tv_test_enabled(),
         "movies_enabled": os.getenv("OMAKASE_PLUS_PRIVATE", "").strip().casefold()
         in {"1", "true", "yes", "on"},
         "review_mode": os.getenv("OMAKASE_PLUS_REVIEW_MODE", "").strip().casefold()
@@ -1043,6 +1045,7 @@ router.include_router(create_language_router(templates, _product_context))
 router.include_router(create_history_artwork_router())
 router.include_router(create_onboarding_router(templates, _product_context))
 router.include_router(create_player_router(templates, _product_context))
+router.include_router(create_native_tv_test_router(templates, _product_context))
 
 
 @router.get("/", include_in_schema=False)

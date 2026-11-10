@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Test on Apple TV · Omakase Plus{% endblock %}
+{% block page_title %}Test on Apple TV{% endblock %}
+{% block content %}
+<section class="web-player-tools" aria-label="Apple TV test pass">
+  {% if code %}
+  <h2>{{ test_title }}</h2>
+  <p>In Omakase Plus TV, choose <strong>Test live Omakase</strong>. Copy this entire link into the app.</p>
+  <label for="apple-tv-test-link">One-time test link</label>
+  <input id="apple-tv-test-link" type="text" value="{{ server }}#{{ code }}" size="62" readonly spellcheck="false" autocomplete="off">
+  <p>The link expires after five minutes. It allows 20 minutes of playback for this title.</p>
+  <form method="post" action="/plus/native-tv-test/revoke">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Revoke Apple TV test access</button>
+  </form>
+  {% elif revoked %}
+  <p role="status">Apple TV test access revoked.</p>
+  {% else %}
+  <p role="alert">{{ error }}</p>
+  {% endif %}
+  <p><a href="/plus/library">Return to library</a></p>
+</section>
+{% endblock %}
