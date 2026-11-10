@@ -384,6 +384,7 @@
     return {
       ...playbackRateConfiguration(), addSeekBar: false, customContextMenu: false,
       contextMenuElements: [], enableKeyboardPlaybackControls: true,
+      alwaysShowVolumeBar: true,
       shortcuts: { picture_in_picture: '' },
       mediaSession: { allowAutoPiP: false, supportedActions: ['play', 'pause', 'seekbackward', 'seekforward', 'seekto'] },
       documentPictureInPicture: { enabled: false },
@@ -662,6 +663,30 @@
   const config = JSON.parse(document.getElementById('web-player-config').textContent);
   const video = find('video');
   const container = find('container');
+  let fullscreenPauseTimer;
+  function wakePausedFullscreen() {
+    window.clearTimeout(fullscreenPauseTimer);
+    container.removeAttribute('data-fullscreen-idle');
+    // Shaka already handles playing controls. Keep its paused behavior inline.
+    if (document.fullscreenElement !== container || !video.paused) return;
+    fullscreenPauseTimer = window.setTimeout(() => {
+      if (container.querySelector(':focus-visible, :is(.shaka-overflow-menu, .shaka-settings-menu):not(.shaka-hidden), .web-player-timeline :active')) return;
+      container.setAttribute('data-fullscreen-idle', '');
+    }, 3000);
+  }
+  document.addEventListener('fullscreenchange', wakePausedFullscreen);
+  document.addEventListener('keydown', wakePausedFullscreen);
+  for (const event of ['play', 'pause', 'ended']) video.addEventListener(event, wakePausedFullscreen);
+  container.addEventListener('pointermove', event => { if (event.pointerType !== 'touch') wakePausedFullscreen(); });
+  container.addEventListener('pointerup', event => { if (event.pointerType !== 'touch') wakePausedFullscreen(); });
+  container.addEventListener('focusout', wakePausedFullscreen);
+  container.addEventListener('touchend', event => {
+    if (container.hasAttribute('data-fullscreen-idle')) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+    wakePausedFullscreen();
+  }, { capture: true });
   const status = find('status');
   const saved = find('save');
   const start = find('start');
@@ -961,7 +986,7 @@
         if (response.status === 200) {
           subtitlePending = false;
           target.subtitles = [{ ...target.subtitle_track, url: target.subtitle_url }];
-          prepareTracks();
+          if (ready) await prepareTracks();
           return;
         }
         if (![202, 429, 503].includes(response.status)) break;
@@ -971,9 +996,12 @@
     }
     if (current()) {
       subtitlePending = false;
-      if (!player.getTextTracks().length && subtitleOverride !== 'off') captionUnavailable();
+      if (ready && !player.getTextTracks().length && subtitleOverride !== 'off') captionUnavailable();
       else refreshBarControls();
     }
+  }
+  function subtitlePolicy() {
+    return subtitleDefault.value === 'anime' ? (config.catalog_target ? 'auto' : 'always') : subtitleDefault.value;
   }
   function prepareTracks() {
     assTracks = styledSubtitleTracks(session.subtitles || []);
@@ -986,15 +1014,14 @@
       if (options.length) { const group = document.createElement('optgroup'); group.label = label; for (const option of options) group.appendChild(new Option(option.label, option.value)); selector.appendChild(group); }
     }
     find('subtitle-unavailable').hidden = !!(nativeTracks.length || assTracks.length);
-    const anime = !config.catalog_target;
-    const policy = subtitleDefault.value === 'anime' ? (anime ? 'always' : 'auto') : subtitleDefault.value;
+    const policy = subtitlePolicy();
     const initial = subtitleOverride ?? initialSubtitleValue(nativeTracks, assTracks, session.text_id, session.resume_version_changed, policy);
     refreshBarControls();
     if (initial === 'off' && !subtitleOverride && policy !== 'off' && !nativeTracks.length && !assTracks.length && session.subtitle_url) {
       selector.disabled = false;
       return;
     }
-    void changeCaption(initial);
+    return changeCaption(initial);
   }
   async function dispose() {
     ready = false;
@@ -1124,6 +1151,7 @@
       });
       const position = find('resume').checked && !session.resume_version_changed ? Math.max(0, Number(session.position_seconds) || 0) : 0;
       find('version-note').hidden = !session.resume_version_changed;
+      const subtitlePreparation = watchStreamSubtitles(session);
       video.preload = 'metadata';
       await player.load(media.href, position, session.media_type || undefined);
       if (failed || leaving) return;
@@ -1162,8 +1190,7 @@
         275,
       );
       ready = true;
-      prepareTracks();
-      if (session.subtitle_url) void watchStreamSubtitles(session);
+      const initialCaptions = prepareTracks();
       find('timeline').disabled = false;
       const currentSession = session;
       let pendingSeek = null;
@@ -1277,6 +1304,20 @@
       });
       restart.disabled = false;
       find('start-panel').hidden = true;
+      const policy = subtitlePolicy();
+      if ((subtitlePending || (captionLoading && (assTracks.length || player.getTextTracks().length))) &&
+          (policy === 'always' || (policy === 'auto' && session.text_id !== 'off'))) {
+        setLoading('Preparing subtitles…', true);
+        status.textContent = 'Preparing subtitles…';
+        let graceTimer;
+        try {
+          await Promise.race([
+            Promise.all([subtitlePreparation, initialCaptions]),
+            new Promise(resolve => { graceTimer = window.setTimeout(resolve, 2500); }),
+          ]);
+        } finally { window.clearTimeout(graceTimer); }
+        if (currentAttempt !== attempt || failed || leaving) return;
+      }
       status.textContent = session.source?.mode === 'direct' ? 'Ready to play · Direct stream' : 'Ready to play';
       capture('seek');
       periodic = window.setInterval(() => { if (!video.paused && !video.ended) capture('progress'); }, 5000);

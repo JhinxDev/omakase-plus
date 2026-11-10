@@ -388,7 +388,9 @@ def create_player_router(
         _stop_process(item.get("subtitle_process"))
         if task := item.get("subtitle_task"):
             task.cancel()
-        folder = item.get("stream_dir")
+        folder = item.pop("stream_dir", None)
+        item.pop("stream_subtitle", None)
+        item.pop("subtitle_track", None)
         if folder:
             shutil.rmtree(folder, ignore_errors=True)
 
@@ -500,10 +502,14 @@ def create_player_router(
                 if required > min(stream_cache_max_bytes - cached, free - 512 * 1024**2):
                     raise remux.RemuxError("stream_capacity")
             item["stream_budget"] = stream_budget(source)
-            folder = stream_cache_root / sid
-            folder.mkdir(mode=0o700)
+            folder = item.get("stream_dir")
+            if folder is None:
+                folder = stream_cache_root / sid
+                folder.mkdir(mode=0o700)
+                item["stream_dir"] = folder
         except OSError:
             raise remux.RemuxError("stream_cache_unavailable") from None
+        prepare_stream_subtitle(source, sid, item, codecs={"ass", "ssa"})
         base = ffmpeg_input(source)
         playlist = folder / "index.m3u8"
         command = base + [
@@ -534,7 +540,6 @@ def create_player_router(
                 *command, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
             )
         except OSError:
-            shutil.rmtree(folder, ignore_errors=True)
             raise remux.RemuxError("stream_worker_unavailable") from None
         item.update(
             streaming=True, stream_dir=folder, stream_playlist=playlist, stream_process=process
@@ -552,10 +557,9 @@ def create_player_router(
                 _worker_diagnostics("hls", "stream_start_timeout", process, tail)
                 raise remux.RemuxError("stream_start_timeout")
             await asyncio.sleep(0.1)
-        prepare_stream_subtitle(source, sid, item, codecs={"ass", "ssa"})
 
     def prepare_stream_subtitle(source, sid, item, *, codecs):
-        if not item["allow_subtitles"]:
+        if not item["allow_subtitles"] or "subtitle_task" in item:
             return
         subtitles = [track for track in source.streams if track.kind == "subtitle"]
         candidates = [
@@ -1130,6 +1134,7 @@ def create_player_router(
                 sid = state["session_id"]
                 compatible = compatibility.CompatibleStream(source, transport)
                 item["compatible_stream"] = compatible
+                prepare_stream_subtitle(source, sid, item, codecs={"ass", "ssa", "srt"})
 
                 async def authorize():
                     current(db, request, user.id, sid)
@@ -1144,13 +1149,11 @@ def create_player_router(
                 except (DeliveryError, TimeoutError):
                     if not fast_anime:
                         raise
-                    await stop_stream(item)
+                    await compatible.close()
+                    item.pop("compatible_stream")
                     _LOG.info("playback_start_fallback reason=on_demand_unavailable")
             if "compatible_stream" in item:
                 item["streaming"] = False
-                prepare_stream_subtitle(
-                    source, state["session_id"], item, codecs={"ass", "ssa", "srt"}
-                )
                 response = compatible_response(db, item, state)
             elif stream_mode:
                 await start_stream(source, state["session_id"], item)

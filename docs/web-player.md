@@ -10,7 +10,8 @@ ambiguous copies still use the external playback action.
 ## Viewing
 
 Choose Play or Resume to open the exact title in a black player with a loading
-indicator. Playback begins as soon as the source and saved position are ready.
+indicator. Playback starts when the source and saved position are ready, with
+up to 2.5 extra seconds for enabled subtitles to catch up.
 If your browser blocks autoplay, press Play in the player to continue.
 Subtitles start on for anime when a supported track is available. Under
 Playback options & credits, set the subtitle default for this browser to On for
@@ -18,7 +19,8 @@ anime, Always on, or Off by default. Use Subtitles in the gear menu to change
 the current playback. Stream info in the gear menu shows the resolution, frame
 rate, bitrate, format and dropped frames when the browser reports them.
 The player supplies seek, pause, volume, speed from 0.25× to 2×,
-audio selection and container fullscreen. A genuinely played partial episode can
+audio selection and container fullscreen. The fullscreen controls hide after
+inactivity and return on input. A genuinely played partial episode can
 appear in Continue watching without marking earlier episodes watched. Exact
 episode completion requires 85% server-accepted played coverage. Seeking alone,
 opening a page and paused pings do not complete an episode.
@@ -47,8 +49,8 @@ keeps the external action and does not retry or increase a limit automatically.
 Installations that enable `OMAKASE_PLAYBACK_STREAMING=true` use authenticated
 copy-only HLS for qualified MKV sources. A transient startup timeout gets one
 bounded retry. Preparation, source-access and codec failures have separate
-messages. Styled ASS extraction runs after video is ready. The subtitle menu
-shows preparation or unavailability without interrupting video playback. For
+messages. Styled ASS extraction starts alongside video preparation. If it takes
+longer than startup allows, the track turns on when it is ready. For
 movies, TV and anime films, the copy is opened in this mode only when the
 stream cache has room for the expected output.
 

@@ -93,6 +93,7 @@ const closeEnough = (actual, expected, tolerance = .05) => Math.abs(actual-expec
     // Process audio is muted; expose the independent volume value for native keys.
     await page.locator('video').evaluate(video=>{video.muted=false;video.volume=.5;});
     const volume = page.locator('input.shaka-volume-bar');await volume.focus();
+    assert((await volume.boundingBox()).width >= 99,'The desktop volume range keeps its full width without hover');
     for (const [key,expected] of [['Home',0],['End',1]]) {
       await volume.press(key);
       const state = await page.locator('video').evaluate(video=>({position:video.currentTime,volume:video.volume}));
@@ -107,6 +108,15 @@ const closeEnough = (actual, expected, tolerance = .05) => Math.abs(actual-expec
     for (let n=0;n<100&&!report.desktop.events.slice(beforeHome).some(event=>event.event==='seek'&&event.position<.1);n++) await page.waitForTimeout(25);
     assert(report.desktop.events.slice(beforeHome).some(event=>event.event==='seek'&&event.position<.1),'Control-only fixture cleanup waits for its actual Home acknowledgement');
     report.desktop.seekHomeEnd = true;
+    await page.getByRole('button',{name:'Full screen',exact:true}).click();
+    await page.waitForFunction(()=>document.fullscreenElement?.matches('[data-player-container]'));
+    assert(await page.locator('video').evaluate(video=>video.clientWidth===innerWidth&&video.clientHeight===innerHeight),'Fullscreen video fills the viewport');
+    await page.mouse.move(300,260);
+    await page.waitForFunction(()=>getComputedStyle(document.querySelector('.shaka-bottom-controls')).visibility==='hidden'&&getComputedStyle(document.querySelector('.web-player-timeline')).visibility==='hidden');
+    await page.mouse.move(340,260);
+    await page.getByRole('button',{name:'Exit full screen',exact:true}).click();
+    await page.waitForFunction(()=>document.fullscreenElement===null);
+    report.desktop.fullscreenIdle = true;
     await active.context.close();active = null;
 
     active = await pageFor('touch',{viewport:{width:390,height:844},hasTouch:true,isMobile:true});

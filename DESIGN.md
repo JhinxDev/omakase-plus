@@ -6,11 +6,12 @@ This source candidate records the maintained interface contract. Technical, crea
 
 The watch page follows the Geist/midnight/iris shell. A contain-fit 16:9 image
 sits above one compact transport row: Play, explicit Next, time, volume,
-fullscreen and gear. The reserved controls band is `52px + 3rem` (100px at the
-normal root size), independent of the original ASS canvas coordinates. Fullscreen
-uses the same band and container fullscreen. Controls retain 44px touch targets,
-an opaque midnight backing, visible keyboard focus and phone-safe widths. The
-actual video image, never a translated canvas, defines subtitle positioning.
+fullscreen and gear. Inline playback reserves `52px + 3rem` for the controls.
+Fullscreen uses the whole viewport for the video and places the controls over
+it. The timeline and transport row hide after inactivity and return on input.
+The desktop volume slider stays at its full width. Controls retain 44px touch
+targets, a midnight backing, visible keyboard focus and phone-safe widths.
+The video image defines subtitle positioning.
 
 The gear orders Quality, Audio, unified Subtitles and then Playback speed. Quality
 lists actual video variants and labels a sole copy Original with its measured

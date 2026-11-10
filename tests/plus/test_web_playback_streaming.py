@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -220,6 +222,42 @@ def test_exact_anime_resume_uses_on_demand_stream_with_hls_fallback(
         ).status_code
         == 204
     )
+
+
+def test_subtitles_start_while_the_on_demand_manifest_is_preparing(setup, monkeypatch):
+    app, _, sessions, _, _ = setup
+    app.state.single_plex_part = True
+    started = asyncio.Event()
+
+    async def complete():
+        return 0
+
+    async def extract(*command, **_options):
+        assert command[-2] == "ass"
+        Path(command[-1]).write_text("[Script Info]\nTitle: synthetic\n", encoding="utf-8")
+        stderr = asyncio.StreamReader()
+        stderr.feed_eof()
+        started.set()
+        return SimpleNamespace(returncode=0, stderr=stderr, wait=complete)
+
+    async def open_manifest(self, _position, authorize):
+        await authorize()
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", extract)
+    monkeypatch.setattr(CompatibleStream, "open", open_manifest)
+    with client(app, sessions[1]) as owner:
+        response = start_stream(owner)
+        assert response.status_code == 201, response.text
+        payload = response.json()
+        assert payload["media_url"].endswith("/compatible.mpd")
+        assert payload["subtitle_url"].endswith("/subtitle.ass")
+        assert (
+            owner.post(
+                f"/plus/api/playback/sessions/{payload['session_id']}/close", json={}
+            ).status_code
+            == 204
+        )
 
 
 def test_stream_playlist_segments_and_subtitles_are_authenticated(setup):

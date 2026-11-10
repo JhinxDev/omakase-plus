@@ -7,7 +7,11 @@
 /* Native fullscreen starts on the click; a brief opacity ease softens entry
    without moving the video, ASS canvas or control hitboxes. */
 @keyframes omakase-fullscreen-entry { from { opacity: .92; } to { opacity: 1; } }
-.web-player-stage:fullscreen { animation: omakase-fullscreen-entry 180ms cubic-bezier(.2, .8, .2, 1); }
+.web-player-stage:fullscreen {
+  --player-controls-band: 0px;
+  width: 100%; height: 100%; min-height: 0; padding: 0; border: 0; border-radius: 0; background: #000;
+  animation: omakase-fullscreen-entry 180ms cubic-bezier(.2, .8, .2, 1);
+}
 .web-player-start { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; background: radial-gradient(ellipse at 50% 100%, #25243c, #080d18 80%); z-index: 3; }
 .web-player [hidden] { display: none !important; }
 .web-player-eyebrow { color: #c5b8eb; font-size: .75rem; font-weight: 650; letter-spacing: .15em; }
@@ -45,6 +49,17 @@
 .web-player .shaka-scrim-container { background: none; }
 .web-player .shaka-controls-button-panel > * { opacity: 1; color: #f0edf8; }
 .web-player .shaka-controls-button-panel .shaka-spacer { min-width: 0; width: 0; padding: 0; flex: 1 1 0; }
+@media (min-width: 641px) {
+  .web-player .shaka-controls-button-panel > .shaka-volume-bar-container { width: 100px; flex: 0 0 100px; padding: 0; }
+}
+.web-player-stage:fullscreen[data-fullscreen-idle] { cursor: none; }
+.web-player-stage:fullscreen[data-fullscreen-idle] .shaka-bottom-controls,
+.web-player-stage:fullscreen[data-fullscreen-idle] > :is(.web-player-timeline, .web-player-skip),
+.web-player-stage:fullscreen .shaka-controls-container:not([shown]) .shaka-bottom-controls,
+.web-player-stage:fullscreen:not(:has(> .shaka-controls-container[shown])) > .web-player-skip,
+.web-player-stage:fullscreen:not(:has(> .shaka-controls-container[shown])) > .web-player-timeline:not(:has(input:is(:focus-visible, :active))) {
+  visibility: hidden;
+}
 /* The app button display rule must not expose Shaka's empty ad placeholder. */
 .web-player .shaka-controls-container .shaka-ad-info:empty { display: none; }
 .web-player .shaka-controls-container :focus-visible { outline: 3px solid var(--stream-accent, #c3b1ff); outline-offset: 2px; }
