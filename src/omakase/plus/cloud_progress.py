@@ -38,8 +38,12 @@ def get_position(db, user_id, file_key):
     position, duration = float(row[0]), float(row[1])
     if position <= 5 or position >= duration - 30:
         return None
-    return {"position_seconds": position, "duration_seconds": duration,
-            "label": clock(position), "updated_at": row[2]}
+    return {
+        "position_seconds": position,
+        "duration_seconds": duration,
+        "label": clock(position),
+        "updated_at": row[2],
+    }
 
 
 def positions(db, user_id, file_keys):

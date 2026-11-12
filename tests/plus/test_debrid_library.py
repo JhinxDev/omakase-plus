@@ -259,7 +259,11 @@ def test_first_segment_gets_a_cold_start_deadline():
     captured = []
     source = CloudSource("Test", "identity", "version", 10, "account", ORIGIN + "/video.m3u8")
     entry = CloudPass(
-        source, 1, "binding", "digest", 1000,
+        source,
+        1,
+        "binding",
+        "digest",
+        1000,
         b"#EXTM3U\n#EXT-X-ENDLIST\n",
         (ORIGIN + "/00000.ts", ORIGIN + "/00001.ts"),
     )
@@ -312,8 +316,10 @@ def test_first_segment_falls_back_to_the_next_segment_when_it_is_empty():
 
 def test_first_segment_retries_once_after_a_cold_provider_timeout():
     calls = {"count": 0}
-    playlist = (b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n"
-                b"#EXTINF:5,\n00000.ts\n#EXTINF:5,\n00001.ts\n#EXT-X-ENDLIST\n")
+    playlist = (
+        b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n"
+        b"#EXTINF:5,\n00000.ts\n#EXTINF:5,\n00001.ts\n#EXT-X-ENDLIST\n"
+    )
 
     def handler(request):
         if request.url.path == "/a/index.m3u8":
@@ -358,8 +364,10 @@ def test_recent_inventory_survives_a_transient_snapshot_failure():
 def test_prepare_races_variants_and_caches_the_first_segment():
     primary = ORIGIN + "/a/primary.m3u8"
     alt = ORIGIN + "/b/original.m3u8"
-    playlist = (b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n"
-                b"#EXTINF:5,\n00000.ts\n#EXT-X-ENDLIST\n")
+    playlist = (
+        b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n"
+        b"#EXTINF:5,\n00000.ts\n#EXT-X-ENDLIST\n"
+    )
 
     def handler(request):
         path = request.url.path
@@ -395,8 +403,7 @@ def test_cached_first_segment_is_served_without_upstream_reads():
         request = Request({"type": "http", "method": "GET", "headers": []})
         response = await streams.deliver(media, "00000.ts", request, lambda: None)
         assert response.body == b"\x47cached"
-        ranged = Request({"type": "http", "method": "GET",
-                          "headers": [(b"range", b"bytes=1-2")]})
+        ranged = Request({"type": "http", "method": "GET", "headers": [(b"range", b"bytes=1-2")]})
         partial = await streams.deliver(media, "00000.ts", ranged, lambda: None)
         assert partial.status_code == 206 and partial.body == b"ca"
         assert partial.headers["content-range"] == "bytes 1-2/7"
@@ -406,8 +413,10 @@ def test_cached_first_segment_is_served_without_upstream_reads():
 
 def test_prepare_can_return_before_the_first_segment_is_ready():
     calls = {"segment": 0}
-    playlist = (b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n"
-                b"#EXTINF:5,\n00000.ts\n#EXTINF:5,\n00001.ts\n#EXT-X-ENDLIST\n")
+    playlist = (
+        b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n"
+        b"#EXTINF:5,\n00000.ts\n#EXTINF:5,\n00001.ts\n#EXT-X-ENDLIST\n"
+    )
 
     def handler(request):
         if request.url.path.endswith(".m3u8"):
@@ -431,8 +440,10 @@ def test_prepare_can_return_before_the_first_segment_is_ready():
 def test_embedded_subtitles_are_served_as_hls_renditions():
     from omakase.plus.debrid_subs import SubtitleJob, SubtitleTrack
 
-    playlist = (b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n"
-                b"#EXTINF:5,\n00000.ts\n#EXTINF:5,\n00001.ts\n#EXT-X-ENDLIST\n")
+    playlist = (
+        b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n"
+        b"#EXTINF:5,\n00000.ts\n#EXTINF:5,\n00001.ts\n#EXT-X-ENDLIST\n"
+    )
     english = b"WEBVTT\n\n00:01.000 --> 00:02.000\nHello\n"
     french = b"WEBVTT\n\n00:01.000 --> 00:02.000\nBonjour\n"
     job = SubtitleJob("version")
@@ -457,21 +468,20 @@ def test_embedded_subtitles_are_served_as_hls_renditions():
         request = Request({"type": "http", "method": "GET", "headers": []})
         master = await streams.deliver(media, "index.m3u8", request, lambda: None)
         body = master.body.decode()
-        assert '#EXT-X-MEDIA:TYPE=SUBTITLES' in body
+        assert "#EXT-X-MEDIA:TYPE=SUBTITLES" in body
         assert 'NAME="English"' in body and 'NAME="French"' in body
         assert 'STREAM-INF:BANDWIDTH=8000000,SUBTITLES="subs"' in body
         assert body.rstrip().endswith("stream.m3u8")
         media_playlist = await streams.deliver(media, "stream.m3u8", request, lambda: None)
         assert media_playlist.body == playlist
-        subtitle_playlist = await streams.deliver(
-            media, "subtitles0.m3u8", request, lambda: None
-        )
+        subtitle_playlist = await streams.deliver(media, "subtitles0.m3u8", request, lambda: None)
         assert b"subtitles0.vtt" in subtitle_playlist.body
         vtt = await streams.deliver(media, "subtitles0.vtt", request, lambda: None)
         assert vtt.body == english
         assert vtt.headers["content-type"].startswith("text/vtt")
         head = await streams.deliver(
-            media, "subtitles0.vtt",
+            media,
+            "subtitles0.vtt",
             Request({"type": "http", "method": "HEAD", "headers": []}),
             lambda: None,
         )

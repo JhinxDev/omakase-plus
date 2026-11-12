@@ -41,8 +41,13 @@ def test_cloud_progress_round_trip_and_finished_clear(db):
     assert cloud_progress.positions(db, 2, ["t-torrent1-1"]) == {}
 
     cloud_progress.save_position(
-        db, user_id=1, file_key="t-torrent1-1", title="Film.mkv",
-        position=5390, duration=5400, now=1100,
+        db,
+        user_id=1,
+        file_key="t-torrent1-1",
+        title="Film.mkv",
+        position=5390,
+        duration=5400,
+        now=1100,
     )
     assert cloud_progress.get_position(db, 1, "t-torrent1-1") is None
     assert cloud_progress.positions(db, 1, ["t-torrent1-1"]) == {}
@@ -68,12 +73,22 @@ def test_cloud_progress_rejects_unknown_keys_and_bad_positions(db):
 
 def test_cloud_progress_never_reads_another_viewers_rows(db):
     cloud_progress.save_position(
-        db, user_id=1, file_key="d-download1", title="Mine.mp4",
-        position=300, duration=900, now=1000,
+        db,
+        user_id=1,
+        file_key="d-download1",
+        title="Mine.mp4",
+        position=300,
+        duration=900,
+        now=1000,
     )
     cloud_progress.save_position(
-        db, user_id=2, file_key="d-download1", title="Theirs.mp4",
-        position=600, duration=900, now=1000,
+        db,
+        user_id=2,
+        file_key="d-download1",
+        title="Theirs.mp4",
+        position=600,
+        duration=900,
+        now=1000,
     )
     assert cloud_progress.get_position(db, 1, "d-download1")["position_seconds"] == 300
     assert cloud_progress.get_position(db, 2, "d-download1")["position_seconds"] == 600

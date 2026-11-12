@@ -414,7 +414,9 @@ def test_web_cloud_player_keeps_provider_and_other_accounts_out(system, monkeypa
     assert redirect.status_code == 303
     assert "?play=1" in redirect.headers["location"]
     csrf_header = csrf_token(
-        Request({"type": "http", "headers": [(b"cookie", f"omakase_session={sessions[1]}".encode())]})
+        Request(
+            {"type": "http", "headers": [(b"cookie", f"omakase_session={sessions[1]}".encode())]}
+        )
     )
     session = owner.post(
         "/plus/api/playback/cloud-sessions",
@@ -452,14 +454,26 @@ def test_cloud_main_player_session_restores_saved_cloud_position(system, monkeyp
     owner, _ = browser(app, sessions[1])
     saved = owner.post(
         "/plus/api/cloud/progress",
-        data={"csrf_token": csrf_token(Request({"type": "http", "headers": [
-            (b"cookie", f"omakase_session={sessions[1]}".encode())]})),
-              "file_key": "d-download1", "title": "Existing.mp4",
-              "position": 42, "duration": 600},
+        data={
+            "csrf_token": csrf_token(
+                Request(
+                    {
+                        "type": "http",
+                        "headers": [(b"cookie", f"omakase_session={sessions[1]}".encode())],
+                    }
+                )
+            ),
+            "file_key": "d-download1",
+            "title": "Existing.mp4",
+            "position": 42,
+            "duration": 600,
+        },
     )
     assert saved.status_code == 200
     csrf = csrf_token(
-        Request({"type": "http", "headers": [(b"cookie", f"omakase_session={sessions[1]}".encode())]})
+        Request(
+            {"type": "http", "headers": [(b"cookie", f"omakase_session={sessions[1]}".encode())]}
+        )
     )
     session = owner.post(
         "/plus/api/playback/cloud-sessions",
@@ -526,8 +540,13 @@ def test_web_cloud_player_saves_and_resumes_progress(system, monkeypatch):
     assert '"start_immediately": true' in player.text
     bad = owner.post(
         "/plus/api/cloud/progress",
-        data={"csrf_token": csrf, "file_key": "not-a-file", "title": "x",
-              "position": 10, "duration": 100},
+        data={
+            "csrf_token": csrf,
+            "file_key": "not-a-file",
+            "title": "x",
+            "position": 10,
+            "duration": 100,
+        },
     )
     assert bad.status_code == 422
     missing_csrf = owner.post(
@@ -537,8 +556,13 @@ def test_web_cloud_player_saves_and_resumes_progress(system, monkeypatch):
     assert missing_csrf.status_code == 403
     finished = owner.post(
         "/plus/api/cloud/progress",
-        data={"csrf_token": csrf, "file_key": "d-download1", "title": "Existing.mp4",
-              "position": 595, "duration": 600},
+        data={
+            "csrf_token": csrf,
+            "file_key": "d-download1",
+            "title": "Existing.mp4",
+            "position": 595,
+            "duration": 600,
+        },
     )
     assert finished.status_code == 200 and finished.json()["position_seconds"] == 0
     assert "Resume 0:42" not in owner.get("/plus/cloud").text

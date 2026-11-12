@@ -1104,9 +1104,9 @@ def test_cloud_player_session_events_and_close_mirror_cloud_progress(setup):
     from omakase.plus import web_playback_store as store
 
     app, db, sessions, _, _ = setup
-    library_id = db.execute(
-        "SELECT library_id FROM personal_libraries WHERE user_id=1"
-    ).fetchone()[0]
+    library_id = db.execute("SELECT library_id FROM personal_libraries WHERE user_id=1").fetchone()[
+        0
+    ]
     target = store.ResolvedTarget(
         user_id=1,
         library_id=library_id,
@@ -1133,17 +1133,30 @@ def test_cloud_player_session_events_and_close_mirror_cloud_progress(setup):
     owner = client(app, sessions[1])
     event = owner.post(
         f"/plus/api/playback/sessions/{state['session_id']}/events",
-        json={"seq": 1, "position_seconds": 42, "playing": True,
-              "event": "progress", "playback_rate": 1},
+        json={
+            "seq": 1,
+            "position_seconds": 42,
+            "playing": True,
+            "event": "progress",
+            "playback_rate": 1,
+        },
     )
     assert event.status_code == 200, event.text
     assert cloud_progress.get_position(db, 1, "d-download1")["position_seconds"] == 42
     import time as _time
+
     _time.sleep(0.3)
     closed = owner.post(
         f"/plus/api/playback/sessions/{state['session_id']}/close",
-        json={"final_event": {"seq": 2, "position_seconds": 47, "playing": False,
-                              "event": "pause", "playback_rate": 1}},
+        json={
+            "final_event": {
+                "seq": 2,
+                "position_seconds": 47,
+                "playing": False,
+                "event": "pause",
+                "playback_rate": 1,
+            }
+        },
     )
     assert closed.status_code == 204, closed.text
     assert cloud_progress.get_position(db, 1, "d-download1")["position_seconds"] == 47

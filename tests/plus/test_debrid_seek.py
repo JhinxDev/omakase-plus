@@ -15,10 +15,7 @@ def test_segments_follow_keyframes_and_cover_duration():
     assert segments[0][0] == 0.0
     assert segments[-1][1] == 31.0
     assert all(end > start for start, end in segments)
-    assert all(
-        later[0] == earlier[1]
-        for earlier, later in zip(segments, segments[1:])
-    )
+    assert all(later[0] == earlier[1] for earlier, later in zip(segments, segments[1:]))
     assert all(6.0 <= end - start <= 7.5 for start, end in segments[:-1])
 
 
@@ -72,8 +69,10 @@ def test_seekable_plan_serves_accurate_playlist_and_segment(tmp_path):
 
 
 def test_failed_seek_index_falls_back_to_the_provider_playlist(tmp_path):
-    playlist = (b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n"
-                b"#EXTINF:5,\n00000.ts\n#EXT-X-ENDLIST\n")
+    playlist = (
+        b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n"
+        b"#EXTINF:5,\n00000.ts\n#EXT-X-ENDLIST\n"
+    )
 
     def no_call(request):
         raise AssertionError("fallback should not read upstream")

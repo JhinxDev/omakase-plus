@@ -162,7 +162,7 @@ def _master_playlist(entry, job=None):
                 f'LANGUAGE="{language}",DEFAULT={default},AUTOSELECT=YES,FORCED=NO,'
                 f'URI="subtitles{number}.m3u8"'
             )
-    stream = '#EXT-X-STREAM-INF:BANDWIDTH=8000000'
+    stream = "#EXT-X-STREAM-INF:BANDWIDTH=8000000"
     if job is not None:
         stream += ',SUBTITLES="subs"'
     lines.append(stream)
@@ -306,9 +306,7 @@ class DebridStreams:
         direct = getattr(source, "direct", "")
         if not direct:
             return None
-        return self.seek.start(
-            source.media_version, direct, source.duration, source.title
-        )
+        return self.seek.start(source.media_version, direct, source.duration, source.title)
 
     def _start_subtitles(self, source, media):
         direct = getattr(source, "direct", "")
@@ -348,10 +346,7 @@ class DebridStreams:
         subtitle_key = source.media_version if job is not None else ""
         seek_plan = self._start_seek(source)
         seek_key = source.media_version if seek_plan is not None else ""
-        medias = [
-            replace(media, subtitle_key=subtitle_key, seek_key=seek_key)
-            for media in medias
-        ]
+        medias = [replace(media, subtitle_key=subtitle_key, seek_key=seek_key) for media in medias]
         self.media_cache[cache_key] = (self.clock() + 300, medias[0])
         while len(self.media_cache) > 16:
             self.media_cache.popitem(last=False)
@@ -406,9 +401,7 @@ class DebridStreams:
             async with asyncio.timeout(25):
                 pending = set(tasks)
                 while pending:
-                    done, pending = await asyncio.wait(
-                        pending, return_when=asyncio.FIRST_COMPLETED
-                    )
+                    done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                     for task in done:
                         if task.cancelled():
                             continue

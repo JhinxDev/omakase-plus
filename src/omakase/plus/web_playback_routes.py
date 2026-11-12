@@ -239,6 +239,7 @@ class Close(BaseModel):
 def _binding(request):
     return hashlib.sha256(request.cookies.get("omakase_session", "").encode()).hexdigest()
 
+
 def _cloud_snapshot(db, sid, user_id):
     """Return the authorization snapshot for a Real-Debrid Cloud player session."""
     row = db.execute(

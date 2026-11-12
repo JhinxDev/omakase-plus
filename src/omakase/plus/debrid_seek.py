@@ -35,9 +35,7 @@ _CUE_POINT = 0xBB
 _CUE_TIME = 0xB3
 _CUE_TRACK_POSITIONS = 0xB7
 _CUE_TRACK = 0xF7
-_DIRECT = re.compile(
-    r"https://[a-z0-9-]+(?:\.[a-z0-9-]+)*\.real-debrid\.com/[^\s]{1,3000}"
-)
+_DIRECT = re.compile(r"https://[a-z0-9-]+(?:\.[a-z0-9-]+)*\.real-debrid\.com/[^\s]{1,3000}")
 _VIDEO_CODECS = {
     "V_MPEG4/ISO/AVC": "h264",
     "V_MPEGH/ISO/HEVC": "hevc",
@@ -350,11 +348,7 @@ class SeekStreams:
     def _trim(self, plan):
         try:
             files = sorted(
-                (
-                    path
-                    for path in plan.root.iterdir()
-                    if path.suffix in {".ts", ".m4s"}
-                ),
+                (path for path in plan.root.iterdir() if path.suffix in {".ts", ".m4s"}),
                 key=lambda path: path.stat().st_mtime,
             )
         except OSError:
@@ -491,14 +485,14 @@ def _split_boxes(data):
     position = 0
     init = bytearray()
     while position + 8 <= len(data):
-        size = int.from_bytes(data[position:position + 4], "big")
-        kind = data[position + 4:position + 8]
+        size = int.from_bytes(data[position : position + 4], "big")
+        kind = data[position + 4 : position + 8]
         if size == 1 and position + 16 <= len(data):
-            size = int.from_bytes(data[position + 8:position + 16], "big")
+            size = int.from_bytes(data[position + 8 : position + 16], "big")
         if size < 8 or position + size > len(data):
             break
         if kind in {b"ftyp", b"moov"}:
-            init.extend(data[position:position + size])
+            init.extend(data[position : position + size])
         else:
             break
         position += size
@@ -611,7 +605,9 @@ def _track_info(data, track_range):
         codec = ""
         if _CODEC_ID in fields:
             try:
-                codec = data[fields[_CODEC_ID][0][0]:fields[_CODEC_ID][0][1]].decode("ascii", "ignore")
+                codec = data[fields[_CODEC_ID][0][0] : fields[_CODEC_ID][0][1]].decode(
+                    "ascii", "ignore"
+                )
             except (IndexError, ValueError):
                 codec = ""
         if track_type == 1 and video_number is None:
