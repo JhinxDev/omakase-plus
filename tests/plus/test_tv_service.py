@@ -478,10 +478,10 @@ def test_distinct_observed_seasons_include_specials_without_completion_claim(db)
     svc = service(db, Native())
     run(svc.check(1, 42))
     db.execute(
-        "INSERT INTO tv_episodes SELECT user_id,tmdb_id,0,episode_number,metadata_json,watched,watch_source,plex_present,updated_at FROM tv_episodes WHERE season_number=1"
+        "INSERT INTO tv_episodes(user_id,tmdb_id,season_number,episode_number,metadata_json,watched,watch_source,plex_present,updated_at) SELECT user_id,tmdb_id,0,episode_number,metadata_json,watched,watch_source,plex_present,updated_at FROM tv_episodes WHERE season_number=1"
     )
     db.execute(
-        "INSERT INTO tv_episodes SELECT user_id,tmdb_id,2,episode_number,metadata_json,watched,watch_source,plex_present,updated_at FROM tv_episodes WHERE season_number=1"
+        "INSERT INTO tv_episodes(user_id,tmdb_id,season_number,episode_number,metadata_json,watched,watch_source,plex_present,updated_at) SELECT user_id,tmdb_id,2,episode_number,metadata_json,watched,watch_source,plex_present,updated_at FROM tv_episodes WHERE season_number=1"
     )
     card = svc.card(1, svc._raw(1, 42))
     assert card["plex_summary"] == "2 seasons + specials in Plex"

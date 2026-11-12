@@ -6,6 +6,16 @@ GitHub Release. The update-feed identity (`PRODUCT_VERSION` in
 `src/omakase/plus/update_service.py`) is a separate operator-facing build
 identifier; it does not replace the public release version.
 
+## 0.4.12 - 2026-11-12
+
+### Added
+
+- Apple TV playback now credits movie and TV completions at the same 85 percent
+  threshold as anime. Movie History, TV episode History and Continue Watching
+  ordering update on the server without a native rebuild.
+- Migration 056 records the Apple TV source detail on movie and TV history rows
+  while preserving existing Plex and manual values.
+
 ## 0.4.11 - 2026-11-12
 
 ### Fixed

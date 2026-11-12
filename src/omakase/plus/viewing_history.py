@@ -194,6 +194,8 @@ def _movies(db, user_id):
         if recorded is None:
             continue
         watched = _stamp(row["last_viewed_at"]) if row["status_source"] == "plex" else None
+        detail = row["status_source_detail"] or ""
+        apple_tv = detail == "apple_tv"
         result.append(
             {
                 "id": f"movie-{imdb_id}",
@@ -211,10 +213,12 @@ def _movies(db, user_id):
                 "watched_at": watched,
                 "watch_time_known": bool(watched),
                 "recorded_at": recorded,
-                "source_label": "Plex" if row["status_source"] == "plex" else "Manual",
-                "source_detail": "From Plex"
-                if row["status_source"] == "plex"
-                else "Added manually",
+                "source_label": "Apple TV"
+                if apple_tv
+                else ("Plex" if row["status_source"] == "plex" else "Manual"),
+                "source_detail": "From Apple TV"
+                if apple_tv
+                else ("From Plex" if row["status_source"] == "plex" else "Added manually"),
                 "status_label": "Completed",
                 "rating": row["rating"],
                 "time_label": "Watched"
@@ -254,9 +258,12 @@ def _television(db, user_id):
                 "episode_title": _title(episode.get("title")),
                 "season_number": row["season_number"],
                 "status_label": "Watched",
-                "source_detail": "Added manually"
-                if row["watch_source"] == "manual"
-                else "From Plex",
+                "source_label": "Apple TV"
+                if (row["watch_source_detail"] or "") == "apple_tv"
+                else ("Manual" if row["watch_source"] == "manual" else "Plex"),
+                "source_detail": "From Apple TV"
+                if (row["watch_source_detail"] or "") == "apple_tv"
+                else ("Added manually" if row["watch_source"] == "manual" else "From Plex"),
                 "rating": row["rating"],
                 "watched_at": None,
                 "watch_time_known": False,
@@ -292,9 +299,12 @@ def _television(db, user_id):
                 "watched_at": None,
                 "watch_time_known": False,
                 "recorded_at": stamp,
-                "source_detail": "Added manually"
-                if row["status_source"] == "manual"
-                else "From Plex",
+                "source_label": "Apple TV"
+                if (row["status_source_detail"] or "") == "apple_tv"
+                else ("Manual" if row["status_source"] == "manual" else "Plex"),
+                "source_detail": "From Apple TV"
+                if (row["status_source_detail"] or "") == "apple_tv"
+                else ("Added manually" if row["status_source"] == "manual" else "From Plex"),
                 "artwork_url": None,
                 "episode_artwork": True,
                 "series_artwork_url": f"/plus/tv/{tmdb}/artwork",

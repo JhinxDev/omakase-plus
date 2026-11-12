@@ -921,7 +921,7 @@ def test_catalog_plays_exact_personal_copy_and_saves_resume(setup, monkeypatch, 
     )
     for ep in (1, 2):
         db.execute(
-            "INSERT INTO tv_episodes VALUES(1,100,1,?,? ,0,'none',1,'now')",
+            "INSERT INTO tv_episodes(user_id,tmdb_id,season_number,episode_number,metadata_json,watched,watch_source,plex_present,updated_at) VALUES(1,100,1,?,?,0,'none',1,'now')",
             (ep, json.dumps({"overview": f"Episode {ep} description"})),
         )
     db.commit()

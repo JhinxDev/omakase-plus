@@ -338,7 +338,9 @@ def test_realdebrid_only_plays_named_titles_and_rechecks_removed_files(system, m
         "INSERT INTO tv_catalog VALUES(1,1,?,'fixture')",
         (json.dumps({"title": "Fixture Series", "in_collection": True}),),
     )
-    db.execute("INSERT INTO tv_episodes VALUES(1,1,1,2,'{}',0,'none',0,'fixture')")
+    db.execute(
+        "INSERT INTO tv_episodes(user_id,tmdb_id,season_number,episode_number,metadata_json,watched,watch_source,plex_present,updated_at) VALUES(1,1,1,2,'{}',0,'none',0,'fixture')"
+    )
     db.commit()
     owner, csrf = browser(app, sessions[1])
     device = TestClient(app, base_url=ORIGIN)
@@ -1005,7 +1007,9 @@ def test_shared_catalog_source_requires_the_viewers_own_plex_access(system, monk
             """INSERT INTO tv_catalog VALUES
                (1,42,'{"title":"Shared series","tmdb_id":42,"imdb_id":"tt7654321"}','fixture')"""
         )
-        db.execute("INSERT INTO tv_episodes VALUES(1,42,1,1,'{}',1,'manual',1,'fixture')")
+        db.execute(
+            "INSERT INTO tv_episodes(user_id,tmdb_id,season_number,episode_number,metadata_json,watched,watch_source,plex_present,updated_at) VALUES(1,42,1,1,'{}',1,'manual',1,'fixture')"
+        )
         db.execute(
             "INSERT INTO tv_plex_snapshots VALUES(1,42,?,'11',1,'fixture')",
             (hashlib.sha256((base + "\0" + owner_token).encode()).hexdigest(),),
@@ -1184,6 +1188,82 @@ def test_native_checkpoints_share_exact_resume_and_yield_to_newer_web_progress(s
     assert reopened.json()["position_seconds"] == 111
     assert native.post(LIBRARY_API + "/unlink").status_code == 200
     assert native.post(url, json=sample).status_code == 401
+
+
+def test_native_playback_credits_movie_and_tv_history(system):
+    _app, db, _sessions, _options = system
+    from omakase.plus.native_tv_test import _credit_native_watch
+    from omakase.plus.viewing_history import viewing_history
+
+    db.execute(
+        "INSERT INTO movie_catalog(user_id,imdb_id,tmdb_id,title,updated_at) "
+        "VALUES(1,'tt0000001',101,'Fixture movie','2026-01-01T00:00:00Z')"
+    )
+    db.execute(
+        "INSERT INTO tv_catalog(user_id,tmdb_id,metadata_json,updated_at) "
+        'VALUES(1,202,\'{"title":"Fixture show","in_collection":1}\','
+        "'2026-01-01T00:00:00Z')"
+    )
+    movie = SimpleNamespace(
+        flow_movie=True,
+        user_id=1,
+        library_id=personal_scope(db, 1).library_id,
+        domain="movie",
+        canonical_id="tt0000001",
+        season_number=0,
+        episode_number=0,
+        duration_seconds=1800,
+    )
+    grant = SimpleNamespace(target=movie, anime_monitor_id=None)
+    assert _credit_native_watch(db, grant, position=1700, observed_at=1000.0)
+    history = db.execute(
+        "SELECT status,status_source,status_source_detail,last_viewed_at "
+        "FROM movie_history WHERE user_id=1 AND imdb_id='tt0000001'"
+    ).fetchone()
+    assert history["status"] == "completed"
+    assert (history["status_source"], history["status_source_detail"]) == ("plex", "apple_tv")
+    assert history["last_viewed_at"] is not None
+
+    tv = SimpleNamespace(
+        flow_tv=True,
+        user_id=1,
+        library_id=personal_scope(db, 1).library_id,
+        domain="tv",
+        canonical_id="202",
+        season_number=1,
+        episode_number=1,
+        duration_seconds=1800,
+    )
+    tv_grant = SimpleNamespace(target=tv, anime_monitor_id=None)
+    assert _credit_native_watch(db, tv_grant, position=1700, observed_at=1001.0)
+    episode = db.execute(
+        "SELECT watched,watch_source,watch_source_detail FROM tv_episodes "
+        "WHERE user_id=1 AND tmdb_id=202 AND season_number=1 AND episode_number=1"
+    ).fetchone()
+    assert (episode["watched"], episode["watch_source"], episode["watch_source_detail"]) == (
+        1,
+        "plex",
+        "apple_tv",
+    )
+    series = db.execute(
+        "SELECT status,status_source,status_source_detail FROM tv_history "
+        "WHERE user_id=1 AND tmdb_id=202"
+    ).fetchone()
+    assert (series["status"], series["status_source"], series["status_source_detail"]) == (
+        "watching",
+        "plex",
+        "apple_tv",
+    )
+
+    cards = viewing_history(db, user_id=1, limit=10)["items"]
+    movie_card = next(card for card in cards if card["media_type"] == "movie")
+    tv_card = next(card for card in cards if card["media_type"] == "tv")
+    assert (movie_card["source_label"], movie_card["source_detail"]) == (
+        "Apple TV",
+        "From Apple TV",
+    )
+    assert tv_card["source_detail"] == "From Apple TV"
+    assert tv_card["episode"] == 1
 
 
 def test_native_playback_credits_anime_watch_and_continue_watching(system, monkeypatch):
