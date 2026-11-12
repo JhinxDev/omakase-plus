@@ -6,6 +6,23 @@ GitHub Release. The update-feed identity (`PRODUCT_VERSION` in
 `src/omakase/plus/update_service.py`) is a separate operator-facing build
 identifier; it does not replace the public release version.
 
+## 0.4.11 - 2026-11-12
+
+### Fixed
+
+- HEVC HLS master playlists now include deterministic video and audio
+  `CODECS` hints even when the local ffmpeg omits them, covering HDR, SDR,
+  muxed and alternate-audio variants.
+- Apple TV playback now credits anime progress at the same 85 percent
+  threshold as the web player. It updates the local watch entry, History and
+  Continue Watching order, and queues the AniList progress outbox.
+- Ruff formatting and the native TV environment reference are now clean in CI.
+
+### Changed
+
+- The README setup visual is rebuilt with the current Plex-optional,
+  Real-Debrid and Apple TV source choices, using the projects' real logos.
+
 ## 0.4.10 - 2026-11-12
 
 ### Added
