@@ -33,6 +33,7 @@ _COPY_AUDIO = frozenset({"aac", "ac3", "eac3"})
 _AUDIO = _COPY_AUDIO | {"flac", "opus", "dca", "dts", "truehd", "mp3"}
 _TEXT_SUBTITLES = frozenset({"srt", "subrip", "ass", "ssa", "webvtt", "mov_text"})
 _MASTER_LIMIT = 16 * 1024
+_BANDWIDTH = re.compile(rb"BANDWIDTH=[0-9]+")
 _VIDEO_VARIANT = re.compile(
     rb"(?m)^#EXT-X-STREAM-INF:[^\r\n]+(?=\r?\nmedia-(?:video|muxed)\.m3u8\r?$)"
 )
@@ -214,7 +215,7 @@ class NativeHLS:
             if variant is not None and video and not _CODECS.search(variant[0]):
                 label = (video + "," + _CODEC_TAGS.get(self.source.audio_codec, "")).rstrip(",")
                 attribute = b'CODECS="' + label.encode("ascii") + b'"'
-                tag = variant[0] + b"," + attribute
+                tag = _BANDWIDTH.sub(b"BANDWIDTH=20000000", variant[0]) + b"," + attribute
                 start = variant.start()
                 return playlist[:start] + tag + playlist[variant.end() :]
             return playlist
@@ -242,7 +243,7 @@ class NativeHLS:
             default_codec = _CODEC_TAGS.get(default_audio.codec, "")
             label = (video + "," + default_codec).rstrip(",")
             attribute = b'CODECS="' + label.encode("ascii") + b'"'
-            tag = variant[0] + b"," + attribute
+            tag = _BANDWIDTH.sub(b"BANDWIDTH=20000000", variant[0]) + b"," + attribute
             start = variant.start()
             playlist = playlist[:start] + tag + playlist[variant.end() :]
         return playlist
