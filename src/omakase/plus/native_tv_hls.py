@@ -36,6 +36,21 @@ _VIDEO_VARIANT = re.compile(
     rb"(?m)^#EXT-X-STREAM-INF:[^\r\n]+(?=\r?\nmedia-(?:video|muxed)\.m3u8\r?$)"
 )
 _VIDEO_RANGE = re.compile(rb"(?<=[,:])VIDEO-RANGE=[^,\r\n]+")
+_CODECS = re.compile(rb"(?<=[,:])CODECS=[^,\r\n]+")
+_AUDIO_LINE = re.compile(rb"(?m)^#EXT-X-MEDIA:TYPE=AUDIO[^\r\n]+")
+_CODEC_TAGS = {
+    "hevc": "hvc1.2.4.L153.B0",
+    "h264": "avc1.640028",
+    "eac3": "ec-3",
+    "ac3": "ac-3",
+    "aac": "mp4a.40.2",
+    "flac": "fLaC",
+    "opus": "opus",
+    "dts": "dtsc",
+    "dca": "dtsc",
+    "truehd": "mlpa",
+    "mp3": "mp4a.40.34",
+}
 
 
 def eligible(source):
@@ -140,6 +155,7 @@ class NativeHLS:
     def playlist_asset(self, name):
         if name == "index.m3u8" and (self.subtitles or self.video_range):
             playlist = captions.master(self.path(name), self.subtitles)
+            playlist = self._with_codecs(playlist)
             if self.video_range and (variant := _VIDEO_VARIANT.search(playlist)):
                 attribute = b"VIDEO-RANGE=" + self.video_range
                 tag, replaced = _VIDEO_RANGE.subn(attribute, variant[0], count=1)
@@ -187,6 +203,48 @@ class NativeHLS:
                     await asyncio.sleep(0.1)
         except TimeoutError:
             raise DeliveryError("Preparing this copy took too long.", 504) from None
+
+    def _with_codecs(self, playlist):
+        """Add deterministic CODECS hints when the local ffmpeg omits them."""
+        if not self.renditions:
+            lines = playlist.splitlines(keepends=True)
+            variant = _VIDEO_VARIANT.search(playlist)
+            video = _CODEC_TAGS.get(self.source.video_codec)
+            if variant is not None and video and not _CODECS.search(variant[0]):
+                label = (video + "," + _CODEC_TAGS.get(self.source.audio_codec, "")).rstrip(",")
+                attribute = b'CODECS="' + label.encode("ascii") + b'"'
+                tag = variant[0] + b"," + attribute
+                start = variant.start()
+                return playlist[:start] + tag + playlist[variant.end() :]
+            return playlist
+        lines = playlist.splitlines(keepends=True)
+        audio_index = 0
+        for number, line in enumerate(lines):
+            if not line.startswith(b"#EXT-X-MEDIA:TYPE=AUDIO"):
+                continue
+            track = self.audio[audio_index] if audio_index < len(self.audio) else None
+            audio_index += 1
+            codec = _CODEC_TAGS.get(track.codec) if track is not None else None
+            if codec and not _CODECS.search(line):
+                lines[number] = (
+                    line.rstrip(b"\r\n")
+                    + b',CODECS="'
+                    + codec.encode()
+                    + b'"'
+                    + line[len(line.rstrip(b"\r\n")) :]
+                )
+        playlist = b"".join(lines)
+        variant = _VIDEO_VARIANT.search(playlist)
+        video = _CODEC_TAGS.get(self.source.video_codec)
+        if variant is not None and video and not _CODECS.search(variant[0]):
+            default_audio = self.audio[0]
+            default_codec = _CODEC_TAGS.get(default_audio.codec, "")
+            label = (video + "," + default_codec).rstrip(",")
+            attribute = b'CODECS="' + label.encode("ascii") + b'"'
+            tag = variant[0] + b"," + attribute
+            start = variant.start()
+            playlist = playlist[:start] + tag + playlist[variant.end() :]
+        return playlist
 
     def _index_ready(self):
         index = self.folder / "index.m3u8"
