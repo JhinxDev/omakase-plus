@@ -1,3 +1,5 @@
+> This page covers the legacy Crunchyroll watch bridge. For the native tvOS app, see [Apple TV](../apple-tv.md).
+
 # Apple TV watch bridge
 
 ## Current decision
