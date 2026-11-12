@@ -21,6 +21,7 @@ from omakase.plus.web_playback_delivery import DeliveryError, open_part
 from omakase.plus.web_playback_source import PlexStream
 
 _MIB = 1024**2
+_GIB = 1024**3
 _VARIANT = r"(?:video|a[0-7])"
 _NAME = re.compile(
     rf"index\.m3u8|media-(?:{_VARIANT}|muxed)\.m3u8|"
@@ -59,7 +60,7 @@ def eligible(source):
         os.getenv("OMAKASE_NATIVE_TV_HLS") == "1"
         and source.container == "mkv"
         and source.video_codec in {"h264", "hevc"}
-        and 0 < source.part_size <= 1536 * _MIB
+        and 0 < source.part_size <= 8 * _GIB
         and 0 < source.duration_ms <= 14400000
         and sum(track.kind == "video" for track in source.streams) == 1
         and 1 <= len(audio) <= 8
