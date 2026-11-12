@@ -1,9 +1,10 @@
 import asyncio
+from pathlib import Path
 
 import httpx
 from starlette.requests import Request
 
-from omakase.plus.debrid_seek import SeekIndex, SeekPlan, _segments
+from omakase.plus.debrid_seek import SeekIndex, SeekPlan, SeekStreams, _segments
 from omakase.plus.debrid_stream import DebridMedia, DebridStreams
 
 ORIGIN = "https://example.stream.real-debrid.com"
@@ -144,3 +145,36 @@ def test_seekable_hevc_plan_serves_fragmented_mp4(tmp_path):
         assert third.headers["content-type"] == "video/iso.segment"
 
     asyncio.run(run())
+
+
+def test_hevc_seek_generates_exact_h264_segments(tmp_path, monkeypatch):
+    import omakase.plus.debrid_seek as seek
+
+    calls = []
+
+    async def fake_ffmpeg(args):
+        calls.append(args)
+        Path(args[-1]).write_bytes(b"x" * 256)
+
+    monkeypatch.setattr(seek, "_run_ffmpeg", fake_ffmpeg)
+    index = SeekIndex(
+        url="https://chi9-4.download.real-debrid.com/x/y.mkv",
+        duration=12.0,
+        video_codec="hevc",
+        audio_codec="aac",
+        keyframes=(),
+        segments=((0.0, 6.0), (6.0, 12.0)),
+        container="ts",
+        transcode=True,
+    )
+    plan = SeekPlan(key="hevc", url=index.url, duration=12.0, root=tmp_path)
+    plan.index = index
+    plan.ready.set()
+    streams = SeekStreams(root=tmp_path)
+    asyncio.run(streams._generate(plan, 0))
+    assert calls
+    args = calls[0]
+    assert "libx264" in args and "ultrafast" in args
+    assert "-output_ts_offset" not in args
+    assert args[args.index("-ss") + 1] == "0.000"
+    assert (tmp_path / "00000.ts").read_bytes() == b"x" * 256

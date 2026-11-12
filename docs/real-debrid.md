@@ -32,8 +32,10 @@ with the same progress and resume behavior as the rest of the library.
 - Embedded text subtitles are extracted and exposed as HLS subtitle tracks with
   an always-on preference.
 - Long seeks on H.264 copies use a seekable timeline built from the file's own
-  keyframe index. HEVC titles currently use the provider transcode path while
-  HEVC fragment timing is corrected.
+  keyframe index.
+- HEVC copies use exact six-second H.264 seek segments generated from the direct
+  file. Far seeks work instead of erroring, with about eight seconds to prepare a
+  far segment and a 720p conversion for that window.
 - Titles that only carry image-based PGS subtitles do not have a text subtitle
   track yet.
 
