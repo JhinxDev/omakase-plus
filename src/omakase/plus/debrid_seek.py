@@ -303,6 +303,12 @@ class SeekStreams:
                     "160k",
                     "-threads",
                     "2",
+                    "-output_ts_offset",
+                    f"{start:.3f}",
+                    "-muxdelay",
+                    "0",
+                    "-muxpreload",
+                    "0",
                 ]
             )
         else:

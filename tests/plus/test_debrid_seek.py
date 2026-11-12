@@ -175,6 +175,7 @@ def test_hevc_seek_generates_exact_h264_segments(tmp_path, monkeypatch):
     assert calls
     args = calls[0]
     assert "libx264" in args and "ultrafast" in args
-    assert "-output_ts_offset" not in args
+    assert args[args.index("-output_ts_offset") + 1] == "0.000"
+    assert args[args.index("-muxdelay") + 1] == "0"
     assert args[args.index("-ss") + 1] == "0.000"
     assert (tmp_path / "00000.ts").read_bytes() == b"x" * 256

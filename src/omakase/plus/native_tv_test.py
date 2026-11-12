@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from omakase.plus import avatar, households
 from omakase.plus import native_tv_devices as devices
 from omakase.plus import web_playback_store as store
+from omakase.plus.anime_synopsis import cached_synopsis
 from omakase.plus.auth import authenticate_session
 from omakase.plus.connections import private_connections_enabled
 from omakase.plus.db import _connect
@@ -804,16 +805,31 @@ def create_native_tv_test_router(
             monitor = playback_monitor(db, scope, match[1])
             if not monitor or episode > 5000 or (episode == 0) != (monitor["format"] == "MOVIE"):
                 raise ValueError("Episode unavailable")
-            source = await resolve_anime(
-                db,
-                actor_user_id=scope.viewer_id,
-                library_id=scope.library_id,
-                anilist_id=monitor["anilist_id"],
-                season_number=monitor["season_number"] or 0,
-                episode_number=episode,
-                media_version=None,
-                transport=transport,
-            )
+            episode_title = f"Episode {episode}"
+            summary = ""
+            try:
+                source = await resolve_anime(
+                    db,
+                    actor_user_id=scope.viewer_id,
+                    library_id=scope.library_id,
+                    anilist_id=monitor["anilist_id"],
+                    season_number=monitor["season_number"] or 0,
+                    episode_number=episode,
+                    media_version=None,
+                    transport=transport,
+                )
+            except Exception:
+                # A Real-Debrid-only episode may not have a Plex copy. Keep the
+                # details panel useful with the series synopsis instead of 404.
+                source = None
+            if source is not None:
+                episode_title = getattr(source, "episode_name", "") or episode_title
+                summary = getattr(source, "episode_summary", "") or ""
+            if not summary and monitor["anilist_id"]:
+                try:
+                    summary = cached_synopsis(db, monitor["anilist_id"])["description"]
+                except Exception:
+                    summary = ""
             artwork = (
                 f"episode-artwork/anime/{match[1]}/{monitor['season_number']}/{episode}"
                 if monitor["season_number"] and episode
@@ -821,10 +837,10 @@ def create_native_tv_test_router(
             )
             return {
                 "title": monitor["title"],
-                "episode_title": getattr(source, "episode_name", "") or f"Episode {episode}",
-                "episode_number": episode,
-                "note": f"Episode {episode}",
-                "summary": getattr(source, "episode_summary", "") or "",
+                "episode_title": episode_title,
+                "episode_number": episode or None,
+                "note": f"Episode {episode}" if episode else "",
+                "summary": summary,
                 "artwork": artwork,
             }
         if match := MOVIE.fullmatch(path):
