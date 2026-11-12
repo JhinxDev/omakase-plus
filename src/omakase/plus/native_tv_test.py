@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import re
 import secrets
@@ -110,6 +111,7 @@ LIBRARY_TTL = 3600
 LIBRARY_MEDIA_TTL = 43200
 NO_STORE = {"Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer"}
 ANIME = re.compile(r"/plus/watch/([1-9][0-9]{0,17})/([0-9]{1,4})")
+_LOG = logging.getLogger(__name__)
 MOVIE = re.compile(r"/plus/watch/title/movie/(tt[0-9]{7,10})")
 TV = re.compile(r"/plus/watch/title/tv/([1-9][0-9]{0,9})/([0-9]{1,3})/([1-9][0-9]{0,3})")
 CLOUD = "/plus/watch/cloud/"
@@ -198,6 +200,45 @@ class TestPass:
     resume_receipt: tuple[int, float, float] | None = None
     resume_last_save: float | None = None
     resume_barrier: int = 0
+    watch_credited: bool = False
+
+
+def _credit_native_watch(db, grant, *, position, observed_at):
+    """Project an Apple TV completion into the durable personal watch record."""
+    target = grant.target
+    if target.domain != "anime" or grant.anime_monitor_id is None:
+        return None
+    duration = target.duration_seconds
+    if duration <= 0:
+        return None
+    fraction = min(1.0, max(0.0, position / duration))
+    if fraction < 0.85:
+        return None
+    from omakase.plus.watch.models import WatchEvent
+    from omakase.plus.watch.service import WatchServiceError, ingest_watch_event
+
+    stamp = datetime.fromtimestamp(observed_at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    event = WatchEvent.progress(
+        source="apple_tv",
+        episode=target.episode_number,
+        event_key=(
+            f"native-tv:{target.user_id}:{target.canonical_id}:"
+            f"{target.season_number}:{target.episode_number}"
+        ),
+        playback_fraction=fraction,
+        confidence="exact",
+    )
+    try:
+        return ingest_watch_event(
+            db,
+            user_id=target.user_id,
+            monitor_id=grant.anime_monitor_id,
+            event=event,
+            observed_at=stamp,
+        )
+    except WatchServiceError:
+        _LOG.warning("native watch credit rejected", exc_info=True)
+        return None
 
 
 def _playback_languages(grant):
@@ -1619,6 +1660,24 @@ def create_native_tv_test_router(
         grant.resume_cursor = (saved["revision"], saved["updated_at"])
         grant.resume_receipt = (body.seq, body.position_seconds, saved["updated_at"])
         grant.resume_last_save = now
+        if not grant.watch_credited:
+            credited = _credit_native_watch(
+                db, grant, position=body.position_seconds, observed_at=saved["updated_at"]
+            )
+            if credited is not None:
+                grant.watch_credited = True
+                if (
+                    credited.outbox_id is not None
+                    and os.getenv("OMAKASE_PLUS_REVIEW_MODE", "").lower() != "true"
+                ):
+                    from omakase.plus.watch.anilist_sync import process_tracker_outbox
+
+                    try:
+                        await asyncio.to_thread(
+                            process_tracker_outbox, db, outbox_id=credited.outbox_id
+                        )
+                    except Exception:
+                        _LOG.warning("Apple TV tracker sync failed", exc_info=True)
         duration = grant.target.duration_seconds
         if duration and body.position_seconds >= max(duration - 300, duration * 0.9):
             schedule_preload(key, grant)

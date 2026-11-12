@@ -27,6 +27,9 @@ identifier; it does not replace the public release version.
 - A looping loading animation after roughly ten seconds of waiting, an
   icon-only spinning Refresh control, and Back returning to the series page
   before the shelf.
+- Apple TV playback now credits anime progress at the same 85 percent
+  completion threshold as the web player, updates History and Continue
+  Watching order, and queues the AniList progress sync.
 
 ### Changed
 

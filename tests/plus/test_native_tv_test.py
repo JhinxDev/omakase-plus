@@ -1186,6 +1186,64 @@ def test_native_checkpoints_share_exact_resume_and_yield_to_newer_web_progress(s
     assert native.post(url, json=sample).status_code == 401
 
 
+def test_native_playback_credits_anime_watch_and_continue_watching(system, monkeypatch):
+    app, db, sessions, options = system
+    monkeypatch.setenv("OMAKASE_NATIVE_TV_LIBRARY", "1")
+    monkeypatch.setenv("OMAKASE_PLUS_REVIEW_MODE", "true")
+    owner, csrf = browser(app, sessions[1])
+    native = TestClient(app, base_url=ORIGIN)
+    pairing = native.post(LIBRARY_API + "/device").json()
+    reply = owner.post(
+        DEVICES_PAGE,
+        data={
+            "csrf_token": csrf,
+            "action": "approve",
+            "device_code": pairing["user_code"],
+        },
+    )
+    assert "Apple TV connected" in reply.text
+    native.headers["Authorization"] = "Bearer " + pairing["device_token"]
+    playback = native.post(LIBRARY_API + "/play", json={"watch_path": "/plus/watch/1/1"})
+    assert playback.status_code == 200, playback.text
+    media = playback.json()
+    resume_url = f"{LIBRARY_API}/media/{media['media_id']}/resume"
+    early = native.post(resume_url, json={"seq": 1, "position_seconds": 700})
+    assert early.status_code == 200, early.text
+    assert db.execute("SELECT count(*) FROM watch_entries").fetchone()[0] == 0
+    assert db.execute("SELECT count(*) FROM watch_events").fetchone()[0] == 0
+    options.now += 1
+    saved = native.post(resume_url, json={"seq": 2, "position_seconds": 1740})
+    assert saved.status_code == 200, saved.text
+    entry = db.execute(
+        "SELECT status,progress_episodes,last_source FROM watch_entries WHERE user_id=1"
+    ).fetchone()
+    assert entry is not None
+    assert (entry["status"], entry["progress_episodes"], entry["last_source"]) == (
+        "watching",
+        1,
+        "apple_tv",
+    )
+    event = db.execute("SELECT source,episode,kind FROM watch_events WHERE user_id=1").fetchone()
+    assert event is not None and (event["source"], event["episode"], event["kind"]) == (
+        "apple_tv",
+        1,
+        "progress",
+    )
+    outbox = db.execute(
+        "SELECT action,progress_episodes,sync_state FROM tracker_sync_outbox WHERE user_id=1"
+    ).fetchone()
+    assert outbox is not None
+    assert (outbox["action"], outbox["progress_episodes"]) == ("progress", 1)
+    from omakase.plus.product_views import home_view
+    from omakase.plus.viewing_history import viewing_history
+
+    cards = home_view(db, user_id=1)["continue_watching"]
+    assert cards and cards[0]["id"] == 1
+    history = viewing_history(db, user_id=1, limit=10)["items"]
+    assert history and history[0]["source_label"] == "Apple TV"
+    assert history[0]["episode"] == 1 and history[0]["watched_at"] is not None
+
+
 def test_native_next_preserves_current_pass_when_successor_preparation_fails(system, monkeypatch):
     app, db, sessions, options = system
     monkeypatch.setenv("OMAKASE_NATIVE_TV_LIBRARY", "1")
