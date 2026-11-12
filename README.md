@@ -33,6 +33,8 @@ branding retain their owners' rights; see [third-party notices](THIRD-PARTY-NOTI
   Cloud file browsing, resume progress and optional Plex or Auto modes.
 - Native Apple TV app with one-time device pairing, shelves, title details,
   resume sync, a next-episode control, subtitle tracks and always-on subtitles.
+- Native Apple TV playback credits anime progress, History and Continue Watching
+  at 85 percent completion and queues the AniList progress update.
 - Embedded text subtitle extraction with a player subtitle picker and an
   always-on preference; image-based PGS subtitles remain a tracked limitation.
 - Fast warm starts, next-episode preload and seekable H.264 playback built from

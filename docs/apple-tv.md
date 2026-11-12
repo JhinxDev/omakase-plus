@@ -13,6 +13,9 @@ connected Real-Debrid account.
   next-episode control.
 - Remember playback progress on the server, so a title resumes on the web, the
   Apple TV or another linked device.
+- Finishing an episode credits the anime progress, History and Continue Watching
+  order at the same 85 percent threshold as the web player, and queues the
+  AniList sync through the durable tracker outbox.
 - Show embedded text subtitles as player subtitle tracks, with English selected
   automatically and an always-on subtitle preference in Settings.
 - Preload the next episode when the current one is near its end so Next starts
