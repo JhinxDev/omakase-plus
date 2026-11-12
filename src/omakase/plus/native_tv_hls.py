@@ -153,7 +153,7 @@ class NativeHLS:
         return self.folder / name
 
     def playlist_asset(self, name):
-        if name == "index.m3u8" and (self.subtitles or self.video_range):
+        if name == "index.m3u8" and (self.subtitles or self.video_range or self.video_playlist):
             playlist = captions.master(self.path(name), self.subtitles)
             playlist = self._with_codecs(playlist)
             if self.video_range and (variant := _VIDEO_VARIANT.search(playlist)):
