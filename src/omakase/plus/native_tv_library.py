@@ -239,7 +239,7 @@ def collection(
     elif kind == "movie":
         rows = db.execute(
             """SELECT c.imdb_id,c.title,c.year,c.poster_url,c.backdrop_url,c.overview,
-                      h.status AS watch_status,
+                      h.status AS watch_status,h.updated_at AS watch_updated_at,
                       CASE WHEN q.code='copy_removed' AND NOT EXISTS (
                         SELECT 1 FROM movie_verifications v
                         WHERE v.user_id=c.user_id AND v.imdb_id=c.imdb_id
@@ -283,9 +283,13 @@ def collection(
             for row in rows
             if personal_legacy_visible(db, scope, domain="movie", canonical_id=row["imdb_id"])
         ]
+        activity = {str(row["imdb_id"]): row["watch_updated_at"] or "" for row in rows}
+        for entry in entries:
+            entry["_activity"] = activity.get(str(entry["id"]), "")
     else:
         rows = db.execute(
-            """SELECT c.tmdb_id,c.metadata_json,h.status AS watch_status
+            """SELECT c.tmdb_id,c.metadata_json,h.status AS watch_status,
+                      h.updated_at AS watch_updated_at
                FROM tv_catalog c LEFT JOIN tv_history h USING(user_id,tmdb_id)
                WHERE c.user_id=? AND json_extract(c.metadata_json,'$.in_collection')=1
                ORDER BY json_extract(c.metadata_json,'$.title') COLLATE NOCASE,c.tmdb_id""",
@@ -295,17 +299,17 @@ def collection(
         for row in rows:
             if personal_legacy_visible(db, scope, domain="tv", canonical_id=str(row["tmdb_id"])):
                 metadata = json.loads(row["metadata_json"])
-                entries.append(
-                    _entry(
-                        row["tmdb_id"],
-                        metadata["title"],
-                        note=metadata.get("year") or "",
-                        poster_url=_tmdb_image(metadata.get("poster_url")),
-                        backdrop_url=_tmdb_image(metadata.get("backdrop_url")),
-                        summary=(metadata.get("overview") or "")[:650],
-                        watching=row["watch_status"] == "watching",
-                    )
+                entry = _entry(
+                    row["tmdb_id"],
+                    metadata["title"],
+                    note=metadata.get("year") or "",
+                    poster_url=_tmdb_image(metadata.get("poster_url")),
+                    backdrop_url=_tmdb_image(metadata.get("backdrop_url")),
+                    summary=(metadata.get("overview") or "")[:650],
+                    watching=row["watch_status"] == "watching",
                 )
+                entry["_activity"] = row["watch_updated_at"] or ""
+                entries.append(entry)
     if query:
         entries = [entry for entry in entries if query.casefold() in entry["title"].casefold()]
     return _feature(db, scope, _page(entries, offset), entries, kind, offset, query)
@@ -313,7 +317,11 @@ def collection(
 
 def _feature(db, scope, response, entries, kind, offset, query):
     if not query and offset == 0:
-        continue_watching = [row for row in entries if row.get("watching")][:8]
+        continue_watching = [row for row in entries if row.get("watching")]
+        continue_watching.sort(key=lambda row: row.get("_activity") or "", reverse=True)
+        continue_watching = continue_watching[:8]
+        for row in entries:
+            row.pop("_activity", None)
         response["continue_watching"] = continue_watching
         featured = (
             next(
@@ -345,6 +353,9 @@ def _feature(db, scope, response, entries, kind, offset, query):
                     "summary": cached_synopsis(db, anilist)["description_preview"],
                 }
         response["featured"] = featured
+    else:
+        for row in entries:
+            row.pop("_activity", None)
     return response
 
 

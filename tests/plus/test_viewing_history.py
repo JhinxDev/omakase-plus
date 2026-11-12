@@ -240,11 +240,11 @@ def test_tv_history_is_owner_scoped_and_uses_observation_dates(db):
             (user, 42, json.dumps({"title": "A series"}), "2026-10-27T20:00:00Z"),
         )
         db.execute(
-            "INSERT INTO tv_episodes VALUES (?,?,?,?,?,1,'manual',1,?)",
+            "INSERT INTO tv_episodes(user_id,tmdb_id,season_number,episode_number,metadata_json,watched,watch_source,plex_present,updated_at) VALUES (?,?,?,?,?,1,'manual',1,?)",
             (user, 42, 2, 3, json.dumps({"title": "A chapter"}), "2026-10-27T20:00:00Z"),
         )
         db.execute(
-            "INSERT INTO tv_history VALUES (?,42,'completed',8,'manual','manual',?)",
+            "INSERT INTO tv_history(user_id,tmdb_id,status,rating,status_source,rating_source,updated_at) VALUES (?,42,'completed',8,'manual','manual',?)",
             (user, "2026-10-27T20:00:00Z"),
         )
     cards = [c for c in viewing_history(db, user_id=1)["items"] if c["media_type"] == "tv"]

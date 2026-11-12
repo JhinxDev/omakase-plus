@@ -62,7 +62,10 @@ def preview(media: Path, data_dir: str):
     connector = hashlib.sha256(b"https://fixture.invalid\0dummy-web").hexdigest()
     db.execute("INSERT INTO tv_plex_snapshots VALUES(1,100,?,'11',1,'now')", (connector,))
     for ep in (1, 2):
-        db.execute("INSERT INTO tv_episodes VALUES(1,100,1,?,'{}',0,'none',1,'now')", (ep,))
+        db.execute(
+            "INSERT INTO tv_episodes(user_id,tmdb_id,season_number,episode_number,metadata_json,watched,watch_source,plex_present,updated_at) VALUES(1,100,1,?,'{}',0,'none',1,'now')",
+            (ep,),
+        )
     db.commit()
     for key, value in {
         "plex_url": "https://fixture.invalid",

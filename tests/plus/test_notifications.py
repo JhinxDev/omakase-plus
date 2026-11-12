@@ -187,7 +187,7 @@ def test_tv_single_finished_season_does_not_imply_series_completion(db):
         (STAMP,),
     )
     db.execute(
-        "INSERT INTO tv_episodes VALUES(1,42,1,1,?,1,?,0,?)",
+        "INSERT INTO tv_episodes(user_id,tmdb_id,season_number,episode_number,metadata_json,watched,watch_source,plex_present,updated_at) VALUES(1,42,1,1,?,1,?,0,?)",
         (json.dumps({"air_date": "2020-01-01"}), "manual", STAMP),
     )
     db.commit()
