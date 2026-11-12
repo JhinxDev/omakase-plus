@@ -78,7 +78,13 @@ class SeekIndex:
     def playlist(self):
         fmp4 = self.container == "fmp4"
         lines = ["#EXTM3U", f"#EXT-X-VERSION:{7 if fmp4 else 3}"]
-        target = max(1, int(max(end - start for start, end in self.segments) + 0.999))
+        longest = max(end - start for start, end in self.segments)
+        target = max(1, int(longest + 0.999))
+        if self.transcode:
+            # A generated six-second H.264 segment can be a few frames longer
+            # than its nominal duration. HLS requires TARGETDURATION to be at
+            # least as long as every segment, or AVPlayer can reject the stream.
+            target = max(target, int(longest + 1.999))
         lines.extend(
             [
                 f"#EXT-X-TARGETDURATION:{target}",
