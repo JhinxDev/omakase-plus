@@ -37,6 +37,12 @@ plain BYOK/Lite deployment into the authenticated Plus product.
 | `OMAKASE_PLUS_QUALITY_PUBLICATION_QUALIFIED` | `false` | Operator qualification flag for optional quality publication. |
 | `OMAKASE_TRACKER_BRIDGE_WRITERS_READY` | `false` | Declares that the legacy tracker writers are ready for bridge operation. |
 | `OMAKASE_PLUS_APPLE_TV_WATCH_ENABLED` | `false` | Enables the optional Apple TV watch bridge. |
+| `OMAKASE_NATIVE_TV_TEST` | empty | `1` enables the opt-in native Apple TV playback test surface. It also requires a valid `OMAKASE_NATIVE_TV_ORIGIN`. |
+| `OMAKASE_NATIVE_TV_ORIGIN` | empty | Exact HTTPS origin for the native Apple TV client. Credentials, a path and a non-HTTPS scheme are rejected. |
+| `OMAKASE_NATIVE_TV_LIBRARY` | empty | `1` enables the linked native Apple TV library and device pairing API. |
+| `OMAKASE_NATIVE_TV_HLS` | empty | `1` enables native HLS streaming for qualified single-part Plex MKV sources. |
+| `OMAKASE_NATIVE_TV_PLEX_HLS` | empty | `1` enables the native Plex-compatible HLS path for qualified sources that need audio or container conversion. |
+| `OMAKASE_NATIVE_TV_INDEXED_CAPTIONS` | empty | `1` enables indexed SRT and subrip captions in the native compatible playback path. |
 | `OMAKASE_PLUS_PLEX_MANAGED_ROOT` | empty | Managed symlink root used by supported web playback; empty disables the managed source. |
 | `OMAKASE_PLAYBACK_CACHE_ROOT` | `/run/omakase-playback` | Dedicated bounded playback cache directory. Do not point it at originals, the database or general storage. |
 | `OMAKASE_PLAYBACK_STREAMING` | `false` | Enables MKV streaming and the Plex audio compatibility path for qualified films and TV episodes. |
