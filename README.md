@@ -91,9 +91,11 @@ console on the app origin.
 
 ## Choose your setup
 
-![Omakase Plus connections: discover through AniList, Seerr or your AI; organize search, watchlists, progress and ratings; optionally open Plex and connect media services](docs/images/connections-v2.png)
+![Omakase Plus setup: discover through AniList, Seerr or your AI; organize search, watchlists, progress and ratings; watch from Plex, Real-Debrid or the Apple TV app](docs/images/omakase-plus-setup-v3.png)
 
-Start with personal planning, then add the connections you use. Movie and TV catalog search requires Seerr; playback stays in optional Plex.
+*Third-party names and logos belong to their owners; see [third-party notices](THIRD-PARTY-NOTICES.md).*
+
+Start with personal planning, then add the connections you use. Movie and TV catalog search requires Seerr. Playback can use your existing Plex library, stream directly from Real-Debrid, or play on the native Apple TV app.
 
 | Setup | Start here | Separate administrator work |
 | --- | --- | --- |
