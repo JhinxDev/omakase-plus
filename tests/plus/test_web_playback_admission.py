@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from omakase.plus.web_playback_admission import Admission, Busy
@@ -55,6 +57,40 @@ def test_rate_and_map_backoff_take_priority_over_concurrency():
     assert other.active[("read",)] == 16 and len(other.rates) == 1024
     for release in releases:
         release()
+
+
+def test_hls_seek_reads_wait_for_old_audio_and_video_without_exceeding_read_limit():
+    async def run():
+        limits = Admission()
+        releases = [limits.acquire("read", 1, "playing") for _ in range(8)]
+        incoming = [
+            asyncio.create_task(limits.acquire_buffered_read(1, "playing")) for _ in range(2)
+        ]
+        await asyncio.sleep(0)
+        assert all(not task.done() for task in incoming)
+        assert limits.active[("read", 1, "playing")] == 8
+
+        releases.pop()()
+        releases.pop()()
+        current = await asyncio.gather(*incoming)
+        assert limits.active[("read", 1, "playing")] == 8
+        for release in releases + current:
+            release()
+        assert not limits.active
+
+    asyncio.run(run())
+
+
+def test_buffered_reads_still_enforce_configured_rate_limit_without_waiting():
+    async def run():
+        limits = Admission(clock=lambda: 0, read_rate_limit=360)
+        for _ in range(360):
+            (await limits.acquire_buffered_read(1, "playing"))()
+        with pytest.raises(Busy) as error:
+            await limits.acquire_buffered_read(1, "playing")
+        assert error.value.retry_after == 10
+
+    asyncio.run(run())
 
 
 def test_rate_window_expires_without_retaining_unbounded_viewers():

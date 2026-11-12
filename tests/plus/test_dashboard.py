@@ -2406,7 +2406,7 @@ class TestTitleRemovalRoutes:
             assert "Library actions" in dossier.text
             assert dossier.text.index(
                 f'href="/plus/library/{monitor_id}/remove"'
-            ) < dossier.text.index('<details class="title-technical-details">')
+            ) < dossier.text.index('<details class="title-technical-details"')
             assert "Type Solo Leveling to confirm" in confirmation.text
             assert "AniList" in confirmation.text
             assert "AniList will not change" in confirmation.text

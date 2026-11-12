@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import sqlite3
+from html import escape
 
 import httpx
 import pytest
@@ -68,9 +69,11 @@ def db(monkeypatch, tmp_path):
     )
     conn.commit()
     art._CACHE.clear()
+    art._SERIES_ROWS.clear()
     yield conn
     conn.close()
     art._CACHE.clear()
+    art._SERIES_ROWS.clear()
 
 
 def source(db, identity):
@@ -82,7 +85,17 @@ def source(db, identity):
     )
 
 
-def plex_transport(calls, *, thumb=None, season=1, episode=1, machine="machine-one", path=None):
+def plex_transport(
+    calls,
+    *,
+    thumb=None,
+    season=1,
+    episode=1,
+    machine="machine-one",
+    path=None,
+    summary="",
+    duration="",
+):
     def handler(request):
         calls.append(request)
         p = request.url.path
@@ -100,7 +113,7 @@ def plex_transport(calls, *, thumb=None, season=1, episode=1, machine="machine-o
                 part = (
                     path or f"/published/Anime/Exact Anime/Season 01/Exact Anime - S01E{n:02}.mkv"
                 )
-                rows += f'<Video type="episode" ratingKey="{101 + n}" grandparentRatingKey="100" parentRatingKey="101" parentIndex="{season}" index="{n if episode == 1 else episode}" thumb="{image}"><Media><Part file="{part}"/></Media></Video>'
+                rows += f'<Video type="episode" ratingKey="{101 + n}" grandparentRatingKey="100" parentRatingKey="101" parentIndex="{season}" index="{n if episode == 1 else episode}" title="Fixture episode {n}" summary="{escape(summary, quote=True)}" duration="{escape(duration, quote=True)}" thumb="{image}"><Media><Part file="{part}"/></Media></Video>'
             return httpx.Response(200, text=f'<MediaContainer size="2">{rows}</MediaContainer>')
         if p.startswith("/library/metadata/") and "/thumb/" in p:
             return httpx.Response(
@@ -111,6 +124,57 @@ def plex_transport(calls, *, thumb=None, season=1, episode=1, machine="machine-o
         raise AssertionError(f"Unexpected offline request {p}")
 
     return httpx.MockTransport(handler)
+
+
+def test_series_routes_use_owned_episode_identity_without_watch_history(db, monkeypatch):
+    monkeypatch.setattr(art, "_source", source)
+    db.execute("DELETE FROM watch_events")
+    db.execute("UPDATE tv_episodes SET watched=0")
+    db.commit()
+    calls = []
+    transport = plex_transport(calls)
+
+    async def metadata(conn, identity):
+        return await art.anime_series_metadata(conn, identity, transport=transport)
+
+    async def still(conn, identity):
+        if identity.media_type == "tv":
+            return png(), "image/png"
+        return await art.episode_artwork(conn, identity, transport=transport)
+
+    monkeypatch.setattr(routes, "anime_series_metadata", metadata)
+    monkeypatch.setattr(routes, "episode_artwork", still)
+    app = FastAPI()
+    app.include_router(routes.create_history_artwork_router(), prefix="/plus")
+    app.dependency_overrides[get_db] = lambda: db
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            client.cookies.set("omakase_session", create_session(db, 2))
+            assert (await client.get("/plus/series/episodes/anime/1")).json() == {}
+            assert (await client.get("/plus/series/artwork/anime/1/1")).status_code == 404
+            assert (await client.get("/plus/series/artwork/tv/42/1/2")).status_code == 404
+            assert not calls
+            client.cookies.set("omakase_session", create_session(db, 1))
+            response = await client.get("/plus/series/episodes/anime/1")
+            assert response.headers["cache-control"] == "private, no-store"
+            assert response.json() == {
+                "1": {"title": "Fixture episode 1", "artwork": True},
+                "2": {"title": "Fixture episode 2", "artwork": True},
+            }
+            first = await client.get("/plus/series/artwork/anime/1/1")
+            second = await client.get("/plus/series/artwork/anime/1/2")
+            assert (
+                first.status_code == second.status_code == 200 and first.content != second.content
+            )
+            assert (await client.get("/plus/series/artwork/tv/42/1/2")).status_code == 200
+            assert (await client.get("/plus/history/artwork/tv/42/1/2")).status_code == 404
+            assert (await client.get("/plus/series/artwork/anime/1/0")).status_code == 404
+            assert len(calls) == 5  # Three season reads and two individual images.
+
+    asyncio.run(exercise())
 
 
 def test_exact_anime_episodes_have_different_sanitized_stills_and_cache(db, monkeypatch):
@@ -131,6 +195,22 @@ def test_exact_anime_episodes_have_different_sanitized_stills_and_cache(db, monk
     asyncio.run(run())
     assert len(calls) == 8
     assert all(r.headers["X-Plex-Token"] == "fixture-secret" for r in calls)
+    assert db.total_changes == before
+
+
+def test_series_display_metadata_reuses_the_owned_season_read_without_writing(db, monkeypatch):
+    monkeypatch.setattr(art, "_source", source)
+    calls = []
+    transport = plex_transport(
+        calls, summary="A <b>keeper</b> follows a signal.", duration="1441000"
+    )
+    identity = art.anime_series_identity(db, 1, 1)
+    before = db.total_changes
+    result = asyncio.run(art.anime_series_metadata(db, identity, transport=transport))
+    assert result[1]["title"] == "Fixture episode 1"
+    assert result[1]["summary"] == "A keeper follows a signal."
+    assert result[1]["duration_seconds"] == 1441
+    assert len(calls) == 3  # Identity, season list, then the one season's episodes.
     assert db.total_changes == before
 
 
@@ -178,7 +258,17 @@ def test_anime_mismatched_machine_season_episode_path_thumb_never_returns_image(
     assert not any("/thumb/" in r.url.path for r in calls)
 
 
-def test_tv_exact_season_episode_still_has_no_db_writes_or_credentials_on_cdn(db, monkeypatch):
+@pytest.mark.parametrize(
+    "still_path",
+    [
+        "/exact.png",
+        "https://image.tmdb.org/t/p/w300/exact.png",
+        "https://image.tmdb.org/t/p/original//exact.png",
+    ],
+)
+def test_tv_exact_season_episode_still_has_no_db_writes_or_credentials_on_cdn(
+    db, monkeypatch, still_path
+):
     monkeypatch.setattr(art, "_source", source)
     calls = []
 
@@ -191,9 +281,7 @@ def test_tv_exact_season_episode_still_has_no_db_writes_or_credentials_on_cdn(db
                 200,
                 json={
                     "seasonNumber": 1,
-                    "episodes": [
-                        {"seasonNumber": 1, "episodeNumber": 2, "stillPath": "/exact.png"}
-                    ],
+                    "episodes": [{"seasonNumber": 1, "episodeNumber": 2, "stillPath": still_path}],
                 },
             )
         assert request.url.host == "image.tmdb.org" and request.url.path == "/t/p/w780/exact.png"
@@ -215,6 +303,16 @@ def test_tv_exact_season_episode_still_has_no_db_writes_or_credentials_on_cdn(db
     [
         {"seasonNumber": 2, "episodeNumber": 2, "stillPath": "/a.jpg"},
         {"seasonNumber": 1, "episodeNumber": 2, "stillPath": "https://evil.invalid/a.jpg"},
+        {
+            "seasonNumber": 1,
+            "episodeNumber": 2,
+            "stillPath": "https://image.tmdb.org@evil.invalid/t/p/original//a.jpg",
+        },
+        {
+            "seasonNumber": 1,
+            "episodeNumber": 2,
+            "stillPath": "https://image.tmdb.org/t/p/original//a.jpg?download=1",
+        },
         {"seasonNumber": 1, "episodeNumber": 2, "stillPath": "/../a.jpg"},
         {"seasonNumber": 1, "episodeNumber": 3, "stillPath": "/a.jpg"},
     ],
@@ -486,7 +584,11 @@ def test_history_without_exact_episode_identity_offers_labeled_series_art(db):
 
 @pytest.mark.parametrize(
     "name,mime",
-    [("history-artwork.js", "application/javascript"), ("history-artwork.css", "text/css")],
+    [
+        ("history-artwork.js", "application/javascript"),
+        ("history-artwork.css", "text/css"),
+        ("series-detail.css", "text/css"),
+    ],
 )
 def test_root_wired_episode_assets_are_served_from_actual_static_allowlist(monkeypatch, name, mime):
     from pathlib import Path

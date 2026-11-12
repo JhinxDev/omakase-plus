@@ -15,15 +15,16 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
-from omakase.plus import households
+from omakase.plus import cloud_progress, households
 from omakase.plus import web_playback_compatible as compatibility
 from omakase.plus import web_playback_remux as remux
 from omakase.plus import web_playback_store as store
 from omakase.plus.auth import authenticate_session
 from omakase.plus.completion_cleanup import process_deferred_completion_cleanup
+from omakase.plus.debrid_library import playback_provider
 from omakase.plus.deps import get_db
 from omakase.plus.middleware import require_user
 from omakase.plus.playback_proof import _insert_binding
@@ -36,7 +37,12 @@ from omakase.plus.web_playback_catalog import (
     revalidate_catalog_source,
     revalidate_remote_catalog_source,
 )
-from omakase.plus.web_playback_context import normalize_skip_segments, watch_context
+from omakase.plus.web_playback_context import (
+    episode_presentation,
+    normalize_skip_segments,
+    source_episode_presentation,
+    watch_context,
+)
 from omakase.plus.web_playback_delivery import HEADERS, DeliveryError, open_local, open_part
 from omakase.plus.web_playback_navigation import enabled, exact_next_url
 from omakase.plus.web_playback_source import (
@@ -232,6 +238,41 @@ class Close(BaseModel):
 
 def _binding(request):
     return hashlib.sha256(request.cookies.get("omakase_session", "").encode()).hexdigest()
+
+def _cloud_snapshot(db, sid, user_id):
+    """Return the authorization snapshot for a Real-Debrid Cloud player session."""
+    row = db.execute(
+        "SELECT snapshot_json,closed FROM web_playback_sessions WHERE session_id=? AND user_id=?",
+        (sid, user_id),
+    ).fetchone()
+    if row is None or row[1]:
+        return None
+    try:
+        snapshot = json.loads(row[0])
+    except (TypeError, ValueError):
+        return None
+    source = snapshot.get("source") if isinstance(snapshot, dict) else None
+    if not isinstance(source, dict) or source.get("kind") != "debrid-cloud":
+        return None
+    return snapshot
+
+
+def _mirror_cloud_position(db, snapshot, result, user_id):
+    source = snapshot.get("source") if isinstance(snapshot, dict) else None
+    file_key = source.get("file_key") if isinstance(source, dict) else None
+    if not cloud_progress.valid_key(file_key):
+        return
+    try:
+        cloud_progress.save_position(
+            db,
+            user_id=user_id,
+            file_key=file_key,
+            title="",
+            position=result.get("position_seconds", 0),
+            duration=result.get("duration_seconds"),
+        )
+    except (TypeError, ValueError):
+        pass
 
 
 def _snapshot(source):
@@ -695,6 +736,7 @@ def create_player_router(
         return JSONResponse(
             state
             | {
+                **source_episode_presentation(source),
                 "source": public_projection(source) | {"mode": "stream"},
                 "skip_segments": normalize_skip_segments(source),
                 "media_url": prefix + "playlist.m3u8",
@@ -721,6 +763,7 @@ def create_player_router(
         return JSONResponse(
             state
             | {
+                **source_episode_presentation(source),
                 "source": public_projection(source) | {"mode": "stream"},
                 "skip_segments": normalize_skip_segments(source),
                 "media_url": prefix + "compatible.mpd",
@@ -835,6 +878,7 @@ def create_player_router(
         return JSONResponse(
             state
             | {
+                **source_episode_presentation(source),
                 "source": public_projection(source)
                 | {"mode": "copy-remux" if copied else "direct"},
                 # Existing exact-source Plex reads supply optional trusted markers.
@@ -878,6 +922,10 @@ def create_player_router(
         monitor, scope = _monitor(db, user.id, monitor_id, library_id)
         if (episode_number == 0) != (monitor["format"] == "MOVIE"):
             raise HTTPException(404, "Title unavailable")
+        if scope.kind == "personal" and playback_provider(db, user.id) == "realdebrid":
+            return RedirectResponse(
+                f"/plus/cloud/title/anime/{monitor_id}/0/{episode_number}", headers=HEADERS
+            )
         return templates.TemplateResponse(
             request,
             "player.html",
@@ -903,6 +951,10 @@ def create_player_router(
         domain, canonical, season, episode = _catalog_key(target)
         try:
             scope = personal_scope(db, user.id)
+            if playback_provider(db, user.id) == "realdebrid":
+                return RedirectResponse(
+                    f"/plus/cloud/title/{domain}/{canonical}/{season}/{episode}", headers=HEADERS
+                )
             catalog, entry = catalog_target(db, scope, domain, canonical, season, episode)
         except PlaybackSourceError:
             raise HTTPException(404, "Title unavailable in your library") from None
@@ -928,6 +980,7 @@ def create_player_router(
                 "start_immediately": play,
                 "overview_url": back_url,
                 "description_preview": overview,
+                **episode_presentation(episode_data.get("title"), overview),
                 "next_url": _catalog_neighbor(db, scope, target, 1),
                 "previous_url": _catalog_neighbor(db, scope, target, -1),
             },
@@ -975,6 +1028,10 @@ def create_player_router(
         if (body.episode_number == 0) != (monitor["format"] == "MOVIE"):
             raise HTTPException(404, "Title unavailable")
         if scope.kind == "personal":
+            if playback_provider(db, user.id) == "realdebrid":
+                raise HTTPException(
+                    409, "Reopen the title to play it from Real-Debrid", headers=HEADERS
+                )
             monitor, scope = _monitor(db, user.id, body.monitor_id, scope.library_id, prepare=True)
         return await start_session(request, body, user, db, scope, monitor=monitor)
 
@@ -990,6 +1047,10 @@ def create_player_router(
         return await start_session(request, body, user, db, scope)
 
     async def start_session(request, body, user, db, scope, *, monitor=None):
+        if monitor is None and playback_provider(db, user.id) == "realdebrid":
+            raise HTTPException(
+                409, "Reopen the title to play it from Real-Debrid", headers=HEADERS
+            )
         for sid, item in list(handles.items()):
             active = db.execute(
                 "SELECT 1 FROM web_playback_sessions s JOIN web_playback_resumes r "
@@ -1144,7 +1205,13 @@ def create_player_router(
                 state = store.create_session(
                     db, target=target, binding_digest=_binding(request), snapshot=_snapshot(source)
                 )
-            position = state["position_seconds"] if body.resume and not version_changed else 0
+                native_barrier = store.native_resume_barrier(db, target)
+                valid_resume = native_barrier in (None, store.resume_watch_barrier(db, target))
+            position = (
+                state["position_seconds"]
+                if body.resume and not version_changed and valid_resume
+                else 0
+            )
             item = {
                 "source": source,
                 "subtitle_preview_until": position + _SUBTITLE_LEAD_SECONDS,
@@ -1298,6 +1365,25 @@ def create_player_router(
         request: Request, sid: str, body: Event, user=Depends(require_user), db=Depends(get_db)
     ):
         require_csrf(request, request.headers.get("x-csrf-token", ""))
+        cloud = _cloud_snapshot(db, sid, user.id)
+        if cloud is not None:
+            try:
+                with households._transaction(db):
+                    result = store.record_event(
+                        db,
+                        session_id=sid,
+                        user_id=user.id,
+                        binding_digest=_binding(request),
+                        expected_snapshot=cloud,
+                        **body.model_dump(),
+                    )
+                _mirror_cloud_position(db, cloud, result, user.id)
+                return JSONResponse(result, headers=HEADERS)
+            except store.PlaybackStoreError as error:
+                _LOG.warning("playback_event_rejected reason=%s", error.code)
+                if error.code == "event_rate_limited":
+                    return _failure(error.code, 429, "Playback save is busy.", retry_after=1)
+                return _failure(error.code, 409, "Playback save is stale or invalid.")
         source, _ = current(db, request, user.id, sid)
         try:
             with households._transaction(db):
@@ -1362,6 +1448,33 @@ def create_player_router(
         response = acknowledged()
         if response is not None:
             return response
+        cloud = _cloud_snapshot(db, sid, user.id)
+        if cloud is not None:
+            try:
+                if final:
+                    with households._transaction(db):
+                        result = store.record_event(
+                            db,
+                            session_id=sid,
+                            user_id=user.id,
+                            binding_digest=_binding(request),
+                            expected_snapshot=cloud,
+                            **final.model_dump(),
+                        )
+                    _mirror_cloud_position(db, cloud, result, user.id)
+                with households._transaction(db):
+                    store.close_session(
+                        db,
+                        session_id=sid,
+                        user_id=user.id,
+                        binding_digest=_binding(request),
+                        expected_snapshot=cloud,
+                    )
+                return Response(status_code=204, headers=HEADERS)
+            except store.PlaybackStoreError:
+                raise HTTPException(
+                    409, "Playback save is stale or invalid. Reload the player."
+                ) from None
         source, _ = current(db, request, user.id, sid)
         pending = terminal_saves.get(sid)
         if pending is not None:

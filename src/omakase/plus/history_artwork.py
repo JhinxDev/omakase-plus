@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from xml.etree import ElementTree
 
@@ -28,17 +28,20 @@ from omakase.plus.connections import (
     _values,
     private_connections_enabled,
 )
+from omakase.plus.local_list import local_removed
 from omakase.plus.outbound import OutboundError, blocked_address, pin_destination
 from omakase.plus.posters import PosterUnavailable, poster_cache_root
+from omakase.plus.tv_service import episode_runtime, episode_still_url, plain
 
 _METADATA_LIMIT = 512 * 1024
 _IMAGE_LIMIT = 6 * 1024 * 1024
 _CACHE_BYTES = 16 * 1024 * 1024
 _CACHE = OrderedDict()
 _INFLIGHT = {}
+_SERIES_ROWS = OrderedDict()
+_SERIES_INFLIGHT = {}
 _RESOLVE_GATES = {}
 _LOCK = threading.Lock()
-_STILL = re.compile(r"/[A-Za-z0-9_-]{1,160}\.(?:jpg|png)")
 
 
 class EpisodeArtworkUnavailable(ValueError):
@@ -73,6 +76,7 @@ class EpisodeIdentity:
     show_key: str | None = None
     canonical_title: str | None = field(default=None, repr=False)
     saved_still: str | None = field(default=None, repr=False)
+    detail: bool = False
 
 
 def anime_identity(db, user_id, event_id):
@@ -92,6 +96,23 @@ def anime_identity(db, user_id, event_id):
     _require(
         type(season) is int and 1 <= season <= 99 and type(episode) is int and 1 <= episode <= 5000
     )
+    return _anime_identity(db, user_id, row, episode, event_id=event_id)
+
+
+def anime_series_identity(db, user_id, monitor_id, episode=0):
+    row = db.execute(
+        "SELECT anilist_id,season_number,title FROM media_monitors WHERE id=? AND user_id=?",
+        (monitor_id, user_id),
+    ).fetchone()
+    _require(row is not None and type(episode) is int and 0 <= episode <= 5000)
+    season = row["season_number"]
+    _require(type(season) is int and 1 <= season <= 99)
+    _require(not local_removed(db, user_id=user_id, anilist_id=row["anilist_id"], season=season))
+    return _anime_identity(db, user_id, row, episode, detail=True)
+
+
+def _anime_identity(db, user_id, row, episode, *, event_id=None, detail=False):
+    season = row["season_number"]
     # No alias/numbering guess. Only an unambiguous canonical path binding from
     # the latest trusted curator snapshot can connect AniList to a Plex show.
     _require(
@@ -125,10 +146,11 @@ def anime_identity(db, user_id, event_id):
         event_id,
         candidate["rating_key"],
         row["title"],
+        detail=detail,
     )
 
 
-def tv_identity(db, user_id, media_id, season, episode):
+def tv_identity(db, user_id, media_id, season, episode, *, detail=False):
     _require(
         type(media_id) is int
         and 0 < media_id <= 2147483647
@@ -140,8 +162,9 @@ def tv_identity(db, user_id, media_id, season, episode):
     row = db.execute(
         "SELECT e.metadata_json FROM tv_episodes e JOIN tv_catalog c "
         "ON c.user_id=e.user_id AND c.tmdb_id=e.tmdb_id WHERE e.user_id=? AND e.tmdb_id=? "
-        "AND e.season_number=? AND e.episode_number=? AND e.watched=1 AND e.watch_source IN ('manual','plex')",
-        (user_id, media_id, season, episode),
+        "AND e.season_number=? AND e.episode_number=? "
+        "AND (? OR (e.watched=1 AND e.watch_source IN ('manual','plex')))",
+        (user_id, media_id, season, episode, detail),
     ).fetchone()
     _require(row is not None)
     metadata = _json(row["metadata_json"])
@@ -149,13 +172,15 @@ def tv_identity(db, user_id, media_id, season, episode):
         metadata.get("episode_number", episode) == episode
         and metadata.get("season_number", season) == season
     )
-    still = metadata.get("still_url")
-    if not isinstance(still, str) or not re.fullmatch(
-        r"https://image\.tmdb\.org/t/p/(?:w[0-9]{2,4}|original)/[A-Za-z0-9_-]{1,160}\.(?:jpg|png)",
-        still,
-    ):
-        still = None
-    return EpisodeIdentity(user_id, "tv", media_id, season, episode, saved_still=still)
+    return EpisodeIdentity(
+        user_id,
+        "tv",
+        media_id,
+        season,
+        episode,
+        saved_still=episode_still_url(metadata.get("still_url")),
+        detail=detail,
+    )
 
 
 @dataclass(frozen=True)
@@ -287,7 +312,7 @@ def _managed_episode(path, identity):
     )
 
 
-async def _plex_still(reader, identity):
+async def _plex_rows(reader, identity):
     machine = await reader.xml("/identity")
     _require(machine.get("machineIdentifier") == reader.source.machine)
     root = await reader.xml(f"/library/metadata/{identity.show_key}/children")
@@ -306,17 +331,26 @@ async def _plex_still(reader, identity):
     root = await reader.xml(f"/library/metadata/{season_key}/children")
     episodes = root.findall("Video")
     _complete(root, episodes)
-    matched = [
+    return [
         r
         for r in episodes
         if r.get("type") == "episode"
         and r.get("grandparentRatingKey") == identity.show_key
         and r.get("parentRatingKey") == season_key
         and r.get("parentIndex") == str(identity.season)
-        and r.get("index") == str(identity.episode)
     ]
+
+
+def _plex_episode(rows, identity):
+    matched = [row for row in rows if row.get("index") == str(identity.episode)]
     _require(len(matched) == 1)
     row = matched[0]
+    parts = row.findall("./Media/Part")
+    _require(bool(parts) and all(_managed_episode(part.get("file"), identity) for part in parts))
+    return row
+
+
+def _plex_thumb(row):
     key = row.get("ratingKey", "")
     thumb = row.get("thumb", "")
     _require(
@@ -325,9 +359,26 @@ async def _plex_still(reader, identity):
             re.fullmatch(r"/library/metadata/" + re.escape(key) + r"/thumb/[0-9]{1,20}", thumb)
         )
     )
-    parts = row.findall("./Media/Part")
-    _require(bool(parts) and all(_managed_episode(part.get("file"), identity) for part in parts))
-    return await reader.read(thumb, image=True)
+    return thumb
+
+
+async def _plex_still(reader, identity):
+    rows = (
+        await _detail_rows(reader, identity)
+        if identity.detail
+        else await _plex_rows(reader, identity)
+    )
+    return await reader.read(_plex_thumb(_plex_episode(rows, identity)), image=True)
+
+
+async def _tv_rows(reader, identity):
+    show = _json(await reader.read(f"/api/v1/tv/{identity.media_id}"))
+    _require(type(show.get("id")) is int and show["id"] == identity.media_id)
+    season = _json(await reader.read(f"/api/v1/tv/{identity.media_id}/season/{identity.season}"))
+    _require(type(season.get("seasonNumber")) is int and season["seasonNumber"] == identity.season)
+    rows = season.get("episodes")
+    _require(isinstance(rows, list) and len(rows) <= 1000)
+    return rows
 
 
 async def _tv_still(reader, identity):
@@ -335,12 +386,11 @@ async def _tv_still(reader, identity):
         return await reader.read(
             identity.saved_still.removeprefix("https://image.tmdb.org"), image=True, public=True
         )
-    show = _json(await reader.read(f"/api/v1/tv/{identity.media_id}"))
-    _require(type(show.get("id")) is int and show["id"] == identity.media_id)
-    season = _json(await reader.read(f"/api/v1/tv/{identity.media_id}/season/{identity.season}"))
-    _require(type(season.get("seasonNumber")) is int and season["seasonNumber"] == identity.season)
-    rows = season.get("episodes")
-    _require(isinstance(rows, list) and len(rows) <= 1000)
+    rows = (
+        await _detail_rows(reader, identity)
+        if identity.detail
+        else await _tv_rows(reader, identity)
+    )
     matches = [
         r
         for r in rows
@@ -351,9 +401,99 @@ async def _tv_still(reader, identity):
     _require(len(matches) == 1)
     row = matches[0]
     _require(type(row.get("seasonNumber")) is int and row["seasonNumber"] == identity.season)
-    path = row.get("stillPath")
-    _require(isinstance(path, str) and bool(_STILL.fullmatch(path)))
-    return await reader.read("/t/p/w780" + path, image=True, public=True)
+    still = episode_still_url(row.get("stillPath"))
+    _require(still is not None)
+    return await reader.read(still.removeprefix("https://image.tmdb.org"), image=True, public=True)
+
+
+async def _detail_rows(reader, identity):
+    """Coalesce season metadata before lazy cards request distinct image bytes."""
+    key = hashlib.sha256(
+        repr(
+            (
+                reader.source.origin,
+                reader.source.key,
+                reader.source.machine,
+                identity.user_id,
+                identity.media_type,
+                identity.media_id,
+                identity.season,
+                identity.show_key,
+                identity.canonical_title,
+            )
+        ).encode()
+    ).hexdigest()
+    inflight_key = (asyncio.get_running_loop(), key)
+    with _LOCK:
+        cached = _SERIES_ROWS.get(key)
+        if cached and cached[0] > time.monotonic():
+            _SERIES_ROWS.move_to_end(key)
+            _require(cached[1] is not None)
+            return cached[1]
+        task = _SERIES_INFLIGHT.get(inflight_key)
+        if task is None:
+            _require(len(_SERIES_INFLIGHT) < 16)
+            task = asyncio.create_task(_load_detail_rows(reader, identity, inflight_key, key))
+            _SERIES_INFLIGHT[inflight_key] = task
+    return await asyncio.shield(task)
+
+
+async def _load_detail_rows(reader, identity, inflight_key, key):
+    rows = None
+    try:
+        async with asyncio.timeout(8):
+            rows = await (
+                _plex_rows(reader, identity)
+                if identity.media_type == "anime"
+                else _tv_rows(reader, identity)
+            )
+        return rows
+    except (EpisodeArtworkUnavailable, OutboundError, httpx.HTTPError, TimeoutError, ValueError):
+        raise EpisodeArtworkUnavailable() from None
+    finally:
+        with _LOCK:
+            _SERIES_INFLIGHT.pop(inflight_key, None)
+            _SERIES_ROWS[key] = (time.monotonic() + (300 if rows is not None else 30), rows)
+            _SERIES_ROWS.move_to_end(key)
+            while len(_SERIES_ROWS) > 16:
+                _SERIES_ROWS.popitem(last=False)
+
+
+async def anime_series_metadata(db, identity, *, transport=None, resolver=None):
+    rows = await _detail_rows(
+        _Reader(_source(db, identity), transport=transport, resolver=resolver), identity
+    )
+    episodes = {}
+    by_number = {}
+    for row in rows:
+        number = row.get("index", "")
+        if re.fullmatch(r"[1-9][0-9]{0,3}", number) and int(number) <= 5000:
+            by_number.setdefault(int(number), []).append(row)
+    for number, matches in by_number.items():
+        try:
+            row = _plex_episode(matches, replace(identity, episode=number))
+        except EpisodeArtworkUnavailable:
+            continue
+        try:
+            _plex_thumb(row)
+            artwork = True
+        except EpisodeArtworkUnavailable:
+            artwork = False
+        title = " ".join(row.get("title", "").split())[:300]
+        try:
+            title = plain(title, 300)
+        except ValueError:
+            title = ""
+        episodes[number] = {"title": title, "artwork": artwork}
+        try:
+            summary = plain(row.get("summary", ""), 650)
+        except ValueError:
+            summary = ""
+        if summary:
+            episodes[number]["summary"] = summary
+        if duration := episode_runtime(row.get("duration"), unit="milliseconds"):
+            episodes[number]["duration_seconds"] = duration
+    return episodes
 
 
 def _disk_root(user_id):
@@ -442,6 +582,7 @@ async def episode_artwork(db, identity, *, transport=None, resolver=None):
                 identity.show_key,
                 identity.canonical_title,
                 identity.saved_still,
+                identity.detail,
             )
         ).encode()
     ).hexdigest()
@@ -489,7 +630,9 @@ async def _resolve(source, identity, cache_key, transport, resolver, gate):
                     if identity.media_type == "anime"
                     else _tv_still(reader, identity)
                 )
-                payload, kind = await asyncio.to_thread(optimized_artwork, raw, kind="banner")
+                payload, kind = await asyncio.to_thread(
+                    optimized_artwork, raw, kind="episode" if identity.detail else "banner"
+                )
                 await asyncio.to_thread(_disk_write, identity.user_id, cache_key[1], payload)
     except (
         EpisodeArtworkUnavailable,

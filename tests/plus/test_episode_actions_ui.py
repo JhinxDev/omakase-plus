@@ -180,10 +180,12 @@ def test_unqualified_installation_keeps_a_rendered_missing_only_action(
     monkeypatch.setattr(language_publication, "LANGUAGE_PUBLICATION_QUALIFIED", language)
     monkeypatch.setattr(quality_publication, "QUALITY_PUBLICATION_QUALIFIED", quality)
     monitor, _ = resurfaced(client)
+    with _connect(client) as db:
+        db.execute("UPDATE media_monitors SET aired_episodes=4 WHERE id=?", (monitor,))
     page = client.get(f"/plus/library/{monitor}").text
     assert 'name="intent" value="missing"' in page
     assert ">Find missing episodes</button>" in page
-    assert "1080p upgrade checks are not enabled" in page
+    assert "1080p upgrades" not in page
     run = AsyncMock(
         return_value=SimpleNamespace(
             outcome="complete",
@@ -214,3 +216,29 @@ def test_unqualified_installation_keeps_a_rendered_missing_only_action(
     with _connect(client) as db:
         assert [tuple(row) for row in db.execute("SELECT * FROM watch_entries")] == watch
         assert db.execute("SELECT count(*) FROM media_sync_lease").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    "quality,covered,action",
+    [
+        ("1080p", 12, None),
+        ("2160p", 12, None),
+        ("1080p", 11, "Find missing episodes"),
+        ("720p", 12, "Check for 1080p upgrades"),
+        ("720p", 11, "Find missing episodes &amp; 1080p upgrades"),
+    ],
+)
+def test_season_recheck_only_offers_actions_with_targets(client, quality, covered, action):
+    _signup(client)
+    monitor = _seed_continue_title(client)
+    with _connect(client) as db:
+        asset(db, monitor, "A", tuple(range(1, covered + 1)), quality)
+
+    page = client.get(f"/plus/library/{monitor}").text
+
+    assert ('class="episode-recheck"' in page) == (action is not None)
+    if action:
+        assert f">{action}</button>" in page
+        intent = "episodes_quality" if quality == "720p" else "missing"
+        assert f'name="intent" value="{intent}"' in page
+    assert "episode-recheck-help" not in page

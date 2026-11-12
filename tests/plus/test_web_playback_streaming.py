@@ -78,6 +78,8 @@ def setup(monkeypatch, tmp_path):
             _scope=scope,
             _snapshot=(),
             _single_plex_part=getattr(app.state, "single_plex_part", False),
+            episode_name="<b>The tenth signal</b>",
+            episode_summary="<p>The exact streaming episode.</p>",
         )
 
     launches = []
@@ -170,6 +172,8 @@ def test_stream_starts_without_the_prepared_size_limit(setup):
     assert payload["media_url"].endswith("/playlist.m3u8")
     assert payload["subtitle_url"].endswith("/subtitle.ass")
     assert payload["source"]["mode"] == "stream"
+    assert payload["episode_name"] == "The tenth signal"
+    assert payload["episode_summary"] == "The exact streaming episode."
     assert len(launches) == 1
     assert "dummy-only" not in response.text
     assert "plex.invalid" not in response.text
@@ -213,6 +217,8 @@ def test_exact_anime_resume_uses_on_demand_stream_with_hls_fallback(
     payload = response.json()
     assert offsets == ([300] if prefer_on_demand else [])
     assert payload["position_seconds"] == 300
+    assert payload["episode_name"] == "The tenth signal"
+    assert payload["episode_summary"] == "The exact streaming episode."
     fast = available and prefer_on_demand
     assert payload["media_url"].endswith("/compatible.mpd" if fast else "/playlist.m3u8")
     assert len(launches) == (1 if fast else 2)

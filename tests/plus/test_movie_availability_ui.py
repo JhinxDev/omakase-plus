@@ -10,6 +10,23 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from omakase.plus.movie_presentation import present_movie
 
 
+@pytest.mark.parametrize(
+    "query,view,expanded", [("", "all", False), ("1408", "all", True), ("", "requests", True)]
+)
+def test_movie_search_disclosure_keeps_native_form_and_active_filter_visible(query, view, expanded):
+    templates = Path(__file__).resolve().parents[2] / "src/omakase/plus/templates"
+    env = Environment(loader=FileSystemLoader(templates), autoescape=True)
+    html = env.get_template("movies.html").render(
+        cards=[], query=query, view=view, csrf_token="fixture-csrf", email="fixture@example.test"
+    )
+    assert ('class="collection-search-disclosure" open' in html) is expanded
+    assert "<summary>Search &amp; filters</summary>" in html
+    assert 'action="/plus/movies" role="search"' in html
+    assert f'name="view" value="{view}"' in html
+    assert 'href="/plus/search?kind=movies"' in html
+    assert 'href="/plus/movies?view=requests"' in html
+
+
 def test_movie_plex_review_script_is_served():
     from omakase.plus.routes import router
 
@@ -38,9 +55,33 @@ def test_missing_viewing_evidence_is_distinct_from_explicit_unwatched(history, l
     templates = Path(__file__).resolve().parents[2] / "src/omakase/plus/templates"
     env = Environment(loader=FileSystemLoader(templates), autoescape=True)
     html = str(env.get_template("_movie_components.html").module.movie_card(displayed))
-    assert label in html
+    if label == "No viewing record":
+        assert label not in html and "Not watched" not in html
+    else:
+        assert label in html
     if history and history.get("rating"):
         assert "Your rating 8/10" in html
+
+
+@pytest.mark.parametrize("resolution,label", [(2160, "4K"), (1080, "1080p"), (720, "720p")])
+def test_movie_cards_combine_available_quality_without_claiming_playback(resolution, label):
+    templates = Path(__file__).resolve().parents[2] / "src/omakase/plus/templates"
+    env = Environment(loader=FileSystemLoader(templates), autoescape=True)
+    card = present_movie(
+        dict(imdb_id="tt1234567", title="Fixture", plex_present=True, resolution=resolution)
+    )
+    html = str(env.get_template("_movie_components.html").module.movie_card(card))
+    assert f"Available · {label}" in html
+    assert "collection-card-quality" not in html and "No viewing record" not in html
+    assert "Ready in Plex" not in html and "Play movie" not in html
+    card["plex_present"] = False
+    assert f"Available · {label}" not in str(
+        env.get_template("_movie_components.html").module.movie_card(card)
+    )
+    if resolution != 2160:
+        assert "HD fallback" in str(
+            env.get_template("_movie_components.html").module.movie_quality(card)
+        )
 
 
 @pytest.mark.parametrize("expired", [False, True])

@@ -26,6 +26,10 @@
   }
   function internalHref(value, item, actionKind) {
     if (typeof value !== 'string') return null;
+    if (item.kind === 'household_request' || actionKind === 'review_request') {
+      return item.kind === 'household_request' && actionKind === 'review_request'
+        && /^\/plus\/settings\/household#request-[0-9a-f]{32}$/.test(value) ? value : null;
+    }
     const patterns = (actionKind ? actionKind === 'review_media' && item.media_type === 'anime' : item.kind === 'removal_reminder')
       ? [/^\/plus\/library\/[1-9]\d*\/remove$/]
       : [/^\/plus\/library\/[1-9]\d*#watch-tracking$/, /^\/plus\/movies\/tt\d+#movie-rating$/, /^\/plus\/tv\/[1-9]\d*#tv-history$/];
@@ -43,7 +47,7 @@
   }
   function normalize(data) {
     if (!data || !Array.isArray(data.items) || !Number.isInteger(data.unread_count) || data.unread_count < 0 || data.unread_count > 100) throw new Error('Invalid notification response');
-    const items = data.items.slice(0, 20).filter(item => item && typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 300 && ['completed_unrated', 'removal_reminder'].includes(item.kind) && ['anime', 'movie', 'tv'].includes(item.media_type) && typeof item.title === 'string');
+    const items = data.items.slice(0, 20).filter(item => item && typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 300 && ['completed_unrated', 'removal_reminder', 'household_request'].includes(item.kind) && ['anime', 'movie', 'tv'].includes(item.media_type) && typeof item.title === 'string');
     return { items, unread_count: data.unread_count, count_capped: data.count_capped === true };
   }
   async function request(url, options = {}) {
@@ -142,19 +146,21 @@
       image.src = artwork;
     }
     const copy = element('div', 'notification-item-copy');
-    copy.append(element('div', 'notification-kind', item.kind === 'completed_unrated' ? 'Finished watching' : 'Media review'), element('h3', '', item.title.slice(0, 250)));
+    const labels = { completed_unrated: 'Finished watching', removal_reminder: 'Media review', household_request: 'Household request' };
+    copy.append(element('div', 'notification-kind', labels[item.kind]), element('h3', '', item.title.slice(0, 250)));
     copy.append(element('p', 'notification-message', typeof item.message === 'string' ? item.message.slice(0, 500) : 'Review your saved title.'));
     const rating = typeof item.rating === 'number' && Number.isFinite(item.rating) && item.rating >= 0 && item.rating <= 10 ? `Your rating ${item.rating}/10` : 'Not rated yet';
-    copy.append(element('p', 'notification-rating', rating));
+    if (item.kind !== 'household_request') copy.append(element('p', 'notification-rating', rating));
     const actions = element('div', 'notification-item-actions');
     const candidates = Array.isArray(item.actions) ? item.actions.slice(0, 2) : [{ kind: item.kind === 'removal_reminder' ? 'review_media' : 'rate', href: item.href }];
     const destinations = new Set();
+    const actionLabels = { rate: 'Rate title', review_media: 'Review media', review_request: 'Review request' };
     for (const action of candidates) {
-      if (!action || !['rate', 'review_media'].includes(action.kind)) continue;
+      if (!action || !Object.hasOwn(actionLabels, action.kind)) continue;
       if (action.kind === 'review_media' && item.media_type !== 'anime') continue;
       const href = internalHref(action.href, item, action.kind);
       if (!href || destinations.has(href)) continue;
-      const link = element('a', destinations.size ? 'notification-secondary' : 'notification-primary', action.kind === 'rate' ? 'Rate title' : 'Review media');
+      const link = element('a', destinations.size ? 'notification-secondary' : 'notification-primary', actionLabels[action.kind]);
       destinations.add(href);
       link.href = href;
       link.setAttribute('aria-label', `${link.textContent}: ${item.title}`);

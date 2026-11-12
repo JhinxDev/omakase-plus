@@ -10,6 +10,30 @@ import json
 import math
 
 from omakase.plus.anime_synopsis import cached_synopsis
+from omakase.plus.tv_service import plain
+
+
+def episode_presentation(name, summary):
+    """Optional display text from the already resolved exact episode."""
+    result = {}
+    for key, value, limit in (("episode_name", name, 300), ("episode_summary", summary, 650)):
+        if not isinstance(value, str):
+            continue
+        try:
+            text = plain(value, limit)
+        except ValueError:
+            continue
+        if text:
+            result[key] = text
+    return result
+
+
+def source_episode_presentation(source):
+    if not source.episode_number:
+        return {}
+    return episode_presentation(
+        getattr(source, "episode_name", ""), getattr(source, "episode_summary", "")
+    )
 
 
 def watch_context(db, monitor, scope, episode_number):

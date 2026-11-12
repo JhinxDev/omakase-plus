@@ -1,12 +1,13 @@
-{% macro progress_bar(item, compact=false, show_availability=true) -%}
+{% macro progress_bar(item, compact=false, show_availability=true, force_progress=false) -%}
+{% set series_progress = item.progress_episodes or item.watch_status == 'completed' or (force_progress and item.episode_total) %}
 <div class="media-progress{% if compact %} media-progress-compact{% endif %}">
   {% if show_availability %}<div class="media-progress-meta">{% endif %}
-  {% if item.progress_episodes or item.watch_status == 'completed' %}
+  {% if series_progress %}
   <span class="watched-count">Watched <b>{{ item.progress_episodes }}{% if item.episode_total %}/{{ item.episode_total }}{% endif %}</b></span>
   {% elif item.partial_playback %}<span class="not-started">Episode in progress</span>
   {% else %}<span class="not-started">{{ "Not started" if item.last_source_label | default("Not tracked yet") not in ["Not tracked yet", "", "Imported"] else "Not watched" }}</span>{% endif %}
   {% if show_availability %}{{ ready_badge(item) }}</div>{% endif %}
-  {% if item.progress_episodes or item.watch_status == 'completed' %}
+  {% if series_progress %}
   <progress max="100" value="{{ item.progress_percent }}" aria-label="{{ item.title }}: {{ item.progress_episodes }}{% if item.episode_total %} of {{ item.episode_total }}{% endif %} episodes watched"></progress>
   {% endif %}
 </div>
@@ -28,10 +29,11 @@
 <span class="source-badge">Updated by {{ item.last_source_label }}</span>
 {%- endmacro %}
 
-{% macro artwork(item, eager=false) -%}
+{% macro artwork(item, eager=false, wide=false) -%}
+{% set poster = item.artwork_url | default('/plus/media/' ~ item.anilist_id ~ '/poster', true) %}
 <div class="media-art poster-frame" data-fallback-title="{{ item.title }}">
-  <span class="media-art-fallback" aria-hidden="true">{{ item.title[:2] | upper }}</span>
-  <img src="{{ item.artwork_url | default('/plus/media/' ~ item.anilist_id ~ '/poster', true) }}" alt="" {% if not eager %}loading="lazy"{% endif %} data-poster>
+  <span class="media-art-fallback" aria-hidden="true"><svg viewBox="0 0 32 32" width="40" height="40" fill="none"><rect x="3" y="5" width="26" height="22" rx="4" stroke="currentColor" stroke-width="1.5"/><path d="m13 11 8 5-8 5z" fill="currentColor"/></svg></span>
+  <img src="{{ '/plus/media/' ~ item.anilist_id ~ '/banner' if wide else poster }}" alt="" {% if not eager %}loading="lazy"{% endif %} decoding="async" data-poster{% if wide %} data-poster-fallback="{{ poster }}"{% endif %}>
 </div>
 {%- endmacro %}
 
@@ -43,11 +45,12 @@
 <a class="playback-link playback-link--{{ style }}{% if style == 'primary' %} button button-primary{% endif %}" href="{{ href }}" aria-label="{{ accessible_name }}">{{ play_icon() }}<span{% if style == 'episode' %} class="sr-only"{% endif %}>{{ label }}</span></a>
 {%- endmacro %}
 
-{% macro media_card(item, badge='', compact=false) -%}
+{% macro media_card(item, badge='', compact=false, watching=false) -%}
 {% set detail = item.detail_url | default('/plus/library/' ~ item.id, true) %}
+{% set resume = item.episode_resume if watching else none %}
 <article class="media-card{% if compact %} media-card-compact{% endif %}">
   <a class="media-card-cover" href="{{ item.play_url or detail }}" aria-label="{% if item.play_url %}{{ item.play_label }} {{ item.title }}{% if item.play_episode %}, episode {{ item.play_episode }}{% endif %}{% else %}Open {{ item.title }}{% endif %}">
-    {{ artwork(item) }}
+    {{ artwork(item, wide=watching) }}
     {% if item.play_url %}
     <span class="media-card-transport" aria-hidden="true">{{ play_icon() }}<span>{{ item.play_label }}{% if item.play_episode %}<small>Episode {{ item.play_episode }}</small>{% endif %}</span></span>
     {% else %}
@@ -57,15 +60,16 @@
   <div class="media-card-body">
     {% if badge %}<span class="media-kicker">{{ badge }}</span>{% endif %}
     <h3 title="{{ item.title }}">{% if item.play_url %}<a class="media-card-detail" href="{{ detail }}">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}</h3>
-    {{ progress_bar(item, true) }}
+    {% if watching and item.play_episode %}<p class="continue-episode">Episode {{ item.play_episode }}{% if resume %} · {{ resume.minutes_left }} min left{% else %} · Up next{% endif %}</p>{% endif %}
+    {{ progress_bar(item, true, not watching, watching) }}
     {{ source_badge(item) }}
   </div>
 </article>
 {%- endmacro %}
 
-{% macro media_rail(items, label, badge='') -%}
-<div class="media-rail" role="list" aria-label="{{ label }}">
-  {% for item in items %}<div role="listitem">{{ media_card(item, badge) }}</div>{% endfor %}
+{% macro media_rail(items, label, badge='', watching=false) -%}
+<div class="media-rail{% if watching %} watching-rail{% endif %}" role="list" aria-label="{{ label }}">
+  {% for item in items %}<div role="listitem">{{ media_card(item, badge, watching=watching) }}</div>{% endfor %}
 </div>
 {%- endmacro %}
 

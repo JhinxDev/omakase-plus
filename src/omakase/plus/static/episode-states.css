@@ -32,7 +32,6 @@
 .viewer-episodes .episode-quality.quality-fallback { color:#ffd69a; border-color:#967345; background:#352a1c; }
 .viewer-episodes .episode-quality-alternate { color:#b6c3d7; font-size:.75rem; line-height:1.6; overflow-wrap:anywhere; }
 .viewer-episodes .episode-recheck { margin:0; }
-.viewer-episodes .episode-recheck-help { color:#b6c3d7; line-height:1.7; margin:0 0 24px; max-width:80ch; }
 @media(max-width:600px) {
   .viewer-episodes .stream-section-heading { flex-direction:column; align-items:stretch; gap:20px; }
   .viewer-episodes .episode-recheck { width:100%; }

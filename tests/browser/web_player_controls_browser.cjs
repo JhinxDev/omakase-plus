@@ -19,7 +19,7 @@ const closeEnough = (actual, expected, tolerance = .05) => Math.abs(actual-expec
   const options = qaBrowser();
   const browser = await chromium.launch({...options,args:[...(options.args||[]),'--mute-audio']});
   const report = {synthetic:true,browser:browser.version(),subjectiveAudio:false,physicalDevice:false,mediaPreparationJobs:0,
-    sourceBefore:identities(),servedAssets:[],errors:[],desktop:{events:[],steps:[]},touch:{events:[]}};
+    sourceBefore:identities(),servedAssets:[],errors:[],httpFailures:[],desktop:{events:[],steps:[]},touch:{events:[]}};
   const reads = [];
   async function pageFor(kind, settings) {
     const context = await browser.newContext({...settings,reducedMotion:'reduce'});
@@ -32,6 +32,7 @@ const closeEnough = (actual, expected, tolerance = .05) => Math.abs(actual-expec
     page.on('pageerror',error=>report.errors.push({kind,message:error.message}));
     page.on('response',response=>{
       const pathname = new URL(response.url()).pathname;
+      if(response.status()>=400)reads.push(response.json().then(body=>report.httpFailures.push({kind,pathname,status:response.status(),code:body.code})).catch(()=>report.httpFailures.push({kind,pathname,status:response.status()})));
       if (pathname.endsWith('/events')) reads.push(response.json().then(saved=>{
         const sent = response.request().postDataJSON();
         report[kind].events.push({status:response.status(),event:sent.event,position:saved.position_seconds,covered:saved.covered_seconds});
@@ -65,6 +66,24 @@ const closeEnough = (actual, expected, tolerance = .05) => Math.abs(actual-expec
     active = await pageFor('desktop',{viewport:{width:1280,height:900}});
     let {page} = active;
     await enter(page);
+    const stage = page.locator('[data-player-container]');
+    const back = page.getByRole('link',{name:'Back to title',exact:true});
+    const cinema = await stage.boundingBox();
+    assert(cinema.x===0&&cinema.y===0&&cinema.width===1280&&cinema.height===900,'Desktop playback fills the window');
+    await page.mouse.move(540,350);
+    await page.waitForFunction(()=>document.querySelector('[data-player-container]').hasAttribute('data-cinema-idle'));
+    assert(await back.isHidden()&&await page.locator('.shaka-bottom-controls').isHidden(),'Idle playback clears title and transport overlays');
+    await page.screenshot({path:path.join(output,'cinema-desktop-idle.png')});
+    await page.mouse.move(560,370);
+    await back.waitFor({state:'visible'});
+    const backBox = await back.boundingBox();
+    assert(backBox.y>=0&&backBox.y+backBox.height<=900,'Pointer wakes Back to title inside the viewport');
+    await page.screenshot({path:path.join(output,'cinema-desktop-controls.png')});
+    await page.waitForFunction(()=>document.querySelector('[data-player-container]').hasAttribute('data-cinema-idle'));
+    await page.keyboard.press('Tab');
+    await back.waitFor({state:'visible'});
+    assert(await stage.getAttribute('data-cinema-idle')===null,'Keyboard input wakes the cinema overlay');
+    report.desktop.cinema = cinema;
     const position = await pauseAck(page,report.desktop);
     await page.locator('[data-player-container]').hover();
     await page.locator('.shaka-overflow-menu-button').click();
@@ -112,11 +131,15 @@ const closeEnough = (actual, expected, tolerance = .05) => Math.abs(actual-expec
     await page.waitForFunction(()=>document.fullscreenElement?.matches('[data-player-container]'));
     assert(await page.locator('video').evaluate(video=>video.clientWidth===innerWidth&&video.clientHeight===innerHeight),'Fullscreen video fills the viewport');
     await page.mouse.move(300,260);
-    await page.waitForFunction(()=>getComputedStyle(document.querySelector('.shaka-bottom-controls')).visibility==='hidden'&&getComputedStyle(document.querySelector('.web-player-timeline')).visibility==='hidden');
+    assert(await page.locator('.shaka-bottom-controls').isVisible(),'Paused fullscreen retains transport and timeline');
     await page.mouse.move(340,260);
     await page.getByRole('button',{name:'Exit full screen',exact:true}).click();
     await page.waitForFunction(()=>document.fullscreenElement===null);
-    report.desktop.fullscreenIdle = true;
+    report.desktop.pausedFullscreenVisible = true;
+    await page.setViewportSize({width:2560,height:1080});
+    await page.evaluate(()=>scrollTo(0,0));
+    report.desktop.ultrawide = await stage.boundingBox();
+    assert(report.desktop.ultrawide.width===2560&&report.desktop.ultrawide.height===1080,'Cinema stage fills an ultrawide window');
     await active.context.close();active = null;
 
     active = await pageFor('touch',{viewport:{width:390,height:844},hasTouch:true,isMobile:true});
@@ -142,6 +165,8 @@ const closeEnough = (actual, expected, tolerance = .05) => Math.abs(actual-expec
     await page.getByRole('button',{name:'Exit full screen',exact:true}).tap();
     await page.waitForFunction(()=>document.fullscreenElement===null);
     report.touch.fullscreenExited = true;
+    await page.setViewportSize({width:320,height:680});
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth===320),'Player and title controls fit the 320px viewport');
     report.touch.escapeScope = 'Emulated Escape is not a physical-device fullscreen acceptance check.';
     await Promise.all(reads);
     assert(report.servedAssets.length>=4&&report.servedAssets.every(asset=>asset.sha256===report.sourceBefore[asset.file]),'Served player assets match the tested source');

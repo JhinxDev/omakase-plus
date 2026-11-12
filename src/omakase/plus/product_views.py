@@ -209,7 +209,10 @@ def home_view(db, *, user_id: int, library_scope=None) -> dict[str, Any]:
     # Stable ties retain the existing library order; rank before the shelf cap.
     ordered_resume = sorted(
         in_progress,
-        key=lambda item: recency.get((item["anilist_id"], int(item["season_number"] or 0)), ""),
+        key=lambda item: max(
+            recency.get((item["anilist_id"], int(item["season_number"] or 0)), ""),
+            item.get("native_resume_at", ""),
+        ),
         reverse=True,
     )
     continue_watching = ordered_resume[:10]

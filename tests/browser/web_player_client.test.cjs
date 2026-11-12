@@ -362,8 +362,30 @@ test('direct Next accepts only the following episode in the same series and libr
 });
 test('one subtitle menu restores native ID zero, ASS and Off without cross-version saved choices', () => {
  const n=[{id:0,language:'en',active:true},{id:8,language:'ja',forced:true}],a=[{plex_stream_id:12,language:'ja',selected:true,default:true}];
- const choices=subtitleChoices(n,a);assert.deepEqual(choices.map(c=>c.value),['off','native:0','native:8','ass:12']);assert.match(choices[2].label,/Forced/);assert.match(choices[3].label,/Styled ASS.*Default/);
+ const choices=subtitleChoices(n,a);assert.deepEqual(choices.map(c=>c.value),['off','native:0','native:8','ass:12']);assert.match(choices[2].label,/Forced/);assert.match(choices[3].label,/Styled.*Default/);
  assert.equal(initialSubtitleValue(n,a,'off'),'off');assert.equal(initialSubtitleValue(n,a,'0'),'native:0');assert.equal(initialSubtitleValue(n,a,'ass:12'),'ass:12');assert.equal(initialSubtitleValue(n,a,'off',true),'ass:12');assert.equal(initialSubtitleValue(n,[],null),'native:0');assert.equal(initialSubtitleValue([],[],null),'off');
+});
+test('human track names preserve language evidence and disambiguate only duplicate choices',()=>{
+ const {trackLanguage}=require('../../src/omakase/plus/static/web-player.js');
+ assert.equal(trackLanguage('eng'),'English');assert.equal(trackLanguage('jpn'),'Japanese');
+ for(const value of ['und','Undetermined','',null,'not_a_language'])assert.equal(trackLanguage(value),'Unknown language');
+ const choices=subtitleChoices([{id:0,language:'en',label:'English'},{id:1,language:'und'}],[{plex_stream_id:'3',language:'eng'},{plex_stream_id:'4',language:'eng'},{plex_stream_id:'5',language:'jpn',forced:true}]);
+ assert.equal(choices[1].label,'English');assert.equal(choices[2].label,'Unknown language');
+ assert.equal(choices[3].label,'English · Styled · Track 1');assert.equal(choices[4].label,'English · Styled · Track 2');
+ assert.equal(choices[5].label,'Japanese · Styled · Forced');
+ assert.deepEqual(choices.map(choice=>choice.value),['off','native:0','native:1','ass:3','ass:4','ass:5']);
+ assert.equal(subtitleChoices([],[{plex_stream_id:'3',language:'eng'}])[1].label,'English · Styled');
+});
+test('unknown audio language uses the public localization dictionary without changing track selection',()=>{
+ const {normalizeUnknownTrackLanguage}=require('../../src/omakase/plus/static/web-player.js');
+ const updates=[];normalizeUnknownTrackLanguage({resolve:()=> 'Undetermined',getCurrentLocales:()=>new Set(['en-US']),insert:(locale,values)=>updates.push([locale,[...values]])});
+ assert.deepEqual(updates,[['en',[['UNDETERMINED_LANGUAGE','Unknown language']]],['en-US',[['UNDETERMINED_LANGUAGE','Unknown language']]]]);
+});
+test('episode presentation retains exact names and honest absence without treating text as markup',()=>{
+ const {episodePresentation}=require('../../src/omakase/plus/static/web-player.js');
+ assert.deepEqual(episodePresentation(7,' I was... a Savior! ',' Episode summary. '),{heading:'Episode 7 · I was... a Savior!',summary:'Episode summary.'});
+ assert.deepEqual(episodePresentation(7,null,null),{heading:'Episode 7',summary:''});
+ assert.equal(episodePresentation(7,'<img src=x onerror=alert(1)>','').heading,'Episode 7 · <img src=x onerror=alert(1)>');
 });
 test('subtitle handoff clears styled before native and disables native before styled loading',async()=>{
  const log=[];let release;const gate=new Promise(r=>release=r);
@@ -402,12 +424,21 @@ test('startup can finish a saved-position seek after the ordinary seek timeout',
   assert.equal(result, true);
 });
 
-test('compact single row and gear priorities expose no app PiP paths', () => {
+test('direct transport controls retain the supplied menus and expose no app PiP paths', () => {
   const config=playerControlsConfiguration();
-  assert.deepEqual(config.controlPanelElements,['play_pause','omakase_next','omakase_time','spacer','mute','volume','fullscreen','overflow_menu']);
-  assert.deepEqual(config.overflowMenuButtons,['omakase_quality','omakase_audio','omakase_subtitles','playback_rate','omakase_stream_info']);
+  assert.deepEqual(config.controlPanelElements,['omakase_rewind','play_pause','omakase_forward','omakase_time','omakase_next','spacer','mute','volume','omakase_audio','omakase_subtitles','fullscreen','overflow_menu']);
+  assert.deepEqual(config.overflowMenuButtons,['omakase_quality','playback_rate','omakase_stream_info']);
   assert.equal(config.addSeekBar,false); assert.equal(config.customContextMenu,false);
   assert.deepEqual(config.contextMenuElements,[]); assert.equal(config.enableKeyboardPlaybackControls,true);
+});
+
+test('relative seek steps clamp, follow the newest queued intent, and refuse invalid duration',()=>{
+  const {relativeSeekTarget}=require('../../src/omakase/plus/static/web-player.js');
+  assert.equal(relativeSeekTarget(15,undefined,10,30),25);
+  assert.equal(relativeSeekTarget(15,25,-10,30),15);
+  assert.equal(relativeSeekTarget(3,null,-10,30),0);
+  assert.equal(relativeSeekTarget(25,undefined,10,30),30);
+  for(const duration of [0,NaN,Infinity,undefined])assert.equal(relativeSeekTarget(15,null,10,duration),null);
 });
 
 test('always-on subtitles recover from saved Off and favor a full English track', () => {

@@ -1,0 +1,18 @@
+{% from "_media_components.html" import playback_link, play_icon %}
+
+{% macro episode_frame(number, state, resume=none, play_url=none, series_art='', still='', name='', quiet=false) %}
+<div class="series-episode-frame{% if still or series_art %} has-episode-artwork{% endif %}{% if quiet %} series-episode-frame--quiet{% endif %}">
+  <span class="series-episode-placeholder" data-history-placeholder role="img" aria-label="Episode {{ number }} image unavailable"{% if still or series_art %} aria-hidden="true"{% endif %}>
+    <span class="series-episode-brand" aria-hidden="true">Omakase Plus</span>
+    <small aria-hidden="true"{% if still or series_art %} hidden{% endif %}>Image unavailable</small>
+  </span>
+  {% if still or series_art %}<img class="series-episode-image" alt="" width="480" height="270" loading="lazy" decoding="async" hidden data-series-artwork data-artwork-scope="episode" data-episode-still="{{ still }}" data-history-fallback="{{ series_art }}">{% endif %}
+  {% if play_url %}
+    {% set action = 'Replay' if state == 'Watched' else 'Resume' if resume else 'Play' %}
+    {% if quiet %}<a class="series-episode-art-action" href="{{ play_url }}" tabindex="-1" aria-hidden="true">{{ play_icon() }}</a>{% else %}{{ playback_link(play_url, action, action ~ ' episode ' ~ number ~ (': ' ~ name if name else ''), 'episode') }}{% endif %}
+  {% endif %}
+  {% if resume or not quiet or state != 'Unwatched' %}<span class="series-episode-state">{% if resume %}<span class="sr-only">In progress · </span>{{ resume.minutes_left }} min left{% else %}{{ state }}{% endif %}</span>{% endif %}
+  {% if resume %}<progress class="series-episode-progress" value="{{ resume.percent }}" max="100" aria-label="Episode {{ number }} saved position"></progress>{% endif %}
+  <span class="series-episode-art-label" data-history-artwork-label hidden>Series artwork</span>
+</div>
+{% endmacro %}

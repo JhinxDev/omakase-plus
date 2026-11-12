@@ -123,6 +123,53 @@ def test_equivalent_timezone_dates_have_a_stable_title_identity_tie(db):
     assert [card["id"] for card in home_view(db, user_id=1)["continue_watching"]] == [alpha, zed]
 
 
+@pytest.mark.parametrize("watched", [0, 3, 6])
+@pytest.mark.parametrize("resume", [None, {"minutes_left": 23, "percent": 8}])
+def test_continue_cards_share_series_progress_with_or_without_an_episode_resume(
+    db, watched, resume
+):
+    entry(db, anilist_id=21, title="A consistent series")
+    context = home_view(db, user_id=1)
+    card = context["continue_watching"][0]
+    context["continue_watching"] = [
+        {
+            **card,
+            "progress_episodes": watched,
+            "progress_percent": watched / 12 * 100,
+            "episode_total": 12,
+            "play_episode": watched + 1,
+            "episode_resume": resume,
+            "partial_playback": bool(resume),
+        }
+    ]
+    html = render("home.html", **context)
+    shelf = html.split('aria-labelledby="continue-heading"', 1)[1].split("</section>", 1)[0]
+    text = " ".join(re.sub(r"<[^>]*>", " ", shelf).split())
+    assert f"Watched {watched}/12" in text
+    assert f"Episode {watched + 1} · {'23 min left' if resume else 'Up next'}" in text
+    assert len(re.findall(r"<progress\b", shelf)) == 1
+    assert f'value="{watched / 12 * 100}"' in shelf
+    assert f"{watched} of 12 episodes watched" in shelf
+    assert "saved position" not in shelf
+
+
+def test_continue_card_does_not_invent_a_series_percentage_without_a_total(db):
+    entry(db, anilist_id=21, title="An open-ended series")
+    context = home_view(db, user_id=1)
+    context["continue_watching"][0].update(
+        progress_episodes=0,
+        progress_percent=0,
+        episode_total=None,
+        partial_playback=True,
+        play_episode=1,
+        episode_resume={"minutes_left": 23, "percent": 8},
+    )
+    html = render("home.html", **context)
+    shelf = html.split('aria-labelledby="continue-heading"', 1)[1].split("</section>", 1)[0]
+    assert "23 min left" in shelf
+    assert "<progress" not in shelf
+
+
 @pytest.mark.parametrize("has_continue", [True, False])
 def test_hero_uses_same_first_resume_card_even_when_partial_ready(db, has_continue):
     _, watch = entry(db, anilist_id=21, title="Alpha older ready title")

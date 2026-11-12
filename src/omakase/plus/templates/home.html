@@ -18,7 +18,7 @@
   <picture class="cinema-hero-art" data-hero-quality data-hero-poster="/plus/media/{{ featured.anilist_id }}/poster"><img src="/plus/media/{{ featured.anilist_id }}/banner?display=hero-v3" alt="" fetchpriority="high"></picture>
   {% endif %}
   <div class="cinema-hero-copy">
-    <div class="cinema-eyebrow"><span class="cinema-wordmark">O<span>+</span></span><span>{% if featured and (featured.progress_episodes or featured.partial_playback) %}CONTINUE WATCHING{% elif featured %}FROM YOUR WATCHLIST{% else %}MADE FOR YOUR NEXT WATCH{% endif %}</span></div>
+    <div class="cinema-eyebrow"><img class="cinema-brandmark" src="/plus/static/omakase-seal.svg?v={{ asset_version }}" width="32" height="32" alt="" aria-hidden="true"><span>{% if featured and (featured.progress_episodes or featured.partial_playback) %}CONTINUE WATCHING{% elif featured %}FROM YOUR WATCHLIST{% else %}MADE FOR YOUR NEXT WATCH{% endif %}</span></div>
     <h1 id="featured-title">{% if featured %}{{ featured.title }}{% else %}A good story starts here.{% endif %}</h1>
     {% if featured %}
       <div class="cinema-meta"><span>Anime</span>{% if featured.progress_episodes %}<span class="watched-count">Watched <b>{{ featured.progress_episodes }}{% if featured.episode_total %}/{{ featured.episode_total }}{% endif %}</b></span>{% elif featured.partial_playback %}<span>Episode in progress</span>{% else %}<span>Not started</span>{% endif %}{{ ready_badge(featured) }}</div>
@@ -36,7 +36,7 @@
 <section class="home-section continue-section" aria-labelledby="continue-heading">
   <header class="stream-section-heading"><div><span>Pick up where you left off</span><h2 id="continue-heading">Continue watching</h2></div><a href="/plus/library?lifecycle=in_progress">See all</a></header>
   {% if continue_watching %}
-    {{ media_rail(continue_watching, 'Continue watching') }}
+    {{ media_rail(continue_watching, 'Continue watching', watching=true) }}
   {% else %}
     {{ empty_state('Nothing in progress yet', 'Start a ready title and it will stay here until you finish it.', 'Browse ready titles', '/plus/library?lifecycle=ready_to_start') }}
   {% endif %}

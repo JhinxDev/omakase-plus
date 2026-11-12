@@ -149,6 +149,76 @@ def get_resume(db, *, target):
     return _resume(row) if row else None
 
 
+def native_resume_barrier(db, target):
+    row = db.execute(
+        "SELECT watch_barrier FROM web_playback_native_resumes WHERE target_key=?", (_key(target),)
+    ).fetchone()
+    return row[0] if row is not None else None
+
+
+def save_native_resume(db, *, target, position, publication, expected, barrier=None, now=None):
+    """Save a playhead on the exact copy while preserving all viewing evidence."""
+    key, now = _key(target), _now(now)
+    position = _number(position, 0, target.duration_seconds, "position")
+    if not isinstance(publication, str) or not _SHA.fullmatch(publication):
+        raise PlaybackStoreError("Invalid publication identity")
+    with _atomic(db):
+        active_barrier = resume_watch_barrier(db, target)
+        if barrier is not None and barrier != active_barrier:
+            raise PlaybackStoreError("Watch status changed", code="resume_superseded")
+        if expected is None:
+            changed = db.execute(
+                """INSERT OR IGNORE INTO web_playback_resumes
+                   (target_key,user_id,library_id,domain,canonical_id,season_number,episode_number,
+                    media_version,duration_seconds,position_seconds,revision,updated_at,publication_identity)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,1,?,?)""",
+                (
+                    key,
+                    target.user_id,
+                    target.library_id,
+                    target.domain,
+                    target.canonical_id,
+                    target.season_number,
+                    target.episode_number,
+                    target.media_version,
+                    target.duration_seconds,
+                    position,
+                    now,
+                    publication,
+                ),
+            )
+        else:
+            changed = db.execute(
+                """UPDATE web_playback_resumes
+                   SET position_seconds=?,revision=revision+1,updated_at=?,publication_identity=?
+                   WHERE target_key=? AND revision=? AND updated_at=? AND duration_seconds=?
+                   AND NOT EXISTS (
+                       SELECT 1 FROM web_playback_sessions
+                       WHERE target_key=? AND closed=0 AND anchor_playing=1
+                         AND expires_at>? AND last_seen>?
+                   )""",
+                (
+                    position,
+                    now,
+                    publication,
+                    key,
+                    *expected,
+                    target.duration_seconds,
+                    key,
+                    now,
+                    now - 60,
+                ),
+            )
+        if changed.rowcount != 1:
+            raise PlaybackStoreError("Playback position changed", code="resume_superseded")
+        db.execute("INSERT INTO web_playback_native_resumes VALUES(?,?)", (key, active_barrier))
+        db.execute(
+            "UPDATE web_playback_sessions SET closed=1,closed_at=? WHERE target_key=? AND closed=0",
+            (now, key),
+        )
+        return _get_resume_by_key(db, key)
+
+
 def _session(db, session_id, user_id, binding_digest, now, expected_snapshot=None):
     _positive(user_id, "viewer")
     _binding(binding_digest)
@@ -211,6 +281,17 @@ def watch_barrier(db, *, user_id, anilist_id, season_number):
     ).fetchone()[0]
 
 
+def resume_watch_barrier(db, target):
+    if target.domain != "anime":
+        return 0
+    return watch_barrier(
+        db,
+        user_id=target.user_id,
+        anilist_id=target.canonical_id,
+        season_number=target.season_number,
+    )
+
+
 def create_session(db, *, target, binding_digest, snapshot, now=None):
     key, now = _key(target), _now(now)
     _binding(binding_digest)
@@ -243,6 +324,7 @@ def create_session(db, *, target, binding_digest, snapshot, now=None):
         stored = _row(db, "SELECT * FROM web_playback_resumes WHERE target_key=?", (key,))
         if stored["duration_seconds"] != target.duration_seconds:
             raise PlaybackStoreError("Exact media duration changed")
+        barrier = resume_watch_barrier(db, target)
         db.execute(
             "UPDATE web_playback_sessions SET closed=1,closed_at=? WHERE target_key=? AND closed=0",
             (now, key),
@@ -277,14 +359,6 @@ def create_session(db, *, target, binding_digest, snapshot, now=None):
                 now,
             ),
         )
-        barrier = 0
-        if target.domain == "anime":
-            barrier = watch_barrier(
-                db,
-                user_id=target.user_id,
-                anilist_id=target.canonical_id,
-                season_number=target.season_number,
-            )
         db.execute(
             "UPDATE web_playback_sessions SET watch_barrier=? WHERE session_id=?", (barrier, sid)
         )

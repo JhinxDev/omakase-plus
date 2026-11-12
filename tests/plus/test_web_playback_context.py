@@ -4,7 +4,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from omakase.plus.web_playback_context import normalize_skip_segments
+from omakase.plus.web_playback_context import episode_presentation, normalize_skip_segments
+
+
+def test_episode_presentation_is_bounded_plain_optional_text():
+    assert episode_presentation("<b>Night &amp; day</b>", "<p>The exact episode.</p>") == {
+        "episode_name": "Night & day",
+        "episode_summary": "The exact episode.",
+    }
+    assert episode_presentation(None, {"untrusted": "value"}) == {}
+    assert episode_presentation("x" * 301, "x" * 651) == {}
 
 
 def sample():

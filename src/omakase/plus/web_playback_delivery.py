@@ -94,7 +94,9 @@ async def open_local(path, request, *, authorize, etag_seed, on_close=lambda: No
     try:
         if request.method not in {"GET", "HEAD"} or path.is_symlink():
             raise DeliveryError("Media resource unavailable.", 404)
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        )
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_size <= 0:
             raise DeliveryError("Media resource unavailable.", 404)
@@ -108,9 +110,11 @@ async def open_local(path, request, *, authorize, etag_seed, on_close=lambda: No
         headers = HEADERS | {"ETag": etag}
         media_type = {
             ".mpd": "application/dash+xml",
+            ".m3u8": "application/vnd.apple.mpegurl",
             ".m4s": "video/iso.segment",
             ".mp4": "video/mp4",
             ".ass": "text/x-ssa",
+            ".vtt": "text/vtt",
             ".bin": "application/octet-stream",
         }.get(path.suffix)
         if not media_type:
@@ -168,7 +172,9 @@ async def open_local(path, request, *, authorize, etag_seed, on_close=lambda: No
     )
 
 
-async def open_part(source, request, *, authorize, transport=None, on_close=lambda: None):
+async def open_part(
+    source, request, *, authorize, transport=None, on_close=lambda: None, internal_matroska=False
+):
     """Stream bounded chunks, validating exact ranges and promptly closing on exit.
 
     ``source`` is server-resolved, never deserialized from a browser request.
@@ -206,6 +212,8 @@ async def open_part(source, request, *, authorize, transport=None, on_close=lamb
     if bounds:
         headers["Content-Range"] = f"bytes {left}-{right}/{source.part_size}"
     media_type = {"mp4": "video/mp4", "webm": "video/webm"}.get(source.container)
+    if internal_matroska and source.container == "mkv":
+        media_type = "video/x-matroska"
     if not media_type:
         raise DeliveryError("This container needs the external player.", 415)
     if request.method == "HEAD":

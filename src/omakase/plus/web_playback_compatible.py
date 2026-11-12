@@ -47,7 +47,7 @@ def _integer(value, low, high):
     return result
 
 
-def _require_decision(data, source):
+def _require_decision(data, source, *, video_action="copy"):
     root = _document(data)
     videos = root.findall("Video")
     if root.tag != "MediaContainer" or len(videos) != 1:
@@ -64,7 +64,7 @@ def _require_decision(data, source):
         (track.get("streamType"), track.get("decision"), track.get("codec")) for track in streams
     ]
     if (
-        decisions.count(("1", "copy", "h264")) != 1
+        decisions.count(("1", video_action, "h264")) != 1
         or sum(kind == "1" for kind, _, _ in decisions) != 1
         or sum(kind == "2" for kind, _, _ in decisions) != 1
         or not any(
@@ -197,6 +197,10 @@ class Generation:
 
 
 class CompatibleStream:
+    protocol = "dash"
+    profile = _PROFILE
+    video_action = "copy"
+
     def __init__(self, source, transport=None):
         self.source = source
         self.transport = transport
@@ -265,6 +269,36 @@ class CompatibleStream:
                 self.generation = None
                 await self._stop(upstream_id)
 
+    def _parameters(self, upstream_id, first):
+        return {
+            "path": "/library/metadata/" + self.source.metadata_key,
+            "mediaIndex": "0",
+            "partIndex": "0",
+            "protocol": self.protocol,
+            "directPlay": "0",
+            "directStream": "1",
+            "directStreamAudio": "0",
+            "hasMDE": "1",
+            "location": "lan",
+            "audioChannelCount": "2",
+            "videoQuality": "100",
+            "maxVideoBitrate": "200000",
+            "autoAdjustQuality": "0",
+            "session": upstream_id,
+            "transcodeSessionId": upstream_id,
+            "subtitles": "none",
+            "advancedSubtitles": "text",
+            "X-Plex-Client-Profile-Extra": self.profile,
+            "secondsPerSegment": str(_SEGMENT_SECONDS),
+            "offset": f"{first * _SEGMENT_SECONDS}.0",
+        }
+
+    async def _load_generation(self, client, upstream_id, first, params):
+        key = uuid4().hex
+        data = await self._xml(client, "start.mpd", upstream_id, params)
+        manifest, tracks, count = _manifest(data, upstream_id, key, self.source.duration_ms / 1000)
+        return Generation(upstream_id, key, manifest, tracks, first, count)
+
     async def open(self, position, authorize):
         async with self.lock:
             await authorize()
@@ -272,32 +306,10 @@ class CompatibleStream:
                 await self._stop(self.generation.upstream_id)
                 self.generation = None
             upstream_id = uuid4().hex
-            key = uuid4().hex
             # Give the player a segment before the requested keyframe and tolerate
             # a request for the previous nominal segment during manifest startup.
             first = max(0, int(position // _SEGMENT_SECONDS) - 2)
-            params = {
-                "path": "/library/metadata/" + self.source.metadata_key,
-                "mediaIndex": "0",
-                "partIndex": "0",
-                "protocol": "dash",
-                "directPlay": "0",
-                "directStream": "1",
-                "directStreamAudio": "0",
-                "hasMDE": "1",
-                "location": "lan",
-                "audioChannelCount": "2",
-                "videoQuality": "100",
-                "maxVideoBitrate": "200000",
-                "autoAdjustQuality": "0",
-                "session": upstream_id,
-                "transcodeSessionId": upstream_id,
-                "subtitles": "none",
-                "advancedSubtitles": "text",
-                "X-Plex-Client-Profile-Extra": _PROFILE,
-                "secondsPerSegment": str(_SEGMENT_SECONDS),
-                "offset": f"{first * _SEGMENT_SECONDS}.0",
-            }
+            params = self._parameters(upstream_id, first)
             try:
                 async with asyncio.timeout(22):
                     self.destination = await pin_destination(
@@ -305,14 +317,13 @@ class CompatibleStream:
                     )
                     async with self._client() as client:
                         _require_decision(
-                            await self._xml(client, "decision", upstream_id, params), self.source
+                            await self._xml(client, "decision", upstream_id, params),
+                            self.source,
+                            video_action=self.video_action,
                         )
-                        data = await self._xml(client, "start.mpd", upstream_id, params)
-                    manifest, tracks, count = _manifest(
-                        data, upstream_id, key, self.source.duration_ms / 1000
-                    )
+                        generation = await self._load_generation(client, upstream_id, first, params)
                     await authorize()
-                    self.generation = Generation(upstream_id, key, manifest, tracks, first, count)
+                    self.generation = generation
                     return self.generation
             except (httpx.HTTPError, TimeoutError, OSError, OutboundError):
                 raise _fail() from None
@@ -331,6 +342,13 @@ class CompatibleStream:
             ):
                 raise _fail("Media resource unavailable.", 404)
 
+        path = f"session/{generation.upstream_id}/{rep}/{asset}"
+        limit = _XML_LIMIT if asset == "header" else _SEGMENT_LIMIT
+        return await self._deliver(
+            generation, path, limit, generation.representations[rep], authorize, release
+        )
+
+    async def _deliver(self, generation, path, limit, media_type, authorize, release):
         client = self._client()
         response = None
 
@@ -343,11 +361,9 @@ class CompatibleStream:
                 release()
 
         try:
-            path = f"session/{generation.upstream_id}/{rep}/{asset}"
             response = await client.send(
                 self._request(client, path, generation.upstream_id), stream=True
             )
-            limit = _XML_LIMIT if asset == "header" else _SEGMENT_LIMIT
             declared = response.headers.get("content-length")
             if (
                 response.status_code != 200
@@ -379,7 +395,7 @@ class CompatibleStream:
                 body(),
                 close=close,
                 headers=headers,
-                media_type=generation.representations[rep],
+                media_type=media_type,
             )
         except BaseException as error:
             await close()

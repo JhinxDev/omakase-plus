@@ -443,6 +443,50 @@ def test_actual_shared_add_and_request_forms_queue_under_owner_without_history_i
     assert db.execute("SELECT COUNT(*) FROM anilist_plannings").fetchone()[0] == 0
 
 
+def test_anime_title_request_keeps_exact_season_and_rejects_a_stale_library_form(
+    state, monkeypatch
+):
+    from unittest.mock import Mock
+
+    from omakase.plus import direct, routes
+    from tests.plus.test_household_requests import target
+
+    app, db, sessions, lib, _ = state
+    lookup = Mock(return_value=target())
+    monkeypatch.setattr(direct, "resolve_direct_request", lookup)
+    forbidden = AsyncMock(side_effect=AssertionError("Suggestions cannot start media sync"))
+    monkeypatch.setattr(routes, "run_media_sync", forbidden)
+    member, token = client(app, sessions[2])
+    data = {
+        "csrf_token": token,
+        "anilist_id": "200",
+        "season": "1",
+        "household_library_id": lib,
+        "household_request_key": "a" * 32,
+        "shared_intent": "suggest",
+    }
+    result = member.post("/plus/add/acquire", data=data)
+    assert result.status_code == 303
+    request_id = result.headers["location"].split("#request-")[1]
+    row = db.execute(
+        "SELECT actor_user_id,domain,canonical_id,season_number,state FROM household_title_requests WHERE id=?",
+        (request_id,),
+    ).fetchone()
+    assert tuple(row) == (2, "anime", "200", 1, "pending")
+    assert not db.execute("SELECT id FROM library_items WHERE canonical_id='200'").fetchone()
+
+    personal = db.execute("SELECT library_id FROM personal_libraries WHERE user_id=2").fetchone()[0]
+    assert (
+        member.post(
+            "/plus/settings/household/select", data={"csrf_token": token, "library_id": personal}
+        ).status_code
+        == 303
+    )
+    assert member.post("/plus/add/acquire", data=data).status_code == 409
+    assert lookup.call_count == 1
+    forbidden.assert_not_called()
+
+
 def test_explicit_movie_check_uses_real_actor_and_rejects_legacy_ready_on_render(state):
     from pathlib import Path
 

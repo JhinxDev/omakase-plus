@@ -158,14 +158,38 @@
         && url.searchParams.get('library_id') === config.library_id ? url.href : null;
     } catch { return null; }
   }
+  function trackLanguage(value) {
+    const raw = typeof value === 'string' ? value.trim().replaceAll('_', '-') : '';
+    if (!raw || /^(und|zxx|unknown|undetermined)$/i.test(raw)) return 'Unknown language';
+    try { return new Intl.DisplayNames(['en'], { type: 'language', fallback: 'none' }).of(Intl.getCanonicalLocales(raw)[0]) || 'Unknown language'; }
+    catch { return 'Unknown language'; }
+  }
+  function episodePresentation(number, name, summary) {
+    const clean = value => typeof value === 'string' ? value.trim() : '';
+    return { heading: `Episode ${number}${clean(name) ? ' · ' + clean(name) : ''}`, summary: clean(summary) };
+  }
+  function normalizeUnknownTrackLanguage(localization) {
+    if (localization.resolve('UNDETERMINED_LANGUAGE') === 'Unknown language') return;
+    for (const locale of new Set(['en', ...localization.getCurrentLocales()])) localization.insert(locale, new Map([['UNDETERMINED_LANGUAGE', 'Unknown language']]));
+  }
   function subtitleChoices(nativeTracks, styledTracks) {
-    const language = track => track.language && track.language !== 'und' ? track.language : 'Language unknown';
+    const language = track => trackLanguage(track.language);
+    const description = track => {
+      const label = typeof track.label === 'string' ? track.label.trim() : '';
+      return !label || [track.language, language(track), 'und', 'Undetermined', 'Unknown language'].some(value => typeof value === 'string' && value.toLowerCase() === label.toLowerCase()) ? '' : label;
+    };
     const flags = track => [...(track.forced ? ['Forced'] : []), ...(track.default ? ['Default'] : [])];
-    return [{ value: 'off', label: 'Off', kind: 'off' },
-      ...nativeTracks.filter(track => track.id != null).map((track, index) => ({ value: `native:${track.id}`, kind: 'native',
-        label: [language(track), track.label, 'Browser subtitles', ...flags(track)].filter(Boolean).join(' · ') + ` (${index + 1})` })),
-      ...styledTracks.map((track, index) => ({ value: `ass:${track.plex_stream_id}`, kind: 'ass',
-        label: [language(track), 'Styled ASS', ...flags(track)].join(' · ') + ` (${index + 1})` }))];
+    const choices = [
+      ...nativeTracks.filter(track => track.id != null).map(track => ({ value: `native:${track.id}`, kind: 'native',
+        label: [language(track), description(track), ...flags(track)].filter(Boolean).join(' · ') })),
+      ...styledTracks.map(track => ({ value: `ass:${track.plex_stream_id}`, kind: 'ass',
+        label: [language(track), description(track), 'Styled', ...flags(track)].filter(Boolean).join(' · ') }))];
+    const counts = new Map(), indexes = new Map();
+    for (const choice of choices) counts.set(choice.label, (counts.get(choice.label) || 0) + 1);
+    return [{ value: 'off', label: 'Off', kind: 'off' }, ...choices.map(choice => {
+      const index = (indexes.get(choice.label) || 0) + 1; indexes.set(choice.label, index);
+      return counts.get(choice.label) > 1 ? { ...choice, label: `${choice.label} · Track ${index}` } : choice;
+    })];
   }
   function initialSubtitleValue(nativeTracks, styledTracks, savedId, versionChanged = false, policy = 'auto') {
     const choices = subtitleChoices(nativeTracks, styledTracks);
@@ -280,6 +304,9 @@
     }
   }
   function startPayload(config, capabilities) {
+    if (config.cloud_file) {
+      return { file_key: config.cloud_file, ...capabilities, defer_prepare: true };
+    }
     const identity = config.catalog_target ? { target: config.catalog_target }
       : { monitor_id: config.monitor_id, episode_number: config.episode_number, library_id: config.library_id };
     return { ...identity, ...capabilities, defer_prepare: true };
@@ -388,9 +415,14 @@
       shortcuts: { picture_in_picture: '' },
       mediaSession: { allowAutoPiP: false, supportedActions: ['play', 'pause', 'seekbackward', 'seekforward', 'seekto'] },
       documentPictureInPicture: { enabled: false },
-      controlPanelElements: ['play_pause', 'omakase_next', 'omakase_time', 'spacer', 'mute', 'volume', 'fullscreen', 'overflow_menu'],
-      overflowMenuButtons: ['omakase_quality', 'omakase_audio', 'omakase_subtitles', 'playback_rate', 'omakase_stream_info'],
+      controlPanelElements: ['omakase_rewind', 'play_pause', 'omakase_forward', 'omakase_time', 'omakase_next', 'spacer', 'mute', 'volume', 'omakase_audio', 'omakase_subtitles', 'fullscreen', 'overflow_menu'],
+      overflowMenuButtons: ['omakase_quality', 'playback_rate', 'omakase_stream_info'],
     };
+  }
+  function relativeSeekTarget(current, pending, delta, duration) {
+    const position = Number.isFinite(pending) ? pending : current;
+    if (![position, delta, duration].every(Number.isFinite) || duration <= 0) return null;
+    return Math.max(0, Math.min(duration, position + delta));
   }
   function qualityChoices(tracks) {
     const choices = new Map();
@@ -564,15 +596,17 @@
     }
     class AudioMenu extends shaka.ui.AudioLanguageSelection {
       constructor(parent, controls) {
-        super(parent, controls); this.button.classList.add('omakase-audio-button'); this.nameSpan.textContent = 'Audio';
+        super(parent, controls); this.button.classList.add('omakase-audio-button'); this.menu.classList.add('omakase-audio-menu'); this.nameSpan.textContent = 'Audio';
+        this.button.addEventListener('click', () => hooks.positionTrackMenus?.());
         this.refresh = () => this.checkAvailability(); this.player.addEventListener('audiotrackschanged', this.refresh);
         hooks.register(this); this.checkAvailability();
       }
-      updateLocalizedStrings() { super.updateLocalizedStrings(); this.button.setAttribute('aria-label', 'Audio language'); this.backSpan.textContent = 'Audio language'; }
+      updateLocalizedStrings() { super.updateLocalizedStrings(); this.nameSpan.textContent = 'Audio'; this.button.setAttribute('aria-label', 'Audio language'); this.backSpan.textContent = 'Audio language'; }
       checkAvailability() {
         super.checkAvailability();
         const { ready, failed } = hooks.state();
         this.button.disabled = !ready || failed || !this.player.getAudioTracks().length;
+        this.button.classList.toggle('shaka-hidden', this.isSubMenuOpened);
         this.button.title = this.player.getAudioTracks().length ? 'Choose audio language' : 'Audio is unavailable for this stream';
       }
       release() { this.player.removeEventListener('audiotrackschanged', this.refresh); hooks.unregister(this); super.release(); }
@@ -584,6 +618,7 @@
         this.button.setAttribute('aria-label', 'Subtitles'); this.button.setAttribute('aria-haspopup', 'menu');
         this.nameSpan.textContent = 'Subtitles'; this.backSpan.textContent = 'Subtitles'; this.backButton.setAttribute('aria-label', 'Close subtitles');
         this.menu.classList.add('omakase-subtitles-menu'); this.menu.setAttribute('role', 'menu'); this.menu.setAttribute('aria-label', 'Subtitles'); this.menu.id = 'web-player-subtitles-menu'; this.button.setAttribute('aria-controls', this.menu.id);
+        this.button.addEventListener('click', () => hooks.positionTrackMenus?.());
         this.choiceRows = [];
         this.choiceKey = null;
         this.menu.addEventListener('keydown', event => {
@@ -606,7 +641,8 @@
           for (const row of this.choiceRows) row.remove();
           this.choiceRows = choices.map(choice => {
             const row = document.createElement('button'); row.type = 'button'; row.dataset.subtitleChoice = choice.value;
-            row.setAttribute('role', 'menuitemradio'); row.textContent = choice.label;
+            row.setAttribute('role', 'menuitemradio');
+            const label = document.createElement('span'); label.textContent = choice.label; row.appendChild(label);
             row.addEventListener('click', event => {
               event.stopPropagation();
               if (!row.disabled) void hooks.selectSubtitle(choice.value).then(() => {
@@ -653,7 +689,7 @@
     }
     return { QualityMenu, AudioMenu, SubtitlesMenu, StreamInfoMenu };
   }
-  if (typeof module !== 'undefined' && module.exports) module.exports = { playbackTime, settingsMenuTypes, playerControlsConfiguration, qualityChoices, streamInfo, waitForSeek, SmoothTimeline, validatedSkipSegments, activeSkipSegment, EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
+  if (typeof module !== 'undefined' && module.exports) module.exports = { normalizeUnknownTrackLanguage, trackLanguage, episodePresentation, relativeSeekTarget, playbackTime, settingsMenuTypes, playerControlsConfiguration, qualityChoices, streamInfo, waitForSeek, SmoothTimeline, validatedSkipSegments, activeSkipSegment, EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
   if (typeof document === 'undefined') return;
   const root = document.querySelector('[data-web-player]');
   if (!root) return;
@@ -663,29 +699,34 @@
   const config = JSON.parse(document.getElementById('web-player-config').textContent);
   const video = find('video');
   const container = find('container');
-  let fullscreenPauseTimer;
-  function wakePausedFullscreen() {
-    window.clearTimeout(fullscreenPauseTimer);
+  const trackSlot = find('track-slot');
+  let chromeTimer;
+  function wakePlayerChrome() {
+    window.clearTimeout(chromeTimer);
     container.removeAttribute('data-fullscreen-idle');
-    // Shaka already handles playing controls. Keep its paused behavior inline.
-    if (document.fullscreenElement !== container || !video.paused) return;
-    fullscreenPauseTimer = window.setTimeout(() => {
-      if (container.querySelector(':focus-visible, :is(.shaka-overflow-menu, .shaka-settings-menu):not(.shaka-hidden), .web-player-timeline :active')) return;
-      container.setAttribute('data-fullscreen-idle', '');
+    container.removeAttribute('data-cinema-idle');
+    if (video.paused || video.ended) return;
+    chromeTimer = window.setTimeout(() => {
+      if (video.paused || video.ended || root.contains(document.activeElement) && document.activeElement !== video) return;
+      if (container.querySelector(':is(.shaka-overflow-menu, .shaka-settings-menu):not(.shaka-hidden), .web-player-timeline :active')) return;
+      if (root.querySelector('.web-player-back:hover, .shaka-bottom-controls:hover, .web-player-timeline:hover, .web-player-skip:hover')) return;
+      container.setAttribute('data-cinema-idle', '');
     }, 3000);
   }
-  document.addEventListener('fullscreenchange', wakePausedFullscreen);
-  document.addEventListener('keydown', wakePausedFullscreen);
-  for (const event of ['play', 'pause', 'ended']) video.addEventListener(event, wakePausedFullscreen);
-  container.addEventListener('pointermove', event => { if (event.pointerType !== 'touch') wakePausedFullscreen(); });
-  container.addEventListener('pointerup', event => { if (event.pointerType !== 'touch') wakePausedFullscreen(); });
-  container.addEventListener('focusout', wakePausedFullscreen);
+  document.addEventListener('fullscreenchange', wakePlayerChrome);
+  document.addEventListener('keydown', wakePlayerChrome);
+  for (const event of ['play', 'pause', 'ended']) video.addEventListener(event, wakePlayerChrome);
+  for (const event of ['pointermove', 'pointerup', 'pointerleave']) {
+    root.addEventListener(event, input => { if (input.pointerType !== 'touch') wakePlayerChrome(); });
+  }
+  root.addEventListener('focusin', wakePlayerChrome);
+  root.addEventListener('focusout', wakePlayerChrome);
   container.addEventListener('touchend', event => {
-    if (container.hasAttribute('data-fullscreen-idle')) {
+    if (container.hasAttribute('data-cinema-idle')) {
       event.preventDefault();
       event.stopImmediatePropagation();
     }
-    wakePausedFullscreen();
+    wakePlayerChrome();
   }, { capture: true });
   const status = find('status');
   const saved = find('save');
@@ -698,8 +739,10 @@
   const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
   let session = null;
   let player = null;
+  let failedStreamRelease = null;
   let mediaUri = null;
   let timeline = null;
+  let transportLayoutObserver = null;
   let seekTo = null;
   let activeSeekSession = null;
   let seekOrigin = null;
@@ -773,6 +816,7 @@
     if (label) find('loading-label').textContent = label;
   }
   function showError(error, saving = false) {
+    const controlsHadFocus = container.contains(document.activeElement);
     setLoading();
     startPanel.hidden = true;
     failed = true;
@@ -781,11 +825,22 @@
     find('timeline').disabled = true; find('skip').hidden = true;
     find('ass-select').disabled = true;
     refreshBarControls();
+    container.setAttribute('data-playback-failed', '');
+    overlay?.getControls().setEnabledShakaControls(false);
     video.pause();
-    void stopCaptions().catch(() => {});
-    window.clearInterval(periodic);
     const blocked = [401, 403, 409].includes(error.status);
-    find('error').hidden = false;
+    void stopCaptions().catch(() => {});
+    if ((blocked || saving) && player && !failedStreamRelease) {
+      const failedPlayer = player;
+      failedStreamRelease = failedPlayer.unload().catch(() => {}).then(() => {
+        video.srcObject = null;
+        video.removeAttribute('src');
+        video.load();
+      });
+    }
+    window.clearInterval(periodic);
+    const errorPanel = find('error');
+    errorPanel.hidden = false;
     const descriptions = {
       unsupported_browser: 'This browser cannot decode the selected video track.',
       unsupported_browser_audio: 'This browser cannot decode the selected audio track.',
@@ -815,6 +870,12 @@
     restart.disabled = true;
     start.disabled = true;
     if (saving) saved.textContent = 'Progress save interrupted.';
+    const recovery = errorPanel.querySelector('button:not([hidden]), a[href]') ?? errorPanel;
+    if (document.fullscreenElement === container) {
+      void document.exitFullscreen().then(() => { if (failed && !leaving) recovery.focus(); }).catch(() => {});
+    } else if (controlsHadFocus) {
+      recovery.focus();
+    }
   }
   function tracks() {
     const selected = selectedTracks(player);
@@ -855,11 +916,74 @@
       return true;
     } catch { return false; }
   }
+  const trackMenuSelector = '.omakase-audio-menu, .omakase-subtitles-menu';
+  function phoneTrackSurface() {
+    return window.matchMedia('(max-width: 640px)').matches && document.fullscreenElement !== container;
+  }
+  function openTrackMenu() {
+    return [...barItems].find(item => item.menu?.matches(trackMenuSelector) && !item.menu.classList.contains('shaka-hidden'));
+  }
+  function positionTrackMenus() {
+    if (!phoneTrackSurface()) { trackSlot.hidden = true; return; }
+    const viewport = window.visualViewport?.height || window.innerHeight;
+    const frame = container.getBoundingClientRect();
+    const item = openTrackMenu();
+    if (frame.bottom <= 0 || frame.top >= viewport) {
+      const x = window.scrollX, y = window.scrollY;
+      trackSlot.hidden = true;
+      if (item) {
+        item.backButton.click(); window.scrollTo({ left: x, top: y, behavior: 'instant' });
+      }
+      return;
+    }
+    const top = frame.bottom + 8;
+    container.style.setProperty('--player-track-menu-left', `${frame.left}px`);
+    container.style.setProperty('--player-track-menu-width', `${frame.width}px`);
+    container.style.setProperty('--player-track-menu-top', `${top}px`);
+    container.style.setProperty('--player-track-menu-height', `${Math.min(360, Math.max(96, viewport - top - 12))}px`);
+    if (!item) { trackSlot.hidden = true; return; }
+    // Keep the actual menu under Shaka's controls. Its reserved page space is
+    // a sibling of the stage, so menus never resize the video or ASS canvas.
+    const opening = trackSlot.hidden;
+    const height = item.menu.getBoundingClientRect().height;
+    trackSlot.style.blockSize = `${height + 8}px`;
+    trackSlot.hidden = false;
+    if (opening && top + height > viewport - 12) {
+      trackSlot.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+      positionTrackMenus();
+    }
+  }
+  window.addEventListener('resize', positionTrackMenus);
+  window.addEventListener('scroll', positionTrackMenus, { passive: true });
+  document.addEventListener('fullscreenchange', positionTrackMenus);
+  window.visualViewport?.addEventListener('resize', positionTrackMenus);
+  document.addEventListener('pointerdown', event => {
+    if (!phoneTrackSurface() || !(event.target instanceof Element)) return;
+    const item = openTrackMenu();
+    if (!item || item.menu.contains(event.target) || item.button.contains(event.target) || event.target.closest('.web-player-timeline')) return;
+    item.backButton.click(); positionTrackMenus();
+  }, { capture: true });
   function configureControls() {
     if (!overlay) return;
     const styledActive = typeof customTextId === 'string' && customTextId.startsWith('ass:');
     video.disablePictureInPicture = true;
     overlay.configure(playerControlsConfiguration());
+    normalizeUnknownTrackLanguage(overlay.getControls().getLocalization());
+    transportLayoutObserver?.disconnect();
+    const panel = container.querySelector('.shaka-controls-button-panel');
+    if (panel) {
+      const measureTransport = () => {
+        const height = panel.getBoundingClientRect().height;
+        if (height > 0) container.style.setProperty('--player-row-height', `${height}px`);
+        const primaryHeight = Math.max(...Array.from(panel.querySelectorAll('.shaka-play-button, .omakase-playback-clock, .shaka-fullscreen-button'), item => item.getBoundingClientRect().height));
+        if (height > 0 && primaryHeight > 0) container.style.setProperty('--player-secondary-band', `${Math.max(0, height - primaryHeight) + 8}px`);
+        positionTrackMenus();
+      };
+      measureTransport();
+      transportLayoutObserver = new ResizeObserver(measureTransport);
+      transportLayoutObserver.observe(panel);
+      for (const menu of container.querySelectorAll(trackMenuSelector)) transportLayoutObserver.observe(menu);
+    }
     enhanceRangeControls(container);
     find('caption-mode-note').hidden = !styledActive;
     refreshBarControls();
@@ -870,13 +994,26 @@
     sidebar.hidden = !next;
     if (next) sidebar.href = next;
     else sidebar.removeAttribute('href');
+    const navigation = find('episode-navigation');
+    if (navigation) navigation.hidden = !next && !root.querySelector('[data-player-previous]');
     for (const item of barItems) { item.checkAvailability(); if ((!ready || failed) && item.menu) { item.menu.classList.add('shaka-hidden'); item.button.setAttribute('aria-expanded', 'false'); } }
+    if (!ready || failed) trackSlot.hidden = true;
+  }
+  function updateEpisodeDetails(target) {
+    if (config.episode_number <= 0 || !target) return;
+    const presentation = episodePresentation(config.episode_number, target.episode_name, target.episode_summary);
+    if (typeof target.episode_name === 'string' && target.episode_name.trim()) find('episode-heading').textContent = presentation.heading;
+    if (presentation.summary) {
+      const synopsis = find('episode-synopsis'); synopsis.textContent = presentation.summary; synopsis.hidden = false;
+      const series = find('series-synopsis'); if (series) series.hidden = true;
+    }
   }
   function registerBarControls() {
     if (controlsRegistered) return;
     controlsRegistered = true;
     const { QualityMenu, AudioMenu, SubtitlesMenu, StreamInfoMenu } = settingsMenuTypes(shaka, {
       document, find, state: () => ({ ready, failed, captionLoading, subtitlePending }),
+      positionTrackMenus,
       register: item => barItems.add(item), unregister: item => barItems.delete(item),
       selectSubtitle: id => chooseSubtitle(id),
       streamInfo: () => streamInfo(video, player.getVariantTracks().find(track => track.active), player.getStats(), session),
@@ -889,12 +1026,34 @@
         this.link.removeAttribute('href'); if (enabled) this.link.href = candidate;
         this.link.setAttribute('aria-disabled', String(!enabled)); this.link.setAttribute('aria-label', candidate ? 'Next episode' : 'Next episode unavailable');
         this.link.querySelector('[data-next-label]').textContent = candidate ? 'Next episode' : 'No next episode';
-        this.link.querySelector('[data-next-compact]').textContent = candidate ? 'Next' : 'No next';
+        this.link.querySelector('[data-next-compact]').textContent = candidate ? 'Next episode' : '';
         this.link.title = candidate ? 'Open the next episode in this series and library' : 'No next episode is available in this library';
       }
       release() { barItems.delete(this); super.release(); }
     }
+    class SeekStep extends shaka.ui.Element {
+      constructor(parent, controls, delta) {
+        super(parent, controls);
+        this.button = document.createElement('button'); this.button.type = 'button';
+        this.button.className = `omakase-seek-step omakase-seek-${delta < 0 ? 'backward' : 'forward'} shaka-no-propagation`;
+        this.button.setAttribute('aria-label', `Seek ${delta < 0 ? 'backward' : 'forward'} 10 seconds`);
+        this.button.title = this.button.getAttribute('aria-label');
+        this.button.textContent = delta < 0 ? '−10' : '+10';
+        this.button.addEventListener('click', event => {
+          event.stopPropagation();
+          if (!ready || failed || leaving) return;
+          const target = relativeSeekTarget(video.currentTime, timeline?.requested(), delta, session?.duration_seconds);
+          if (target !== null) seekTo?.(target);
+        });
+        this.button.addEventListener('keydown', event => { if (['Enter', ' '].includes(event.key)) event.stopPropagation(); });
+        parent.appendChild(this.button); barItems.add(this); this.checkAvailability();
+      }
+      checkAvailability() { this.button.disabled = !ready || failed; }
+      release() { barItems.delete(this); super.release(); }
+    }
     for (const [name, Type] of [['omakase_quality', QualityMenu], ['omakase_audio', AudioMenu], ['omakase_subtitles', SubtitlesMenu], ['omakase_stream_info', StreamInfoMenu]]) shaka.ui.OverflowMenu.registerElement(name, { create: (parent, controls) => new Type(parent, controls) });
+    for (const [name, Type] of [['omakase_audio', AudioMenu], ['omakase_subtitles', SubtitlesMenu]]) shaka.ui.Controls.registerElement(name, { create: (parent, controls) => new Type(parent, controls) });
+    for (const [name, delta] of [['omakase_rewind', -10], ['omakase_forward', 10]]) shaka.ui.Controls.registerElement(name, { create: (parent, controls) => new SeekStep(parent, controls, delta) });
     shaka.ui.Controls.registerElement('omakase_next', { create: (parent, controls) => new NextEpisode(parent, controls) });
     shaka.ui.Controls.registerElement('omakase_time', { create: parent => {
       const clock = find('clock');
@@ -1044,6 +1203,8 @@
   }
   async function dispose() {
     ready = false;
+    trackSlot.hidden = true;
+    transportLayoutObserver?.disconnect(); transportLayoutObserver = null;
     if (timeline) timeline.destroy(); timeline = null;
     seekTo = null;
     find('timeline').disabled = true; find('skip').hidden = true;
@@ -1057,6 +1218,10 @@
       if (session?.session_id === pending.pending.session_id) session = null;
     }
     await stopCaptions();
+    if (failedStreamRelease) {
+      await failedStreamRelease;
+      failedStreamRelease = null;
+    }
     if (queue) await queue.idle();
     if (session) {
       try { await post(sessionPath('/close'), {}, leaving); } catch { /* Expiring server sessions provide the fallback. */ }
@@ -1096,6 +1261,7 @@
     const currentAttempt = ++attempt;
     let useRegularStream = false;
     failed = false;
+    container.removeAttribute('data-playback-failed');
     start.disabled = true;
     startPanel.hidden = true;
     find('cancel-preparation').hidden = true;
@@ -1120,7 +1286,7 @@
       if (priorExitUnconfirmed) saved.textContent = 'Previous exit save could not be verified.';
       if (currentAttempt !== attempt || leaving) return;
       status.textContent = `Opening your ${mediaLabel}…`;
-      const startUrl = config.catalog_target ? '/plus/api/playback/catalog-sessions' : '/plus/api/playback/sessions';
+      const startUrl = config.cloud_file ? '/plus/api/playback/cloud-sessions' : config.catalog_target ? '/plus/api/playback/catalog-sessions' : '/plus/api/playback/sessions';
       const payload = startPayload(config, browserCapabilities(window, video));
       if (!find('resume').checked) payload.resume = false;
       if (regularStreamVersion) {
@@ -1134,6 +1300,7 @@
         return;
       }
       session = opened;
+      updateEpisodeDetails(session);
       if (!Number.isFinite(session.duration_seconds) || session.duration_seconds <= 0) throw new Error('Invalid playback timeline');
       if (safeLink(find('plex'), session.source?.plex_url)) find('fallback').hidden = true;
       if (session.preparation_required) {
@@ -1148,6 +1315,7 @@
         if (currentAttempt !== attempt || leaving) return;
         preparation = null;
         session = prepared;
+        updateEpisodeDetails(session);
         find('cancel-preparation').hidden = true;
         if (safeLink(find('plex'), session.source?.plex_url)) find('fallback').hidden = true;
       }

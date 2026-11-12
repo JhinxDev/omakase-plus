@@ -70,6 +70,7 @@ class LibraryScope:
     policy_revision: int
     members_can_add: bool
     acquisition_requests: bool
+    can_request_titles: bool = False
 
 
 def resolve_scope(db, *, viewer_id: int, library_id: str) -> LibraryScope:
@@ -78,15 +79,21 @@ def resolve_scope(db, *, viewer_id: int, library_id: str) -> LibraryScope:
     ).fetchone()
     _require(row is not None, "Library not available.", 404)
     role = "owner"
+    can_add = bool(row["members_can_add"])
+    can_request_titles = False
     if row["kind"] == "personal":
         _require(row["owner_user_id"] == viewer_id, "Library not available.", 404)
     else:
         member = db.execute(
-            "SELECT role FROM household_memberships WHERE library_id=? AND user_id=? AND state='active'",
+            "SELECT role,can_add_titles,can_request_titles FROM household_memberships WHERE library_id=? AND user_id=? AND state='active'",
             (library_id, viewer_id),
         ).fetchone()
         _require(member is not None, "Library not available.", 404)
         role = member["role"]
+        if role == "member":
+            if member["can_add_titles"] is not None:
+                can_add = bool(member["can_add_titles"])
+            can_request_titles = bool(member["can_request_titles"])
     return LibraryScope(
         library_id,
         row["kind"],
@@ -95,8 +102,9 @@ def resolve_scope(db, *, viewer_id: int, library_id: str) -> LibraryScope:
         row["owner_user_id"],
         row["membership_revision"],
         row["policy_revision"],
-        bool(row["members_can_add"]),
+        can_add,
         bool(row["acquisition_requests"]),
+        can_request_titles,
     )
 
 
@@ -160,14 +168,17 @@ def selected_scope(db, *, viewer_id: int) -> LibraryScope:
 
 def overview(db, *, viewer_id: int) -> dict[str, Any]:
     row = db.execute(
-        "SELECT l.id,l.name,m.role,l.members_can_add,l.acquisition_requests FROM household_memberships m JOIN libraries l ON l.id=m.library_id WHERE m.user_id=? AND m.state='active' AND l.state='active'",
+        "SELECT l.id,l.name,m.role,l.members_can_add,l.acquisition_requests,m.can_request_titles FROM household_memberships m JOIN libraries l ON l.id=m.library_id WHERE m.user_id=? AND m.state='active' AND l.state='active'",
         (viewer_id,),
     ).fetchone()
     if row is None:
         return {"household": None}
     members = db.execute(
-        "SELECT m.user_id,m.role,m.display_name,m.joined_at FROM household_memberships m WHERE m.library_id=? AND m.state='active' ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END,joined_at",
-        (row["id"],),
+        """SELECT user_id,role,display_name,joined_at,
+                  COALESCE(can_add_titles,?) AS can_add_titles,can_request_titles
+           FROM household_memberships WHERE library_id=? AND state='active'
+           ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END,joined_at,user_id""",
+        (row["members_can_add"], row["id"]),
     ).fetchall()
     # No emails, names, private progress or notifications from other accounts.
     return {
@@ -182,6 +193,8 @@ def overview(db, *, viewer_id: int) -> dict[str, Any]:
                 else m["display_name"],
                 "role": m["role"],
                 "joined_at": m["joined_at"],
+                "can_add_titles": bool(m["can_add_titles"]),
+                "can_request_titles": bool(m["can_request_titles"]),
             }
             for m in members
         ],
@@ -589,7 +602,11 @@ def accept_invite(
         _require(changed == 1, "Invitation is invalid or no longer available.", 404)
         ensure_personal_library(db, user_id=viewer_id)
         db.execute(
-            "INSERT INTO household_memberships(library_id,user_id,role,joined_at,display_name) VALUES(?,?,'member',?,?) ON CONFLICT(library_id,user_id) DO UPDATE SET state='active',joined_at=excluded.joined_at,revoked_at=NULL,display_name=excluded.display_name",
+            """INSERT INTO household_memberships(library_id,user_id,role,joined_at,display_name)
+               VALUES(?,?,'member',?,?)
+               ON CONFLICT(library_id,user_id) DO UPDATE SET state='active',
+                 joined_at=excluded.joined_at,revoked_at=NULL,display_name=excluded.display_name,
+                 can_add_titles=NULL,can_request_titles=1""",
             (row["library_id"], viewer_id, _stamp(), display_name),
         )
         db.execute(
@@ -633,6 +650,7 @@ def leave_or_revoke(db, scope: LibraryScope, *, member_id: int | None = None) ->
             "UPDATE library_request_events SET state='cancelled',updated_at=? WHERE library_id=? AND actor_user_id=? AND state='queued'",
             (_stamp(), scope.library_id, target),
         )
+        _cancel_title_requests(db, scope.library_id, target)
 
         personal = db.execute(
             "SELECT library_id FROM personal_libraries WHERE user_id=?", (target,)
@@ -642,6 +660,36 @@ def leave_or_revoke(db, scope: LibraryScope, *, member_id: int | None = None) ->
                 "UPDATE library_selections SET library_id=? WHERE user_id=? AND library_id=?",
                 (personal[0], target, scope.library_id),
             )
+
+
+def _cancel_title_requests(db, library_id: str, member_id: int) -> None:
+    db.execute(
+        """UPDATE household_title_requests SET state='cancelled',decided_at=?
+           WHERE library_id=? AND actor_user_id=? AND state='pending'""",
+        (_stamp(), library_id, member_id),
+    )
+
+
+def set_member_permissions(
+    db, scope: LibraryScope, *, member_id: int, can_add_titles: bool, can_request_titles: bool
+) -> None:
+    with _transaction(db):
+        revalidate_scope(db, scope, owner=True)
+        member = resolve_scope(db, viewer_id=member_id, library_id=scope.library_id)
+        _require(member.role == "member", "Choose a household member.", 422)
+        db.execute(
+            """UPDATE household_memberships SET can_add_titles=?,can_request_titles=?
+               WHERE library_id=? AND user_id=?""",
+            (int(can_add_titles), int(can_request_titles), scope.library_id, member_id),
+        )
+        if member.members_can_add and not can_add_titles:
+            db.execute(
+                """UPDATE library_request_events SET state='cancelled',updated_at=?
+                   WHERE library_id=? AND actor_user_id=? AND state='queued'""",
+                (_stamp(), scope.library_id, member_id),
+            )
+        if not can_request_titles:
+            _cancel_title_requests(db, scope.library_id, member_id)
 
 
 def set_policy(
@@ -1158,6 +1206,7 @@ def navigation_context(db, *, viewer_id: int) -> dict[str, Any]:
         "can_add": selected.role == "owner" or selected.members_can_add,
         "can_request": selected.acquisition_requests
         and (selected.role == "owner" or selected.members_can_add),
+        "can_suggest": selected.can_request_titles,
         "libraries": [dict(row) for row in rows],
     }
 

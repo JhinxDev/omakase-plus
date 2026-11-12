@@ -13,6 +13,8 @@ from omakase.plus.deps import get_db
 from omakase.plus.history_artwork import (
     EpisodeArtworkUnavailable,
     anime_identity,
+    anime_series_identity,
+    anime_series_metadata,
     episode_artwork,
     tv_identity,
 )
@@ -76,5 +78,38 @@ def create_history_artwork_router():
         media_id: int, season: int, episode: int, user=Depends(require_user), db=Depends(get_db)
     ):
         return await image(db, user, media_id=media_id, season=season, episode=episode)
+
+    @router.get("/series/episodes/anime/{monitor_id}")
+    async def anime_episodes(monitor_id: int, user=Depends(require_user), db=Depends(get_db)):
+        try:
+            identity = anime_series_identity(db, user.id, monitor_id)
+            return await anime_series_metadata(db, identity)
+        except EpisodeArtworkUnavailable:
+            # Missing catalog metadata is a normal detail-page fallback.
+            return {}
+
+    @router.get("/series/artwork/anime/{monitor_id}/{episode}")
+    async def anime_still(
+        monitor_id: int, episode: int, user=Depends(require_user), db=Depends(get_db)
+    ):
+        try:
+            if episode <= 0:
+                raise EpisodeArtworkUnavailable()
+            identity = anime_series_identity(db, user.id, monitor_id, episode)
+            payload, kind = await episode_artwork(db, identity)
+        except EpisodeArtworkUnavailable:
+            raise HTTPException(404, "Image unavailable", headers=_HEADERS) from None
+        return Response(payload, media_type=kind, headers=_HEADERS)
+
+    @router.get("/series/artwork/tv/{media_id}/{season}/{episode}")
+    async def tv_still(
+        media_id: int, season: int, episode: int, user=Depends(require_user), db=Depends(get_db)
+    ):
+        try:
+            identity = tv_identity(db, user.id, media_id, season, episode, detail=True)
+            payload, kind = await episode_artwork(db, identity)
+        except EpisodeArtworkUnavailable:
+            raise HTTPException(404, "Image unavailable", headers=_HEADERS) from None
+        return Response(payload, media_type=kind, headers=_HEADERS)
 
     return router

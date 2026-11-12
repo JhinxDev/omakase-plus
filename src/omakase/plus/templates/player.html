@@ -4,25 +4,31 @@
 <link rel="stylesheet" href="/plus/static/shaka-controls-5.3.3.css?v={{ asset_version }}">
 <link rel="stylesheet" href="/plus/static/web-player.css?v={{ asset_version }}">
 {% endblock %}
-{% block eyebrow %}Your private cinema{% endblock %}
-{% block page_title %}Watch{% endblock %}
-{% block page_intro %}{% endblock %}
-{% block page_actions %}
-<a class="web-player-back" href="{{ overview_url }}"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5m7 7-7-7 7-7"/></svg>Back to title</a>
-{% if native_tv_test_enabled %}
-<form method="post" action="/plus/native-tv-test">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <input type="hidden" name="watch_path" value="{{ request.url.path }}">
-  <input type="hidden" name="library_id" value="{{ library_id }}">
-  <button class="web-player-back" type="submit">Test on Apple TV</button>
-</form>
-{% endif %}
-{% endblock %}
+{% block masthead %}{% endblock %}
 {% block content %}
 {% set episodic = episode_number > 0 %}
 {% set media = "episode" if episodic else "movie" %}
 {% set media_title = "Episode " ~ episode_number if episodic else title %}
+{% set initial_episode_name = episode_name | default('', true) | trim %}
+{% set initial_episode_summary = episode_summary | default('', true) | trim %}
 <section class="web-player" data-web-player aria-label="{{ media | capitalize }} player">
+  <header class="product-masthead web-player-header">
+    <div>
+      <span class="page-kicker">Watching{% if episodic %} · Episode {{ episode_number }}{% endif %}</span>
+      <h1 title="{{ title }}">{{ title }}</h1>
+    </div>
+    <div class="masthead-actions">
+      <a class="web-player-back" href="{{ overview_url }}" aria-label="Back to title"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5m7 7-7-7 7-7"/></svg><span class="web-player-back-label">Back to title</span></a>
+      {% if native_tv_test_enabled %}
+      <form class="web-player-tv-test web-player-tv-test--desktop" method="post" action="/plus/native-tv-test">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="watch_path" value="{{ request.url.path }}">
+        <input type="hidden" name="library_id" value="{{ library_id }}">
+        <button class="web-player-back" type="submit"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>Create Apple TV link</button>
+      </form>
+      {% endif %}
+    </div>
+  </header>
   <div class="web-player-stage" data-player-container{% if start_immediately %} aria-busy="true"{% endif %}>
     <video data-player-video playsinline disablepictureinpicture preload="none" aria-label="{{ title }}{% if episodic %}, episode {{ episode_number }}{% endif %}"></video>
     <div class="web-player-timeline shaka-no-propagation"><input type="range" min="0" max="1" step="any" value="0" aria-label="Seek {{ media }}" data-player-timeline disabled></div>
@@ -49,21 +55,32 @@
       <button class="web-player-primary" type="button" data-player-start disabled>Play {{ media }}</button>
     </div>
   </div>
-  <div class="web-player-state">
-    <p class="web-player-status" role="status" aria-live="polite" data-player-status>{% if start_immediately %}Loading {{ media }}…{% endif %}</p>
-    <p class="web-player-save" role="status" data-player-save></p>
-  </div>
+  <div data-player-track-slot hidden aria-hidden="true"></div>
+  <p class="web-player-status sr-only" role="status" aria-live="polite" data-player-status>{% if start_immediately %}Loading {{ media }}…{% endif %}</p>
   <p class="web-player-version-note" data-player-version-note hidden>Your saved position belongs to a different copy of this {{ media }}. This copy starts from the beginning.</p>
-  <div class="web-player-error" role="alert" data-player-error hidden>
+  <div class="web-player-error" role="alert" tabindex="-1" data-player-error hidden>
     <p data-player-error-text></p>
-    <div class="web-player-actions"><button type="button" data-player-retry hidden>Try playback once more</button><button type="button" data-player-play-from-start hidden>Play from beginning</button><button type="button" data-player-reload hidden>Reload player</button></div>
+    <div class="web-player-actions">
+      <button class="web-player-primary" type="button" data-player-retry hidden>Try playback once more</button>
+      <button type="button" data-player-play-from-start hidden>Play from beginning</button>
+      <button class="web-player-primary" type="button" data-player-reload hidden>Reload player</button>
+      <a href="{{ overview_url }}">Back to title</a>
+    </div>
   </div>
   <div class="web-player-details">
     <article class="web-player-episode" aria-labelledby="episode-heading">
       {% if episodic %}<a class="web-player-series" href="{{ overview_url }}">{{ title }}</a>{% endif %}
-      <h2 id="episode-heading">{{ media_title }}</h2>
-      {% if description_preview %}<p class="web-player-synopsis">{{ description_preview }}</p>{% if description_more %}<details class="web-player-more"><summary>Read synopsis</summary><p>{{ description_more }}</p></details>{% endif %}{% endif %}
+      <h2 id="episode-heading" data-player-episode-heading>{{ media_title }}{% if episodic and initial_episode_name %} · {{ initial_episode_name }}{% endif %}</h2>
+      {% if episodic %}<p class="web-player-synopsis" data-player-episode-synopsis{% if not initial_episode_summary %} hidden{% endif %}>{{ initial_episode_summary }}</p>{% endif %}
+      {% if description_preview %}<div data-player-series-synopsis{% if episodic and initial_episode_summary %} hidden{% endif %}>{% if episodic %}<h3 class="web-player-description-label">About the series</h3>{% endif %}<p class="web-player-synopsis">{{ description_preview }}</p>{% if description_more %}<details class="web-player-more"><summary>Read synopsis</summary><p>{{ description_more }}</p></details>{% endif %}</div>{% endif %}
       <details class="web-player-tools"><summary>Playback options & credits</summary>
+        {% if native_tv_test_enabled %}<form class="web-player-tv-test web-player-tv-test--phone" method="post" action="/plus/native-tv-test">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="watch_path" value="{{ request.url.path }}">
+          <input type="hidden" name="library_id" value="{{ library_id }}">
+          <button type="submit">Create Apple TV link</button>
+        </form>{% endif %}
+        <p class="web-player-save" role="status" data-player-save></p>
         <div class="web-player-tools-actions"><button type="button" data-player-restart disabled>Restart {{ media }}</button>
         <a data-player-plex hidden target="_blank" rel="noopener noreferrer">Open this {{ media }} in Plex <span aria-hidden="true">↗</span></a></div>
         <p data-player-fallback>Open the title for other playback options.</p>
@@ -79,19 +96,20 @@
       </details>
     </article>
     <aside class="web-player-sidebar" aria-label="Series and episode navigation"{% if not episodic %} hidden{% endif %}>
-      <span class="web-player-eyebrow">UP NEXT & SERIES</span>
-      <nav aria-label="Episode navigation">
+      <span class="web-player-eyebrow">SERIES</span>
+      <nav aria-label="Series"><a href="{{ overview_url }}">See episodes <span aria-hidden="true">↗</span></a></nav>
+      <details class="web-player-episode-navigation" data-player-episode-navigation{% if not next_url and not previous_url %} hidden{% endif %}>
+      <summary>Episode navigation</summary><nav aria-label="Episode navigation">
         <a data-player-sidebar-next {% if next_url %}href="{{ next_url }}"{% else %}hidden{% endif %}>Next episode <span aria-hidden="true">→</span></a>
-        {% if previous_url %}<a href="{{ previous_url }}">Previous episode <span aria-hidden="true">←</span></a>{% endif %}
-        <a href="{{ overview_url }}">See episodes <span aria-hidden="true">↗</span></a>
-      </nav>
+        {% if previous_url %}<a data-player-previous href="{{ previous_url }}">Previous episode <span aria-hidden="true">←</span></a>{% endif %}
+      </nav></details>
       {% if episodic and season_number is not none %}<p>{{ "Season " ~ season_number if season_number else "Specials" }}</p>{% endif %}
       {% if genres %}<p class="web-player-genres">{{ genres | join(' · ') }}</p>{% endif %}
     </aside>
   </div>
 </section>
 <noscript><style>.web-player-loading { display: none }</style><p class="web-player-error">JavaScript is required for this player. <a href="{{ overview_url }}">Return to the title</a> to open the {{ media }} in Plex.</p></noscript>
-<script id="web-player-config" type="application/json">{{ {"monitor_id": monitor_id | default(none), "episode_number": episode_number, "library_id": library_id, "next_url": next_url | default(none), "start_immediately": start_immediately | default(false), "catalog_target": catalog_target | default(none), "subtitle_viewer_id": subtitle_viewer_id | default(none)} | tojson }}</script>
+<script id="web-player-config" type="application/json">{{ {"monitor_id": monitor_id | default(none), "episode_number": episode_number, "library_id": library_id, "next_url": next_url | default(none), "start_immediately": start_immediately | default(false), "catalog_target": catalog_target | default(none), "cloud_file": cloud_file | default(none), "subtitle_viewer_id": subtitle_viewer_id | default(none)} | tojson }}</script>
 {% endblock %}
 {% block end_scripts %}
 <script src="/plus/static/shaka-player-5.3.3.js?v={{ asset_version }}" defer></script>

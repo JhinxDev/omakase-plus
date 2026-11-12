@@ -25,6 +25,20 @@ class PlaybackProofError(ValueError):
     pass
 
 
+def plex_stream_role(stream: ET.Element) -> str:
+    """Classify a Plex track without passing through its provider-supplied title."""
+    title = (stream.get("title", "") + " " + stream.get("displayTitle", "")).lower()
+    if stream.get("forced") == "1":
+        return "forced"
+    if re.search(r"\bsigns?\b", title):
+        return "signs"
+    if stream.get("hearingImpaired") == "1" or re.search(r"\b(sdh|cc)\b", title):
+        return "sdh"
+    if "commentary" in title:
+        return "commentary"
+    return "full_dialogue"
+
+
 def _require(condition, message="Playback proof is unavailable or changed."):
     if not condition:
         raise PlaybackProofError(message)
@@ -450,18 +464,6 @@ async def observe_movie_playback(
         if not kind:
             continue
         stream_id = _numeric(stream.get("id", ""))
-        title = (stream.get("title", "") + " " + stream.get("displayTitle", "")).lower()
-        role = (
-            "forced"
-            if stream.get("forced") == "1"
-            else "signs"
-            if re.search(r"\bsigns?\b", title)
-            else "sdh"
-            if stream.get("hearingImpaired") == "1" or re.search(r"\b(sdh|cc)\b", title)
-            else "commentary"
-            if "commentary" in title
-            else "full_dialogue"
-        )
         raw = stream.get("languageCode") or stream.get("languageTag")
         tracks.append(
             TrackObservation(
@@ -469,7 +471,7 @@ async def observe_movie_playback(
                 kind,
                 physical,
                 raw,
-                role=role,
+                role=plex_stream_role(stream),
                 source="external"
                 if stream.get("key") or stream.get("external") == "1"
                 else "embedded",

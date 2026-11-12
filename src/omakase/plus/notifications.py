@@ -10,6 +10,8 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 
+from omakase.plus.households import feature_enabled as households_enabled
+
 _LIMIT = 20
 _COUNT_CAP = 100
 
@@ -120,12 +122,21 @@ _SOURCES["anime_media"] = (
     )
     .replace("n.anilist_id\n FROM", "n.anilist_id," + _MEDIA_CHANGED + "\n FROM")
 )
+_SOURCES["household_request"] = """
+SELECT 'household_request:title:'||r.id,'household_request',r.domain,r.title,NULL,
+       r.created_at,'/plus/settings/household#request-'||r.id,NULL,NULL,m.display_name
+ FROM household_title_requests r JOIN libraries l ON l.id=r.library_id
+ JOIN household_memberships m ON m.library_id=r.library_id AND m.user_id=r.actor_user_id
+ WHERE l.owner_user_id=:user_id AND l.kind='household' AND l.state='active'
+       AND r.state='pending' AND m.state='active' AND m.role='member' AND m.can_request_titles=1
+"""
 
 
 def _window_sql(source: str) -> str:
     candidate = _SOURCES[source]
-    if source != "anime_media":
-        candidate = "SELECT d.*,NULL FROM (" + candidate + ") d"
+    if source != "household_request":
+        extras = "NULL" if source == "anime_media" else "NULL,NULL"
+        candidate = f"SELECT d.*,{extras} FROM (" + candidate + ") d"
     # Honor prior-version read/dismiss state only for media that already existed
     # at that acknowledgement. A newly managed asset is a genuinely new signal.
     legacy_read = "CASE WHEN replace(legacy.read_at,' ','T')>=replace(c.signal_at,' ','T') THEN legacy.read_at END"
@@ -134,7 +145,7 @@ def _window_sql(source: str) -> str:
     dismissed = "COALESCE(s.dismissed_at," + legacy_dismiss + ")"
     return (
         _ANIME
-        + ",candidate(id,kind,media_type,title,rating,created_at,href,artwork_ref,signal_at) AS ("
+        + ",candidate(id,kind,media_type,title,rating,created_at,href,artwork_ref,signal_at,requester) AS ("
         + candidate
         + ") SELECT c.*,"
         + read
@@ -188,6 +199,21 @@ def _artwork_url(row: sqlite3.Row) -> str | None:
 def _item(row: sqlite3.Row) -> dict:
     review = row["kind"] == "removal_reminder"
     title = "".join(c for c in str(row["title"]) if ord(c) >= 32).strip()[:300]
+    if row["kind"] == "household_request":
+        return {
+            "id": row["id"],
+            "kind": row["kind"],
+            "media_type": row["media_type"],
+            "title": title,
+            "message": f"{row['requester']} requested this title for your household.",
+            "actions": [{"kind": "review_request", "label": "Review request", "href": row["href"]}],
+            "href": row["href"],
+            "action_label": "Review request",
+            "rating": None,
+            "created_at": row["created_at"],
+            "read": row["read_at"] is not None,
+            "artwork_url": None,
+        }
     return {
         "id": row["id"],
         "kind": row["kind"],
@@ -239,6 +265,8 @@ def notification_feed(db: sqlite3.Connection, *, user_id: int) -> dict:
     rows = []
     unread_total = 0
     for source in _SOURCES:
+        if source == "household_request" and not households_enabled():
+            continue
         rows.extend(db.execute(_window_sql(source), params).fetchall())
         unread_total += len(
             db.execute(_window_sql(source), {**params, "unread_only": True}).fetchall()
@@ -272,8 +300,9 @@ def set_notification_state(
         ("completed_unrated", "movie"): "movie_rating",
         ("completed_unrated", "tv"): "tv_rating",
         ("removal_reminder", "anime"): "anime_media",
+        ("household_request", "title"): "household_request",
     }.get(tuple(parts[:2]))
-    if source is None:
+    if source is None or (source == "household_request" and not households_enabled()):
         return False
     params.update(cap=1, unread_only=False, include_dismissed=True, target_id=notification_id)
     row = db.execute(_window_sql(source), params).fetchone()

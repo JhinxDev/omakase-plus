@@ -86,10 +86,24 @@ def show(**overrides):
 def test_collection_exact_identity_and_honest_catalog_state():
     html = render("tv.html", cards=[show(in_plex_episodes=0)], query="", view="all")
     assert 'href="/plus/tv/321"' in html
-    assert "Not watched" in html
+    assert "1 episode watched" in html
+    assert "Not watched" not in html
     assert "Availability unknown" in html
     assert "Ready" not in html
     assert "Sync collection from Plex" in html
+
+
+def test_tv_search_disclosure_has_progressive_native_form_and_preserves_query():
+    html = render("tv.html", cards=[show()], query="", view="all")
+    assert 'class="collection-search-disclosure" open' not in html
+    assert "<summary>Search &amp; filters</summary>" in html
+    assert 'action="/plus/tv" role="search"' in html
+    assert 'href="/plus/search?kind=tv"' in html
+    filtered = render("tv.html", cards=[show()], query="A Series", view="watching")
+    assert 'class="collection-search-disclosure" open' in filtered
+    assert 'name="q" value="A Series"' in filtered
+    assert 'name="view" value="watching"' in filtered
+    assert 'href="/plus/tv/321"' in filtered
 
 
 def test_detail_separates_history_inventory_and_no_playback_claim():
@@ -165,6 +179,31 @@ def test_legacy_raw_inventory_never_claims_a_season_count():
     assert "Available" in html and "38 episodes indexed" in html
     assert "Season coverage unknown" in html
     assert "38 in Plex" not in html and "38 seasons" not in html
+
+
+def test_collection_inventory_is_optional_and_separate_from_browse_cards():
+    html = render(
+        "tv.html",
+        cards=[
+            show(in_plex_episodes=38),
+            show(tmdb_id=654, in_plex_episodes=0, watched_episodes=0),
+        ],
+        query="",
+        view="all",
+    )
+    before, details = html.split('id="tv-library-details"', 1)
+    assert "tv-card-inventory" not in before
+    assert "38 episodes indexed" not in before and "Season coverage unknown" not in before
+    assert "38 episodes indexed" in details and "Season coverage unknown" in details
+    assert "Library availability details" in details
+    assert 'class="tv-tools" open' not in html
+    assert html.count('class="tv-library-inventory"') == 1
+    assert "Library presence does not verify media bytes or playback." in details
+    assert 'href="/plus/tv/321"' in before and 'href="/plus/tv/654"' in before
+    empty = render(
+        "tv.html", cards=[show(in_plex_episodes=0, watched_episodes=0)], query="", view="all"
+    )
+    assert 'id="tv-library-details"' not in empty and "Not watched" not in empty
 
 
 def test_detail_does_not_count_specials_as_a_fifth_regular_season():

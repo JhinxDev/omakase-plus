@@ -114,11 +114,24 @@ def test_watched_and_media_verified_are_independent_rendered_states():
     assert (
         "is-verified" in parsed.rows[4]["classes"] and "is-watched" not in parsed.rows[4]["classes"]
     )
-    assert "Media verified" in parsed.rows[4]["text"] and "Unwatched" in parsed.rows[4]["text"]
+    assert (
+        "Media verified" not in parsed.rows[4]["text"] and "Unwatched" not in parsed.rows[4]["text"]
+    )
+    file_details = html.split('<details class="episode-file-details">', 1)[1].split(
+        "</details>", 1
+    )[0]
+    assert "Episode 4" in file_details and "Media verified" in file_details
     assert "is-verified" not in parsed.rows[5]["classes"]
     assert "is-upcoming" in parsed.rows[7]["classes"] and "Upcoming" in parsed.rows[7]["text"]
     assert "is-watched" not in parsed.rows[7]["classes"]
     assert html.count('class="episode-verification-icon"') == 3
+    assert html.index('<details class="title-technical-details"') < html.index(
+        '<details class="episode-file-details">'
+    )
+    assert "3 verified · 3 in Plex" not in html
+    assert "3 of 6 episodes verified" not in html
+    assert html.count("3 / 6 episodes verified") == 1
+    assert "Library evidence" in html
 
 
 def test_original_release_and_episode_numbers_are_disclosed_without_changing_action_contracts():
@@ -144,3 +157,75 @@ def test_completed_watch_status_does_not_invent_episode_progress():
     parsed = EpisodeRows()
     parsed.feed(render_title(title))
     assert all("is-watched" not in row["classes"] for row in parsed.rows.values())
+
+
+def test_anime_series_cover_and_playhead_keep_exact_play_targets():
+    title = title_fixture()
+    title.update(
+        play_url="/plus/watch/1/3?play=1",
+        play_episode=3,
+        play_label="Resume",
+        episode_play_urls={1: "/plus/watch/1/1?play=1", 3: "/plus/watch/1/3?play=1"},
+        episode_resume={"percent": 28, "minutes_left": 17},
+    )
+    html = render_title(title)
+    assert "Continue watching · E3" in html
+    assert 'aria-label="Replay episode 1"' in html
+    assert 'aria-label="Resume episode 3"' in html
+    assert 'value="28" max="100" aria-label="Episode 3 saved position"' in html
+    assert "17 min left" in html
+    assert 'data-series-episodes="/plus/series/episodes/anime/1"' in html
+    assert 'data-episode-still="/plus/series/artwork/anime/1/3"' in html
+
+
+def test_quiet_anime_art_links_keep_single_keyboard_action_and_tv_default():
+    title = title_fixture()
+    title["episode_play_urls"] = {4: "/plus/watch/1/4?play=1"}
+    html = render_title(title)
+    assert (
+        'class="series-episode-caption-link" href="/plus/watch/1/4?play=1" aria-label="Play episode 4"'
+        in html
+    )
+    assert (
+        'class="series-episode-art-action" href="/plus/watch/1/4?play=1" tabindex="-1" aria-hidden="true"'
+        in html
+    )
+    assert "Unwatched" not in html
+    folder = Path(__file__).resolve().parents[2] / "src/omakase/plus/templates"
+    env = Environment(loader=FileSystemLoader(folder), autoescape=True)
+    default = str(
+        env.get_template("_series_components.html").module.episode_frame(
+            4, "Not watched", play_url="/plus/watch/title/tv/321/1/4?play=1"
+        )
+    )
+    assert 'class="series-episode-state">Not watched</span>' in default
+    assert "playback-link--episode" in default and "series-episode-art-action" not in default
+
+
+def test_quiet_episode_cards_preserve_fallback_upcoming_and_removed_warnings():
+    title = title_fixture()
+    title["episode_qualities"] = {
+        4: {
+            "quality": "720p",
+            "label": "720p fallback release",
+            "detail": "1080p not confirmed",
+            "alternates": ["1080p"],
+        }
+    }
+    html = render_title(title)
+    assert html.count("720p fallback release") == 2  # Card warning and file evidence.
+    assert "1080p found · publication unconfirmed" in html
+    assert "Not yet verified" in html and "Upcoming" in html
+    title["state"] = "archived"
+    removed = render_title(title)
+    assert "Media removed" in removed
+    assert "Removed media is not available for playback." in removed
+
+
+def test_unknown_episode_count_keeps_media_diagnostics_without_an_episode_range():
+    title = title_fixture()
+    title["display_episode_count"] = None
+    html = render_title(title)
+    assert "The episode list will appear when the title's episode count is known." in html
+    assert 'class="episode-file-details"' not in html
+    assert 'id="media-availability"' in html

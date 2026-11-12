@@ -108,20 +108,29 @@ def _render(fields):
     )
 
 
-def _init_fields(data):
+def _hevc_sample_entry(data, *, allow_audio=False):
     _require(isinstance(data, bytes) and 0 < len(data) <= LIMIT)
     counter = [0]
     boxes = _boxes(data, 0, len(data), 0, counter)
     _one(boxes, b"ftyp")
     _, start, end = _one(boxes, b"moov")
-    children = _boxes(data, start, end, 1, counter)
-    _, start, end = _one(children, b"trak")
-    for depth, kind in enumerate((b"mdia", b"minf", b"stbl", b"stsd"), 2):
-        children = _boxes(data, start, end, depth, counter)
-        if kind == b"minf":
-            _, left, right = _one(children, b"hdlr")
-            _require(right - left >= 12 and data[left + 8 : left + 12] == b"vide")
-        _, start, end = _one(children, kind)
+    tracks = [box for box in _boxes(data, start, end, 1, counter) if box[0] == b"trak"]
+    _require(1 <= len(tracks) <= (2 if allow_audio else 1))
+    video = []
+    for _, start, end in tracks:
+        _, start, end = _one(_boxes(data, start, end, 2, counter), b"mdia")
+        children = _boxes(data, start, end, 3, counter)
+        _, left, right = _one(children, b"hdlr")
+        _require(right - left >= 12)
+        handler = data[left + 8 : left + 12]
+        if handler == b"vide":
+            video.append(children)
+        else:
+            _require(allow_audio and handler == b"soun")
+    _require(len(video) == 1)
+    _, start, end = _one(video[0], b"minf")
+    for depth, kind in enumerate((b"stbl", b"stsd"), 4):
+        _, start, end = _one(_boxes(data, start, end, depth, counter), kind)
     _require(
         end - start >= 8
         and data[start : start + 4] == bytes(4)
@@ -131,7 +140,11 @@ def _init_fields(data):
     _require(len(entries) == 1 and entries[0][0] in {b"hev1", b"hvc1"})
     kind, start, end = entries[0]
     _require(end - start >= 78)
-    children = _boxes(data, start + 78, end, 7, counter)
+    return kind, _boxes(data, start + 78, end, 7, counter)
+
+
+def _init_fields(data):
+    kind, children = _hevc_sample_entry(data)
     _, start, end = _one(children, b"hvcC")
     return _configuration(data[start:end], kind.decode("ascii"))
 
@@ -182,6 +195,19 @@ def _read(folder, name):
         return bytes(raw)
     finally:
         os.close(fd)
+
+
+def hevc_video_range(folder: Path, name: str) -> bytes | None:
+    """Read the transfer characteristic from the owned video initialization segment."""
+    try:
+        data = _read(folder, name)
+        _, children = _hevc_sample_entry(data, allow_audio=True)
+        _, start, end = _one(children, b"colr")
+        if end - start != 11 or data[start : start + 4] != b"nclx":
+            return None
+        return {b"\x00\x10": b"PQ", b"\x00\x12": b"HLG"}.get(data[start + 6 : start + 8])
+    except (OSError, CodecMetadataError):
+        return None
 
 
 def normalize_partial_manifest(db, folder, source, recipe, *, job_id, owner_token):

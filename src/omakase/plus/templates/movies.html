@@ -7,6 +7,7 @@
 {% block page_title %}{% if discover_movies %}Find your next favorite.{% else %}Your movies{% endif %}{% endblock %}
 {% block page_intro %}<p class="page-intro">{% if discover_movies %}Movie picks from public metadata, shaped by your saved local ratings.{% else %}Your collection, requests and personal ratings in one place.{% endif %}</p>{% endblock %}
 {% block page_actions %}{% if not discover_movies %}<a class="button button-secondary" href="/plus/discover/movies">Explore movies <span aria-hidden="true">↗</span></a>{% endif %}{% endblock %}
+{% block masthead %}{% if discover_movies %}{{ super() }}{% else %}<div class="product-masthead collection-masthead" role="region" aria-label="Page overview"><div><span class="page-kicker">Your cinema</span><h1>Your movies</h1><p class="page-intro">Your collection, requests and personal ratings in one place.</p></div><div class="masthead-actions"><a class="button button-secondary" href="/plus/discover/movies">Explore movies <span aria-hidden="true">↗</span></a></div></div>{% endif %}{% endblock %}
 {% block content %}
 {% if discover_movies %}
 <nav class="movie-tabs" aria-label="Discover media"><a href="/plus/discover">Anime</a><a href="/plus/discover/movies" aria-current="page">Movies</a></nav>
@@ -19,7 +20,7 @@
 </form></details>
 {% else %}
 {{ collection_tabs('/plus/movies', view) }}
-{% call(slot) collection_search('/plus/movies', 'movies', 'Search the movie catalog' if view == 'all' else 'Filter this view', 'Find a movie', query, placeholder='Title, year or IMDb ID', count=cards | length) %}
+{% call(slot) collection_search('/plus/movies', 'movies', 'Search the movie catalog' if view == 'all' else 'Filter this view', 'Find a movie', query, placeholder='Title, year or IMDb ID', count=cards | length, collapsible=true, expanded=view == 'requests') %}
   {% if slot == 'fields' %}<input type="hidden" name="view" value="{{ view }}">
   {% else %}<details class="watchlist-filter-details"{% if view == 'requests' %} open{% endif %}>
     <summary>More filters</summary><div class="collection-secondary-views"><a href="/plus/movies?view=requests"{% if view == 'requests' %} aria-current="page"{% endif %}>Requests</a></div>

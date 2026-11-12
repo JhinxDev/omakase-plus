@@ -182,6 +182,10 @@ def test_all_tables_exist(_fresh_db):
         "web_playback_cycle_coverage",
         "web_playback_completions",
         "_migrations",  # internal tracking table
+        "cloud_playback_resumes",
+        "household_title_requests",
+        "native_tv_devices",
+        "web_playback_native_resumes",
     }
     assert tables == expected, (
         f"Mismatch — missing: {expected - tables}, extra: {tables - expected}"

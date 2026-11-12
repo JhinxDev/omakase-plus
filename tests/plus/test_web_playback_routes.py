@@ -85,6 +85,8 @@ def setup(monkeypatch, tmp_path, request):
             token="dummy-only",
             _scope=scope,
             _snapshot=(),
+            episode_name=getattr(app.state, "episode_name", ""),
+            episode_summary=getattr(app.state, "episode_summary", ""),
         )
         if getattr(app.state, "actual_source_guard", False):
             from dataclasses import replace
@@ -201,6 +203,23 @@ def test_page_does_not_resolve_media_or_create_history(setup, play):
     assert db.execute("SELECT COUNT(*) FROM watch_events").fetchone()[0] == 0
 
 
+def test_realdebrid_only_routes_web_watch_links_without_starting_plex(setup, monkeypatch):
+    from omakase.plus import web_playback_routes
+
+    app, db, sessions, calls, _ = setup
+    monkeypatch.setattr(web_playback_routes, "playback_provider", lambda *_: "realdebrid")
+    viewer = client(app, sessions[1])
+    for source, target in (
+        ("/plus/watch/1/1", "/plus/cloud/title/anime/1/0/1"),
+        ("/plus/watch/title/movie/tt1234567", "/plus/cloud/title/movie/tt1234567/0/0"),
+        ("/plus/watch/title/tv/100/1/2", "/plus/cloud/title/tv/100/1/2"),
+    ):
+        reply = viewer.get(source, params={"play": 1})
+        assert reply.status_code == 307 and reply.headers["location"] == target
+    assert calls == []
+    assert db.execute("SELECT COUNT(*) FROM web_playback_sessions").fetchone()[0] == 0
+
+
 def test_watch_shows_next_without_starting_a_session(setup, monkeypatch):
     from omakase.plus import web_playback_navigation
 
@@ -285,6 +304,28 @@ def test_owned_exact_session_range_events_and_logout(setup):
     valid[0] = True
     delete_session(db, sessions[1])
     assert owner.get(url).status_code == 401
+
+
+@pytest.mark.parametrize("container", ["mp4", "mkv"])
+def test_prepared_response_reuses_exact_episode_text_without_another_resolution(setup, container):
+    app, _, sessions, calls, _ = setup
+    app.state.source_container = container
+    app.state.episode_name = "<b>Night crossing</b>"
+    app.state.episode_summary = "<p>The keeper follows this signal.</p>"
+    response = client(app, sessions[1]).post(
+        "/plus/api/playback/sessions",
+        json={
+            "monitor_id": 1,
+            "episode_number": 1,
+            "ass_supported": True,
+            "codecs": ["h264", "aac"],
+        },
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["episode_name"] == "Night crossing"
+    assert response.json()["episode_summary"] == "The keeper follows this signal."
+    assert len(calls) == 1
+    assert "dummy-only" not in response.text and "plex.invalid" not in response.text
 
 
 def test_no_foreign_monitor_or_arbitrary_source_or_csrf_grant(setup):
@@ -1056,3 +1097,58 @@ def test_catalog_plays_exact_personal_copy_and_saves_resume(setup, monkeypatch, 
     assert resumed.status_code == 201, resumed.text
     assert resumed.json()["position_seconds"] == 7
     assert db.execute("SELECT COUNT(*) FROM web_playback_watch").fetchone()[0] == 0
+
+
+def test_cloud_player_session_events_and_close_mirror_cloud_progress(setup):
+    from omakase.plus import cloud_progress
+    from omakase.plus import web_playback_store as store
+
+    app, db, sessions, _, _ = setup
+    library_id = db.execute(
+        "SELECT library_id FROM personal_libraries WHERE user_id=1"
+    ).fetchone()[0]
+    target = store.ResolvedTarget(
+        user_id=1,
+        library_id=library_id,
+        canonical_id="123456789",
+        season_number=0,
+        episode_number=0,
+        media_version="c" * 64,
+        duration_seconds=600,
+        domain="anime-film",
+    )
+    snapshot = {
+        "membership": {"library_id": library_id, "viewer_id": 1},
+        "policy": {"kind": "realdebrid-cloud"},
+        "source": {
+            "kind": "debrid-cloud",
+            "identity": "b" * 64,
+            "media_version": "c" * 64,
+            "file_key": "d-download1",
+            "title": "Existing.mp4",
+        },
+    }
+    binding = __import__("hashlib").sha256(sessions[1].encode()).hexdigest()
+    state = store.create_session(db, target=target, binding_digest=binding, snapshot=snapshot)
+    owner = client(app, sessions[1])
+    event = owner.post(
+        f"/plus/api/playback/sessions/{state['session_id']}/events",
+        json={"seq": 1, "position_seconds": 42, "playing": True,
+              "event": "progress", "playback_rate": 1},
+    )
+    assert event.status_code == 200, event.text
+    assert cloud_progress.get_position(db, 1, "d-download1")["position_seconds"] == 42
+    import time as _time
+    _time.sleep(0.3)
+    closed = owner.post(
+        f"/plus/api/playback/sessions/{state['session_id']}/close",
+        json={"final_event": {"seq": 2, "position_seconds": 47, "playing": False,
+                              "event": "pause", "playback_rate": 1}},
+    )
+    assert closed.status_code == 204, closed.text
+    assert cloud_progress.get_position(db, 1, "d-download1")["position_seconds"] == 47
+    row = db.execute(
+        "SELECT closed FROM web_playback_sessions WHERE session_id=?",
+        (state["session_id"],),
+    ).fetchone()
+    assert row[0] == 1

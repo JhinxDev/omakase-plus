@@ -17,6 +17,10 @@ from omakase.plus.movies import MovieError, MovieService, _art, _imdb, _iso, _po
 from omakase.plus.movies_store import require_user
 
 UNSET = object()
+_EPISODE_STILL = re.compile(
+    r"(?:https://image\.tmdb\.org/t/p/(?:w[0-9]{2,4}|original)/?)?"
+    r"(?P<filename>/[A-Za-z0-9_-]{1,160}\.(?:jpe?g|png|webp))"
+)
 
 
 class TVError(ValueError):
@@ -59,6 +63,26 @@ def number(value, maximum, *, zero=False):
     if type(value) is not int or not (0 if zero else 1) <= value <= maximum:
         raise TVError("Invalid TV number.")
     return value
+
+
+def episode_runtime(value, *, unit="seconds"):
+    """Optional display metadata; invalid or over-four-hour values stay unknown."""
+    factor, maximum = {
+        "seconds": (1, 14400),
+        "milliseconds": (0.001, 14400000),
+    }[unit]
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,12}", value):
+        value = int(value)
+    if type(value) not in (int, float) or not 0 < value <= maximum:
+        return None
+    seconds = value * factor
+    return math.ceil(seconds)
+
+
+def episode_still_url(value: object) -> str | None:
+    """Normalize Seerr's bare filename or full TMDB still URL to a bounded image size."""
+    match = _EPISODE_STILL.fullmatch(value) if isinstance(value, str) else None
+    return _art(match["filename"], "w780") if match else None
 
 
 def air_date(value):
@@ -452,7 +476,9 @@ class TVService(MovieService):
             parsed.append(
                 {
                     "episode_number": n,
+                    "season_number": season_number,
                     "title": plain(row.get("name"), 300) or f"Episode {n}",
+                    "still_url": episode_still_url(row.get("stillPath")),
                     "air_date": aired,
                     "released": bool(aired and aired <= self._clock().date().isoformat()),
                     "overview": plain(row.get("overview")),
@@ -705,6 +731,15 @@ class TVService(MovieService):
                             "air_date": aired,
                             "released": bool(aired and aired <= self._clock().date().isoformat()),
                             "overview": plain(row.get("summary")),
+                            **(
+                                {"runtime_seconds": duration}
+                                if (
+                                    duration := episode_runtime(
+                                        row.get("duration"), unit="milliseconds"
+                                    )
+                                )
+                                else {}
+                            ),
                         },
                         int(count) > 0,
                     )

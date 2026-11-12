@@ -5,13 +5,14 @@
 </a>
 {%- endmacro %}
 
-{% macro settings_nav(active='preferences', household_enabled=false) -%}
+{% macro settings_nav(active='preferences', household_enabled=false, devices_enabled=false) -%}
 <nav class="settings-navigation" aria-label="Settings navigation">
   {{ settings_link('Settings home', '/plus/settings', active == 'overview') }}
   <section aria-labelledby="settings-account-heading">
     <h2 id="settings-account-heading">Account</h2>
     {{ settings_link('Your profile', '/plus/settings/profile', active == 'profile') }}
     {{ settings_link('Security', '/plus/settings/security', active == 'security') }}
+    {% if devices_enabled or (linked_devices_enabled is defined and linked_devices_enabled()) %}{{ settings_link('Devices', '/plus/settings/devices', active == 'devices') }}{% endif %}
     {{ settings_link('Sign-in methods', '/plus/auth/google/account', active == 'signin') }}
     {% if household_enabled | default(false) %}{{ settings_link('Household', '/plus/settings/household', active == 'household') }}{% endif %}
   </section>
@@ -19,6 +20,7 @@
     <h2 id="settings-experience-heading">Your experience</h2>
     {{ settings_link('Recommendations', '/plus/settings/preferences', active == 'preferences') }}
     {{ settings_link('Watch history', '/plus/settings/tracking', active == 'tracking') }}
+    {% if active == 'languages' or (download_language_settings_enabled is defined and download_language_settings_enabled()) %}{{ settings_link('Audio & subtitles', '/plus/settings/languages', active == 'languages') }}{% endif %}
     {{ settings_link('Video quality & downloads', '/plus/settings/downloads', active == 'downloads') }}
   </section>
   <section aria-labelledby="settings-services-heading">

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_settings_nav.html" import settings_nav %}
 {% block title %}Audio & subtitles — Omakase Plus{% endblock %}
 {% block masthead %}{% endblock %}
 {% macro languages(name, label, help) -%}
@@ -9,7 +10,7 @@
 {%- endmacro %}
 {% block content %}
 <link rel="stylesheet" href="/plus/static/settings-language.css?v={{ asset_version }}">
-<div class="language-workspace">
+<div class="settings-workspace">{{ settings_nav('languages', households_enabled) }}<div class="settings-content language-workspace">
 <header class="language-heading"><p class="language-kicker">Download criteria · Audio & subtitles</p><h1>Choose the languages you want</h1><p>Settings for <strong>{{ library_name }}</strong>. Future requests keep a copy of their chosen rules. Saving here never replaces existing media or changes a request already in progress.</p><a href="/plus/settings/downloads">Back to download criteria</a></header>
 {% if language_notice %}<p class="language-notice" role="status">{{ language_notice }}</p>{% endif %}
 {% if language_error %}<p class="language-notice language-error" role="alert">{{ language_error }}</p>{% endif %}
@@ -18,7 +19,9 @@
 {% if domain == 'tv' %}<p class="language-notice">TV is catalog and tracking only. These choices do not enable automatic TV downloads or verify any episode tracks.</p>{% elif not delivery_qualified %}<p class="language-notice">Language delivery is awaiting system qualification. You can save choices now; they do not make media ready or start a search.</p>{% endif %}
 <section class="language-summary" aria-labelledby="summary-heading"><div><p class="language-kicker">{{ policy_source }}</p><h2 id="summary-heading">{{ 'Library default' if target == 'library' else 'Effective preference' }} for {{ {'anime':'anime','movie':'movies','tv':'TV'}[domain] }}</h2></div><dl>{% for key, label in [('audio_language','Audio'),('subtitle_language','Subtitles'),('audio_fallback','Audio fallback'),('subtitle_fallback','Subtitle fallback'),('subtitle_format','Subtitle format'),('sdh','SDH')] %}<div><dt>{{ label }}</dt><dd>{{ language_summary[key] }}</dd></div>{% endfor %}</dl><p>Preferences rank choices. Required languages must be verified in the actual media. Unknown tracks stay unverified; forced or signs-only subtitles do not count as full dialogue.</p></section>
 {% if not can_edit %}<p class="language-notice">The library owner has disabled personal language preferences. The library default applies to your future requests.</p>{% else %}
-<form method="post" action="/plus/settings/languages" class="language-form">
+<a class="language-edit-link" href="#language-form-heading">Edit preferences ↓</a>
+<form method="post" action="/plus/settings/languages" class="language-form" aria-labelledby="language-form-heading">
+<h2 id="language-form-heading" tabindex="-1">Edit {{ 'library defaults' if target == 'library' else 'your preferences' }}</h2>
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="library_id" value="{{ scope.library_id }}"><input type="hidden" name="membership_revision" value="{{ scope.membership_revision }}"><input type="hidden" name="policy_revision" value="{{ scope.policy_revision }}"><input type="hidden" name="domain" value="{{ domain }}"><input type="hidden" name="target" value="{{ target }}">
 <p>{{ 'Library defaults apply to members who have no allowed personal preference.' if target == 'library' else 'This preference belongs to you in this library. It does not change another member’s settings.' }} Choose up to eight languages in each list. On a keyboard, hold Ctrl or Command to select or deselect multiple choices.</p>
 <fieldset><legend>Audio</legend><div class="language-grid">{{ languages('audio_required','Required audio languages','Leave empty to accept any audio language. Regional variants stay distinct.') }}<div class="language-field"><label for="audio_requirement">Required audio match</label><select id="audio_requirement" name="audio_requirement"><option value="any_of" {% if language_rule.audio_requirement == 'any_of' %}selected{% endif %}>At least one chosen language</option><option value="all_of" {% if language_rule.audio_requirement == 'all_of' %}selected{% endif %}>Every chosen language</option></select><p>Every language can be fulfilled by different tracks in one compatible copy.</p></div></div></fieldset>
@@ -28,5 +31,6 @@
 <div class="language-actions"><button class="button button-primary" name="action" value="save" type="submit">Save {{ 'library default' if target == 'library' else 'my preference' }}</button><button class="button button-secondary" name="action" value="preview" type="submit">Preview without saving</button><a href="/plus/settings/downloads">Cancel</a></div>
 <details class="language-reset"><summary>Reset this media type</summary><p>{{ 'Restore the original language defaults for this media type. Other media types and member permissions stay as selected above.' if target == 'library' else 'Remove only your saved preference for this media type in this library. The current library default will apply.' }}</p><button class="button button-secondary" name="action" value="reset" type="submit">{{ 'Restore original ' ~ domain ~ ' defaults' if target == 'library' else 'Use library default' }}</button></details>
 </form>{% endif %}
+</div>
 </div>
 {% endblock %}

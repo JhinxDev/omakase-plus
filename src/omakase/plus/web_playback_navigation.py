@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from urllib.parse import urlencode
 
@@ -162,6 +164,9 @@ def attach_navigation(db, cards, *, user_id, library_scope=None):
 def _attach_navigation(db, cards, user_id, scope):
     from functools import lru_cache
 
+    from omakase.plus.debrid_anime import anime_episodes
+    from omakase.plus.debrid_library import account_token, playback_provider
+
     @lru_cache(maxsize=1)
     def publication():
         try:
@@ -170,6 +175,8 @@ def _attach_navigation(db, cards, user_id, scope):
             return None
 
     player_enabled = enabled()
+    debrid_only = scope.kind == "personal" and playback_provider(db, user_id) == "realdebrid"
+    debrid_connected = debrid_only and bool(account_token(db, user_id))
     for card in cards:
         activity = db.execute(
             "SELECT * FROM web_playback_watch WHERE user_id=? AND library_id=? AND anilist_id=? AND season_number=? AND covered_seconds>0 ORDER BY last_played_at DESC,id DESC",
@@ -218,7 +225,14 @@ def _attach_navigation(db, cards, user_id, scope):
             monitor = _monitor(db, scope, card)
             if monitor is None or card.get("state") == "archived":
                 continue
-            candidates = _candidates(db, scope, monitor, publication)
+            if debrid_only:
+                candidates = (
+                    dict.fromkeys(anime_episodes(db, scope, monitor["id"]))
+                    if debrid_connected
+                    else {}
+                )
+            else:
+                candidates = _candidates(db, scope, monitor, publication)
             if 0 in candidates:
                 card.update(
                     play_url=_url(scope, monitor["id"], 0),
@@ -230,6 +244,7 @@ def _attach_navigation(db, cards, user_id, scope):
             card["episode_play_urls"] = {ep: _url(scope, monitor["id"], ep) for ep in candidates}
             episode = card.get("next_episode") or 1
             resumed = False
+            resume_updated = 0
             for watch in partial:
                 ep = watch["episode_number"]
                 if ep not in candidates:
@@ -237,7 +252,9 @@ def _attach_navigation(db, cards, user_id, scope):
                 # Resume provenance outlives seven-day session cleanup. Missing
                 # legacy/unbound proof stays ordinary Play, never guessed Resume.
                 proof = db.execute(
-                    "SELECT publication_identity FROM web_playback_resumes WHERE user_id=? AND library_id=? AND domain='anime' AND canonical_id=? AND season_number=? AND episode_number=? AND media_version=?",
+                    "SELECT publication_identity,duration_seconds,position_seconds,updated_at,n.watch_barrier "
+                    "FROM web_playback_resumes r LEFT JOIN web_playback_native_resumes n USING(target_key) "
+                    "WHERE user_id=? AND library_id=? AND domain='anime' AND canonical_id=? AND season_number=? AND episode_number=? AND media_version=?",
                     (
                         user_id,
                         scope.library_id,
@@ -247,10 +264,47 @@ def _attach_navigation(db, cards, user_id, scope):
                         watch["media_version"],
                     ),
                 ).fetchone()
-                if candidates[ep] is None or not proof or proof[0] != candidates[ep]:
+                if (
+                    candidates[ep] is None
+                    or not proof
+                    or proof[0] != candidates[ep]
+                    or proof[4] not in (None, barrier)
+                ):
                     continue
                 episode, resumed = ep, True
+                card["episode_resume"] = episode_resume(proof[2], proof[1])
+                resume_updated = proof[3]
                 break
+            if card.get("watch_status") != "completed" and candidates:
+                native_resumes = db.execute(
+                    """SELECT episode_number,publication_identity,position_seconds,duration_seconds,updated_at
+                       FROM web_playback_resumes r JOIN web_playback_native_resumes n USING(target_key)
+                       WHERE user_id=? AND library_id=? AND domain='anime'
+                         AND canonical_id=? AND season_number=? AND n.watch_barrier=?
+                         AND episode_number>? AND position_seconds>0 AND position_seconds<duration_seconds
+                         AND updated_at>=? ORDER BY updated_at DESC LIMIT 100""",
+                    (
+                        user_id,
+                        scope.library_id,
+                        str(card["anilist_id"]),
+                        card["season_number"],
+                        barrier,
+                        card.get("progress_episodes") or 0,
+                        resume_updated,
+                    ),
+                )
+                for ep, identity, position, duration, updated_at in native_resumes:
+                    if ep in completed or not identity or candidates.get(ep) != identity:
+                        continue
+                    episode, resumed = ep, True
+                    card.update(
+                        episode_resume=episode_resume(position, duration),
+                        native_resume_at=datetime.fromtimestamp(updated_at, UTC).isoformat(),
+                        lifecycle="in_progress",
+                        lifecycle_label="In progress",
+                        partial_playback=True,
+                    )
+                    break
             if episode in candidates:
                 card.update(
                     play_url=_url(scope, monitor["id"], episode),
@@ -262,6 +316,16 @@ def _attach_navigation(db, cards, user_id, scope):
             # Corrupt or stale publication remains an overview, never a capability.
             continue
     return cards
+
+
+def episode_resume(position, duration):
+    """A saved playhead can describe resume, never completion or coverage."""
+    if not 0 < position < duration:
+        return None
+    return {
+        "percent": min(99, max(1, round(100 * position / duration))),
+        "minutes_left": math.ceil((duration - position) / 60),
+    }
 
 
 def exact_next_url(db, *, source, monitor_id):

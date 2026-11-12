@@ -96,65 +96,65 @@ def anime_cards(db, scope, *, viewer_id, query="", lifecycle="active"):
             break
     else:
         raise core.HouseholdError("This library needs a paginated collection view.", 422)
-    cards = []
-    for item in rows:
-        history = item["history"]
-        status = history["status"] if history else "untracked"
-        covered = item["facts"]["verified_episodes"]
-        progress = history["progress_episodes"] if history else 0
-        total = history["episode_total"] if history else None
-        title_lifecycle = (
-            "completed" if status == "completed" else "in_progress" if progress else "waiting"
-        )
-        if (lifecycle == "active" and title_lifecycle == "completed") or (
-            lifecycle not in {"active", "all"} and title_lifecycle != lifecycle
-        ):
-            continue
-        cards.append(
-            {
-                **item,
-                "anilist_id": int(item["canonical_id"]),
-                "format": "Anime",
-                "active": True,
-                "required": 0,
-                "usable": len(covered),
-                "usable_episodes": covered,
-                "plex_visible": 0,
-                "state": "planned",
-                "status_label": item["facts"]["label"],
-                "providers": [],
-                "provider_kinds": [],
-                "provider_summary": "Shared library",
-                "asset_count": 0,
-                "release_qualities": [],
-                "fallback_episodes": [],
-                "lifecycle": title_lifecycle,
-                "lifecycle_label": "Completed"
-                if status == "completed"
-                else "Not watched"
-                if history is None
-                else "Watching"
-                if progress
-                else "My list",
-                "progress_episodes": progress,
-                "episode_total": total,
-                "next_episode": progress + 1 if history and status != "completed" else None,
-                "progress_percent": min(100, 100 * progress // total) if total else 0,
-                "watch_status": status,
-                "last_source_label": "Your tracking" if history else "Not tracked yet",
-                "last_observed_at": None,
-                "has_pending_confirmation": False,
-                "new_episode_ready": False,
-                "removal_status": "",
-                "publication_pending": False,
-                "quality_fallback": False,
-                "release_episode_total": None,
-                "display_episode_count": total,
-                "can_download": False,
-                "rating": history.get("rating") if history else None,
-            }
-        )
-    return cards
+    return [
+        card
+        for card in map(anime_card, rows)
+        if not (lifecycle == "active" and card["lifecycle"] == "completed")
+        and (lifecycle in {"active", "all"} or card["lifecycle"] == lifecycle)
+    ]
+
+
+def anime_card(item):
+    history = item["history"]
+    status = history["status"] if history else "untracked"
+    covered = item["facts"]["verified_episodes"]
+    progress = history["progress_episodes"] if history else 0
+    total = history["episode_total"] if history else None
+    title_lifecycle = (
+        "completed" if status == "completed" else "in_progress" if progress else "waiting"
+    )
+    return {
+        **item,
+        "anilist_id": int(item["canonical_id"]),
+        "format": "Anime",
+        "active": True,
+        "required": 0,
+        "usable": len(covered),
+        "usable_episodes": covered,
+        "plex_visible": 0,
+        "state": "planned",
+        "status_label": item["facts"]["label"],
+        "providers": [],
+        "provider_kinds": [],
+        "provider_summary": "Shared library",
+        "asset_count": 0,
+        "release_qualities": [],
+        "fallback_episodes": [],
+        "lifecycle": title_lifecycle,
+        "lifecycle_label": "Completed"
+        if status == "completed"
+        else "Not watched"
+        if history is None
+        else "Watching"
+        if progress
+        else "My list",
+        "progress_episodes": progress,
+        "episode_total": total,
+        "next_episode": progress + 1 if history and status != "completed" else None,
+        "progress_percent": min(100, 100 * progress // total) if total else 0,
+        "watch_status": status,
+        "last_source_label": "Your tracking" if history else "Not tracked yet",
+        "last_observed_at": None,
+        "has_pending_confirmation": False,
+        "new_episode_ready": False,
+        "removal_status": "",
+        "publication_pending": False,
+        "quality_fallback": False,
+        "release_episode_total": None,
+        "display_episode_count": total,
+        "can_download": False,
+        "rating": history.get("rating") if history else None,
+    }
 
 
 def search_cards(db, scope, *, query, domain):

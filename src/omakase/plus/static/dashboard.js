@@ -420,11 +420,21 @@
   function setupPosterFallbacks(root = document) {
     root.querySelectorAll("[data-poster]").forEach((image) => {
       const unavailable = () => {
+        const fallback = image.dataset.posterFallback;
+        if (fallback && fallback !== image.getAttribute("src")) {
+          delete image.dataset.posterFallback;
+          image.src = fallback;
+          return;
+        }
         image.hidden = true;
         image.closest(".poster-frame")?.classList.add("poster-unavailable");
       };
       image.addEventListener("error", unavailable);
-      if (image.complete && !image.naturalWidth) unavailable();
+      const checkLoaded = () => {
+        if (!image.naturalWidth || (image.dataset.posterFallback && image.naturalWidth < 16)) unavailable();
+      };
+      image.addEventListener("load", checkLoaded);
+      if (image.complete) checkLoaded();
     });
   }
 

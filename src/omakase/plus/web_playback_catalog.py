@@ -1,4 +1,4 @@
-"""Exact personal movie and TV sources for the shared playback gateway."""
+"""Exact movie and TV sources with per-viewer Plex authorization."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import json
 import re
 
 from omakase.plus import connections, households
-from omakase.plus.household_media import personal_legacy_visible
+from omakase.plus.household_media import binding, matching_item, personal_legacy_visible
 from omakase.plus.language_source import digest
 from omakase.plus.movies import MovieConnections, MovieService
 from omakase.plus.playback_proof import _account, _get, _xml
@@ -30,10 +30,22 @@ def personal_scope(db, user_id):
 
 
 def catalog_target(db, scope, domain, canonical_id, season=0, episode=0):
+    catalog, episode_row, _ = _catalog_target(db, scope, domain, canonical_id, season, episode)
+    return catalog, episode_row
+
+
+def _catalog_target(db, scope, domain, canonical_id, season, episode):
     households.revalidate_scope(db, scope)
-    owner = scope.viewer_id
-    _require(scope.kind == "personal" and scope.operational_owner_id == owner)
-    _require(personal_legacy_visible(db, scope, domain=domain, canonical_id=canonical_id))
+    owner = scope.operational_owner_id
+    media = None
+    if scope.kind == "household":
+        item = matching_item(db, scope, domain=domain, canonical_id=canonical_id)
+        _require(item is not None, "This title is unavailable in your shared library.")
+        media = binding(db, scope, item_id=item)
+        _require(media.legacy_id and media.resource_id, "No shared source has been bound.")
+    else:
+        _require(scope.kind == "personal" and owner == scope.viewer_id)
+        _require(personal_legacy_visible(db, scope, domain=domain, canonical_id=canonical_id))
     if domain == "movie":
         row = db.execute(
             "SELECT imdb_id,tmdb_id,title,year,overview FROM movie_catalog "
@@ -41,7 +53,7 @@ def catalog_target(db, scope, domain, canonical_id, season=0, episode=0):
             (owner, canonical_id),
         ).fetchone()
         _require(row is not None, "This movie is unavailable in your collection.")
-        return dict(row), None
+        return dict(row), None, media
     _require(domain == "tv")
     row = db.execute(
         "SELECT c.metadata_json,e.metadata_json AS episode_json,s.plex_key,s.source_scope "
@@ -52,22 +64,46 @@ def catalog_target(db, scope, domain, canonical_id, season=0, episode=0):
         (owner, canonical_id, season, episode),
     ).fetchone()
     _require(row is not None, "This episode is unavailable in your collection.")
-    return json.loads(row["metadata_json"]), dict(row)
+    return json.loads(row["metadata_json"]), dict(row), media
 
 
 def _snapshot(db, scope, domain, canonical_id, season, episode):
-    catalog, entry = catalog_target(db, scope, domain, canonical_id, season, episode)
-    base, token = connections._values(db, scope.viewer_id, connections._spec("plex"))
-    server = connections._read(db, scope.viewer_id, "plex_machine_id")
-    _require(base and token and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", server or ""))
+    catalog, entry, media = _catalog_target(db, scope, domain, canonical_id, season, episode)
+    owner = scope.operational_owner_id
+    base, owner_token = connections._values(db, owner, connections._spec("plex"))
+    server = connections._read(db, owner, "plex_machine_id")
+    token = (
+        owner_token
+        if scope.viewer_id == owner
+        else connections._read(db, scope.viewer_id, "plex_token")
+    )
+    _require(base and owner_token and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", server or ""))
+    _require(
+        token and (scope.viewer_id == owner or token != owner_token),
+        "A personal Plex connection is required.",
+        code="viewer_plex_required",
+    )
     if entry is not None:
-        connector = hashlib.sha256((base + "\0" + token).encode()).hexdigest()
+        connector = hashlib.sha256((base + "\0" + owner_token).encode()).hexdigest()
         _require(entry["source_scope"] == connector)
         plex_key = _numeric(entry["plex_key"])
     else:
         plex_key = ""
+    shared = None
+    if media:
+        movie_key = ""
+        if domain == "movie":
+            keys = db.execute(
+                """SELECT DISTINCT plex_key FROM movie_verifications
+                   WHERE user_id=? AND imdb_id=? AND state='ready' AND plex_key!=''
+                   LIMIT 2""",
+                (owner, canonical_id),
+            ).fetchall()
+            _require(len(keys) == 1, "The shared movie needs one verified Plex item.")
+            movie_key = _numeric(keys[0]["plex_key"])
+        shared = (media.item_id, media.resource_id, movie_key, digest(owner_token))
     catalog_identity = (catalog.get("imdb_id"), catalog.get("tmdb_id"), catalog.get("year"))
-    return (base, digest(token), server, catalog_identity, plex_key), catalog, token
+    return (base, digest(token), server, catalog_identity, plex_key, shared), catalog, token
 
 
 def revalidate_catalog_source(db, source):
@@ -186,7 +222,7 @@ async def resolve_catalog_source(
     try:
         async with asyncio.timeout(18):
             snapshot, catalog, token = _snapshot(db, scope, domain, canonical_id, season, episode)
-            base, _, server, catalog_identity, show_key = snapshot
+            base, _, server, catalog_identity, show_key, shared = snapshot
 
             def current():
                 _require(_snapshot(db, scope, domain, canonical_id, season, episode)[0] == snapshot)
@@ -198,6 +234,16 @@ async def resolve_catalog_source(
 
             account = await _account(token, transport)
             current()
+            if scope.viewer_id != scope.operational_owner_id:
+                owner_token = connections._read(db, scope.operational_owner_id, "plex_token")
+                _require(owner_token and digest(owner_token) == shared[3])
+                owner_account = await _account(owner_token, transport)
+                current()
+                _require(
+                    account != owner_account,
+                    "The owner's Plex identity cannot represent another viewer.",
+                    code="viewer_plex_required",
+                )
             _account_is_personal(db, account, server, scope.viewer_id)
             _require((await xml("/identity")).get("machineIdentifier") == server)
             if domain == "movie":
@@ -210,6 +256,10 @@ async def resolve_catalog_source(
                 current()
                 section = str(section_id)
                 _movie_identity(video, canonical_id, catalog["tmdb_id"])
+                if shared:
+                    _require(
+                        video.get("ratingKey") == shared[2], "The verified shared movie changed."
+                    )
                 service._file(video, section_id, catalog, None)
             else:
                 sections = [
@@ -229,7 +279,10 @@ async def resolve_catalog_source(
                 video = await _tv_episode(xml, section, show_key, season, episode)
 
             media, part = _single_part(video)
-            identity = digest([domain, canonical_id, catalog_identity, show_key, season, episode])
+            identity_parts = [domain, canonical_id, catalog_identity, show_key, season, episode]
+            if shared:
+                identity_parts.extend(shared[:3])
+            identity = digest(identity_parts)
             source = _resolved_part(
                 video,
                 media,

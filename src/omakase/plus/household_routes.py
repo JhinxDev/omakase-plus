@@ -11,6 +11,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from omakase.plus import household_suggestions as suggestions
 from omakase.plus import households as core
 from omakase.plus.deps import get_db
 from omakase.plus.middleware import require_user
@@ -92,9 +93,11 @@ def create_household_router(
         preview = core.promotion_preview(db, user_id=user.id) if page == "create" else None
         invitations = []
         services = []
+        title_requests = []
         if state["household"]:
             selected = scope(db, user, state["household"]["id"])
             services = core.connector_status(db, selected)
+            title_requests = suggestions.for_settings(db, selected)
             if selected.role == "owner":
                 invitations = [
                     dict(r)
@@ -118,6 +121,7 @@ def create_household_router(
                 "invite_preview": invite_preview,
                 "invitations": invitations,
                 "shared_services": services,
+                "title_requests": title_requests,
             },
             status_code=status,
             headers=HEADERS,
@@ -239,7 +243,12 @@ def create_household_router(
             preview = core.inspect_invite(db, token=form.get("invite_token", ""))
             if preview["library_id"] != form.get("preview_library_id"):
                 raise core.HouseholdError("Review this invitation before joining.", 422)
-            core.accept_invite(db, viewer_id=user.id, token=form.get("invite_token", ""))
+            core.accept_invite(
+                db,
+                viewer_id=user.id,
+                token=form.get("invite_token", ""),
+                display_name=form.get("display_name", ""),
+            )
             return redirect()
         except (core.HouseholdError, sqlite3.IntegrityError) as error:
             return failure(request, user, db, error, "join")
@@ -285,6 +294,51 @@ def create_household_router(
             return redirect()
         except core.HouseholdError as error:
             return failure(request, user, db, error)
+
+    @router.post("/settings/household/{library_id}/members/{member_id}/permissions")
+    async def member_permissions(
+        library_id: str,
+        member_id: int,
+        request: Request,
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        form = await _form(request, {"can_add", "can_request"})
+        try:
+            core.set_member_permissions(
+                db,
+                scope(db, user, library_id),
+                member_id=member_id,
+                can_add_titles=form.get("can_add") == "1",
+                can_request_titles=form.get("can_request") == "1",
+            )
+        except core.HouseholdError as error:
+            return failure(request, user, db, error)
+        return RedirectResponse(
+            suggestions.SETTINGS + "#household-members", status_code=303, headers=HEADERS
+        )
+
+    @router.post("/settings/household/{library_id}/requests/{request_id}/decision")
+    async def decide_title_request(
+        library_id: str,
+        request_id: str,
+        request: Request,
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        form = await _form(request, {"decision"})
+        try:
+            suggestions.decide(
+                db,
+                scope(db, user, library_id),
+                request_id=request_id,
+                decision=form.get("decision", ""),
+            )
+        except core.HouseholdError as error:
+            return failure(request, user, db, error)
+        return RedirectResponse(
+            suggestions.SETTINGS + f"#request-{request_id}", status_code=303, headers=HEADERS
+        )
 
     @router.post("/settings/household/{library_id}/connections")
     async def connection(
@@ -920,6 +974,32 @@ def create_household_router(
             raise HTTPException(error.status, str(error), headers=HEADERS) from None
         return RedirectResponse(
             f"/plus/libraries/{library_id}/items/{item}", status_code=303, headers=HEADERS
+        )
+
+    @router.post("/libraries/{library_id}/catalog/request")
+    async def request_shared_catalog(
+        library_id: str, request: Request, user=Depends(require_user), db=Depends(get_db)
+    ):
+        from omakase.plus.household_catalog import actor_catalog_metadata
+
+        form = await _form(request, {"domain", "canonical_id"})
+        try:
+            selected = scope(db, user, library_id)
+            core._require(
+                selected.can_request_titles, "Title requests are off for this member.", 403
+            )
+            domain = form.get("domain", "")
+            canonical_id = form.get("canonical_id", "")
+            metadata = actor_catalog_metadata(
+                db, viewer_id=user.id, domain=domain, canonical_id=canonical_id
+            )
+            request_id = suggestions.request_title(
+                db, selected, domain=domain, canonical_id=canonical_id, metadata=metadata
+            )
+        except core.HouseholdError as error:
+            return failure(request, user, db, error)
+        return RedirectResponse(
+            suggestions.SETTINGS + f"#request-{request_id}", status_code=303, headers=HEADERS
         )
 
     return router

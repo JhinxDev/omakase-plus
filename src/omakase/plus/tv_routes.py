@@ -19,6 +19,88 @@ from omakase.plus.tv_service import UNSET, TVError, TVService, number
 from omakase.plus.web_security import csrf_token, require_csrf
 
 
+def _episode_navigation(db, user_id, card):
+    """Project existing exact catalog/player records without resolving Plex on page load."""
+    from omakase.plus.language_source import digest
+    from omakase.plus.web_playback_catalog import _snapshot, personal_scope
+    from omakase.plus.web_playback_navigation import episode_resume
+    from omakase.plus.web_playback_source import PlaybackSourceError
+
+    if not card.get("coverage_complete"):
+        return None
+    media_id = str(card["tmdb_id"])
+    episodes = {
+        (season["season_number"], episode["episode_number"]): episode
+        for season in card.get("seasons", [])
+        for episode in season.get("episodes", [])
+    }
+    try:
+        scope = personal_scope(db, user_id)
+    except (PlaybackSourceError, ValueError):
+        return None
+
+    def bound_source(key):
+        try:
+            snapshot, _, _ = _snapshot(db, scope, "tv", media_id, *key)
+        except (PlaybackSourceError, ValueError):
+            return None
+        return digest(["tv", media_id, snapshot[3], snapshot[4], *key])
+
+    def link(key, *, resume=False):
+        season, episode = key
+        return {
+            "url": f"/plus/watch/title/tv/{media_id}/{season}/{episode}?play=1",
+            "season": season,
+            "episode": episode,
+            "continue": resume,
+        }
+
+    resumes = db.execute(
+        "SELECT season_number,episode_number,position_seconds,duration_seconds,publication_identity "
+        "FROM web_playback_resumes WHERE user_id=? AND library_id=? AND domain='tv' "
+        "AND canonical_id=? ORDER BY updated_at DESC LIMIT 100",
+        (user_id, scope.library_id, media_id),
+    )
+    featured, examined = None, set()
+    for row in resumes:
+        key = (row["season_number"], row["episode_number"])
+        episode = episodes.get(key)
+        if key in examined or not episode or not episode["in_plex"] or episode["watched"]:
+            continue
+        source = bound_source(key)
+        if source is None or row["publication_identity"] != source:
+            continue
+        examined.add(key)
+        progress = episode_resume(row["position_seconds"], row["duration_seconds"])
+        if progress:
+            episode["resume"] = progress
+            featured = featured or link(key, resume=True)
+    if featured or card.get("status") == "completed":
+        return featured
+    for key, episode in sorted(episodes.items(), reverse=True):
+        season, number = key
+        previous = episodes.get((season, number - 1))
+        if (
+            season > 0
+            and episode["in_plex"]
+            and not episode["watched"]
+            and previous
+            and previous["watched"]
+            and bound_source(key)
+        ):
+            return link(key, resume=True)
+    first = episodes.get((1, 1))
+    if (
+        first
+        and first["in_plex"]
+        and not first["watched"]
+        and not card.get("watched_episodes")
+        and bound_source((1, 1))
+    ):
+        return link((1, 1))
+    return None
+
+
 def create_tv_router(
     templates, context_factory=None, service_factory=None, households_enabled=False
 ):
@@ -247,6 +329,7 @@ def create_tv_router(
             return await render(request, user, db, error=exc.detail)
         from omakase.plus.web_playback_navigation import enabled as web_player_enabled
 
+        watch_in_app = web_player_enabled()
         return templates.TemplateResponse(
             request,
             "tv_detail.html",
@@ -254,7 +337,10 @@ def create_tv_router(
                 **context(request, user),
                 "card": card,
                 "selected_season": season,
-                "watch_in_app": web_player_enabled(),
+                "watch_in_app": watch_in_app,
+                "featured_episode": _episode_navigation(db, user.id, card)
+                if watch_in_app
+                else None,
                 "tv_error": "",
                 "notice": "",
             },

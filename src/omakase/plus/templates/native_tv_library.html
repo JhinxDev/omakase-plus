@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% from "_settings_nav.html" import settings_nav %}
+{% macro device_icon(kind) %}
+<span class="device-glyph" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">{% if kind == 'iphone' %}<rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10 18h4"/>{% else %}<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/>{% endif %}</svg></span>
+{% endmacro %}
+{% macro device_activity(device) %}
+<dl class="device-activity">
+  <div><dt>Last seen</dt><dd>{% if device.last_seen %}<time datetime="{{ device.last_seen.isoformat() }}" data-local-datetime="{{ device.last_seen.isoformat() }}">{{ device.last_seen.strftime('%b %d, %Y at %H:%M UTC') }}</time>{% else %}Awaiting first connection{% endif %}</dd></div>
+  <div><dt>Masked IP</dt><dd>{{ device.network or 'Unavailable' }}</dd></div>
+  <div><dt>Access expires</dt><dd><time datetime="{{ device.expiry.isoformat() }}" data-local-datetime="{{ device.expiry.isoformat() }}">{{ device.expiry.strftime('%b %d, %Y at %H:%M UTC') }}</time></dd></div>
+</dl>
+{% endmacro %}
+{% block title %}Devices · Omakase Plus{% endblock %}
+{% block eyebrow %}Settings{% endblock %}
+{% block page_title %}Devices{% endblock %}
+{% block page_intro %}<p class="page-intro">Link a device to your personal library and manage its access.</p>{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="/plus/static/devices.css?v={{ asset_version }}">
+<script src="/plus/static/devices.js?v={{ asset_version }}" defer></script>
+{% endblock %}
+{% block content %}
+<div class="settings-workspace">
+  {{ settings_nav('devices', households_enabled | default(false), true) }}
+  <div class="settings-content devices-content">
+    {% set messages = {
+      'linked': 'Apple TV connected. Your library will open on the TV.',
+      'iphone_linked': 'iPhone connected. Your library will open in the app.',
+      'invalid': 'Check the code on your device and try again. You can link up to five devices.',
+      'disconnected': 'Device disconnected.',
+      'missing': 'This device is already disconnected.',
+      'renamed': 'Device name updated.',
+      'shared': 'Device is visible to the household owner.',
+      'unshared': 'Device is hidden from the household owner.',
+      'share_unavailable': 'Device sharing is unavailable. Check the device and your household membership.',
+      'revoked': 'Library access revoked for connected devices.'
+    } %}
+    {% if device_result in messages %}
+    {% set device_error = device_result in ('invalid', 'share_unavailable') %}
+    <div class="product-notice{% if device_error %} notice-danger{% endif %}" role="{{ 'alert' if device_error else 'status' }}">{{ messages[device_result] }}</div>
+    {% endif %}
+    <section class="editorial-panel settings-section device-panel" aria-labelledby="linked-devices-heading">
+      <header class="device-heading">
+        <div><h2 id="linked-devices-heading">Your connected devices</h2><p>Review devices linked to your account and remove access you no longer need.</p></div>
+        <span class="device-count">{{ devices | length }} linked</span>
+      </header>
+      {% if devices %}
+      <ul class="device-list">
+        {% for device in devices %}
+        <li class="device-row">
+          {{ device_icon(device.kind) }}
+          <div class="device-identity">
+            <strong>{{ device.name }}</strong>
+            <span>{{ device.label }} · Linked by {{ device_owner or 'you' }}{% if device.temporary %} · Temporary access{% endif %}</span>
+            {% if device_household %}<small class="device-household">{{ device_household.display_name }} · {{ device_household.name }}{% if device.shared %} · Shared with owner{% endif %}</small>{% endif %}
+            {{ device_activity(device) }}
+          </div>
+          <span class="device-linked">Linked</span>
+          <div class="device-controls">
+            <form class="device-actions" method="post" action="/plus/settings/devices">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="device_reference" value="{{ device.reference }}">
+              <button class="button button-secondary" type="submit" name="action" value="disconnect" aria-label="Disconnect {{ device.name }} (device {{ loop.index }})">Disconnect</button>
+              {% if device_household and device_household.role == 'member' and not device.temporary %}
+              <button class="button button-secondary" type="submit" name="action" value="{{ 'unshare' if device.shared else 'share' }}" aria-label="{{ 'Hide' if device.shared else 'Share' }} {{ device.name }} {{ 'from' if device.shared else 'with' }} the household owner (device {{ loop.index }})">{{ 'Hide from owner' if device.shared else 'Share with owner' }}</button>
+              {% endif %}
+            </form>
+            {% if not device.temporary %}
+            <details class="device-rename">
+              <summary aria-label="Rename {{ device.name }} (device {{ loop.index }})">Rename</summary>
+              <form method="post" action="/plus/settings/devices">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="device_reference" value="{{ device.reference }}">
+                <label><span>Device name or location</span><input name="device_name" type="text" value="{{ device.name }}" maxlength="40" autocomplete="off" required></label>
+                <button class="button button-primary" type="submit" name="action" value="rename">Save name</button>
+              </form>
+            </details>
+            {% endif %}
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+      {% if device_household and device_household.role == 'member' %}
+      <p class="device-help">Sharing shows the household owner the device name, your household name, its recent activity, and its masked network when available.</p>
+      {% endif %}
+      {% else %}
+      <div class="device-empty"><strong>No devices linked</strong><p>Open Omakase Plus on your Apple TV to get a pairing code.</p></div>
+      {% endif %}
+    </section>
+    {% if is_household_owner %}
+    <section class="editorial-panel settings-section device-panel" aria-labelledby="household-devices-heading">
+      <header class="device-heading">
+        <div><h2 id="household-devices-heading">Household devices</h2><p>Devices members chose to show you. Members can disconnect their devices from their own accounts.</p></div>
+        <span class="device-count">{{ household_device_count }} shared</span>
+      </header>
+      {% if household_device_groups %}
+      {% for group in household_device_groups %}
+      <section class="device-member-group" aria-labelledby="device-member-{{ loop.index }}">
+        <h3 id="device-member-{{ loop.index }}">{{ group[0].member }} <span>· {{ device_household.name }}</span></h3>
+        <ul class="device-list">
+          {% for device in group %}
+          <li class="device-row device-row-shared">
+            {{ device_icon(device.kind) }}
+            <div class="device-identity">
+              <strong>{{ device.name }}</strong>
+              <span>{{ device.label }}</span>
+              {{ device_activity(device) }}
+            </div>
+            <span class="device-linked">Linked</span>
+          </li>
+          {% endfor %}
+        </ul>
+      </section>
+      {% endfor %}
+      {% else %}
+      <div class="device-empty"><strong>No devices shared yet</strong><p>Members can share a device from their own Devices page.</p></div>
+      {% endif %}
+    </section>
+    {% endif %}
+    {% if devices or household_device_count %}
+    <p class="device-help device-network-note">Masked IP shows the public network at the last activity check, when available. Use a room or place in the device name to tell similar devices apart.</p>
+    {% endif %}
+    <section class="editorial-panel settings-section device-panel" aria-labelledby="link-device-heading">
+      <header class="device-heading">
+        <div><h2 id="link-device-heading">Link a device</h2><p>Open Omakase Plus on your device and enter the pairing code it shows.</p></div>
+      </header>
+      <form method="post" action="/plus/settings/devices" class="device-pair-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label><span>Pairing code</span><input id="apple-tv-device-code" name="device_code" value="{{ device_code }}"
+             type="text" placeholder="XXXX-XXXX" maxlength="9" autocomplete="off" autocapitalize="characters" spellcheck="false" required></label>
+        <label><span>Device name or location <small>(optional)</small></span><input name="device_name" type="text" placeholder="Living room" maxlength="40" autocomplete="off"></label>
+        <button class="button button-primary" type="submit" name="action" value="approve">Link device</button>
+      </form>
+      <p class="device-help">Approve only a code shown on a device you recognize.</p>
+    </section>
+    <details class="editorial-panel settings-section device-panel device-manual"{% if invitation %} open{% endif %}>
+      <summary>Use a one-time link</summary>
+      <p>Choose <strong>Use a one-time link</strong> in the TV app and paste the full link. It expires in five minutes and grants access for up to one hour.</p>
+      {% if invitation %}
+      <label for="apple-tv-library-link">One-time library link</label>
+      <div class="device-copy">
+        <input id="apple-tv-library-link" type="text" value="{{ invitation }}" readonly spellcheck="false" autocomplete="off">
+        <button class="button button-secondary" type="button" data-copy-device-link="apple-tv-library-link" hidden>Copy link</button>
+      </div>
+      <p class="device-help" role="status" data-device-copy-status></p>
+      {% else %}
+      <form method="post" action="/plus/settings/devices">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button button-secondary" type="submit" name="action" value="issue">Generate one-time link</button>
+      </form>
+      {% endif %}
+    </details>
+  </div>
+</div>
+{% endblock %}

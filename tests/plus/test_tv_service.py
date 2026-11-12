@@ -81,6 +81,7 @@ class Native:
                             "episodeNumber": 1,
                             "name": "Pilot",
                             "airDate": "2020-01-01",
+                            "stillPath": "https://image.tmdb.org/t/p/original//pilot.jpg",
                         },
                         {
                             "seasonNumber": 1,
@@ -96,7 +97,7 @@ class Native:
         elif path == "/library/sections/5/all":
             xml = f'<MediaContainer totalSize="{self.total}" offset="0" librarySectionID="5"><Directory type="show" ratingKey="7"><Guid id="{self.guid}"/><Guid id="imdb://{self.imdb}"/></Directory></MediaContainer>'
         elif path == "/library/metadata/7/allLeaves":
-            xml = f'<MediaContainer totalSize="1" offset="0" librarySectionID="5"><Video type="episode" grandparentRatingKey="{self.episode_parent}" parentIndex="1" index="1" title="Pilot" originallyAvailableAt="2020-01-01" viewCount="1"/></MediaContainer>'
+            xml = f'<MediaContainer totalSize="1" offset="0" librarySectionID="5"><Video type="episode" grandparentRatingKey="{self.episode_parent}" parentIndex="1" index="1" title="Pilot" duration="1441000" originallyAvailableAt="2020-01-01" viewCount="1"/></MediaContainer>'
         else:
             raise AssertionError(path)
         return httpx.Response(200, text=xml)
@@ -155,6 +156,7 @@ def test_explicit_plex_import_is_bounded_and_never_playback_proof(db):
     assert card["in_plex_episodes"] == 1 and card["watched_episodes"] == 1
     assert card["available_episodes"] == 0 and card["status_source"] == "none"
     assert card["seasons"][0]["episodes"][0]["available"] is None
+    assert card["seasons"][0]["episodes"][0]["runtime_seconds"] == 1441
     assert [row["tmdb_id"] for row in run(svc.list(1, view="available"))] == [42]
     assert run(svc.list(2, view="available")) == []
     assert all("/library/parts/" not in r.url.path for r in native.calls)
@@ -162,6 +164,18 @@ def test_explicit_plex_import_is_bounded_and_never_playback_proof(db):
     assert all(
         r.headers.get("X-Api-Key") is None for r in native.calls if r.url.host == "plex.test"
     )
+
+
+def test_episode_catalog_normalizes_stills_and_leaves_unknown_runtime_unset(db):
+    svc = service(db, Native())
+    run(svc.detail(1, 42))
+    card = run(svc.season(1, 42, 1))
+    first, second = card["seasons"][0]["episodes"]
+    assert "runtime_seconds" not in first
+    assert "runtime_seconds" not in second
+    assert first["available"] is None
+    assert first["still_url"] == "https://image.tmdb.org/t/p/w780/pilot.jpg"
+    assert second["still_url"] is None
 
 
 def test_episode_manual_wins_and_rating_does_not_set_progress(db):

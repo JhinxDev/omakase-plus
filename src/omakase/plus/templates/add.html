@@ -48,8 +48,19 @@
       </div>
       <div class="add-result-actions">
         {% if household_navigation and household_navigation.selected_kind == 'household' %}
-        <form method="post" action="/plus/add/acquire" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="anilist_id" value="{{ target.anilist_id }}"><input type="hidden" name="season" value="{{ season }}"><input type="hidden" name="household_request_key" value="{{ household_request_key }}"><input type="hidden" name="shared_intent" value="catalog"><button type="submit" class="button button-primary" {% if not household_navigation.can_add %}disabled{% endif %}>Add shared title</button></form>
-        {% if household_navigation.can_request %}<form method="post" action="/plus/add/acquire" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="anilist_id" value="{{ target.anilist_id }}"><input type="hidden" name="season" value="{{ season }}"><input type="hidden" name="household_request_key" value="{{ household_request_key }}"><input type="hidden" name="shared_intent" value="request"><button type="submit" class="button button-secondary">Request shared media</button><small>Queues the owner’s acquisition criteria and your permitted language preference. Provider work waits for qualified publication support.</small></form>{% else %}<p>The owner has disabled shared media requests. Adding a shared title does not acquire media.</p>{% endif %}
+        {% if household_navigation.can_add or household_navigation.can_suggest or household_navigation.can_request %}
+        <form method="post" action="/plus/add/acquire" data-busy-form>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="anilist_id" value="{{ target.anilist_id }}">
+          <input type="hidden" name="season" value="{{ season }}">
+          <input type="hidden" name="household_request_key" value="{{ household_request_key }}">
+          <input type="hidden" name="household_library_id" value="{{ household_navigation.selected_id }}">
+          {% if household_navigation.can_add %}<button type="submit" name="shared_intent" value="catalog" class="button button-primary">Add shared title</button>{% endif %}
+          {% if household_navigation.can_suggest %}<button type="submit" name="shared_intent" value="suggest" class="button {{ 'button-secondary' if household_navigation.can_add else 'button-primary' }}">Request title</button>{% endif %}
+          {% if household_navigation.can_request %}<button type="submit" name="shared_intent" value="request" class="button button-secondary">Request shared media</button>{% endif %}
+        </form>
+        {% if household_navigation.can_suggest %}<p>Your household owner reviews title requests.</p>{% endif %}
+        {% else %}<p>Your household access is set to viewing.</p>{% endif %}
         {% else %}
         <form method="post" action="/plus/add/acquire" data-busy-form>
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

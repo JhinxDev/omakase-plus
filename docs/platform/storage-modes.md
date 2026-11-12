@@ -18,6 +18,39 @@ claim that a debrid provider changes local law or provider terms. The current
 private reference keeps Real-Debrid and Zurg on its established hosts; a new
 friend install can omit both.
 
+### Cloud files
+
+On a private installation, open **Settings → Connections → Real-Debrid →
+Browse cloud files**. The Cloud library lists your account's torrents and
+download history. Open a torrent to browse its files. Browse and search refresh
+the inventory after a short cache interval. A pending torrent can appear before
+its files are ready to play.
+
+Choose **Play** to ask Real-Debrid for an Apple HLS stream of the selected file.
+Omakase relays that stream through the authenticated app so the provider token
+and generated links stay on the server. Compatible releases of the Apple TV
+and iPhone apps expose the same library under **Cloud**. Availability, audio and
+subtitle choices depend on the stream Real-Debrid supplies.
+
+Cloud files belong to the account that saved the connection. Household
+libraries do not inherit it. The Cloud list uses filenames and torrent folders.
+
+### Personal library playback
+
+Choose **Real-Debrid only** under **Settings → Connections → Playback source**
+to open your personal library through Real-Debrid. This setting applies to the
+Apple TV and iPhone title player and to web watch links. Choose **Plex only** for
+a Plex-backed library. **Automatic** allows the native player to try Real-Debrid
+before Plex. The web Cloud library is always available with a Real-Debrid connection.
+
+Omakase supplies title identities, artwork, episode metadata and watch history.
+Real-Debrid supplies file availability and the compatible stream. Anime playback
+uses verified episode mappings. Movies and TV episodes use a matching title,
+release year for movies, and exact episode numbers for TV. A Play request
+rechecks the current selected files. Browse results refresh after a short cache
+interval. Files without a confirmed catalog match are available to browse in
+Cloud under their original filenames.
+
 ## qBittorrent through Gluetun
 
 This is opt-in. qBittorrent shares Gluetun's network namespace and has no

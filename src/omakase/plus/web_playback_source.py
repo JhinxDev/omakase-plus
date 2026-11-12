@@ -24,7 +24,8 @@ from omakase.plus import (
 )
 from omakase.plus.households import resolve_scope, revalidate_scope
 from omakase.plus.language_source import digest
-from omakase.plus.playback_proof import PlaybackProofError, _account, _get, _xml
+from omakase.plus.playback_proof import PlaybackProofError, _account, _get, _xml, plex_stream_role
+from omakase.plus.tv_service import plain
 
 
 class PlaybackSourceError(ValueError):
@@ -89,6 +90,7 @@ class PlexStream:
     forced: bool
     selected: bool
     container_index: int | None = None
+    role: str = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +125,8 @@ class ResolvedAnimeSource:
     _series_key: str = field(default="", repr=False)
     _single_plex_part: bool = field(default=False, repr=False)
     frame_rate: float | None = None
+    episode_name: str = field(default="", repr=False, compare=False)
+    episode_summary: str = field(default="", repr=False, compare=False)
 
     @property
     def canonical_id(self):
@@ -396,6 +400,7 @@ def _snapshot(db, scope, anilist_id, season_number, episode_number, publication_
         and owner_token
         and (scope.viewer_id == scope.operational_owner_id or token != owner_token),
         "A separately authenticated personal Plex connection is required.",
+        code="viewer_plex_required",
     )
     _require(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", server or ""))
     return (relative, size, identity, base, digest(token), digest(owner_token), server, root)
@@ -476,6 +481,13 @@ async def _section_pages(xml, section, media_type):
     return videos
 
 
+def _episode_text(video, key, limit):
+    try:
+        return plain(video.get(key, "")[:4096], 4096)[:limit]
+    except ValueError:
+        return ""
+
+
 def _resolved_part(
     video,
     media,
@@ -526,6 +538,7 @@ def _resolved_part(
             s.get("forced") == "1",
             s.get("selected") == "1",
             _container_index(s.get("index")),
+            role=plex_stream_role(s) if s.get("streamType") == "3" else "unknown",
         )
         for s in raw_streams
     )
@@ -567,6 +580,8 @@ def _resolved_part(
         _series_key=series_key,
         _single_plex_part=len(video.findall("Media")) == 1 and len(media.findall("Part")) == 1,
         frame_rate=frame_rate if 0 < frame_rate <= 240 else None,
+        episode_name=_episode_text(video, "title", 120) if episode_number else "",
+        episode_summary=_episode_text(video, "summary", 650) if episode_number else "",
     )
 
 
@@ -639,6 +654,7 @@ async def resolve_anime_source(
             _require(
                 account != owner_account,
                 "The owner's Plex identity cannot represent another viewer.",
+                code="viewer_plex_required",
             )
         _require(
             db.execute(

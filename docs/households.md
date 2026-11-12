@@ -24,10 +24,22 @@ every member watched it or can play it through the same external account.
    Omakase account, reviews the target library and explicitly accepts.
 3. Each person chooses Personal or Shared from the library selector. Changing
    scope changes visible library items, not their identity or personal history.
-4. The owner chooses whether members can add titles or request media, then
-   explicitly configures library sources. Membership does not expose connector keys.
+4. In **Settings → Household → Members**, the owner can let each person request
+   titles for review, add titles to the catalog, or use viewing access alone.
+   An account with no custom setting inherits the household's add-title default.
+   The owner configures library sources separately. Membership does not expose
+   connector keys.
 
-Adding a shared title and requesting media are separate actions. A request records
+A member can choose **Find a title** in Household settings, search the catalog,
+and select **Request title**. Movie and TV discovery use the catalog connection
+shared by the owner. Anime requests use the reviewed AniList title and season.
+The owner's notification names the requester and links to the pending decision.
+Approval adds the exact title to the shared catalog. Declining leaves the catalog
+alone. The requester sees the decision in Household settings. Removing a member
+or turning off their title requests cancels their pending suggestions.
+
+Requesting a title, adding it to the catalog and acquiring media are separate
+actions. A media acquisition request records
 its actual member actor, owner acquisition criteria and allowed effective language
 rule. It does not borrow the owner's tracker identity. New operational monitors
 remain inactive until the qualified shared dispatcher can use that frozen request.

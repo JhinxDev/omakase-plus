@@ -193,6 +193,7 @@ def preview(media: Path, data_dir: str):
                 "email": user.email,
                 "active_page": "library",
                 "csrf_token": csrf_token(request),
+                "native_tv_test_enabled": os.getenv("OMAKASE_REVIEW_NATIVE_TV_LINK") == "1",
             },
             resolver=resolver,
             source_guard=guard,

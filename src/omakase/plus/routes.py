@@ -79,6 +79,7 @@ from omakase.plus.completion_cleanup import (
     set_keep_completed_in_plex,
 )
 from omakase.plus.connections_routes import create_connections_router
+from omakase.plus.debrid_routes import create_debrid_router
 from omakase.plus.deps import get_db
 from omakase.plus.discovery import DiscoveryRequest, save_preferences, saved_preferences
 from omakase.plus.feedback import feedback_for_prompt, save_feedback
@@ -102,7 +103,12 @@ from omakase.plus.media_sync import reconcile_curator_blocked_assets, run_media_
 from omakase.plus.media_types import MediaRecheckIntent
 from omakase.plus.middleware import require_user
 from omakase.plus.movies_routes import create_movies_router
-from omakase.plus.native_tv_test import create_native_tv_test_router, native_tv_test_enabled
+from omakase.plus.native_tv_test import (
+    create_native_tv_test_router,
+    native_tv_library_enabled,
+    native_tv_test_enabled,
+    resume_device_pairing,
+)
 from omakase.plus.notifications_routes import create_notifications_router
 from omakase.plus.oauth_flows import consume_oauth_flow, create_oauth_flow
 from omakase.plus.onboarding_routes import create_onboarding_router
@@ -229,10 +235,13 @@ _STATIC_ASSETS = {
     "notifications.js": "application/javascript",
     "credentials.css": "text/css",
     "credentials.js": "application/javascript",
+    "devices.css": "text/css",
+    "devices.js": "application/javascript",
     "history-artwork.css": "text/css",
     "history-artwork.js": "application/javascript",
     "health-actions.css": "text/css",
     "episode-states.css": "text/css",
+    "series-detail.css": "text/css",
     "hero-quality.js": "application/javascript",
     "shelves.js": "application/javascript",
     "discover-hub.js": "application/javascript",
@@ -242,6 +251,8 @@ _STATIC_ASSETS = {
     "geist-variable.woff2": "font/woff2",
     "dashboard.js": "application/javascript",
     "shaka-player-5.3.3.js": "application/javascript",
+    "debrid-library.css": "text/css",
+    "debrid-player.js": "application/javascript",
     "shaka-controls-5.3.3.css": "text/css",
     "web-player.css": "text/css",
     "web-player.js": "application/javascript",
@@ -257,16 +268,19 @@ _TRANSPARENT_POSTER_PLACEHOLDER = (
 
 
 def _static_asset_version() -> str:
+    revision = os.getenv("OMAKASE_REVISION", "dev")
     try:
-        return str(
-            max((_STATIC_DIR / asset_name).stat().st_mtime_ns for asset_name in _STATIC_ASSETS)
-        )
+        newest = max((_STATIC_DIR / asset_name).stat().st_mtime_ns for asset_name in _STATIC_ASSETS)
     except OSError:
-        return os.getenv("OMAKASE_REVISION", "dev")
+        return revision
+    # Container layers can preserve or normalize timestamps across releases.
+    return f"{newest}-{hashlib.sha256(revision.encode()).hexdigest()[:12]}"
 
 
 templates.env.globals["asset_version"] = _static_asset_version()
 templates.env.globals["release_status_label"] = release_status_label
+templates.env.globals["linked_devices_enabled"] = native_tv_library_enabled
+templates.env.globals["download_language_settings_enabled"] = language_settings_enabled
 
 # ── Rate limiting ───────────────────────────────────────────
 # Simple in-memory: {ip: [timestamp, ...]}
@@ -1015,6 +1029,7 @@ def _product_context(request: Request, user, *, active_page: str) -> dict[str, o
         "active_page": active_page,
         "csrf_token": _csrf_token(request),
         "native_tv_test_enabled": native_tv_test_enabled(),
+        "native_tv_library_enabled": native_tv_library_enabled(),
         "movies_enabled": os.getenv("OMAKASE_PLUS_PRIVATE", "").strip().casefold()
         in {"1", "true", "yes", "on"},
         "review_mode": os.getenv("OMAKASE_PLUS_REVIEW_MODE", "").strip().casefold()
@@ -1024,6 +1039,7 @@ def _product_context(request: Request, user, *, active_page: str) -> dict[str, o
 
 router.include_router(create_google_router(templates, _set_session_cookie, _product_context))
 router.include_router(create_connections_router(templates, _product_context))
+router.include_router(create_debrid_router(templates, _product_context))
 router.include_router(create_updates_router(templates, _product_context))
 router.include_router(create_agent_router(templates, _product_context))
 router.include_router(create_avatar_router(templates, _product_context))
@@ -1045,7 +1061,14 @@ router.include_router(create_language_router(templates, _product_context))
 router.include_router(create_history_artwork_router())
 router.include_router(create_onboarding_router(templates, _product_context))
 router.include_router(create_player_router(templates, _product_context))
-router.include_router(create_native_tv_test_router(templates, _product_context))
+router.include_router(
+    create_native_tv_test_router(
+        templates,
+        _product_context,
+        subtitle_root=os.path.join(os.getenv("OMAKASE_DATA_DIR", "data"), "subtitles"),
+        seek_root=os.path.join(os.getenv("OMAKASE_DATA_DIR", "data"), "seek"),
+    )
+)
 
 
 @router.get("/", include_in_schema=False)
@@ -1061,6 +1084,8 @@ async def home_page(
     user=Depends(require_user),
     db=Depends(get_db),
 ):
+    if pairing := resume_device_pairing(request):
+        return pairing
     selected = (
         households.selected_scope(db, viewer_id=user.id) if households.feature_enabled() else None
     )
@@ -1323,6 +1348,13 @@ async def add_acquire(
     _require_csrf(request, csrf_token)
     from omakase.plus.direct import resolve_direct_request
 
+    form = await request.form()
+    shared_submission = "shared_intent" in form or "household_library_id" in form
+    if shared_submission and (
+        not households.feature_enabled()
+        or households.selected_scope(db, viewer_id=user.id).kind != "household"
+    ):
+        raise HTTPException(409, "Select the shared library before submitting this title.")
     try:
         target = resolve_direct_request(str(anilist_id), season=season)
     except (ValueError, httpx.HTTPError) as exc:
@@ -1330,7 +1362,9 @@ async def add_acquire(
             url=f"/plus/add?message={quote(_clean_download_detail(exc), safe='')}",
             status_code=302,
         )
-    shared = _shared_anime_response(request, user, db, (target,), await request.form())
+    shared = _shared_anime_response(request, user, db, (target,), form)
+    if shared is None and shared_submission:
+        raise HTTPException(409, "Select the shared library before submitting this title.")
     if shared is not None:
         return shared
     monitor_id = _enroll_media_target(db, user, target)
@@ -2717,15 +2751,34 @@ def _shared_anime_response(request, user, db, targets, form):
     if selected.kind != "household":
         return None
     from omakase.plus.household_requests import prepare_shared_anime
+    from omakase.plus.household_suggestions import SETTINGS, request_title
 
+    if form.get("household_library_id") not in (None, selected.library_id):
+        raise HTTPException(409, "Reload the form after switching libraries.")
     base_key = str(form.get("household_request_key", ""))
     if not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", base_key):
         raise HTTPException(422, "Reload the shared-library form before submitting.")
     intent = str(form.get("shared_intent", "catalog"))
-    if intent not in {"catalog", "request"}:
+    if intent not in {"catalog", "request", "suggest"}:
         raise HTTPException(422, "Choose whether to add a shared title or request media.")
     try:
         with households._transaction(db):
+            if intent == "suggest":
+                households._require(len(targets) == 1, "Request one title at a time.", 422)
+                target = targets[0]
+                request_id = request_title(
+                    db,
+                    selected,
+                    domain="anime",
+                    canonical_id=str(target.anilist_id),
+                    season=target.season_number or 0,
+                    metadata={"title": target.title},
+                )
+                return RedirectResponse(
+                    SETTINGS + f"#request-{request_id}",
+                    status_code=303,
+                    headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+                )
             receipts = [
                 prepare_shared_anime(
                     db,

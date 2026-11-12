@@ -16,19 +16,19 @@
 {% set display = card.display | default({}, true) %}
 {% set history = card.history or {} %}
 {% set status_known = history.status_source and history.status_source != 'none' %}
+{% set resolution = card.resolution | default('') | string | lower %}
 <article class="movie-card">
   {% if card.imdb_id %}<a class="movie-card-link" href="/plus/movies/{{ card.imdb_id }}" aria-label="View {{ card.title }}{% if card.year %}, {{ card.year }}{% endif %}">{% endif %}
   {{ movie_poster(card, status=false) }}
   <div class="movie-card-body">
     <h2 title="{{ card.title }}">{{ card.title }}</h2>
-    <div class="movie-meta">{% if card.year %}<span>{{ card.year }}</span>{% endif %}<span>Movie</span></div>
+    {% if card.year %}<div class="movie-meta"><span>{{ card.year }}</span></div>{% endif %}
     {% if card.recommendation_reason %}<p class="movie-ranking-label">{% if card.ranking_basis == 'saved_ratings' %}Your local taste{% elif card.ranking_basis == 'public_rating' %}Public TMDB ratings{% elif card.ranking_basis == 'release_date' %}Release year{% else %}Public discovery{% endif %}</p><p class="movie-card-reason">{{ card.recommendation_reason }}</p>{% endif %}
     <div class="media-progress-meta movie-card-status">
-      {% if status_known or history.rating or not card.recommendation_reason %}<p class="collection-card-progress">{% if status_known %}{{ display.watch_label | default('Viewing status unavailable') }}{% else %}No viewing record{% endif %}{% if history.rating %} · Your rating {{ history.rating }}/10{% endif %}</p>{% endif %}
-      <p class="collection-card-availability" data-status-tone="{{ 'ready' if card.plex_present else display.status_tone | default('neutral') }}">{% if not card.imdb_id %}Catalog preview · identity unconfirmed{% elif card.plex_present %}Available{% elif display %}{{ 'Availability unknown' if display.status_label == 'Not checked in Plex' and not request_view else display.status_label }}{% else %}Availability not checked{% endif %}</p>
+      {% if status_known or history.rating %}<p class="collection-card-progress">{% if status_known %}{{ display.watch_label | default('Viewing status unavailable') }}{% endif %}{% if history.rating %}{% if status_known %} · {% endif %}Your rating {{ history.rating }}/10{% endif %}</p>{% endif %}
+      <p class="collection-card-availability" data-status-tone="{{ 'ready' if card.plex_present else display.status_tone | default('neutral') }}">{% if not card.imdb_id %}Catalog preview · identity unconfirmed{% elif card.plex_present %}Available{% if resolution in ['2160','2160p','4k'] %} · 4K{% elif resolution in ['1080','1080p','720','720p'] %} · {{ resolution | replace('p','') }}p{% endif %}{% elif display %}{{ 'Availability unknown' if display.status_label == 'Not checked in Plex' and not request_view else display.status_label }}{% else %}Availability not checked{% endif %}</p>
     </div>
     {% if request_view and (display.request_recorded_at or display.request_observed_at) %}<p class="movie-card-timestamp">{% set stamp = display.request_observed_at or display.request_recorded_at %}{{ 'Checked' if display.request_observed_at else 'Last update' }} <time datetime="{{ stamp }}" data-local-datetime="{{ stamp }}">{{ stamp }}</time></p>{% endif %}
-    <div class="collection-card-quality">{{ movie_quality(card) }}</div>
   </div>
   {% if card.imdb_id %}</a>{% else %}<p class="movie-card-note">Preview only. Exact identity is still being checked.</p>{% endif %}
 </article>

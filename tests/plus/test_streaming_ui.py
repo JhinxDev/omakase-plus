@@ -386,8 +386,9 @@ def test_title_page_leads_with_artwork_progress_and_separates_technical_details(
 
     html = client.get(f"/plus/library/{monitor_id}").text
 
-    assert 'class="title-view-hero streaming-title-hero"' in html
-    assert 'data-fallback-title="Solo Leveling"' in html
+    assert 'class="title-view-hero streaming-title-hero series-hero"' in html
+    assert '<h1 id="series-title">Solo Leveling</h1>' in html
+    assert 'data-series-backdrop="/plus/media/151807/poster"' in html
     assert '<span class="watched-count">Watched <b>4/12</b></span>' in html
     assert 'aria-label="Solo Leveling: 4 of 12 episodes watched"' in html
     assert '<progress max="100" value="33"' in html
@@ -439,17 +440,19 @@ def test_title_exposes_episode_availability_without_confusing_watched_with_ready
 
     html = client.get(f"/plus/library/{monitor_id}").text
 
-    episodes = re.search(r'<ol class="viewer-episode-grid">(.*?)</ol>', html, re.DOTALL)
+    episodes = re.search(
+        r'<ol class="viewer-episode-grid series-episode-grid"[^>]*>(.*?)</ol>', html, re.DOTALL
+    )
     assert episodes is not None
     assert (
-        len(re.findall(r'<li\b[^>]*\bclass="viewer-episode(?:\s[^"]*)?"', episodes.group(1))) == 12
+        len(re.findall(r'<li\b[^>]*\bclass="series-episode(?:\s[^"]*)?"', episodes.group(1))) == 12
     )
     assert re.findall(r'id="episode-(\d+)"', episodes.group(1)) == [str(n) for n in range(1, 13)]
     assert episodes.group(1).count("Not yet verified") == 12
     assert episodes.group(1).count(">Watched</span>") == 4
     assert episodes.group(1).count(">Up next</span>") == 1
     assert html.index('id="episode-heading"') < html.index(
-        '<details class="title-technical-details">'
+        '<details class="title-technical-details"'
     )
     assert "not individual episode playback" in html
     assert 'href="#episode-heading"' in html
@@ -485,7 +488,7 @@ def test_title_exposes_missing_episode_search_and_removal_in_library_actions(cli
 
     html = client.get(f"/plus/library/{monitor_id}").text
 
-    technical_start = html.index('<details class="title-technical-details">')
+    technical_start = html.index('<details class="title-technical-details"')
     assert html.index(f'action="/plus/library/{monitor_id}/retry"') < technical_start
     assert "Find missing episodes" in html
     assert "Library actions" in html
@@ -557,7 +560,9 @@ def test_completion_offers_score_and_cleanup_without_deleting_media(client, monk
     assert response.status_code == 200
     assert "Keep in library" in response.text
     assert "Review media removal" in response.text
-    assert "Queued for AniList" in response.text
+    sync_status = '<p class="title-progress-source" role="status">Queued for AniList.'
+    assert response.text.index('id="watch-tracking"') < response.text.index(sync_status)
+    assert response.text.index(sync_status) > response.text.index('class="viewer-episodes"')
     with _connect(client) as db:
         row = db.execute(
             "SELECT action,score_ten FROM tracker_sync_outbox ORDER BY id DESC LIMIT 1"

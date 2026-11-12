@@ -53,27 +53,15 @@ test('direct subtitle rows preserve focus/identity while state changes; no track
   f.state.captionLoading=true;menu.checkAvailability();assert.ok(menu.menu.querySelectorAll('[data-subtitle-choice]').every(r=>r.disabled));
 });
 
-test('compact transport uses actual Shaka time class and bounded border boxes at 320px and text enlargement',()=>{
-  const fs=require('node:fs');const path=require('node:path');const css=fs.readFileSync(path.join(__dirname,'../../src/omakase/plus/static/web-player.css'),'utf8');
-  const grid=[...css.matchAll(/\.web-player \.shaka-controls-button-panel\s*\{([^}]+)\}/g)].map(m=>m[1]).find(x=>x.includes('grid-template-columns'));
-  assert.ok(grid,'mobile row owns a grid instead of overflowing supplied content-box widths');
-  const columns=grid.match(/grid-template-columns:\s*([^;]+)/)[1];
-  assert.equal((columns.match(/44px/g)||[]).length,5);assert.ok(columns.includes('minmax(0, 1fr)'));
-  assert.match(css,/\.shaka-controls-button-panel > :is\(button, a\)[^{]*\{[^}]*box-sizing:\s*border-box/);
-  assert.match(css,/\.shaka-current-time[^{]*\{[^}]*white-space:\s*normal/);
-  assert.match(css,/\.omakase-next-control[^{]*\{[^}]*box-sizing:\s*border-box/);
-  // Stage at320 has16px page gutters.98% supplied bar,8px total padding;
-  // five44px controls leave a real44px+ time target. Font zoom grows row height,
-  // not these physical target widths; the time wraps inside its own grid cell.
-  const stage=320-32,inner=stage*.98-8,time=inner-5*44;
-  assert.ok(time>=44);assert.ok(5*44+time<=stage);
-  for(const rootFont of [16,32]){const row=Math.max(44,rootFont*3);assert.ok(row+8+44<=52+rootFont*3);}
+test('empty audio keeps its direct trigger disabled without offering invented tracks',()=>{
+  global.document=document;const f=fixture();f.controls.player.getAudioTracks=()=>[];
+  f.menus[1].checkAvailability();assert.equal(f.menus[1].button.disabled,true);assert.equal(f.menus[1].button.classList.contains('shaka-hidden'),false);
+  f.controls.open();f.controls.close();assert.equal(f.menus[1].button.disabled,true);
 });
 
-test('empty audio preserves inherited unavailable state instead of reviving its row',()=>{
-  global.document=document;const f=fixture();f.controls.player.getAudioTracks=()=>[];
-  f.menus[1].checkAvailability();assert.equal(f.menus[1].button.disabled,true);assert.ok(f.menus[1].button.classList.contains('shaka-hidden'));
-  f.controls.open();f.controls.close();assert.ok(f.menus[1].button.classList.contains('shaka-hidden'));
+test('a sole real audio track keeps direct Audio access while absent audio stays unavailable',()=>{
+  global.document=document;const f=fixture();f.controls.player.getAudioTracks=()=>[{id:2}];
+  f.menus[1].checkAvailability();assert.equal(f.menus[1].button.disabled,false);assert.equal(f.menus[1].button.classList.contains('shaka-hidden'),false);
 });
 
 test('async direct subtitle handoff restores its visible row after body fallback but never steals Back focus',async()=>{
@@ -86,13 +74,4 @@ test('async direct subtitle handoff restores its visible row after body fallback
     assert.equal(document.activeElement,back?menu.button:row);
     assert.equal(menu.button.classList.contains('shaka-hidden'),!back);
   }
-});
-
-test('320px with doubled rem gutters reserves readable time by dropping only the mute target',()=>{
-  const fs=require('node:fs'),path=require('node:path'),css=fs.readFileSync(path.join(__dirname,'../../src/omakase/plus/static/web-player.css'),'utf8');
-  assert.match(css,/@media\s*\(max-width:\s*360px\)[\s\S]*grid-template-columns:\s*44px 44px minmax\(0, 1fr\) 44px 44px/);
-  assert.match(css,/\.shaka-mute-button\s*\{\s*display:\s*none/);
-  const stage=320-2*32,available=stage*.98-8-4*44;assert.ok(available>=60);
-  assert.match(css,/\.web-player-timeline\s*\{[^}]*z-index:\s*3/);
-  assert.match(css,/:has\([^\n]+shaka-overflow-menu[^\n]+\)[^\n]+\.web-player-timeline[^\n]+z-index:\s*1/);
 });

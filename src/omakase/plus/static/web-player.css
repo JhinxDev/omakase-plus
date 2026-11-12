@@ -1,4 +1,19 @@
-.web-player { --shaka-font-family: var(--sans, Geist, sans-serif); width: 100%; min-width: 0; max-width: 1200px; margin-inline: auto; color: var(--stream-text, #f0edf8); }
+.web-player { --shaka-font-family: var(--sans, Geist, sans-serif); width: 100%; min-width: 0; max-width: 1600px; margin-inline: auto; color: var(--stream-text, #f0edf8); }
+body.product-body:has(.web-player) { background: #080a0e; }
+body:has(.web-player) :is(.stream-header, .mobile-primary-nav, .library-context) { display: none; }
+body:has(.web-player) > .skip-link:focus {
+  position: relative; inset: auto; display: block; width: fit-content;
+  margin: .75rem 1rem; padding: .65rem .9rem; transform: none;
+  border-radius: .5rem; background: #c3b1ff; color: #171325;
+  outline: 2px solid #c3b1ff; outline-offset: 3px;
+}
+.web-player .web-player-header {
+  min-height: 0; padding: 1rem 0; margin-block: 0; align-items: center;
+}
+.web-player-header h1 {
+  margin-block: .25rem 0; font-size: clamp(1.25rem, 2vw, 1.9rem); line-height: 1.15;
+}
+body.product-body:has(.web-player) .product-main { padding-top: 0; }
 .web-player-stage { --player-controls-band: calc(52px + 3rem); --player-row-height: max(44px, 3rem); position: relative; width: 100%; min-width: 0; box-sizing: border-box; padding-bottom: var(--player-controls-band); min-height: 260px; overflow: hidden; background: #020408; border: 1px solid #303547; border-radius: 14px; isolation: isolate; }
 .web-player-stage video { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: contain; }
 /* Keep canvas coordinates tied to the video image, including in fullscreen.
@@ -19,19 +34,21 @@
 .web-player-start h2 { font-size: clamp(1.4rem, 3vw, 2rem); letter-spacing: -.025em; }
 .web-player p { margin: 0; color: #b8c0d1; line-height: 1.6; }
 .web-player button, .web-player a { font: inherit; }
-.web-player button, .web-player-next, .web-player-details a { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 16px; border: 1px solid #4b4c65; border-radius: 8px; background: #1c2232; color: #f0edf8; cursor: pointer; text-decoration: none; }
+.web-player button, .web-player-next, .web-player-details a, .web-player-actions a { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 16px; border: 1px solid #4b4c65; border-radius: 8px; background: #1c2232; color: #f0edf8; cursor: pointer; text-decoration: none; }
 .web-player button:hover, .web-player a:hover { border-color: #c8b5f1; }
 .web-player button:disabled { opacity: .5; cursor: default; }
-.web-player .web-player-primary { color: #171325; background: var(--stream-accent, #c3b1ff); border-color: var(--stream-accent, #c3b1ff); font-weight: 650; padding-inline: 28px; }
+.web-player .web-player-primary { color: #171124; background: var(--stream-accent, #c3b1ff); border-color: var(--stream-accent, #c3b1ff); font-weight: 650; padding-inline: 28px; }
+.web-player .web-player-primary:hover { background: #d9ccff; border-color: var(--stream-accent, #c3b1ff); }
+.web-player .web-player-primary:focus-visible { outline: 2px solid #d2c2ff; outline-offset: 4px; }
 .web-player-resume { display: flex; align-items: center; gap: 10px; min-height: 44px; color: #cbd1df; font-size: .875rem; }
 .web-player-resume input { width: 18px; height: 18px; accent-color: var(--stream-accent, #c3b1ff); flex: none; }
 .web-player :focus-visible { outline: 3px solid var(--stream-accent, #c3b1ff); outline-offset: 3px; }
-.web-player-state { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 24px; padding: 16px 0; font-size: .875rem; }
-.web-player-state .web-player-save { color: #bdc8dd; }
+.web-player-tools .web-player-save:empty { display: none; }
 .web-player-error { margin: 0 0 24px; padding: 18px; border: 1px solid #885461; border-radius: 10px; background: #2c1d28; }
 .web-player-error p { color: #ffd8e0; }
 .web-player-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
-.web-player-details { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, .38fr); gap: 32px; border-top: 1px solid #303547; padding: 24px 0; }
+.web-player:has(.web-player-error:not([hidden])) .masthead-actions > .web-player-back { display: none; }
+.web-player-details { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, .38fr); gap: 32px; margin-top: 1.25rem; border-top: 1px solid #303547; padding: 24px 0; }
 .web-player-details p { margin-top: 8px; font-size: .9rem; max-width: 55ch; }
 .web-player-details button, .web-player-details a { margin-top: 20px; }
 .web-player-next { margin-bottom: 16px; }
@@ -48,17 +65,11 @@
 .web-player .shaka-bottom-controls { box-sizing: border-box; padding: 0 8px 8px; border-radius: 8px; background: #080d1a; }
 .web-player .shaka-scrim-container { background: none; }
 .web-player .shaka-controls-button-panel > * { opacity: 1; color: #f0edf8; }
+/* The inline player reserves a control band. Keep transport visible in that band. */
+.web-player-stage:not(:fullscreen) .shaka-controls-button-panel { opacity: 1; }
 .web-player .shaka-controls-button-panel .shaka-spacer { min-width: 0; width: 0; padding: 0; flex: 1 1 0; }
 @media (min-width: 641px) {
   .web-player .shaka-controls-button-panel > .shaka-volume-bar-container { width: 100px; flex: 0 0 100px; padding: 0; }
-}
-.web-player-stage:fullscreen[data-fullscreen-idle] { cursor: none; }
-.web-player-stage:fullscreen[data-fullscreen-idle] .shaka-bottom-controls,
-.web-player-stage:fullscreen[data-fullscreen-idle] > :is(.web-player-timeline, .web-player-skip),
-.web-player-stage:fullscreen .shaka-controls-container:not([shown]) .shaka-bottom-controls,
-.web-player-stage:fullscreen:not(:has(> .shaka-controls-container[shown])) > .web-player-skip,
-.web-player-stage:fullscreen:not(:has(> .shaka-controls-container[shown])) > .web-player-timeline:not(:has(input:is(:focus-visible, :active))) {
-  visibility: hidden;
 }
 /* The app button display rule must not expose Shaka's empty ad placeholder. */
 .web-player .shaka-controls-container .shaka-ad-info:empty { display: none; }
@@ -81,6 +92,7 @@ body.product-body .web-player input.shaka-range-element[type="range"] { box-sizi
 }
 
 .web-player .shaka-controls-container { z-index: 2; }
+.web-player-stage[data-playback-failed] > :is(.shaka-controls-container, .web-player-timeline) { display: none; }
 .web-player .web-player-version-note { padding: 0 0 20px; color: #f1d3a1; }
 .web-player-ass-options { margin-top: 20px; display: grid; gap: 8px; min-width: 0; }
 .web-player-ass-options label { color: #e1d9ef; font-size: .9rem; font-weight: 600; }
@@ -88,7 +100,9 @@ body.product-body .web-player input.shaka-range-element[type="range"] { box-sizi
 .web-player .web-player-caption-mode { padding: 12px; border-left: 2px solid #ab98d1; background: #1b1e2d; }
 @media (max-width: 640px) {
   .web-player { --shaka-icon-size: 44px; }
+  .web-player .web-player-header { align-items: flex-start; }
   .web-player-stage { border-radius: 8px; min-height: 280px; }
+  .web-player-stage[data-playback-failed]:not(:fullscreen) { display: none; }
   .web-player-start { gap: 10px; padding: 16px; }
   .web-player-start p { font-size: .875rem; }
   .web-player-details { grid-template-columns: minmax(0, 1fr); gap: 24px; }
@@ -160,7 +174,7 @@ body.product-body .web-player input[data-player-timeline] { --played: 0%; --buff
 .web-player .shaka-overflow-menu { box-sizing: border-box; width: min(340px, calc(100% - 24px)); overflow-y: auto; overflow-x: hidden; }
 .web-player .shaka-overflow-menu .shaka-overflow-button-label { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .web-player .omakase-subtitles-menu { box-sizing: border-box; width: 100%; max-width: 100%; padding: 4px; margin: 0; overflow: visible; }
-.web-player .omakase-subtitles-menu [data-subtitle-choice] { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 44px; height: auto; white-space: normal; overflow-wrap: anywhere; text-align: start; font: inherit; line-height: 1.5; }
+.web-player .omakase-subtitles-menu [data-subtitle-choice] { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 44px; height: auto; white-space: normal; overflow-wrap: anywhere; text-align: start; font: 400 .875rem/1.5 var(--sans, Geist, sans-serif); }
 .web-player .omakase-subtitles-menu [data-subtitle-choice][aria-checked="true"]::after { content: "✓"; flex: none; color: var(--stream-accent, #c3b1ff); }
 .web-player .omakase-subtitles-menu [data-subtitle-choice]:focus-visible { outline-offset: -3px; }
 @media (max-width: 640px) {
@@ -172,7 +186,7 @@ body.product-body .web-player input[data-player-timeline] { --played: 0%; --buff
 
 /* The supplied controls are a later sibling. Raise the owned range for actual
    hit testing, then yield to a visible settings surface so menus remain on top. */
-.web-player-stage:has(.shaka-overflow-menu:not(.shaka-hidden), .shaka-settings-menu:not(.shaka-hidden)) .web-player-timeline { z-index: 1; }
+.web-player-stage:has(.shaka-overflow-menu:not(.shaka-hidden), .shaka-settings-menu:not(.shaka-hidden, .omakase-audio-menu, .omakase-subtitles-menu)) .web-player-timeline { z-index: 1; }
 .web-player-stage:has(.shaka-overflow-menu:not(.shaka-hidden), .shaka-settings-menu:not(.shaka-hidden)) .web-player-skip { z-index: 1; }
 @media (max-width: 360px) {
   /* Rem-based page gutters also grow at200% text. Preserve Play, Next, time,
@@ -243,13 +257,14 @@ body.product-body .web-player input[data-player-timeline]:focus { outline: none;
   right: 0;
   transform: none;
 }
-.masthead-actions > .web-player-back {
+.masthead-actions .web-player-back {
   display: inline-flex; align-items: center; justify-content: center; gap: .55rem;
   min-height: 44px; padding: .5rem .9rem; border: 1px solid #525c76; border-radius: .5rem;
-  background: #1a2131; color: #f0edf8; font-weight: 650; text-decoration: none;
+  background: #1a2131; color: #f0edf8; font: inherit; font-weight: 650; text-decoration: none;
 }
-.masthead-actions > .web-player-back:hover { background: #282f44; border-color: #a898e0; }
-.masthead-actions > .web-player-back:focus-visible { outline: 2px solid #c6b5ff; outline-offset: 3px; }
+.masthead-actions .web-player-back:hover { background: #282f44; border-color: #a898e0; }
+.masthead-actions .web-player-back:focus-visible { outline: 2px solid #c6b5ff; outline-offset: 3px; }
+.web-player-tv-test button { cursor: pointer; }
 .web-player-caption-default { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .85rem; }
 .web-player-caption-default select { max-width: 100%; min-height: 44px; }
 .web-player-stream-info {
@@ -258,3 +273,126 @@ body.product-body .web-player input[data-player-timeline]:focus { outline: none;
 }
 .web-player-stream-info dt { color: #b8c0d4; }
 .web-player-stream-info dd { margin: 0; text-align: end; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+
+@media (min-width: 850px) and (min-height: 600px) {
+  body.product-body:has(.web-player) :is(.product-workspace, .product-main) { width: 100%; max-width: none; padding-inline: 0; }
+  .web-player { position: relative; max-width: none; }
+  .web-player .web-player-header {
+    position: absolute; inset: 0 0 auto; z-index: 4; width: 100%;
+    padding: 1.25rem clamp(1rem, 3vw, 3rem) 2rem;
+    background: linear-gradient(#020408 0%, #020408eb 50%, #02040800 100%);
+    pointer-events: none;
+  }
+  .web-player-header .masthead-actions { pointer-events: auto; }
+  .web-player-stage:not(:fullscreen) {
+    --player-controls-band: 0px;
+    height: 100dvh; min-height: 0; padding: 0; border: 0; border-radius: 0; background: #000;
+  }
+  .web-player-stage:not(:fullscreen) video { height: 100%; aspect-ratio: auto; }
+  .web-player-stage:not(:fullscreen) .web-player-skip { bottom: calc(var(--player-row-height) + 60px); }
+  .web-player:has(.web-player-stage[data-cinema-idle]) .web-player-header:not(:focus-within),
+  .web-player-stage[data-cinema-idle] :is(.shaka-bottom-controls, .web-player-timeline, .web-player-skip) {
+    visibility: hidden;
+  }
+  .web-player-stage[data-cinema-idle] { cursor: none; }
+  .web-player :is(.web-player-details, .web-player-version-note) {
+    width: min(calc(100% - 2 * var(--stream-gutter)), 96rem); margin-inline: auto;
+  }
+  .web-player .web-player-error {
+    position: absolute; z-index: 5; top: 50dvh; left: 50%; transform: translate(-50%, -50%);
+    width: min(34rem, calc(100% - 2rem)); margin: 0;
+  }
+}
+
+/* One cinema surface: the timeline and transport share an opaque lower scrim.
+   The video/ASS geometry remains unchanged by opening menus or hiding chrome. */
+.web-player .web-player-stage { --player-controls-band: 0px; padding-bottom: 0; }
+.web-player .shaka-bottom-controls { container: player-transport / inline-size; width: 100%; margin: 0; padding: 44px 20px 10px; border-radius: 0; background: #080d1a; }
+.web-player .shaka-bottom-controls::before { content: ""; position: absolute; inset: -48px 0 auto; height: 48px; background: linear-gradient(transparent, #080d1a); pointer-events: none; }
+.web-player .shaka-controls-button-panel { display: flex; gap: 4px; }
+.web-player .shaka-bottom-controls .shaka-controls-button-panel { min-height: 0; }
+.web-player .shaka-controls-button-panel > :is(button, a) { box-sizing: border-box; min-height: 44px; height: auto; }
+.web-player .shaka-controls-button-panel .omakase-seek-step { flex: 0 0 44px; width: 44px; font: 650 14px var(--sans, Geist, sans-serif); padding: 0; }
+.web-player .shaka-controls-button-panel .omakase-next-control { max-width: none; width: auto; padding-inline: 10px; opacity: 1; }
+.web-player [data-next-label] { display: inline; }
+.web-player [data-next-compact], .web-player .omakase-next-icon { display: none; }
+.web-player .shaka-controls-button-panel > button:is(.omakase-audio-button, .omakase-subtitles-button) { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; width: auto; min-width: 44px; max-width: none; padding-inline: 10px; opacity: 1; }
+.web-player .shaka-controls-button-panel :is(.omakase-audio-button, .omakase-subtitles-button) .shaka-overflow-button-label { display: block; width: auto; min-width: 0; margin: 0; padding: 0; font-size: .8125rem; white-space: nowrap; }
+.web-player .shaka-controls-button-panel :is(.omakase-audio-button, .omakase-subtitles-button) .shaka-overflow-button-label::after { display: none; }
+.web-player .shaka-controls-button-panel :is(.omakase-audio-button, .omakase-subtitles-button) .shaka-current-selection-span { display: none; }
+.web-player .shaka-controls-button-panel .shaka-current-time { font-size: .8125rem; padding-inline: 8px; }
+.web-player .web-player-timeline { box-sizing: border-box; inset-inline: 20px; bottom: calc(var(--player-row-height) + 10px); }
+.web-player .shaka-settings-menu { max-height: min(360px, calc(100% - 24px)); }
+/* SettingsMenu anchors root menus to their trigger. Bound wide track lists to
+   the player edge, rather than carrying overflow-submenu width into the bar. */
+.web-player .shaka-settings-menu:is(.omakase-subtitles-menu, .omakase-audio-menu) { left: auto !important; right: 12px !important; width: min(360px, calc(100% - 24px)); max-width: calc(100% - 24px); overflow-y: auto; overflow-x: hidden; }
+.web-player .shaka-settings-menu:is(.omakase-subtitles-menu, .omakase-audio-menu) { bottom: calc(var(--player-row-height) + 62px) !important; max-height: min(360px, calc(100% - var(--player-row-height) - 80px)) !important; }
+/* The truncated text in the original desktop capture was a hover tooltip.
+   Keep that duplicate cue out of an already open track menu. */
+.web-player-stage:has(.omakase-audio-menu:not(.shaka-hidden), .omakase-subtitles-menu:not(.shaka-hidden)) .shaka-controls-button-panel > :is(.shaka-tooltip, .shaka-tooltip-status)::after,
+.web-player-stage:has(.omakase-audio-menu:not(.shaka-hidden), .omakase-subtitles-menu:not(.shaka-hidden)) .shaka-controls-button-panel > :is(.shaka-tooltip, .shaka-tooltip-status)::before { display: none; }
+.web-player .omakase-subtitles-menu [data-subtitle-choice] > span { margin-left: 0; min-width: 0; }
+.web-player-stage[data-cinema-idle] :is(.shaka-bottom-controls, .web-player-timeline, .web-player-skip) { visibility: hidden; }
+.web-player-stage[data-cinema-idle] { cursor: none; }
+.web-player-stage:focus-within :is(.shaka-bottom-controls, .web-player-timeline) { visibility: visible; }
+@media (max-width: 1000px) {
+  .web-player .shaka-controls-button-panel .shaka-volume-bar-container { display: none; }
+}
+@media (max-width: 640px) {
+  .web-player .web-player-stage { --player-row-height: max(96px, 6rem); min-height: 340px; }
+  .web-player .shaka-bottom-controls { padding: 44px 8px 8px; }
+  .web-player .shaka-controls-button-panel { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); grid-template-rows: minmax(44px, auto) minmax(44px, auto); gap: 4px 0; }
+  .web-player .shaka-controls-button-panel > * { min-width: 0; max-width: 100%; }
+  .web-player .omakase-seek-backward { grid-column: 1; grid-row: 1; }
+  .web-player .shaka-play-button { grid-column: 2; grid-row: 1; }
+  .web-player .omakase-seek-forward { grid-column: 3; grid-row: 1; }
+  .web-player .shaka-controls-button-panel .shaka-current-time { grid-column: 4 / 6; grid-row: 1; font-size: .75rem; padding: 0 3px; white-space: normal; overflow-wrap: normal; }
+  .web-player .shaka-fullscreen-button { grid-column: 6; grid-row: 1; }
+  .web-player .shaka-controls-button-panel .omakase-next-control { grid-column: 1 / 3; grid-row: 2; width: 100%; height: auto; padding: 0 4px; font-size: .8125rem; white-space: normal; line-height: 1.25; }
+  .web-player .shaka-controls-button-panel .omakase-next-control [data-next-label] { display: block; width: 100%; min-width: 0; white-space: normal; overflow-wrap: normal; word-break: normal; }
+  .web-player .shaka-controls-button-panel .omakase-audio-button { grid-column: 3; grid-row: 2; }
+  .web-player .shaka-controls-button-panel .omakase-subtitles-button { grid-column: 4 / 6; grid-row: 2; }
+  .web-player .shaka-overflow-menu-button { grid-column: 6; grid-row: 2; }
+  .web-player .shaka-controls-button-panel > button:is(.omakase-audio-button, .omakase-subtitles-button) { flex-direction: column; gap: 0; width: 100%; max-width: 100%; height: auto; padding: 2px; }
+  .web-player .shaka-controls-button-panel :is(.omakase-audio-button, .omakase-subtitles-button) .shaka-overflow-button-label { max-width: 100%; white-space: nowrap; overflow-wrap: normal; word-break: normal; }
+  .web-player .shaka-controls-button-panel .omakase-audio-button .shaka-ui-icon { display: none; }
+  .web-player .shaka-controls-button-panel .shaka-mute-button { display: none; }
+  .web-player .web-player-timeline { inset-inline: 12px; bottom: calc(var(--player-row-height) + 12px); }
+  .web-player .shaka-controls-button-panel.shaka-tooltips-on > .shaka-tooltip::after { display: none; }
+}
+/* Rem units follow text enlargement. A third row gives complete track words
+   their own half-width targets instead of fracturing Audio or Subtitles. */
+@container player-transport (width < 18rem) {
+  .web-player .shaka-controls-button-panel { grid-template-rows: repeat(3, minmax(44px, auto)); }
+  .web-player .shaka-controls-button-panel .omakase-next-control { grid-column: 1 / 6; grid-row: 2; }
+  .web-player .shaka-controls-button-panel .shaka-overflow-menu-button { grid-column: 6; grid-row: 2; }
+  .web-player .shaka-controls-button-panel .omakase-audio-button { grid-column: 1 / 4; grid-row: 3; }
+  .web-player .shaka-controls-button-panel .omakase-subtitles-button { grid-column: 4 / 7; grid-row: 3; }
+  .web-player .shaka-controls-button-panel > button:is(.omakase-audio-button, .omakase-subtitles-button) { flex-direction: row; gap: 6px; }
+}
+
+.web-player-tv-test--phone { display: none; }
+.web-player-description-label { margin: 1.1rem 0 -.6rem; color: #b8c0d1; font-size: .8125rem; font-weight: 550; }
+@media (max-width: 640px) {
+  .web-player .web-player-header { flex-direction: row; flex-wrap: nowrap; align-items: center; gap: .5rem; padding-block: .5rem; }
+  .web-player-header > div:first-child { min-width: 0; flex: 1; }
+  .web-player-header .page-kicker { display: none; }
+  .web-player .web-player-header h1 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin: 0; font-size: 1rem; line-height: 1.3; }
+  .web-player-header .masthead-actions { order: -1; flex: 0 0 auto; width: auto; padding: 0; }
+  .web-player-header .web-player-back { box-sizing: border-box; width: 44px; height: 44px; min-width: 44px; padding: 0; border: 0; background: transparent; }
+  .web-player-header .web-player-back-label, .web-player-tv-test--desktop { display: none; }
+  .web-player-tv-test--phone { display: block; margin-block: .5rem; }
+  .web-player .web-player-stage:not(:fullscreen) { display: block; min-height: 0; padding-bottom: var(--player-secondary-band, 56px); }
+  .web-player .web-player-stage:not(:fullscreen) > video { display: block; width: 100%; height: auto; aspect-ratio: auto 16 / 9; flex: none; }
+  .web-player .shaka-controls-button-panel > button:is(.omakase-audio-button, .omakase-subtitles-button) { flex-direction: row; gap: 0; }
+  .web-player .shaka-controls-button-panel .omakase-subtitles-button .omakase-caption-icon { display: none; }
+  .web-player .shaka-controls-button-panel :is(.omakase-audio-button, .omakase-subtitles-button) .shaka-overflow-button-label { line-height: 1.25; }
+  .web-player .web-player-stage:not(:fullscreen) .shaka-settings-menu:is(.omakase-subtitles-menu, .omakase-audio-menu) { position: fixed; top: var(--player-track-menu-top, 50dvh); bottom: auto !important; left: var(--player-track-menu-left, 12px) !important; right: auto !important; width: var(--player-track-menu-width, calc(100% - 24px)); max-height: var(--player-track-menu-height, 40dvh) !important; z-index: 10; }
+}
+.web-player-episode-navigation { margin-top: .5rem; }
+.web-player-episode-navigation > summary { min-height: 44px; align-content: center; color: #c9cddd; font-size: .875rem; cursor: pointer; }
+@media (min-width: 850px) and (min-height: 600px) {
+  .web-player:has(.web-player-stage[data-playback-failed]) .web-player-header { position: relative; padding-block: 1rem; background: none; }
+  .web-player .web-player-stage[data-playback-failed]:not(:fullscreen) { display: none; }
+  .web-player:has(.web-player-stage[data-playback-failed]) .web-player-error { position: relative; inset: auto; transform: none; margin: 1rem auto; }
+}

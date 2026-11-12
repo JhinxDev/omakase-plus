@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from omakase.plus import web_playback_source as source
+from omakase.plus.native_tv_captions import rendition_tags
 
 
 @pytest.fixture
@@ -18,8 +19,13 @@ def fixture(monkeypatch):
     db.executescript("""
     CREATE TABLE libraries(id,kind,owner_user_id,name,state,membership_revision,policy_revision,members_can_add,acquisition_requests);
     INSERT INTO libraries VALUES('library','household',1,'Synthetic','active',1,1,1,0);
-    CREATE TABLE household_memberships(library_id,user_id,role,state);
-    INSERT INTO household_memberships VALUES('library',2,'member','active');
+    CREATE TABLE household_memberships(
+        library_id,user_id,role,state,
+        can_add_titles INTEGER CHECK(can_add_titles IN (0,1)),
+        can_request_titles INTEGER NOT NULL DEFAULT 1 CHECK(can_request_titles IN (0,1))
+    );
+    INSERT INTO household_memberships(library_id,user_id,role,state)
+        VALUES('library',2,'member','active');
     CREATE TABLE library_items(id,state,library_id,domain,canonical_id,season_number,resource_id);
     CREATE TABLE library_resources(id,owner_user_id,domain,canonical_id,season_number,legacy_id);
     INSERT INTO library_resources VALUES('resource',1,'anime','123',1,'1');
@@ -99,6 +105,8 @@ def transport(
     server="fixture-server",
     section_id="3",
     stream_codec="aac",
+    subtitle_streams="",
+    episode_attributes="",
     metadata_status=None,
     metadata_missing_part=False,
     markers="",
@@ -119,7 +127,8 @@ def transport(
         elif req.url.path == "/library/sections":
             body = '<MediaContainer><Directory key="3" type="show" title="Anime"><Location path="/managed/Anime"/></Directory></MediaContainer>'
         else:
-            video = f'<Video ratingKey="20" grandparentRatingKey="10" librarySectionID="3" type="episode" parentIndex="1" index="{episode}" duration="60000"><Media id="30" container="mkv" videoCodec="h264" audioCodec="aac"><Part id="40" key="/library/parts/40/file.mkv" file="{path}" size="100000" duration="60000"><Stream id="50" streamType="2" codec="aac" languageCode="jpn" default="1"/></Part></Media></Video>'
+            extra = f" {episode_attributes}" if episode_attributes else ""
+            video = f'<Video ratingKey="20" grandparentRatingKey="10" librarySectionID="3" type="episode" parentIndex="1" index="{episode}" duration="60000"{extra}><Media id="30" container="mkv" videoCodec="h264" audioCodec="aac"><Part id="40" key="/library/parts/40/file.mkv" file="{path}" size="100000" duration="60000"><Stream id="50" streamType="2" codec="aac" languageCode="jpn" default="1"/></Part></Media></Video>'
             body = (
                 '<MediaContainer size="1" totalSize="1">'
                 + video * (2 if duplicate else 1)
@@ -162,6 +171,8 @@ def transport(
             body = body.replace(
                 "</Part>", f'<Stream id="51" streamType="3" index="{stream_index}"/></Part>'
             )
+        if subtitle_streams:
+            body = body.replace("</Part>", subtitle_streams + "</Part>")
         body = body.replace('librarySectionID="3"', f'librarySectionID="{section_id}"')
         body = body.replace(' codec="aac"', f' codec="{stream_codec}"')
         response_status = status
@@ -229,6 +240,58 @@ def test_exact_source_and_private_projection(fixture):
     assert "token" not in public and "/managed" not in public and "fixture.invalid" not in public
     assert "personal-token" not in repr(result)
     source.revalidate_source(fixture[0], result)
+
+
+def test_exact_episode_carries_sanitized_presentation_without_changing_media_identity(fixture):
+    baseline = run(fixture)
+    result = run(
+        fixture,
+        episode_attributes=(
+            'title="A &amp; B" summary="&lt;p&gt;The crew returns.&lt;/p&gt; '
+            '&lt;script&gt;privateScript&lt;/script&gt; https://fixture.invalid/hidden"'
+        ),
+    )
+    assert result.episode_name == "A & B"
+    assert result.episode_summary == "The crew returns. [link omitted]"
+    assert result.media_version == baseline.media_version
+    assert "The crew returns" not in repr(result)
+
+
+def test_native_subtitle_roles_survive_plex_source_resolution(fixture):
+    streams = (
+        '<Stream id="51" index="2" streamType="3" codec="srt" languageCode="eng"/>'
+        '<Stream id="52" index="3" streamType="3" codec="srt" languageCode="eng" '
+        'title="Signs &amp; Songs"/>'
+        '<Stream id="53" index="4" streamType="3" codec="srt" languageCode="eng" '
+        'hearingImpaired="1" title="Private fixture title &quot;"/>'
+        '<Stream id="54" index="5" streamType="3" codec="srt" languageCode="eng" forced="1"/>'
+        '<Stream id="55" index="6" streamType="3" codec="srt" languageCode="eng" '
+        'displayTitle="English Commentary"/>'
+        '<Stream id="56" index="7" streamType="3" codec="srt" languageCode="eng"/>'
+    )
+    result = run(fixture, stream_index=1, subtitle_streams=streams)
+    tags = rendition_tags(
+        [(track, f"captions-{index}.m3u8") for index, track in enumerate(result.streams[1:])]
+    )
+    assert [re.search(r'NAME="([^"]+)"', tag)[1] for tag in tags] == [
+        "English",
+        "English (Signs)",
+        "English (SDH)",
+        "English (Forced)",
+        "English (Commentary)",
+        "English 2",
+    ]
+    assert "AUTOSELECT=YES,FORCED=NO" in tags[2]
+    assert (
+        'CHARACTERISTICS="public.accessibility.transcribes-spoken-dialog,'
+        'public.accessibility.describes-music-and-sound"' in tags[2]
+    )
+    assert "AUTOSELECT=YES,FORCED=YES" in tags[3]
+    assert all(
+        "AUTOSELECT=NO,FORCED=NO" in tags[index] and "CHARACTERISTICS" not in tags[index]
+        for index in (0, 1, 4, 5)
+    )
+    assert "Private fixture title" not in "\n".join(tags)
 
 
 def _count_validations(monkeypatch):

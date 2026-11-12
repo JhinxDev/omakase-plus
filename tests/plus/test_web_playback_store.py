@@ -424,7 +424,7 @@ def test_target_migration_preserves_live_session_and_coverage(monkeypatch, tmp_p
     previous = tmp_path / "migrations"
     previous.mkdir()
     for path in installed.glob("*.sql"):
-        if not path.name.startswith("047-"):
+        if int(path.name.split("-", 1)[0]) < 47:
             shutil.copyfile(path, previous / path.name)
     conn = sqlite3.connect(":memory:")
     conn.execute("PRAGMA foreign_keys=ON")

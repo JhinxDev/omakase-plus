@@ -16,7 +16,18 @@
     </div>
     {% if card.rating %}<span class="movie-card-rating">Your rating {{ card.rating }}/10</span>{% endif %}
   </div>
-  <div class="movie-detail-actions">{% if card.library_id %}<a class="button button-primary" href="/plus/library/{{ card.library_id }}">{{ "View saved history" if card.library_status == "removed" else "View removal status" if card.library_status == "removing" else "View your episodes" }}</a>{% else %}<form method="post" action="/plus/add/preview" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="query" value="https://anilist.co/anime/{{ card.anilist_id }}/"><button type="submit" class="button button-primary" data-busy-label="Checking title…">Review & add to library</button></form>{% endif %}<a class="button button-secondary" href="https://anilist.co/anime/{{ card.anilist_id }}/" target="_blank" rel="noopener noreferrer">AniList ↗</a></div>
+  <div class="movie-detail-actions">
+    {% if card.library_id %}
+    <a class="button button-primary" href="/plus/library/{{ card.library_id }}">{{ "View saved history" if card.library_status == "removed" else "View removal status" if card.library_status == "removing" else "View your episodes" }}</a>
+    {% elif not household_navigation or household_navigation.selected_kind != 'household' or household_navigation.can_add or household_navigation.can_suggest %}
+    <form method="post" action="/plus/add/preview" data-busy-form>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="query" value="https://anilist.co/anime/{{ card.anilist_id }}/">
+      <button type="submit" class="button button-primary" data-busy-label="Checking title…">{{ 'Review title request' if household_navigation and household_navigation.selected_kind == 'household' and not household_navigation.can_add else 'Review & add to library' }}</button>
+    </form>
+    {% endif %}
+    <a class="button button-secondary" href="https://anilist.co/anime/{{ card.anilist_id }}/" target="_blank" rel="noopener noreferrer">AniList ↗</a>
+  </div>
   {% if card.studio %}<p class="catalog-studio">Studio · {{ card.studio }}</p>{% endif %}
   </div>
 </section>

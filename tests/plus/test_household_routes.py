@@ -108,6 +108,157 @@ def create(client, token, *, promote=False, digest=""):
     )
 
 
+def test_viewer_can_request_exact_title_and_only_owner_can_decide(fixture, monkeypatch):
+    from omakase.plus.notifications_routes import create_notifications_router
+
+    monkeypatch.setenv("OMAKASE_PLUS_HOUSEHOLDS_ENABLED", "true")
+    app, db, sessions = fixture
+    app.include_router(create_notifications_router(), prefix="/plus")
+    owner, owner_token = client_for(app, sessions[1])
+    member, member_token = client_for(app, sessions[2])
+    outsider, outsider_token = client_for(app, sessions[3])
+    library = core.create_household(db, user_id=1, name="Cedar House", members_can_add=False)
+
+    def owner_scope():
+        return core.resolve_scope(db, viewer_id=1, library_id=library)
+
+    code = core.create_invite(db, owner_scope())["token"]
+    assert (
+        member.post(
+            "/plus/households/join",
+            data={
+                "csrf_token": member_token,
+                "invite_token": code,
+                "preview_library_id": library,
+                "display_name": "Alex",
+            },
+        ).status_code
+        == 303
+    )
+    db.executemany(
+        "INSERT INTO tv_catalog(user_id,tmdb_id,metadata_json,updated_at) VALUES(2,?,?,CURRENT_TIMESTAMP)",
+        [(42, '{"tmdb_id":42,"title":"Night Train"}'), (43, '{"tmdb_id":43,"title":"Day Train"}')],
+    )
+    db.commit()
+    settings = f"/plus/settings/household/{library}"
+    assert "Alex" in owner.get("/plus/settings/household").text
+    form = {"csrf_token": member_token, "domain": "tv", "canonical_id": "42"}
+    catalog = f"/plus/libraries/{library}/catalog"
+    assert member.post(f"{catalog}/add", data=form).status_code == 403
+    assert member.post(f"{catalog}/request", data={**form, "canonical_id": "44"}).status_code == 409
+    assert member.post(f"{catalog}/request", data=form).status_code == 303
+    assert member.post(f"{catalog}/request", data=form).status_code == 303
+    assert not core.LibraryRepository(db, owner_scope()).items()
+    assert db.execute("SELECT count(*) FROM library_request_events").fetchone()[0] == 0
+    feed = owner.get("/plus/api/notifications").json()
+    assert len(feed["items"]) == 1
+    notice = feed["items"][0]
+    assert notice["kind"] == "household_request" and notice["title"] == "Night Train"
+    assert "Alex" in notice["message"]
+    assert member.get("/plus/api/notifications").json()["items"] == []
+    assert outsider.get("/plus/api/notifications").json()["items"] == []
+    assert (
+        outsider.post(
+            f"/plus/api/notifications/{notice['id']}/read", headers={"X-CSRF-Token": outsider_token}
+        ).status_code
+        == 404
+    )
+    marked = owner.post(
+        f"/plus/api/notifications/{notice['id']}/read", headers={"X-CSRF-Token": owner_token}
+    )
+    assert marked.status_code == 200 and marked.json()["items"][0]["read"]
+    request_id = notice["id"].rsplit(":", 1)[1]
+    decision = f"{settings}/requests/{request_id}/decision"
+    assert (
+        member.post(decision, data={"csrf_token": member_token, "decision": "approve"}).status_code
+        == 403
+    )
+    assert (
+        outsider.post(
+            decision, data={"csrf_token": outsider_token, "decision": "approve"}
+        ).status_code
+        == 404
+    )
+    assert (
+        owner.post(decision, data={"csrf_token": owner_token, "decision": "approve"}).status_code
+        == 303
+    )
+    assert (
+        owner.post(decision, data={"csrf_token": owner_token, "decision": "approve"}).status_code
+        == 303
+    )
+    assert [item["title"] for item in core.LibraryRepository(db, owner_scope()).items()] == [
+        "Night Train"
+    ]
+    assert owner.get("/plus/api/notifications").json()["items"] == []
+    member_page = member.get("/plus/settings/household").text
+    assert "Night Train" in member_page and "Approved" in member_page
+
+    assert member.post(f"{catalog}/request", data={**form, "canonical_id": "43"}).status_code == 303
+    next_notice = owner.get("/plus/api/notifications").json()["items"][0]
+    next_id = next_notice["id"].rsplit(":", 1)[1]
+    assert (
+        owner.post(
+            f"{settings}/requests/{next_id}/decision",
+            data={"csrf_token": owner_token, "decision": "decline"},
+        ).status_code
+        == 303
+    )
+    assert "Declined" in member.get("/plus/settings/household").text
+    assert [item["title"] for item in core.LibraryRepository(db, owner_scope()).items()] == [
+        "Night Train"
+    ]
+
+    permissions = f"{settings}/members/2/permissions"
+    invite = core.create_invite(db, owner_scope())["token"]
+    core.accept_invite(db, viewer_id=3, token=invite, display_name="Morgan")
+    assert (
+        member.post(permissions, data={"csrf_token": member_token, "can_add": "1"}).status_code
+        == 403
+    )
+    assert (
+        owner.post(permissions, data={"csrf_token": owner_token, "can_add": "1"}).status_code == 303
+    )
+    assert member.post(f"{catalog}/request", data={**form, "canonical_id": "43"}).status_code == 403
+    other_scope = core.resolve_scope(db, viewer_id=3, library_id=library)
+    assert other_scope.can_request_titles and not other_scope.members_can_add
+    assert member.post(f"{catalog}/add", data={**form, "canonical_id": "43"}).status_code == 303
+    assert (
+        owner.post(f"{settings}/members/2/revoke", data={"csrf_token": owner_token}).status_code
+        == 303
+    )
+    assert member.post(f"{catalog}/add", data=form).status_code == 404
+
+    db.execute(
+        "INSERT INTO tv_catalog(user_id,tmdb_id,metadata_json,updated_at) VALUES(3,45,?,CURRENT_TIMESTAMP)",
+        ('{"tmdb_id":45,"title":"Coast Road"}',),
+    )
+    db.commit()
+    assert (
+        outsider.post(
+            f"{catalog}/request",
+            data={"csrf_token": outsider_token, "domain": "tv", "canonical_id": "45"},
+        ).status_code
+        == 303
+    )
+    pending = owner.get("/plus/api/notifications").json()["items"][0]["id"].rsplit(":", 1)[1]
+    assert (
+        owner.post(f"{settings}/members/3/revoke", data={"csrf_token": owner_token}).status_code
+        == 303
+    )
+    assert owner.get("/plus/api/notifications").json()["items"] == []
+    assert (
+        owner.post(
+            f"{settings}/requests/{pending}/decision",
+            data={"csrf_token": owner_token, "decision": "approve"},
+        ).status_code
+        == 409
+    )
+    assert "Coast Road" not in [
+        item["title"] for item in core.LibraryRepository(db, owner_scope()).items()
+    ]
+
+
 def test_real_three_account_invite_join_private_status_and_immediate_revocation(fixture):
     app, db, sessions = fixture
     owner, token = client_for(app, sessions[1])
@@ -257,7 +408,25 @@ def render_route_fixtures(output):
     )
     member.post(
         "/plus/households/join",
-        data={"csrf_token": member_csrf, "invite_token": code, "preview_library_id": library},
+        data={
+            "csrf_token": member_csrf,
+            "invite_token": code,
+            "preview_library_id": library,
+            "display_name": "Alex",
+        },
+    )
+    db.execute(
+        "INSERT INTO tv_catalog(user_id,tmdb_id,metadata_json,updated_at) VALUES(2,42,?,CURRENT_TIMESTAMP)",
+        ('{"tmdb_id":42,"title":"The Last Train Through the Cedar Mountains"}',),
+    )
+    db.commit()
+    receipt = member.post(
+        f"/plus/libraries/{library}/catalog/request",
+        data={"csrf_token": member_csrf, "domain": "tv", "canonical_id": "42"},
+    )
+    assert receipt.status_code == 303
+    (output / "owner-requests.html").write_text(
+        owner.get("/plus/settings/household").text, encoding="utf-8"
     )
     (output / "member.html").write_text(
         member.get("/plus/settings/household").text, encoding="utf-8"

@@ -5,7 +5,6 @@
 {% block eyebrow %}Settings{% endblock %}
 {% block page_title %}Your connections{% endblock %}
 {% block page_intro %}<p class="page-intro">Connect your own services, confirm access, and see what needs attention.</p>{% endblock %}
-{% block page_actions %}<a href="/plus/settings" class="button button-secondary">All settings</a>{% endblock %}
 {% block content %}
 <link rel="stylesheet" href="/plus/static/connections.css?v={{ asset_version }}">
 <link rel="stylesheet" href="/plus/static/credentials.css?v={{ asset_version }}">
@@ -13,6 +12,21 @@
 <div class="settings-workspace">{{ settings_nav('connections', households_enabled | default(false)) }}<div class="settings-content">
 {% if connections_notice %}<div class="product-notice" role="status">{{ connections_notice }}</div>{% endif %}
 {% if connections_error %}<div class="product-notice connection-error" role="alert">{{ connections_error }}</div>{% endif %}
+<section id="connection-playback-source" class="editorial-panel connection-panel" aria-labelledby="playback-source-heading">
+  <h2 id="playback-source-heading">Playback source</h2>
+  <form class="connection-form" method="post" action="/plus/settings/connections/playback">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="connection-field">
+      <label for="playback-provider">Personal library</label>
+      <select id="playback-provider" name="provider">
+        {% for key, label in [('auto','Automatic'),('realdebrid','Real-Debrid only'),('plex','Plex only')] %}
+        <option value="{{ key }}" {% if playback_provider == key %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="button button-secondary" type="submit">Save playback source</button>
+  </form>
+</section>
 <aside class="editorial-panel connection-guidance" aria-label="Connection privacy and movie setup">
   <div><strong>Private to your account</strong><p>Keys are encrypted. Saved keys and addresses are never returned to this page. Choose Change key when you want to replace a key. A different server requires a replacement key.</p></div>
   <div><strong>{{ 'Movie services are ready' if movies_ready else 'Set up movies in three steps' }}</strong><p>Save and test Plex, Riven and Seerr to enable movie discovery and requests. Each test checks access without requesting or changing media.</p></div>
@@ -28,6 +42,9 @@
       <div class="connection-identity"><img class="service-logo" src="/plus/static/services/{{ connection.id }}.png" alt="" width="40" height="40"><div><h2 id="connection-heading-{{ connection.id }}">{{ connection.name }}</h2><p>{{ connection.purpose }}</p></div></div>
       <span class="connection-state connection-state-{{ health.state }}"><span aria-hidden="true"></span>{{ connection.label }}</span>
     </header>
+    {% if connection.id == 'realdebrid' and connection.key_saved %}
+    <p><a class="button button-secondary" href="/plus/cloud">Browse cloud files</a></p>
+    {% endif %}
     {% if health.state in ['degraded','error','rate_limited','incomplete'] %}<div class="connection-attention" role="status"><p>{{ health.detail }}</p>{% for indexer in health.indexers | default([]) %}{% if indexer.state == 'cooldown' %}<p><strong>{{ indexer.name }}</strong> is paused by Prowlarr until <time datetime="{{ indexer.disabled_till }}" data-local-datetime="{{ indexer.disabled_till }}">{{ indexer.disabled_till }} UTC</time>.</p>{% endif %}{% endfor %}{% if health.code == 'indexer_cooldowns' %}<small>Other available indexers can still be used. Prowlarr controls this pause after source failures.</small>{% endif %}</div>{% endif %}
     <details class="connection-observation"><summary>Connection details</summary>
       <p>{{ health.detail }}</p>

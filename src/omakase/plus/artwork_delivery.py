@@ -18,7 +18,7 @@ MAX_PIXELS = 16_000_000
 MAX_DIMENSION = 8192
 MAX_CACHE_BYTES = 8 * 1024 * 1024
 _MAX_CACHE_ENTRIES = 128
-_BOUNDS = {"poster": (480, 720), "banner": (2560, 1440)}
+_BOUNDS = {"poster": (480, 720), "banner": (2560, 1440), "episode": (780, 440)}
 _CONTENT_TYPE = "image/webp"
 _DERIVATIVE_VERSION = b"hero-2560-q88-v2:"
 
@@ -102,7 +102,7 @@ def optimized_artwork(payload: bytes, *, kind: str) -> tuple[bytes, str]:
 
     No source bytes, files or upstream cache entries are changed. Inputs are still
     JPEG/PNG/WebP up to 6 MiB, 16 million pixels and 8192 pixels per side. Derivatives
-    fit 480x720 (poster) or 2560x1440 (banner), preserving aspect without upscaling.
+    fit their configured bounds, preserving aspect without upscaling.
     """
     if not isinstance(kind, str) or kind not in _BOUNDS:
         raise PosterUnavailable("Artwork display kind is invalid")

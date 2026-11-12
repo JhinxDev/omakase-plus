@@ -193,6 +193,7 @@ def test_home_resume_hero_shows_episode_and_watched_count_once():
         title="Synthetic",
         anilist_id=123,
         progress_episodes=10,
+        progress_percent=10 / 13 * 100,
         episode_total=13,
         next_episode=11,
         partial_playback=True,
@@ -203,6 +204,7 @@ def test_home_resume_hero_shows_episode_and_watched_count_once():
         play_url="/plus/watch/7/11?library_id=opaque",
         play_label="Resume",
         play_episode=11,
+        episode_resume={"percent": 40, "minutes_left": 14},
     )
     html = render(
         "home.html",
@@ -217,11 +219,11 @@ def test_home_resume_hero_shows_episode_and_watched_count_once():
     assert "Resume episode 11" in hero
     assert "Watched <b>10/13</b>" in hero
     assert "episodes watched through" not in hero
-    rail = html.split('<div class="media-rail" role="list" aria-label="Continue watching">', 1)[1]
-    progress_row = rail.split('<div class="media-progress-meta">', 1)[1].split("</div>", 1)[0]
-    assert "Watched <b>10/13</b>" in progress_row
-    assert "Available <b>13/13</b>" in progress_row
-    assert html.count('<div class="media-progress-meta">') == 3
+    rail = html.split('aria-label="Continue watching">', 1)[1].split("</section>", 1)[0]
+    assert "Episode 11 · 14 min left" in rail
+    assert rail.count("<progress ") == 1
+    assert f'<progress max="100" value="{10 / 13 * 100}"' in rail
+    assert "Watched <b>10/13</b>" in rail
 
 
 @pytest.mark.parametrize(
@@ -259,3 +261,34 @@ def test_resume_uses_actual_unfinished_episode_and_durable_source_identity(
     assert card["play_label"] == label
     assert card["progress_episodes"] == 0
     assert db.total_changes == changes
+
+
+def test_tv_checkpoint_surfaces_on_home_without_counting_as_watched(db, monkeypatch):
+    from omakase.plus import web_playback_store as store
+
+    _enable(monkeypatch)
+    library_id = households.ensure_personal_library(db, user_id=1)
+    monitor, watch = entry(db)
+    db.execute("UPDATE watch_entries SET progress_episodes=0 WHERE id=?", (watch,))
+    target = store.ResolvedTarget(1, library_id, "21", 1, 2, "a" * 64, 1400)
+    store.save_native_resume(db, target=target, position=710, publication="b" * 64, expected=None)
+    monkeypatch.setattr(nav, "_candidates", lambda *args: {1: "c" * 64, 2: "b" * 64})
+    card = home_view(db, user_id=1)["continue_watching"][0]
+    assert card["play_url"] == f"/plus/watch/{monitor}/2?library_id={library_id}&play=1"
+    assert card["play_label"] == "Resume"
+    assert card["episode_resume"] == {"percent": 51, "minutes_left": 12}
+    assert card["progress_episodes"] == 0
+    assert db.execute("SELECT count(*) FROM web_playback_watch").fetchone()[0] == 0
+    monkeypatch.setattr(nav, "_candidates", lambda *args: {1: "c" * 64, 2: "d" * 64})
+    assert all(
+        item["play_label"] != "Resume" for item in home_view(db, user_id=1)["continue_watching"]
+    )
+    monkeypatch.setattr(nav, "_candidates", lambda *args: {1: "c" * 64, 2: "b" * 64})
+    db.execute(
+        """INSERT INTO watch_events (watch_entry_id,user_id,source,event_key,kind,disposition,observed_at)
+           VALUES(?,1,'manual','correction','correction','accepted','2026-11-10T00:00:00Z')""",
+        (watch,),
+    )
+    assert all(
+        item["play_label"] != "Resume" for item in home_view(db, user_id=1)["continue_watching"]
+    )

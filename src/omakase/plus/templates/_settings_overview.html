@@ -16,4 +16,5 @@
   {{ entry('Your profile', 'Update the name and picture you see in Omakase.', '/plus/settings/profile') }}
   {{ entry('Security', 'Change your password and review signed-in sessions.', '/plus/settings/security') }}
   {{ entry('Connections', 'Manage Plex, AniList and other services you use.', '/plus/settings/connections') }}
+  {% if native_tv_library_enabled %}{{ entry('Devices', 'Link an Apple TV and manage device access to your library.', '/plus/settings/devices') }}{% endif %}
 </section>

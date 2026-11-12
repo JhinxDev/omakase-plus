@@ -25,10 +25,10 @@ def hvcc(*, constraints=b"\x90\0\0\0\0\0", profile=2, compatibility=0x20000000):
     return header + arrays
 
 
-def init_segment(config=None, *, entry=b"hev1", duplicate=False, tracks=1):
+def init_segment(config=None, *, entry=b"hev1", duplicate=False, tracks=1, color=b""):
     config = hvcc() if config is None else config
     child = box(b"hvcC", config)
-    visual = box(entry, bytes(78) + child * (2 if duplicate else 1))
+    visual = box(entry, bytes(78) + child * (2 if duplicate else 1) + color)
     stsd = box(b"stsd", bytes(4) + (1).to_bytes(4, "big") + visual)
     hdlr = box(b"hdlr", bytes(8) + b"vide" + bytes(12))
     trak = box(b"trak", box(b"mdia", hdlr + box(b"minf", box(b"stbl", stsd))))
@@ -128,6 +128,21 @@ def test_compatibility_bit_reversal_and_constraint_trailing_zeros():
 
 def test_profile_space_and_high_tier_are_not_guessed():
     assert codecs.hevc_codec_from_init(init_segment(hvcc(profile=0xA2))) == "hev1.B2.4.H150.90"
+
+
+@pytest.mark.parametrize(
+    ("color", "expected"),
+    [
+        (bytes.fromhex("6e636c7800090010000900"), b"PQ"),
+        (bytes.fromhex("6e636c7800090012000900"), b"HLG"),
+        (bytes.fromhex("6e636c7800010001000100"), None),
+        (bytes.fromhex("6e636c78000900100009"), None),
+    ],
+)
+def test_native_video_range_uses_the_color_box_in_the_exact_hevc_entry(tmp_path, color, expected):
+    name = "init-video.mp4"
+    (tmp_path / name).write_bytes(init_segment(color=box(b"colr", color)))
+    assert codecs.hevc_video_range(tmp_path, name) == expected
 
 
 @pytest.mark.parametrize(

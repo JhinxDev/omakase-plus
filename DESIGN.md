@@ -4,11 +4,14 @@ This source candidate records the maintained interface contract. Technical, crea
 
 ## Integrated player, November 1
 
-The watch page follows the Geist/midnight/iris shell. A contain-fit 16:9 image
-sits above one compact transport row: Play, explicit Next, time, volume,
-fullscreen and gear. Inline playback reserves `52px + 3rem` for the controls.
-Fullscreen uses the whole viewport for the video and places the controls over
-it. The timeline and transport row hide after inactivity and return on input.
+The watch page follows the Geist/midnight/iris shell. The video preserves its
+aspect ratio. Desktop playback fills the browser viewport with the title and
+navigation above the picture and one compact transport row below. The overlays
+hide after three seconds of pointer inactivity while playing and return on
+pointer or keyboard input. A focused control or an open menu keeps them visible.
+The compact phone layout reserves `52px + 3rem` for the transport row. Browser
+fullscreen remains available in either layout. Playback failures show recovery
+actions inside the desktop viewport.
 The desktop volume slider stays at its full width. Controls retain 44px touch
 targets, a midnight backing, visible keyboard focus and phone-safe widths.
 The video image defines subtitle positioning.
@@ -54,6 +57,14 @@ to its copy. The page renders its context from local data. Public scores and epi
 is unavailable. Restart, exact Plex fallback and subtitle license/source access
 remain in a compact playback-options disclosure. Save feedback stays discreet;
 actual failures remain an alert and stop buffered playback.
+On the watch page, the focused skip link sits in its own row above the player
+title. Dark `#171325` text on iris `#c3b1ff` keeps the label legible. A playback
+failure removes transport and timeline controls and moves focus from the
+player to recovery. Fullscreen exits so the recovery action remains visible.
+The recovery panel includes a filled iris retry or reload button and the
+Back to title link in the same keyboard order. On phones it replaces the
+empty video frame so the actions stay close to the title.
+An unavailable next episode uses a dimmed icon and accessible label.
 
 Play, Resume, and episode navigation open the same stable player frame. The
 loading indicator stays in the video area through startup and seeks. The player
@@ -129,9 +140,23 @@ Home uses a 64–72vh cinematic stage, a genuine wide image, long text-protectio
 
 ## Shared components
 
-Anime, Movies and TV share CollectionSearch: the same surface, keyline, corner, spacing and 48px controls. Scope is explicit; collection filtering differs from catalog discovery. Dense cards reserve three title lines with clipping and full accessible name, then use normal-flow metadata, progress, availability and quality rows. Never overlap text or call zero available episodes ready.
+Anime, Movies and TV share CollectionSearch: the same surface, keyline, corner, spacing and 48px controls. Scope is explicit; collection filtering differs from catalog discovery. Anime collection cards reserve three title lines with clipping and a full accessible name. Movie and TV browse titles use up to three natural lines, followed within 8px by their year. Viewing history and availability occupy separate full-width rows, avoiding narrow phone status columns. Never overlap text or call zero available episodes ready.
+
+Movie and TV collection search lives in a native Search & filters disclosure.
+It works without JavaScript and opens automatically for an active query or the
+movie Requests view. The phone masthead pairs the page title with its optional
+Explore action; the decorative kicker and supporting introduction yield space
+to the first complete poster row and its titles above the bottom navigation.
 
 TV cards use observed season counts; only reconciled released sets establish completeness. Unknown coverage stays unknown. Removal is a separate confirmed library action naming actual destinations and retained records. Shared assets remain protected.
+
+Movie and TV browse cards lead with title, year, recorded progress and one
+availability line. Available movies include the known 4K, 1080p or 720p resolution
+on that line. The movie detail page retains the explicit HD fallback explanation.
+An absent viewing record adds no repeated label and never becomes an unwatched
+claim. TV inventory counts, observation times and season coverage live in one
+collapsed Library availability details section below the collection. Request
+failures, restrictions and pending states remain visible on movie cards.
 
 ## Interaction and reach
 
@@ -146,6 +171,12 @@ Technical pass, rendered creative acceptance, production identity and physical-d
 The Account utility group includes a 44px notification bell. It uses one deferred, deadline-bound same-origin local-DB read per page; there is no polling or provider lookup. Unknown/loading/error never claims zero unread. The compact nonmodal panel uses the existing Geist/midnight/iris system, 14px corners, 14–16px body/title text, current saved rating, and neutral media-type art placeholders when no cached artwork is provided.
 
 Primary links open the existing rating or guarded removal-review flow. Each completed title has one card. When both reminders apply, it offers separate Rate title and Review media actions, with one unread/dismiss state and a compact 44px Dismiss cross. Saving a rating keeps the media-review action; a genuinely new completion or managed asset can create a fresh reminder. Primary-link activation marks read through a nonblocking CSRF-protected keepalive POST; dismissal is a separate account-scoped action. Both use the returned feed without another GET. The panel supports Close, Escape, outside dismissal and focus return, and closes when keyboard focus moves outside. Phones use viewport-bounded height, an independently scrolling list and safe-area gutters. Readiness and saved progress remain distinct; a reminder performs no import, provider call, acquisition or removal.
+
+A pending household title request shows the title and requester's household name
+to the owner. Review request links to the corresponding decision card in
+Household settings. The card shows Pending, Approved, Declined or Cancelled.
+The member sees the outcome in their own request list. Permission controls live
+under each member and keep the owner's request queue separate from acquisition.
 
 ### Notification artwork
 
@@ -217,6 +248,11 @@ browser's focus scrolling. The overflowing rail also reveals a focused link with
 native scrollIntoView using nearest alignment, keeping its target and outline
 reachable without changing media-shelf controls.
 
+Devices separates personal access from shared household devices. The owner sees
+shared rows grouped by household member, with device name, last activity,
+masked public network when available, and expiry. Device names can include a
+room or place. Sharing a row gives the owner visibility into those details.
+
 ## Text and separate actions
 
 Direct explanatory paragraphs in editorial, utility and empty-state panels have
@@ -237,11 +273,18 @@ release and successful publication are distinct states, with actual pending work
 and honest busy/no-result/blocked outcomes. Repeated submission is prevented and
 back navigation restores the action.
 
-Each episode card uses a real separate quality row. Amber identifies720p
-fallbacks;1080p stays quieter. Release claims remain labeled release quality.
+Episode cards lead with artwork, episode name and watch progress. Amber
+identifies 720p fallback copies. Missing, upcoming and removed media remain
+visible. Normal verification and release quality live in one Files & quality
+disclosure below the episode grid. Release claims remain labeled release quality.
 Measured dimensions require current source, exact file and episode proof. A new
 higher release cannot hide the still-selected fallback. Phones stack the section
 heading and action with breathing room; watch controls span the full title grid.
+Anime episode browsing uses two columns on phones, with complete episode names
+and separate 44px playback targets.
+Routine progress-source and AniList synchronization notes sit inside Watch
+progress & rating. Failed sync and conflicting progress remain visible by the
+hero's progress summary.
 
 A previously completed run can return when its exact next aired episode exists.
 Retain its original completion and rating until an explicit guarded continue and
@@ -382,3 +425,94 @@ AI menu, use static skeletons during loading, and show a separate unavailable
 state if their catalog cannot be reached. Ask for a menu opens the existing AI
 workflow. Shelves keep native scrolling, keyboard controls and reduced-motion
 behavior. Off-screen artwork loads lazily.
+
+## Series detail covers and episode cards
+
+Anime episode stills have no Unwatched overlay. Watched, Up next and saved
+remaining time stay independent from media verification. The exact playback
+action appears beside the episode number below the still, with a 44px keyboard
+and touch target. The still is also clickable; its auxiliary link stays outside
+the tab order and accessibility tree. Hover or focus within the episode reveals
+the central play cue without covering every resting still. TV keeps its existing
+episode presentation. Episode file and quality evidence lives inside the single
+Media availability & playback disclosure, whose summary reports overall verified
+coverage once. Per-release and per-episode evidence remains separately labeled.
+
+Personal Anime and TV detail pages lead with a bounded landscape cover and an
+exact episode action when the existing player can open that target. Continue
+Watching follows a source-bound saved position or the next known episode after
+recorded viewing. Synopsis, rating and inventory remain separate from playback.
+On phones the cover text and actions stack, and the episode grid reflows to fit.
+
+Episode cards pair a stable 16:9 still with a readable number, available episode
+title, and independent viewing and media facts. Watched comes from recorded
+episode progress. An exact saved playhead can show time remaining and a progress
+bar. Qualified Anime season metadata supplies names and stills through the owned
+Plex identity. TV uses exact catalog season and episode keys. Still reads happen
+near the viewport and share bounded season metadata for legacy rows. A loaded
+series fallback says Series artwork. While stills load or when art is missing,
+the frame displays the Omakase Plus seal and wordmark. Missing art also retains
+an accessible episode-specific description. Play, replay and TV watch-record buttons retain their
+existing scoped routes and keyboard targets.
+
+## Continue watching progress
+
+Continue Watching cards use the same series watched count and bar, including
+zero watched episodes when the total is known. A saved episode position stays
+separate: the episode line shows its remaining minutes, or Up next when there
+is no saved position. Do not replace the series bar with an unlabeled episode
+percentage. Unknown totals do not invent a series percentage. Keep the episode
+line visible and card footers aligned at normal text sizes; enlarged text can
+wrap without overflowing. The home recommendation action also wraps at200% text.
+
+The Continue Watching thumbnail cue uses a compact dark backing. Its action and
+episode text keep at least4.5:1 contrast over white artwork, while the upper60%
+of the image remains unobstructed. The entire cover retains the playback target.
+
+## Player transport and episode metadata
+
+The web player exposes guarded ten-second seek steps, Audio and Subtitles
+directly in its transport. Next episode names the action explicitly; Quality,
+playback speed and stream information remain in Settings. A dark lower backing
+protects controls and timecodes from bright footage. Playing video can hide idle
+chrome, while paused video, keyboard focus and open menus keep it visible.
+
+On phones, one compact Back/header row keeps video near the top. Apple TV linking
+lives inside Playback options. Audio and Subtitles share the secondary control
+baseline; enlarged text can reflow them. Subtitle canvas bounds follow the video,
+including its intrinsic aspect, rather than the complete control frame.
+
+Desktop track menus clear the transport and suppress its duplicate tooltips.
+On phones, the open menu reserves measured space after the player so it covers
+neither video nor episode details. The seek bar remains usable. Closing the menu
+restores the original layout; the video and subtitle canvas keep their bounds.
+Next episode stays in the transport. See episodes remains visible below, with
+optional adjacent links in a collapsed disclosure. Desktop playback recovery
+removes the empty stage so the recovery action and episode context remain visible.
+
+Track labels use readable language names and retain exact selection identities.
+An unknown language stays Unknown language. Prepared, HLS and on-demand responses
+reuse the resolved episode name and summary, without another metadata request.
+The detail heading names that episode; a missing episode synopsis labels the
+fallback About the series. Display metadata never changes the saved source key.
+
+TV episode cards show exact titles or an Episode N fallback, a known runtime,
+and a short synopsis when the scoped metadata provides them. Unknown runtimes
+stay absent. The existing owned Plex episode read can enrich the native catalog;
+metadata does not establish availability, viewing or successful playback.
+Native pre-play uses one artwork background with a protected text region and an
+inline runtime/audio/subtitle row when it fits. Libraries retains the same label
+across scopes. Device Settings fills the screen and isolates its destructive
+confirmation from the library behind it.
+
+The broken-circle plus is the shared brand emblem for the web header and Home
+hero, and for Apple TV navigation, setup, device settings, and artwork fallbacks.
+When a native feature has no artwork reference, use a compact banner with the
+emblem on the same uninterrupted surface. A feature with artwork retains its
+cinematic composition; image scaling does not add a second artwork request.
+
+Primary web actions use the iris fill with dark text. Secondary actions retain
+their quieter treatment. Web disclosures use a small chevron and a rounded
+visible focus ring on the summary controls. Keep
+the settings navigation independently scrollable on desktop, with enough room
+below the final link for its focus ring, and horizontally scrollable on phones.

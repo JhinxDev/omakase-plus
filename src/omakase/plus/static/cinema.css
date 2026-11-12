@@ -6,8 +6,10 @@ body.product-body,body.auth-body{--stream-background:#090b12;--stream-surface:#1
 .product-body :is(p,label,input,select,textarea,button,.page-intro,.product-footer){font-family:inherit}
 .product-body :is(h1,h2,h3){font-family:inherit;letter-spacing:-.025em}
 .product-body .button{min-height:44px;border-radius:6px;font-size:.82rem;font-weight:600;box-shadow:none;transition:background-color .16s,border-color .16s}
-.product-body .button-primary,.auth-body .button-primary{background:#f1edf9;border-color:#f1edf9;color:#171320;box-shadow:none}
-.product-body .button-primary:hover,.auth-body .button-primary:hover{background:#dcd0fb;border-color:#dcd0fb}
+.product-body .button-primary{background:var(--stream-accent,#c3b1ff);border-color:var(--stream-accent,#c3b1ff);color:#171124;box-shadow:none}
+.product-body .button-primary:hover{background:#d9ccff;border-color:var(--stream-accent,#c3b1ff);color:#171124}
+.auth-body .button-primary{background:#f1edf9;border-color:#f1edf9;color:#171320;box-shadow:none}
+.auth-body .button-primary:hover{background:#dcd0fb;border-color:#dcd0fb}
 .product-body .button-secondary{background:#1b202d;border-color:#41495c;color:#f1eef8}
 .product-body .button-secondary:hover{background:#272e3f;border-color:#6d6785}
 .product-body :is(a,button,summary):focus-visible{outline:2px solid #d2c2ff;outline-offset:4px}
@@ -40,7 +42,7 @@ body.product-body,body.auth-body{--stream-background:#090b12;--stream-surface:#1
 .cinema-hero::after{content:"";position:absolute;z-index:-1;inset:0;background:linear-gradient(90deg,#090b12f0 0%,#090b129c 40%,#090b1200 85%),linear-gradient(0deg,#090b12 0%,#090b12b8 10%,transparent 58%)}
 .cinema-hero-copy{width:min(720px,67%);padding:3rem 4rem 6rem}
 .cinema-eyebrow{display:flex;flex-wrap:wrap;align-items:center;gap:.7rem;color:#e4dcef;font-size:.68rem;letter-spacing:.08em}
-.cinema-wordmark{font-size:1.7rem;font-weight:700;letter-spacing:-.1em;padding-right:.45rem}.cinema-wordmark>span{color:#c7b6ff}
+.cinema-brandmark{display:block;width:32px;height:32px;flex:none}
 .cinema-hero h1{margin:1.15rem 0;max-width:14ch;color:#fff;font-size:clamp(2.1rem,4.4vw,4.3rem);font-weight:650;line-height:1.06;letter-spacing:-.055em;text-wrap:balance}
 .cinema-hero-copy>p{color:#d8deeb;font-size:.94rem;line-height:1.7;max-width:42ch;margin:0 0 1.4rem}
 .cinema-meta{display:flex;flex-wrap:wrap;align-items:center;gap:.65rem;margin:1rem 0 1.4rem;color:#c1c8d6;font-size:.76rem}
@@ -272,6 +274,29 @@ body.product-body .streaming-title-hero,.movie-detail-hero{grid-template-columns
 .media-card-transport svg { box-sizing: content-box; flex: none; padding: .4rem; border-radius: 50%; background: #eeebf7; color: #171325; }
 .media-card-transport--details svg { background: #262b3b; color: #f0edf8; }
 .media-card-transport small { display: block; margin-top: .18rem; color: #d3cada; font-size: .75rem; font-weight: 450; }
+.watching-rail .media-card-transport {
+  inset: auto auto .55rem .55rem;
+  width: fit-content;
+  max-width: calc(100% - 1.1rem);
+  box-sizing: border-box;
+  min-height: 0;
+  padding: .35rem .6rem .35rem .35rem;
+  border-radius: 999px;
+  background: rgb(9 11 19 / 90%);
+  color: #f4f3f8;
+}
+.watching-rail .media-card-transport small { color: #e0d9e8; }
+@media (max-width: 700px) {
+  .watching-rail .media-card-transport {
+    inset: auto auto 6px 8px;
+    padding: 3px 7px 3px 3px;
+    gap: 6px;
+    font-size: .75rem;
+    line-height: 1.15;
+  }
+  .watching-rail .media-card-transport svg { width: 14px; height: 14px; padding: 5px; }
+  .watching-rail .media-card-transport small { margin-top: 1px; font-size: .625rem; }
+}
 .media-card-cover:is(:hover, :focus-visible) .media-card-transport svg { background: var(--stream-accent, #c3b1ff); color: #171325; }
 .media-rail .media-card-body h3 { block-size: 2.8em; min-block-size: 2.8em; -webkit-line-clamp: 2; }
 .media-card-detail { display: inline-block; max-width: 100%; color: inherit; text-decoration: none; }
@@ -306,14 +331,128 @@ body.product-body .streaming-title-hero,.movie-detail-hero{grid-template-columns
 .movie-card-status, .catalog-result-status { margin-top: .55rem; }
 .movie-card-status > p, .catalog-result-status > .watched-count,
 .tv-card-facts .media-progress-meta > .collection-card-availability { margin: 0; }
+.movie-card-status > .collection-card-availability:only-child,
+.tv-card-facts .media-progress-meta > .collection-card-availability:only-child {
+  grid-column: 1 / -1;
+  justify-self: start;
+  text-align: start;
+}
 @media (max-width: 700px) {
   .home-section .media-rail:not(.history-shelf) { grid-auto-columns: 176px; }
 }
 .playback-link svg { flex: none; }
 .playback-link--primary { gap: .45rem; }
+.home-discovery > .button {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  box-sizing: border-box;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* Continue Watching keeps series progress and exact episode context together. */
+.page-home .watching-rail .media-card-body > .continue-episode {
+  display: block;
+  margin: .35rem 0 .45rem;
+  color: var(--stream-muted, #aeb7c7);
+  font-size: .8rem;
+  line-height: 1.4;
+  min-block-size: 1.4em;
+}
+/* Anime stills remain clear; the caption is the single keyboard playback link. */
+.viewer-episodes .series-episode-art-action {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #171124;
+}
+.viewer-episodes .series-episode-art-action svg {
+  box-sizing: content-box;
+  width: 24px;
+  height: 24px;
+  padding: 10px;
+  border-radius: 50%;
+  background: #c3b1ff;
+  opacity: 0;
+}
+.viewer-episodes .series-episode:is(:hover, :focus-within) .series-episode-art-action svg { opacity: 1; }
+.viewer-episodes .series-episode-caption-link {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .25rem .5rem;
+  min-height: 44px;
+  color: inherit;
+  text-decoration: none;
+}
+.viewer-episodes .series-episode-caption-link [data-episode-title] { grid-column: 1 / -1; }
+.viewer-episodes .series-episode-action-label {
+  display: inline-flex;
+  align-items: center;
+  gap: .2rem;
+  color: #dfd0ff;
+  font-size: .875rem;
+  font-weight: 550;
+}
+.viewer-episodes .series-episode-caption-link:is(:hover, :focus-visible) { color: #dfd0ff; }
+.viewer-episodes .series-episode-caption-link:focus-visible { outline: 2px solid #c3b1ff; outline-offset: 3px; }
+.title-technical-details > .episode-file-details { margin: 0 24px; padding-block: .5rem; }
+@media (max-width: 760px) {
+  .title-technical-details > .episode-file-details { margin-inline: 16px; }
+}
+/* Browse titles determine their own height. Keep their facts close and readable. */
+.movie-grid .movie-card h2, .tv-grid .tv-card .tv-card-copy h3 {
+  block-size: auto;
+  min-block-size: 0;
+}
+.movie-grid .movie-meta { margin-top: .25rem; font-size: .75rem; }
+.movie-card-status, .tv-card-facts .media-progress-meta {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: .25rem;
+}
+.movie-card-status > .collection-card-availability,
+.tv-card-facts .media-progress-meta > .collection-card-availability {
+  grid-column: 1;
+  grid-row: auto;
+  justify-self: start;
+  text-align: start;
+  overflow-wrap: normal;
+}
+.collection-search-heading a { gap: .3em; }
+.collection-search-disclosure { margin: 0 0 1.1rem; }
+.collection-search-disclosure > summary {
+  width: fit-content;
+  min-height: 44px;
+  align-content: center;
+  color: #cbbaf0;
+  cursor: pointer;
+  font-size: .875rem;
+}
+.collection-search-disclosure[open] > summary { margin-bottom: .5rem; }
+@media (max-width: 600px) {
+  .product-masthead.collection-masthead {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: .5rem 1rem;
+    padding-block: 1rem .65rem;
+  }
+  .collection-masthead :is(.page-kicker, .page-intro) { display: none; }
+  .product-masthead.collection-masthead h1 { font-size: 1.5rem; margin: 0; }
+  .collection-masthead .masthead-actions { width: auto; margin: 0; }
+  .collection-masthead .masthead-actions .button { min-height: 44px; gap: .35em; }
+  .collection-masthead ~ .product-main .collection-view-tabs { margin-bottom: .2rem; }
+  .collection-search-disclosure { margin-bottom: .75rem; }
+  .movie-grid .movie-card h2 { font-size: .9rem; }
+}
 @media (forced-colors: active) {
   .media-card-transport { background: Canvas; color: CanvasText; }
   .media-card-transport small { color: CanvasText; }
+  .watching-rail .media-card-transport { background: Canvas; color: CanvasText; border: 1px solid CanvasText; }
+  .watching-rail .media-card-transport small { color: CanvasText; }
 }
 
 /* Settings directory and progressively disclosed download controls. */

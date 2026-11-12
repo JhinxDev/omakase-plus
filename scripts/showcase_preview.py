@@ -353,6 +353,7 @@ def prohibit_outbound():
 
 
 EPISODE_STATES = (
+    "complete-1080p",
     "complete-fallback",
     "resurfaced",
     "download-pending",
@@ -370,6 +371,8 @@ def episode_presentation_card(catalog, state):
     title = title_presentation_card(catalog)
     total = title["episode_total"]
     fallback = [episode for episode in (6, 7, 8, 9, 10, 12, 13) if episode <= total]
+    if state == "complete-1080p":
+        fallback = []
     title.update(
         usable=total,
         required=total,
@@ -401,6 +404,13 @@ def episode_presentation_card(catalog, state):
             "detail": "Synthetic release-quality presentation; no physical media or current publication was verified.",
             "alternates": ["1080p"] if state == "publication-pending" and quality == "720p" else [],
         }
+    if state == "upgrades-unavailable":
+        title["usable"] -= 1
+        title["plex_visible"] -= 1
+        title["usable_episodes"].remove(total)
+        del title["episode_qualities"][total]
+        if total in fallback:
+            fallback.remove(total)
     if state == "resurfaced":
         title.update(
             watch_status="completed",
@@ -907,7 +917,7 @@ def create_showcase(data: Path, catalog, *, library_state="personal"):
             body = re.sub(r"(<main\b[^>]*>)", lambda match: match.group(1) + notice, body, count=1)
             if state == "busy":
                 body = body.replace(
-                    'data-busy-label="Checking episodes…">Find missing episodes &amp; 1080p',
+                    'data-busy-label="Checking episodes…">Check for 1080p upgrades',
                     'data-busy-label="Checking episodes…" disabled aria-busy="true">Checking episodes…',
                 )
             response = HTMLResponse(body)
