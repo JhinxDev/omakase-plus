@@ -326,14 +326,19 @@ def collection(
                     if watching and episode and episode["plex_present"]
                     else metadata.get("year") or ""
                 )
+                episode_path = (
+                    f"/plus/watch/title/tv/{row['tmdb_id']}/"
+                    f"{episode['season_number']}/{episode['episode_number']}"
+                    if episode and episode["plex_present"]
+                    else None
+                )
                 entry = _entry(
                     row["tmdb_id"],
                     metadata["title"],
                     note=note,
-                    watch_path=f"/plus/watch/title/tv/{row['tmdb_id']}/"
-                    f"{episode['season_number']}/{episode['episode_number']}"
-                    if episode and episode["plex_present"]
-                    else None,
+                    watch_path=episode_path,
+                    featured_path=episode_path,
+                    featured_episode=episode["episode_number"] if episode and watching else None,
                     poster_url=_tmdb_image(metadata.get("poster_url")),
                     backdrop_url=_tmdb_image(metadata.get("backdrop_url")),
                     summary=(metadata.get("overview") or "")[:650],
