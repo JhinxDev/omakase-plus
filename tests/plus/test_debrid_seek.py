@@ -98,7 +98,7 @@ def test_failed_seek_index_falls_back_to_the_provider_playlist(tmp_path):
     asyncio.run(run())
 
 
-def test_seekable_hevc_plan_serves_fragmented_mp4(tmp_path):
+def test_hevc_prefers_realdebrid_transcode_over_seek(tmp_path):
     index = SeekIndex(
         url="https://chi9-4.download.real-debrid.com/x/y.mkv",
         duration=12.0,
@@ -108,41 +108,22 @@ def test_seekable_hevc_plan_serves_fragmented_mp4(tmp_path):
         segments=((0.0, 6.0), (6.0, 12.0)),
         container="fmp4",
     )
-    plan = SeekPlan(
-        key="hevc",
-        url=index.url,
-        duration=12.0,
-        root=tmp_path,
-    )
+    plan = SeekPlan(key="hevc", url=index.url, duration=12.0, root=tmp_path)
     plan.index = index
     plan.ready.set()
+    provider = b"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\n00000.ts\n#EXT-X-ENDLIST\n"
 
     async def run():
         streams = DebridStreams(seek_root=tmp_path)
         streams.seek.plans["hevc"] = plan
-
-        async def init(current):
-            return b"init-boxes"
-
-        async def segment(current, number):
-            return b"moof" + bytes([number])
-
-        streams.seek.init = init
-        streams.seek.segment = segment
-        media = DebridMedia(b"", (), seek_key="hevc")
+        media = DebridMedia(
+            provider, ("https://chi9-4.download.real-debrid.com/x/00000.ts",), seek_key="hevc"
+        )
         request = Request({"type": "http", "method": "GET", "headers": []})
-        await streams.deliver(media, "index.m3u8", request, lambda: None)
+        index_reply = await streams.deliver(media, "index.m3u8", request, lambda: None)
         stream = await streams.deliver(media, "stream.m3u8", request, lambda: None)
-        body = stream.body.decode()
-        assert "#EXT-X-VERSION:7" in body
-        assert '#EXT-X-MAP:URI="init.mp4"' in body
-        assert "00000.m4s" in body
-        init_reply = await streams.deliver(media, "init.mp4", request, lambda: None)
-        assert init_reply.body == b"init-boxes"
-        assert init_reply.headers["content-type"] == "video/mp4"
-        third = await streams.deliver(media, "00001.m4s", request, lambda: None)
-        assert third.body == b"moof\x01"
-        assert third.headers["content-type"] == "video/iso.segment"
+        assert index_reply.status_code == 200
+        assert stream.body == provider
 
     asyncio.run(run())
 

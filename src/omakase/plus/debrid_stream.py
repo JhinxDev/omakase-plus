@@ -486,7 +486,10 @@ class DebridStreams:
                             await plan.ready.wait()
                     except TimeoutError:
                         pass
-                if plan.index is not None:
+                # The host cannot transcode HEVC faster than realtime. Real-Debrid
+                # already exposes a server-side H.264 transcode; use it directly
+                # instead of generating a slow local seek stream.
+                if plan.index is not None and plan.index.video_codec != "hevc":
                     plan.mode = "seek"
                     subtitles = job if job is not None and job.tracks else None
                     return _playlist_reply(_master_playlist(entry, subtitles), request)
@@ -494,7 +497,12 @@ class DebridStreams:
                 return _playlist_reply(_master_playlist(entry, job), request)
             return _playlist_reply(entry.playlist, request)
         if asset == "stream.m3u8":
-            if plan is not None and plan.mode == "seek" and plan.index is not None:
+            if (
+                plan is not None
+                and plan.mode == "seek"
+                and plan.index is not None
+                and plan.index.video_codec != "hevc"
+            ):
                 return _playlist_reply(plan.index.playlist, request)
             return _playlist_reply(entry.playlist, request)
         if match := re.fullmatch(r"subtitles([0-9]{1,2})\.m3u8", asset):
