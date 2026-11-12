@@ -68,6 +68,7 @@ class SeekIndex:
     keyframes: tuple[float, ...]
     segments: tuple[tuple[float, float], ...]
     container: str = "ts"
+    transcode: bool = False
 
     @property
     def suffix(self):
@@ -274,16 +275,33 @@ class SeekStreams:
             plan.url,
             "-t",
             f"{max(0.1, end - start):.3f}",
-            "-output_ts_offset",
-            f"{start:.3f}",
             "-map",
             "0:v:0",
             "-map",
             "0:a:0?",
-            "-c:v",
-            "copy",
         ]
-        args.extend(_audio_args(plan.index.audio_codec))
+        if plan.index.transcode:
+            args.extend(
+                [
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-crf",
+                    "26",
+                    "-vf",
+                    "scale=-2:720",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "160k",
+                    "-threads",
+                    "2",
+                ]
+            )
+        else:
+            args.extend(["-output_ts_offset", f"{start:.3f}", "-c:v", "copy"])
+            args.extend(_audio_args(plan.index.audio_codec))
         if plan.index.container == "fmp4":
             args.extend(
                 [
@@ -322,7 +340,8 @@ class SeekStreams:
 
         async def run():
             try:
-                for offset in range(_MAX_PREFETCH):
+                limit = 2 if plan.index is not None and plan.index.transcode else _MAX_PREFETCH
+                for offset in range(limit):
                     number = start + offset
                     if plan.index is None or number >= len(plan.index.segments):
                         return
@@ -403,9 +422,33 @@ async def build_index(url, duration):
             return None
         segment_start, tracks, info, seekhead = header
         video_number, video_codec, audio_codec = _track_info(first, tracks)
-        if video_number is None or video_codec != "h264":
-            # HEVC fragments currently duplicate the leading GOP in ffmpeg's
-            # streaming muxers, so those titles keep the provider transcode path.
+        if video_number is None:
+            return None
+        if video_codec == "hevc":
+            # HEVC stream-copy fragments duplicate the leading GOP. Fixed
+            # six-second H.264 segments give an exact seek timeline and keep
+            # far-forward seeks working from the direct file.
+            segments = tuple(
+                (start, min(start + _SEGMENT_SECONDS, float(duration)))
+                for start in (
+                    index * _SEGMENT_SECONDS
+                    for index in range(int(float(duration) // _SEGMENT_SECONDS) + 1)
+                )
+                if start < float(duration) - 0.05
+            )
+            if len(segments) < 2 or len(segments) > _MAX_SEGMENTS:
+                return None
+            return SeekIndex(
+                url=url,
+                duration=float(duration),
+                video_codec=video_codec,
+                audio_codec=audio_codec,
+                keyframes=(),
+                segments=segments,
+                container="ts",
+                transcode=True,
+            )
+        if video_codec != "h264":
             return None
         container = "ts"
         scale = _timecode_scale(first, info) or 1_000_000
