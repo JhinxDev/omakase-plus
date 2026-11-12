@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -77,6 +78,7 @@ from omakase.plus.native_tv_library import (
 )
 from omakase.plus.posters import PosterUnavailable, banner_bytes, poster_bytes
 from omakase.plus.request_limits import bounded_form_route
+from omakase.plus.tv_service import plain
 from omakase.plus.web_playback_admission import Admission, Busy
 from omakase.plus.web_playback_catalog import (
     catalog_target,
@@ -796,6 +798,65 @@ def create_native_tv_test_router(
         )
         return source, catalog["title"]
 
+    async def details_for_path(db, scope, path):
+        if match := ANIME.fullmatch(path):
+            episode = int(match[2])
+            monitor = playback_monitor(db, scope, match[1])
+            if not monitor or episode > 5000 or (episode == 0) != (monitor["format"] == "MOVIE"):
+                raise ValueError("Episode unavailable")
+            source = await resolve_anime(
+                db,
+                actor_user_id=scope.viewer_id,
+                library_id=scope.library_id,
+                anilist_id=monitor["anilist_id"],
+                season_number=monitor["season_number"] or 0,
+                episode_number=episode,
+                media_version=None,
+                transport=transport,
+            )
+            artwork = (
+                f"episode-artwork/anime/{match[1]}/{monitor['season_number']}/{episode}"
+                if monitor["season_number"] and episode
+                else None
+            )
+            return {
+                "title": monitor["title"],
+                "episode_title": getattr(source, "episode_name", "") or f"Episode {episode}",
+                "episode_number": episode,
+                "note": f"Episode {episode}",
+                "summary": getattr(source, "episode_summary", "") or "",
+                "artwork": artwork,
+            }
+        if match := MOVIE.fullmatch(path):
+            catalog, _ = catalog_target(db, scope, "movie", match[1], 0, 0)
+            return {
+                "title": catalog["title"],
+                "episode_title": "",
+                "episode_number": None,
+                "note": str(catalog.get("year") or ""),
+                "summary": catalog.get("overview") or "",
+                "artwork": None,
+            }
+        if match := TV.fullmatch(path):
+            canonical, season, episode = match[1], int(match[2]), int(match[3])
+            if int(canonical) > 2_147_483_647 or season > 200 or episode > 1000:
+                raise ValueError("Episode unavailable")
+            catalog, episode_row = catalog_target(db, scope, "tv", canonical, season, episode)
+            metadata = json.loads(episode_row["episode_json"])
+            return {
+                "title": catalog["title"],
+                "episode_title": metadata.get("title")
+                or metadata.get("name")
+                or f"Episode {episode}",
+                "episode_number": episode,
+                "note": f"S{season} E{episode}",
+                "summary": plain(metadata.get("overview"))[:650]
+                if metadata.get("overview")
+                else "",
+                "artwork": f"episode-artwork/tv/{canonical}/{season}/{episode}",
+            }
+        raise ValueError("Unsupported watch page")
+
     async def resolve_debrid_path(db, scope, path):
         if match := ANIME.fullmatch(path):
             return await resolve_debrid_anime(
@@ -1466,6 +1527,19 @@ def create_native_tv_test_router(
         except (EpisodeArtworkUnavailable, households.HouseholdError):
             raise HTTPException(404, "Artwork unavailable", headers=NO_STORE) from None
         return Response(data, media_type=media_type, headers=NO_STORE)
+
+    @router.get(LIBRARY_API + "/details")
+    async def library_details(
+        request: Request, path: str = Query("", max_length=512), db=Depends(get_db)
+    ):
+        _, _, scope = requested_scope(request, db)
+        try:
+            payload = await details_for_path(db, scope, path)
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(404, "Details unavailable", headers=NO_STORE) from None
+        except PlaybackSourceError:
+            raise HTTPException(404, "Details unavailable", headers=NO_STORE) from None
+        return JSONResponse(payload, headers=NO_STORE)
 
     @router.post(LIBRARY_API + "/play")
     async def play_library(request: Request, db=Depends(get_db)):

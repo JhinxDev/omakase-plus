@@ -138,19 +138,27 @@ def _shared_cards(db, scope, kind, offset, query):
 
 
 def _anime_entries(db, scope, cards):
-    return [
-        _entry(
-            row["id"],
-            row["title"],
-            note=row["lifecycle_label"],
-            artwork_id=_anime_monitor_id(db, scope, row["id"]),
-            progress=row["progress_percent"] / 100,
-            watching=row["lifecycle"] == "in_progress",
-            featured_path=urlsplit(row["play_url"]).path if row.get("play_url") else None,
-            featured_episode=row.get("play_episode"),
+    entries = []
+    for row in cards:
+        monitor = _anime_monitor_id(db, scope, row["id"])
+        featured = row.get("play_episode")
+        episode = featured if row["lifecycle"] == "in_progress" and featured else None
+        entries.append(
+            _entry(
+                row["id"],
+                row["title"],
+                note=f"Episode {episode}" if episode else row["lifecycle_label"],
+                artwork_id=monitor,
+                progress=row["progress_percent"] / 100,
+                watching=row["lifecycle"] == "in_progress",
+                featured_path=urlsplit(row["play_url"]).path if row.get("play_url") else None,
+                featured_episode=featured,
+                episode_artwork=f"episode-artwork/anime/{monitor}/{row['season_number']}/{episode}"
+                if monitor and episode and row.get("season_number")
+                else None,
+            )
         )
-        for row in cards
-    ]
+    return entries
 
 
 async def personal_plex_movies(db, scope, *, transport=None):
@@ -299,14 +307,41 @@ def collection(
         for row in rows:
             if personal_legacy_visible(db, scope, domain="tv", canonical_id=str(row["tmdb_id"])):
                 metadata = json.loads(row["metadata_json"])
+                watching = row["watch_status"] == "watching"
+                episode = db.execute(
+                    """SELECT season_number,episode_number,plex_present FROM tv_episodes
+                       WHERE user_id=? AND tmdb_id=? AND watched=0 AND plex_present=1
+                       ORDER BY season_number,episode_number LIMIT 1""",
+                    (owner, row["tmdb_id"]),
+                ).fetchone()
+                if episode is None:
+                    episode = db.execute(
+                        """SELECT season_number,episode_number,plex_present FROM tv_episodes
+                           WHERE user_id=? AND tmdb_id=?
+                           ORDER BY season_number DESC,episode_number DESC LIMIT 1""",
+                        (owner, row["tmdb_id"]),
+                    ).fetchone()
+                note = (
+                    f"S{episode['season_number']} E{episode['episode_number']}"
+                    if watching and episode and episode["plex_present"]
+                    else metadata.get("year") or ""
+                )
                 entry = _entry(
                     row["tmdb_id"],
                     metadata["title"],
-                    note=metadata.get("year") or "",
+                    note=note,
+                    watch_path=f"/plus/watch/title/tv/{row['tmdb_id']}/"
+                    f"{episode['season_number']}/{episode['episode_number']}"
+                    if episode and episode["plex_present"]
+                    else None,
                     poster_url=_tmdb_image(metadata.get("poster_url")),
                     backdrop_url=_tmdb_image(metadata.get("backdrop_url")),
                     summary=(metadata.get("overview") or "")[:650],
-                    watching=row["watch_status"] == "watching",
+                    episode_artwork=f"episode-artwork/tv/{row['tmdb_id']}/"
+                    f"{episode['season_number']}/{episode['episode_number']}"
+                    if watching and episode and episode["plex_present"]
+                    else None,
+                    watching=watching,
                 )
                 entry["_activity"] = row["watch_updated_at"] or ""
                 entries.append(entry)
