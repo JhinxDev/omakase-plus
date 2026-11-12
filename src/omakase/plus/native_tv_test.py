@@ -1650,19 +1650,6 @@ def create_native_tv_test_router(
         finally:
             release()
 
-    async def prepared_seek_codec(prepared):
-        if prepared is None or not getattr(prepared, "seek_key", ""):
-            return None
-        plan = cloud_streams.seek.get(prepared.seek_key)
-        if plan is None:
-            return None
-        try:
-            async with asyncio.timeout(7):
-                await plan.ready.wait()
-        except TimeoutError:
-            return None
-        return plan.index.video_codec if plan.index is not None else None
-
     async def open_library_pass(request, db, key, library, scope, path, *, previous=None):
         prepared = None
         cloud_error = None
@@ -1689,19 +1676,6 @@ def create_native_tv_test_router(
             raise HTTPException(
                 404, "No matching Real-Debrid file for this title", headers=NO_STORE
             )
-        # Real-Debrid HEVC files cannot be transcoded to H.264 faster than
-        # realtime on this host. When the same episode exists in Plex, use the
-        # native HLS path: HEVC video is copied and only audio is transcoded.
-        if resolved is not None and prepared is not None:
-            if await prepared_seek_codec(prepared) == "hevc":
-                try:
-                    async with asyncio.timeout(15):
-                        plex_source, plex_title = await exact_source(db, scope, path)
-                except (ValueError, TimeoutError, households.HouseholdError):
-                    plex_source = None
-                if plex_source is not None and native_hls_eligible(plex_source):
-                    resolved = (plex_source, plex_title)
-                    prepared = None
         try:
             if resolved:
                 source, title = resolved
