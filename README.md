@@ -38,8 +38,9 @@ branding retain their owners' rights; see [third-party notices](THIRD-PARTY-NOTI
   and queues the AniList progress update for anime.
 - Embedded text subtitle extraction with a player subtitle picker and an
   always-on preference; image-based PGS subtitles remain a tracked limitation.
-- Fast warm starts, next-episode preload and seekable H.264 playback built from
-  the Real-Debrid file itself.
+- Fast warm starts, next-episode preload and seekable playback built from the
+  Real-Debrid file itself, including exact six-second H.264 seek segments for
+  HEVC copies.
 - Account-specific [notifications](docs/notification-center.md) to rate finished titles
   and review safely owned anime media, with read/dismiss controls.
 - Account-scoped JSON CLI and optional stdio MCP access, with named permissions
@@ -121,9 +122,11 @@ the current one, and embedded text subtitles become real player subtitle tracks
 with an always-on preference.
 
 Long forward seeks work on H.264 copies through a seekable timeline built from
-the file's keyframe index. HEVC copies currently remain on the provider
-transcode path, and titles whose only subtitles are image-based PGS tracks do
-not yet have a text subtitle track.
+the file's keyframe index. HEVC copies use exact six-second H.264 seek segments
+generated from the direct file, so far seeks still work instead of erroring;
+preparing a far segment takes about eight seconds and converts only that window
+at 720p. Titles whose only subtitles are image-based PGS tracks do not yet have
+a text subtitle track.
 
 See [Apple TV](docs/apple-tv.md) and [Real-Debrid playback](docs/real-debrid.md).
 

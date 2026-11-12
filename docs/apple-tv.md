@@ -53,9 +53,10 @@ that only ship PGS currently have no subtitle track.
 
 Real-Debrid playback gives instant warm starts and a short seek within the
 provider's ready window. For H.264 copies, Omakase can also build a seekable HLS
-timeline from the file's keyframe index, which supports long jumps. HEVC titles
-currently remain on the provider transcode path while HEVC fragment timestamps
-are being corrected.
+timeline from the file's keyframe index, which supports long jumps. HEVC copies
+use exact six-second H.264 seek segments generated from the direct file, so
+far-forward seeks work instead of erroring; preparing a far segment takes about
+eight seconds and converts only that 720p window.
 
 ## Building and installing
 

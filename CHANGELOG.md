@@ -15,6 +15,9 @@ identifier; it does not replace the public release version.
   ordering update on the server without a native rebuild.
 - Migration 056 records the Apple TV source detail on movie and TV history rows
   while preserving existing Plex and manual values.
+- HEVC Real-Debrid copies now get a seekable timeline of exact six-second H.264
+  segments generated from the direct file. Far-forward seeks work instead of
+  erroring; a far segment takes about eight seconds to prepare at 720p.
 
 ## 0.4.11 - 2026-11-12
 
