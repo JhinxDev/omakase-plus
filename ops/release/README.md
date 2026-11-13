@@ -80,7 +80,9 @@ A real build additionally proves that the image content equals the commit tree.
 It hashes every installed file inside the built image, using `python -B` in a
 read only, networkless container, and compares both the file set and each hash
 against the manifest. A mismatch fails the build. Exit code 0 means success and
-1 means a guarded step failed.
+1 means a guarded step failed. The comparison covers shipped source files;
+interpreter bytecode that pip compiles during install is ignored, while any
+other extra file is a hard failure.
 
 ## Subtitle runtime parity
 
