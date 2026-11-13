@@ -62,11 +62,44 @@ Build, tag and verify an image:
 .venv\Scripts\python.exe ops/release/build_image.py --commit <sha> --manifest "$env:TEMP\manifest.json"
 ```
 
+Build on the Docker host instead of the workstation. The commit archive is
+streamed over ssh, so the host never needs the repository or a checkout, and the
+host free space is checked against the floor before the build starts:
+
+```powershell
+.venv\Scripts\python.exe ops/release/build_image.py --commit <sha> `
+    --remote omakase-ct --readback --manifest "$env:TEMP\manifest.json"
+```
+
+`--remote` refuses the build when the Docker root has less than
+`--min-free-bytes` free (default 4 GiB). `--readback` additionally proves that
+`tesseract`, `mkvmerge`, `ffmpeg`, `faster_whisper` and `pgsrip` resolve inside
+the built image and reports their versions.
+
 A real build additionally proves that the image content equals the commit tree.
 It hashes every installed file inside the built image, using `python -B` in a
 read only, networkless container, and compares both the file set and each hash
 against the manifest. A mismatch fails the build. Exit code 0 means success and
 1 means a guarded step failed.
+
+## Subtitle runtime parity
+
+The production image also needs OCR and speech recognition tooling. The out of
+repo release path added it with a live overlay, which is exactly the silent
+regression this directory exists to remove. The versioned image now declares it:
+
+- `Dockerfile` installs `tesseract-ocr` and `mkvtoolnix` next to `ffmpeg` and
+  installs `requirements-subtitles.txt` with `--require-hashes`.
+- `requirements-subtitles.txt` pins `faster-whisper==1.2.1` and `pgsrip==0.3.0`
+  plus every transitive dependency, with sha256 hashes for the linux/amd64
+  Python 3.12 wheels.
+- `anyio` and `typing-extensions` are pinned to the application versions, so
+  the subtitle install cannot rewrite the app stack. The resolved set and
+  versions were compared against the live container and match it exactly.
+- `tests/infra/test_release_tooling.py` asserts that the Dockerfile keeps
+  declaring all four tools and that every subtitle pin is hashed, so CI fails
+  if this parity is quietly dropped again.
+- `--readback` proves the same facts inside the real built image.
 
 Manifest shape:
 
