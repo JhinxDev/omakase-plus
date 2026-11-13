@@ -272,6 +272,7 @@ class DebridStreams:
         # First segments that are being warmed without blocking the play reply.
         self.warm = {}
         self.first_cache = OrderedDict()
+        self.segment_cache = OrderedDict()
         self.media_cache = OrderedDict()
 
     async def _read(
@@ -430,6 +431,32 @@ class DebridStreams:
                 await job.ready.wait()
         except TimeoutError:
             return
+
+    def warm_position(self, media, position):
+        if position <= 0 or not media.segments:
+            return
+        duration = _media_duration(media.playlist) or max(1.0, len(media.segments) * 5.0)
+        step = max(1.0, duration / len(media.segments))
+        index = min(len(media.segments) - 1, max(0, int(position / step)))
+        for number in range(max(0, index - 1), min(len(media.segments), index + 2)):
+            url = media.segments[number]
+            stored = self.segment_cache.get(url)
+            if stored is not None and stored[0] > self.clock():
+                continue
+            if url in self.warm:
+                continue
+            self.warm[url] = asyncio.create_task(self._fetch_segment(url))
+
+    async def _fetch_segment(self, url):
+        try:
+            data, status, _ = await self._read(url, limit=_SEGMENT_LIMIT, timeout=45, attempts=1)
+        except (DebridLibraryError, TimeoutError, asyncio.CancelledError):
+            return None
+        if status == 200 and data:
+            self.segment_cache[url] = (self.clock() + 120, data)
+            while len(self.segment_cache) > 12:
+                self.segment_cache.popitem(last=False)
+        return data
 
     def _start_warm(self, media):
         if not media.segments:
@@ -662,6 +689,19 @@ class DebridStreams:
         byte_range = request.headers.get("range")
         if byte_range and not re.fullmatch(r"bytes=[0-9]{1,9}-[0-9]{0,9}", byte_range):
             return Response(status_code=416, headers=HEADERS)
+        url = entry.segments[index]
+        stored = self.segment_cache.get(url)
+        if stored is not None and stored[0] > self.clock():
+            self.segment_cache.move_to_end(url)
+            cached_segment = stored[1]
+            if request.method == "GET":
+                return Response(
+                    cached_segment,
+                    media_type="video/mp2t",
+                    headers=HEADERS | {"Content-Length": str(len(cached_segment))},
+                )
+        elif stored is not None:
+            self.segment_cache.pop(url, None)
         cached = getattr(entry, "first_segment", b"")
         if index == 0 and not cached and entry.segments:
             url = entry.segments[0]
@@ -759,6 +799,10 @@ class DebridStreams:
                         )
             except TimeoutError:
                 raise _unavailable() from None
+        if request.method == "GET" and status == 200 and not byte_range and data:
+            self.segment_cache[url] = (self.clock() + 120, data)
+            while len(self.segment_cache) > 12:
+                self.segment_cache.popitem(last=False)
         headers = HEADERS.copy()
         if status == 206:
             value = upstream.get("content-range", "")
