@@ -10,6 +10,7 @@ from pathlib import PurePosixPath
 from urllib.parse import urlencode
 
 from omakase.plus import households, quality_publication
+from omakase.plus.providers import playback as playback_providers
 from omakase.plus.web_playback_source import publication_identity, qualified_publication
 from omakase.plus.web_playback_store import watch_barrier
 
@@ -165,7 +166,7 @@ def _attach_navigation(db, cards, user_id, scope):
     from functools import lru_cache
 
     from omakase.plus.debrid_anime import anime_episodes
-    from omakase.plus.debrid_library import account_token, playback_provider
+    from omakase.plus.debrid_library import account_token
 
     @lru_cache(maxsize=1)
     def publication():
@@ -175,8 +176,14 @@ def _attach_navigation(db, cards, user_id, scope):
             return None
 
     player_enabled = enabled()
-    debrid_only = scope.kind == "personal" and playback_provider(db, user_id) == "realdebrid"
+    selection = (
+        playback_providers.select(db, user_id)
+        if scope.kind == "personal"
+        else playback_providers.shared_publication()
+    )
+    debrid_only = scope.kind == "personal" and selection.cloud_route
     debrid_connected = debrid_only and bool(account_token(db, user_id))
+    catalog_only = selection.provider is not None and not selection.supports("play")
     for card in cards:
         activity = db.execute(
             "SELECT * FROM web_playback_watch WHERE user_id=? AND library_id=? AND anilist_id=? AND season_number=? AND covered_seconds>0 ORDER BY last_played_at DESC,id DESC",
@@ -221,6 +228,9 @@ def _attach_navigation(db, cards, user_id, scope):
             episode_play_urls={},
             playback_navigation_state="Current published episode unavailable",
         )
+        if catalog_only:
+            card["playback_navigation_state"] = f"{selection.label} playback is not available yet"
+            continue
         try:
             monitor = _monitor(db, scope, card)
             if monitor is None or card.get("state") == "archived":

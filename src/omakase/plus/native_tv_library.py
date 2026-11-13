@@ -13,7 +13,7 @@ from omakase.plus import connections, household_views, households
 from omakase.plus.anime_synopsis import cached_synopsis
 from omakase.plus.debrid_anime import DebridTitleSource, anime_episodes
 from omakase.plus.debrid_catalog import catalog_title as debrid_catalog_title
-from omakase.plus.debrid_library import account_token, playback_provider
+from omakase.plus.debrid_library import account_token
 from omakase.plus.history_artwork import (
     EpisodeArtworkUnavailable,
     anime_series_identity,
@@ -22,6 +22,7 @@ from omakase.plus.history_artwork import (
 from omakase.plus.household_media import binding, matching_item, personal_legacy_visible
 from omakase.plus.movies import MovieConnections, MovieError, MovieService
 from omakase.plus.product_views import library_titles
+from omakase.plus.providers import playback as playback_providers
 from omakase.plus.tv_service import episode_runtime, plain
 from omakase.plus.web_playback_catalog import catalog_target
 from omakase.plus.web_playback_navigation import attach_navigation, exact_next_url
@@ -51,12 +52,15 @@ def _tmdb_image(value):
 
 def _anime(db, scope, *, debrid_torrents=None):
     cards = library_titles(db, user_id=scope.viewer_id, lifecycle="all", library_scope=scope)
-    mode = playback_provider(db, scope.viewer_id) if scope.kind == "personal" else "plex"
-    if mode != "plex":
+    selection = (
+        playback_providers.select(db, scope.viewer_id)
+        if scope.kind == "personal"
+        else playback_providers.shared_publication()
+    )
+    if selection.cloud_route:
         has_debrid = bool(account_token(db, scope.viewer_id))
         for card in cards:
-            if mode == "realdebrid":
-                card.update(play_url=None, play_episode=None, episode_play_urls={})
+            card.update(play_url=None, play_episode=None, episode_play_urls={})
             if card.get("state") == "archived":
                 continue
             monitor_id = card["id"]
@@ -74,6 +78,10 @@ def _anime(db, scope, *, debrid_torrents=None):
                     card.update(
                         play_url=paths[preferred], play_episode=preferred or None, play_label="Play"
                     )
+    elif selection.provider is not None and not selection.supports("play"):
+        # A catalog-only provider must not borrow another provider's play paths.
+        for card in cards:
+            card.update(play_url=None, play_episode=None, episode_play_urls={})
     return cards
 
 

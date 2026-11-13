@@ -203,11 +203,13 @@ def test_page_does_not_resolve_media_or_create_history(setup, play):
     assert db.execute("SELECT COUNT(*) FROM watch_events").fetchone()[0] == 0
 
 
-def test_realdebrid_only_routes_web_watch_links_without_starting_plex(setup, monkeypatch):
-    from omakase.plus import web_playback_routes
+def test_realdebrid_only_routes_web_watch_links_without_starting_plex(setup):
+    from omakase.plus.secrets import store_secret
 
     app, db, sessions, calls, _ = setup
-    monkeypatch.setattr(web_playback_routes, "playback_provider", lambda *_: "realdebrid")
+    store_secret(db, 1, "realdebrid_api_key", "fixture-token")
+    store_secret(db, 1, "preferred_playback_provider", "realdebrid")
+    db.commit()
     viewer = client(app, sessions[1])
     for source, target in (
         ("/plus/watch/1/1", "/plus/cloud/title/anime/1/0/1"),
@@ -247,15 +249,20 @@ def test_actual_source_guard_start_and_resource_routes_keep_atomic_authorization
     app.state.actual_source_guard = True
     monkeypatch.setenv("OMAKASE_PLUS_PLEX_MANAGED_ROOT", "/synthetic")
     monkeypatch.setattr(source_module, "_publication", lambda *a: ("synthetic.mp4", 100, "b" * 64))
+    plex_secrets = {
+        "plex_url": "https://plex.invalid",
+        "plex_token": "dummy-only",
+        "plex_machine_id": "synthetic-server",
+    }
     monkeypatch.setattr(
         source_module.connections,
         "_values",
-        lambda *a: ("https://plex.invalid", "dummy-only"),
+        lambda *a: (plex_secrets["plex_url"], plex_secrets["plex_token"]),
     )
     monkeypatch.setattr(
         source_module.connections,
         "_read",
-        lambda db, uid, key: "synthetic-server" if key == "plex_machine_id" else "dummy-only",
+        lambda db, uid, key: plex_secrets.get(key, ""),
     )
     owner = client(app, sessions[1])
     created = owner.post("/plus/api/playback/sessions", json={"monitor_id": 1, "episode_number": 1})
@@ -905,8 +912,13 @@ def test_catalog_plays_exact_personal_copy_and_saves_resume(setup, monkeypatch, 
     compatible = os.getenv("OMAKASE_PLAYBACK_STREAMING") == "true"
     base_url = "https://plex.invalid"
     fixture_auth = secrets.token_urlsafe(24)
+    plex_secrets = {
+        "plex_url": base_url,
+        "plex_token": fixture_auth,
+        "plex_machine_id": "synthetic-server",
+    }
     monkeypatch.setattr(connections, "_values", lambda *args: (base_url, fixture_auth))
-    monkeypatch.setattr(connections, "_read", lambda *args: "synthetic-server")
+    monkeypatch.setattr(connections, "_read", lambda db, user, key: plex_secrets.get(key, ""))
     db.execute(
         "INSERT INTO movie_catalog(user_id,imdb_id,tmdb_id,title,year,identity_verified,updated_at) "
         "VALUES(1,'tt1234567',100,'Synthetic film',2025,1,'now')"

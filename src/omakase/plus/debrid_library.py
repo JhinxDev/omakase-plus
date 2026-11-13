@@ -15,6 +15,7 @@ from pathlib import PurePosixPath
 import httpx
 
 from omakase.plus import connections
+from omakase.plus.providers import playback as playback_providers
 from omakase.plus.realdebrid import RD_API
 
 _ID = r"[a-zA-Z0-9]{3,64}"
@@ -28,8 +29,11 @@ _MAX_ACCOUNT_ENTRIES = 10000
 _RESPONSE_BYTES = 2 * 1024 * 1024
 _TTL = 25
 _STALE = 900
-PLAYBACK_PROVIDERS = {"auto", "realdebrid", "plex"}
-PLAYBACK_PROVIDER_KEY = "preferred_playback_provider"
+
+# Compatibility re-exports: playback provider policy now lives in providers.playback.
+PLAYBACK_PROVIDERS = playback_providers.PLAYBACK_PROVIDERS
+PLAYBACK_PROVIDER_KEY = playback_providers.PROVIDER_KEY
+playback_provider = playback_providers.playback_provider
 
 
 class DebridLibraryError(ValueError):
@@ -46,15 +50,6 @@ def account_token(db, user_id):
 
 def account_binding(token):
     return hashlib.sha256(token.encode()).hexdigest()
-
-
-def playback_provider(db, user_id):
-    saved = connections._read(db, user_id, PLAYBACK_PROVIDER_KEY)
-    if saved in PLAYBACK_PROVIDERS:
-        return saved
-    if account_token(db, user_id) and not connections._read(db, user_id, "plex_token"):
-        return "realdebrid"
-    return "auto"
 
 
 def _text(text, limit=300):
