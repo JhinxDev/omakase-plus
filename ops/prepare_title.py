@@ -74,6 +74,34 @@ _SEGMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.(?:ts|m4s)")
 _INIT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.mp4")
 _MAP = re.compile(r'#EXT-X-MAP:URI="([^"]{1,64})"')
 _EXTINF = re.compile(r"#EXTINF:([0-9]+(?:\.[0-9]+)?),?")
+# A release often leaves its subtitle track titles empty, and an unnamed track is
+# shown as "Subtitles 3" on the television. The language tag is the useful label.
+_LANGUAGE_NAMES = {
+    "eng": "English",
+    "en": "English",
+    "fre": "French",
+    "fra": "French",
+    "ger": "German",
+    "deu": "German",
+    "spa": "Spanish",
+    "es": "Spanish",
+    "ita": "Italian",
+    "por": "Portuguese",
+    "rus": "Russian",
+    "ara": "Arabic",
+    "dut": "Dutch",
+    "nld": "Dutch",
+    "dan": "Danish",
+    "jpn": "Japanese",
+    "kor": "Korean",
+    "chi": "Chinese",
+    "zho": "Chinese",
+    "pol": "Polish",
+    "tur": "Turkish",
+    "swe": "Swedish",
+    "nor": "Norwegian",
+    "fin": "Finnish",
+}
 
 
 class _Captured(Exception):
@@ -294,11 +322,17 @@ def _text_tracks(streams):
         if codec not in _TEXT_SUBTITLE_CODECS:
             continue
         tags = stream.get("tags") or {}
+        language = str(tags.get("language") or "").strip().lower()[:8]
+        title = str(tags.get("title") or "").strip()[:40]
+        if not title:
+            title = _LANGUAGE_NAMES.get(language, "")
+        elif title.upper() == "SDH":
+            title = f"{_LANGUAGE_NAMES.get(language, language.upper())} (SDH)"
         tracks.append(
             {
                 "index": stream.get("index"),
-                "name": str(tags.get("title") or "").strip()[:40],
-                "language": str(tags.get("language") or "").strip().lower()[:8],
+                "name": title,
+                "language": language,
                 "codec": codec,
             }
         )
