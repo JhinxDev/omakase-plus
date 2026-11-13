@@ -96,6 +96,9 @@ class SeekIndex:
     # True when the boundaries and spans were measured from a segmenter pass
     # instead of predicted, which lets the copy request stop exactly on a boundary.
     measured_timeline: bool = False
+    # Per-segment seek targets recorded by a scan: asking for these lands on the
+    # measured start. Empty means fall back to prediction.
+    seek_targets: tuple[float, ...] = ()
     audio_index: int | None = None
 
     @property
@@ -219,7 +222,7 @@ class SeekStreams:
                 keyframes, offset = cached
                 measured = _cached_timeline(plan)
                 segments = (
-                    tuple(measured) if measured else tuple(_segments(keyframes, float(plan.duration)))
+                    measured[0] if measured else tuple(_segments(keyframes, float(plan.duration)))
                 )
                 if 2 <= len(segments) <= _MAX_SEGMENTS:
                     plan.index = replace(
@@ -237,9 +240,10 @@ class SeekStreams:
                         seek_targets=measured[1] if measured else (),
                     )
                     _LOG.warning(
-                        "seek timeline from %d cached demuxer keyframes (first %.3f s)",
-                        len(cached),
-                        cached[0],
+                        "seek timeline from %d cached demuxer keyframes (first %.3f s, measured=%s)",
+                        len(keyframes),
+                        keyframes[0],
+                        bool(measured),
                     )
             plan.ready.set()
             if _REFINE_KEYFRAMES:
@@ -248,7 +252,11 @@ class SeekStreams:
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001 - fall back to the transcode path
+            # Falling back is intended. Failing silently is not: a TypeError here
+            # once disabled the whole measured-timeline path with no trace in the
+            # logs, so every plan build failure is now reported.
             plan.error = type(error).__name__
+            _LOG.warning("seek plan build failed (%s): %s", type(error).__name__, error)
         finally:
             plan.ready.set()
 
@@ -906,7 +914,13 @@ def _cached_keyframes(plan):
 
 
 def _cached_timeline(plan):
-    """Return measured (start, end) pairs for this media, if a scan recorded them."""
+    """Return (windows, seek_targets) measured for this media, if a scan recorded them.
+
+    A row is [seek_target, declared_start, duration]: asking the demuxer for
+    seek_target starts content at declared_start, so the playlist and the produced
+    chunks agree by construction. A two element row is read as [start, duration]
+    with the start doubling as the seek target.
+    """
     try:
         cached = keyframes_cache_path(plan.root.parent, plan.url)
         stored = json.loads(cached.read_text(encoding="utf-8"))
@@ -917,17 +931,25 @@ def _cached_timeline(plan):
     timeline = stored.get("timeline")
     if not isinstance(timeline, list) or len(timeline) < 2:
         return None
-    pairs = []
-    for start, duration in timeline:
+    windows = []
+    targets = []
+    for row in timeline:
         try:
-            left = float(start)
-            right = left + float(duration)
-        except (TypeError, ValueError):
+            if len(row) >= 3:
+                seek_target = float(row[0])
+                start = float(row[1])
+                duration = float(row[2])
+            else:
+                seek_target = float(row[0])
+                start = seek_target
+                duration = float(row[1])
+        except (TypeError, ValueError, IndexError):
             return None
-        if left < 0 or right <= left:
+        if start < 0 or duration <= 0:
             return None
-        pairs.append((round(left, 3), round(right, 3)))
-    return tuple(pairs)
+        windows.append((round(start, 3), round(start + duration, 3)))
+        targets.append(round(seek_target, 3))
+    return tuple(windows), tuple(targets)
 
 
 def _dense_keyframes(index):

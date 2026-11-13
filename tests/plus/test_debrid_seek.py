@@ -228,3 +228,65 @@ def test_seek_aims_at_the_next_keyframe_only_when_keyframes_are_dense(tmp_path, 
     )
     assert target == "6.000"
     assert duration == "6.000"
+
+
+def test_keyframe_cache_hit_actually_rebuilds_the_timeline(tmp_path, monkeypatch):
+    """A cached keyframe list must take effect, not silently fall back.
+
+    A missing dataclass field once raised TypeError inside the plan build, the
+    broad handler swallowed it, and every measured-timeline commit was dead code
+    in production with no line in the log. This test fails if a cache hit cannot
+    build the plan.
+    """
+    import json as jsonlib
+
+    import omakase.plus.debrid_seek as seek
+
+    url = "https://chi9-4.download.real-debrid.com/d/WOR2S6BMRLW6623/MobLand.S01E01.mkv"
+    duration = 30.0
+
+    async def fake_build_index(target_url, target_duration):
+        return SeekIndex(
+            url=target_url,
+            duration=target_duration,
+            video_codec="h264",
+            audio_codec="ac3",
+            keyframes=(0.0, 6.0, 12.0),
+            segments=((0.0, 6.0), (6.0, 12.0)),
+            container="ts",
+        )
+
+    monkeypatch.setattr(seek, "build_index", fake_build_index)
+    monkeypatch.setattr(seek, "_warm", _noop_warm, raising=False)
+    seek_root = tmp_path / "seek"
+    plan_root = seek_root / "plan-600"
+    plan_root.mkdir(parents=True)
+    cache = seek.keyframes_cache_path(seek_root, url)
+    cache.write_text(
+        jsonlib.dumps(
+            {
+                "keyframes": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+                "offset": 0.26,
+                "timeline": [[0.0, 0.0, 6.0], [6.2, 6.2, 6.0]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    plan = SeekPlan(key="cachehit", url=url, duration=duration, root=plan_root)
+    streams = SeekStreams(root=seek_root)
+    monkeypatch.setattr(streams, "_warm", _noop_warm_async, raising=False)
+    asyncio.run(streams._build(plan))
+    assert plan.error is None, plan.error
+    assert plan.index is not None
+    assert plan.index.measured_timeline is True
+    assert plan.index.seek_targets == (0.0, 6.2)
+    assert plan.index.segments == ((0.0, 6.0), (6.2, 12.2))
+    assert plan.index.subtitle_offset == 0.26
+
+
+async def _noop_warm_async(*args, **kwargs):
+    return None
+
+
+def _noop_warm(*args, **kwargs):
+    return None
