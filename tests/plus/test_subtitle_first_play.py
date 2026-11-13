@@ -193,6 +193,27 @@ def test_uncached_segment_without_history_uses_the_provider():
     assert calls and calls[0].endswith("00001.ts")
 
 
+def test_a_stall_after_a_seek_fails_instead_of_replaying_old_content():
+    """A skip of 39 segments must not replay segment 0 as a stall bridge."""
+    from omakase.plus.debrid_library import DebridLibraryError
+
+    async def scenario():
+        streams = DebridStreams()
+        streams._advance = lambda media, index: None
+        segments = tuple(f"https://s.stream.real-debrid.com/v/{n:05d}.ts" for n in range(60))
+        media = DebridMedia(b"#EXTM3U\n", segments, b"\x47first")
+        await streams.deliver(media, "00000.ts", _request(), lambda: None)
+        # The player resumed three minutes in and the provider never answers.
+        streams.warm[segments[39]] = asyncio.create_task(asyncio.sleep(60))
+        try:
+            response = await streams.deliver(media, "00039.ts", _request(), lambda: None)
+            return response.status_code
+        except DebridLibraryError as error:
+            return error.status
+
+    assert asyncio.run(scenario()) == 503
+
+
 def test_a_long_provider_stall_fails_instead_of_looping_forever():
     from omakase.plus.debrid_library import DebridLibraryError
 

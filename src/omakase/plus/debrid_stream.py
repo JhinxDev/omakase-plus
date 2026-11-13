@@ -63,6 +63,10 @@ _SEGMENT_GRACE = 2.5
 # hiccup, but a long outage must fail honestly: looping a frozen picture while
 # the subtitle timeline advances desyncs captions and hides the real problem.
 _SEGMENT_REPEAT_LIMIT = 3
+# A request that is this many segments past the previous request came from a seek
+# or a resume, not from normal playback. Serving old content to bridge a stall
+# would then replay a picture from minutes earlier.
+_SEGMENT_REQUEST_JUMP = 4
 _SEGMENT_CACHE_ENTRIES = 64
 _SEGMENT_CACHE_BYTES = 96 * 1024 * 1024
 _SEGMENT_TTL = 180.0
@@ -385,12 +389,15 @@ class DebridStreams:
         self.pump = None
         self.last_served = {}
         self.repeat_streak = {}
+        # The last segment index the player asked for, per playback, so a stall
+        # after a seek can be told apart from a stall in normal playback.
+        self.requested = {}
 
     @staticmethod
     def _playback_key(media):
         return media.segments[0] if media.segments else ""
 
-    def _repeat_last_segment(self, media, index, request, headers):
+    def _repeat_last_segment(self, media, index, previous_index, request, headers):
         """Answer with the last segment actually served for this media."""
         key = self._playback_key(media)
         record = self.last_served.get(key)
@@ -398,6 +405,27 @@ class DebridStreams:
             return None
         data = record[1]
         if not data or request.method == "HEAD":
+            return None
+        # A player that seeks or resumes jumps far past the segment it was last
+        # served. Repeating that old content then shows pictures from minutes
+        # earlier, which is the visible jump back the owner reported after a
+        # skip: the plan had served 00001, the player asked for 00039, and the
+        # stall fallback answered 00001 three times. Only a request that follows
+        # on from the previous one may repeat.
+        if previous_index is not None and index - previous_index > _SEGMENT_REQUEST_JUMP:
+            _LOG.warning(
+                "provider segment %05d not ready after a jump from %05d; failing instead of "
+                "replaying %05d",
+                index,
+                previous_index,
+                record[0],
+            )
+            raise DebridLibraryError(
+                "Real-Debrid is not delivering this part of the video right now.", 503
+            )
+        # Even without a detected jump, never replay something far behind the
+        # requested position: that is a wrong picture, not a stall bridge.
+        if index - record[0] > _SEGMENT_REPEAT_LIMIT + _SEGMENT_REQUEST_JUMP:
             return None
         streak = self.repeat_streak.get(key, 0) + 1
         self.repeat_streak[key] = streak
@@ -1129,6 +1157,9 @@ class DebridStreams:
             return Response(data, media_type=media_type, headers=headers)
         if index >= len(entry.segments):
             raise DebridLibraryError("This stream is unavailable.", 404)
+        playback_key = self._playback_key(entry)
+        previous_index = self.requested.get(playback_key)
+        self.requested[playback_key] = index
         byte_range = request.headers.get("range")
         if byte_range and not re.fullmatch(r"bytes=[0-9]{1,9}-[0-9]{0,9}", byte_range):
             return Response(status_code=416, headers=HEADERS)
@@ -1155,7 +1186,9 @@ class DebridStreams:
                 # Real-Debrid stalled a segment past the player's deadline.
                 # Answer with the last real segment so AVPlayer keeps the item
                 # alive and retries, instead of failing with -12889.
-                repeated = self._repeat_last_segment(entry, index, request, HEADERS.copy())
+                repeated = self._repeat_last_segment(
+                    entry, index, previous_index, request, HEADERS.copy()
+                )
                 if repeated is not None:
                     return repeated
                 # Nothing served yet for this media: wait the fetch out.

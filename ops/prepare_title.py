@@ -48,6 +48,8 @@ import time
 import urllib.parse
 from pathlib import Path
 
+_KEY = re.compile(r"[a-f0-9]{64}")
+
 # Text subtitle codecs ffmpeg can convert to WebVTT without a bitmap decoder.
 # PGS and DVD bitmap tracks are excluded on purpose: the app already serves its
 # own OCR rendition for those, and a bitmap track cannot become text here.
@@ -459,6 +461,14 @@ def _materialize(direct, key, partial, duration, tracks, log_path, limit=None, r
     if recipe == "fmp4":
         # Apple requires the hvc1 tag for HEVC; the default hev1 is refused.
         command += ["-tag:v", "hvc1"]
+    if recipe != "fmp4":
+        # The MPEG-TS muxer adds muxdelay and muxpreload to every timestamp,
+        # about 1.4 s in total. The WebVTT cues are timed from zero, so a shifted
+        # picture clock puts every subtitle about a second and a half out. Measured
+        # on a zero-origin 20 s clip: the plain recipe writes a first PTS of
+        # 1.423 s, and with these two flags 0.023 s. The fMP4 muxer has no such
+        # delay, which is why the prepared fMP4 titles never showed this.
+        command += ["-muxdelay", "0", "-muxpreload", "0"]
     command += [
         "-f",
         "hls",
@@ -518,10 +528,37 @@ def _write_meta(directory, payload):
 
 async def main(argv):
     if not argv:
-        print("usage: prepare_title.py <watch-path> [--force] | --verify <key>")
+        print(
+            "usage: prepare_title.py <watch-path> [--force] [--stage] | --probe | --verify <key> | --promote <key>"
+        )
         return 2
     root = _prepared_root()
     store = _store()
+    if argv[0] == "--promote":
+        # Swap a verified staged timeline into place. This is the only step that
+        # changes what a playing session would fetch, so it is separate from the
+        # long preparation: the owner's player must not see a half-built store,
+        # and the swap itself is two renames on one filesystem.
+        key = argv[1] if len(argv) > 1 else ""
+        if not _KEY.fullmatch(key):
+            print(json.dumps({"key": key, "ok": False, "error": "not a prepared key"}))
+            return 2
+        staged = root / f"{key}.staged"
+        result = _verify(staged)
+        if not result["ok"]:
+            print(json.dumps({"key": key, "ok": False, **result}, indent=1))
+            return 4
+        current = root / key
+        retired = root / f"{key}.retired"
+        if retired.exists():
+            shutil.rmtree(retired)
+        if current.exists():
+            current.rename(retired)
+        staged.rename(current)
+        if retired.exists():
+            shutil.rmtree(retired)
+        print(json.dumps({"key": key, "ok": True, "promoted": True, **result}, indent=1))
+        return 0
     if argv[0] == "--verify":
         key = argv[1] if len(argv) > 1 else ""
         opened = store.open(key) if store is not None else None
@@ -696,7 +733,8 @@ async def main(argv):
         print(json.dumps(report, indent=1))
         return 0
     (partial / "ffmpeg.log").unlink(missing_ok=True)
-    completed = root / key
+    staged = "--stage" in argv[1:]
+    completed = root / f"{key}.staged" if staged else root / key
     if completed.exists():
         shutil.rmtree(completed)
     partial.rename(completed)
@@ -722,6 +760,7 @@ async def main(argv):
     )
     report["ok"] = True
     report["directory"] = str(completed)
+    report["staged"] = staged
     print(json.dumps(report, indent=1))
     return 0
 
