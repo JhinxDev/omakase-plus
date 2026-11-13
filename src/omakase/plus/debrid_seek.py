@@ -133,8 +133,6 @@ class SeekPlan:
     init_task: asyncio.Task | None = None
     touched: float = field(default_factory=time.monotonic)
     drift: float | None = None
-    bias: float = 0.0
-    calibrated: bool = False
     # Segment the player will open on. Seeded from the saved resume position so
     # the prefetch starts there instead of always walking forward from zero.
     warm_index: int | None = None
@@ -356,7 +354,7 @@ class SeekStreams:
             "error",
             "-y",
             "-ss",
-            f"{start + plan.bias:.3f}",
+            f"{start:.3f}",
             "-i",
             plan.url,
             "-t",
@@ -473,18 +471,6 @@ class SeekStreams:
         start_drift = round(first - declared_start, 3)
         span_drift = round((last - first) - declared_span, 3)
         plan.drift = span_drift
-        if not plan.calibrated and number >= 1 and abs(start_drift) > 0.3:
-            # Every seek lands about a second before its boundary, which makes
-            # the previous segment's tail replay. Learn the offset from one real
-            # segment and apply it to every later seek.
-            plan.bias = round(plan.bias - start_drift, 3)
-            plan.calibrated = True
-            _LOG.warning(
-                "seek bias calibrated from segment %d: bias=%+.3f s (measured start drift %+.3f s)",
-                number,
-                plan.bias,
-                start_drift,
-            )
         if number < 3 or number % 40 == 0:
             # Deliberately unconditional for a few segments: the playlist
             # position, the generator boundary and the file's own first
