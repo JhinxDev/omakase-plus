@@ -62,6 +62,7 @@ _AUDIO_CODECS = {
 # 0.8 s per segment against playback while a 3 s segment would starve.
 _SEGMENT_SECONDS = 6.0
 _LOG = logging.getLogger(__name__)
+_REFINE_KEYFRAMES = False
 _BOUNDARY_TOLERANCE = 0.2
 _MAX_PLANS = 64
 _MAX_SEGMENTS = 4000
@@ -199,9 +200,12 @@ class SeekStreams:
                 return
             plan.index = index
             plan.ready.set()
-            # Reading every keyframe means reading the whole file, so refine in
-            # the background and keep serving the cue timeline until it lands.
-            plan.task_refine = asyncio.create_task(self._refine_keyframes(plan))
+            # Reading every keyframe means reading the whole file over the same
+            # provider link the player is using, which starves segment
+            # generation during playback. It stays off until the scan can run
+            # without competing, for example between sessions on an idle plan.
+            if _REFINE_KEYFRAMES:
+                plan.task_refine = asyncio.create_task(self._refine_keyframes(plan))
             await self._warm(plan)
         except asyncio.CancelledError:
             raise
