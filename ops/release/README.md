@@ -303,3 +303,39 @@ use it while a player session is in use.
 6. Keep `backups/<revision>/receipt.json`, `pre-swap.db.xz` and
    `pre-swap.db.sha256` until the release has been accepted.
 7. Re run `check_drift.py --commit <sha>` to prove the container now matches.
+
+## retention.py
+
+Release debris accumulates in two places: `backups/`, `receipts/`, `releases/`,
+`reviews/` and `qualification/` under the stack directory, and old release
+images. The critical constraint is that **every release appends an overlay file
+to the live compose invocation**, and those files live inside historical release
+directories. Deleting by age alone breaks the next restart.
+
+`retention.py` therefore reads the running container's
+`com.docker.compose.project.config_files` label, treats the directory of every
+one of those files as protected, keeps the newest few unprotected directories per
+root as a rollback window, and only then deletes. It also removes old
+`omakase-plus-debrid-reliability:*` images (keeping the live image plus the two
+newest), stopped probe containers, and known one-off media artifacts in `data/`.
+
+```powershell
+# report only, always safe
+.venv\Scripts\python.exe ops/release/retention.py --remote omakase-ct
+# reclaim
+.venv\Scripts\python.exe ops/release/retention.py --remote omakase-ct --execute
+```
+
+Measured on 2026-11-13: 139 live compose inputs protected, 0 missing after the
+run, 200 unprotected directories and 49 old images reclaimed, host free space
+from 2.5 GB to 23 GB, and disk usage from 97 percent to 73 percent. Verify after
+any run with:
+
+```bash
+docker inspect omakase-plus \
+  --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}'
+```
+
+and confirm every listed path still exists. The compose chain is the reason this
+file exists: collapsing it to one compose file plus a release manifest is the
+durable fix, and until that lands retention must never delete a referenced path.
