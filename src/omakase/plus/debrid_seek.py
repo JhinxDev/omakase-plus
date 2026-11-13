@@ -78,7 +78,7 @@ class SeekIndex:
     container: str = "ts"
     transcode: bool = False
     start_offset: float = 0.0
-    audio_number: int | None = None
+    audio_index: int | None = None
 
     @property
     def suffix(self):
@@ -237,7 +237,7 @@ class SeekStreams:
             "-map",
             "0:v:0",
             "-map",
-            f"0:{plan.index.audio_number}" if plan.index.audio_number else "0:a:0?",
+            f"0:a:{plan.index.audio_index}" if plan.index.audio_index is not None else "0:a:0?",
             "-c:v",
             "copy",
         ]
@@ -348,7 +348,7 @@ class SeekStreams:
             "-map",
             "0:v:0",
             "-map",
-            f"0:{plan.index.audio_number}" if plan.index.audio_number else "0:a:0?",
+            f"0:a:{plan.index.audio_index}" if plan.index.audio_index is not None else "0:a:0?",
         ]
         if plan.index.transcode:
             args.extend(
@@ -523,7 +523,7 @@ async def build_index(url, duration):
         if header is None:
             return None
         segment_start, tracks, info, seekhead = header
-        video_number, video_codec, audio_codec, audio_number = _track_info(first, tracks)
+        video_number, video_codec, audio_codec, audio_index = _track_info(first, tracks)
         if video_number is None:
             return None
         if video_codec == "hevc":
@@ -545,7 +545,7 @@ async def build_index(url, duration):
                 duration=float(duration),
                 video_codec=video_codec,
                 audio_codec=audio_codec,
-                audio_number=audio_number,
+                audio_index=audio_index,
                 keyframes=(),
                 segments=segments,
                 container="ts",
@@ -745,7 +745,8 @@ def _track_info(data, track_range):
     video_number = None
     video_codec = ""
     audio_codec = ""
-    audio_number = None
+    audio_index = None
+    audio_seen = 0
     first_audio = None
     for entry_start, entry_end in _children(data, start, end, {_TRACK_ENTRY}).get(_TRACK_ENTRY, []):
         fields = _children(data, entry_start, entry_end, {_TRACK_NUMBER, _TRACK_TYPE, _CODEC_ID})
@@ -766,18 +767,22 @@ def _track_info(data, track_range):
             video_codec = _VIDEO_CODECS.get(codec, codec.lower())
         elif track_type == 2:
             name = _AUDIO_CODECS.get(codec, codec.lower())
+            # -map selects the ordinal among audio streams, not the container
+            # track number, so keep our own count.
+            ordinal = audio_seen
+            audio_seen += 1
             if first_audio is None:
-                first_audio = (number, name)
+                first_audio = (ordinal, name)
             # Copying a track keeps the source's own audio offset, so a
             # transcoded track that starts at the seek point drifts about a
             # second away from the copied video. Prefer a codec that muxes
             # into MPEG-TS unchanged.
-            if audio_number is None and name in _COPYABLE_AUDIO:
-                audio_number = number
+            if audio_index is None and name in _COPYABLE_AUDIO:
+                audio_index = ordinal
                 audio_codec = name
-    if audio_number is None and first_audio is not None:
-        audio_number, audio_codec = first_audio
-    return video_number, video_codec, audio_codec, audio_number
+    if audio_index is None and first_audio is not None:
+        audio_index, audio_codec = first_audio
+    return video_number, video_codec, audio_codec, audio_index
 
 
 def _timecode_scale(data, info_range):
