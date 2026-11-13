@@ -315,8 +315,12 @@ class SeekStreams:
         else:
             args.extend(
                 [
+                    # Preserve each segment's real timeline position. Shifting
+                    # every segment by a negative start offset left the TS
+                    # presentation time about 1.5 s away from the playlist
+                    # position, which is what broke the earlier copy attempt.
                     "-output_ts_offset",
-                    f"{-(plan.index.start_offset):.3f}",
+                    f"{start:.3f}",
                     "-muxdelay",
                     "0",
                     "-muxpreload",

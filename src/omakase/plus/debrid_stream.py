@@ -489,9 +489,11 @@ class DebridStreams:
                 self.passes.pop(key, None)
 
     def _start_seek(self, source):
-        # The provider's own HLS transcode is the reliable Apple TV path for
-        # both H.264 and HEVC. Keep the seek engine available for tests and
-        # future direct-file work, but do not select it during playback.
+        # The provider transcode only produces a short window ahead, so the
+        # player still uses it for now. The direct-file seek engine is the fix
+        # for provider outages and its stream-copy recipe is proven
+        # (see evidence 2026-11-12-tv-subtitles-hardening), but switching
+        # playback onto it needs a verified pass first.
         return None
 
     def _start_seek_disabled(self, source):
