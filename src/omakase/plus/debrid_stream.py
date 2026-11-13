@@ -735,6 +735,17 @@ class DebridStreams:
                     # letting the player wait and fail the item with -12971.
                     for offset in range(3):
                         await self.seek.ensure(plan, opening + offset, _SEEK_WARM_WAIT)
+                    # Record what is actually being served so a failed play can
+                    # be read back from the log without another guess.
+                    _LOG.info(
+                        "seek plan audio=%s index=%s video=%s container=%s segments=%d opening=%d",
+                        plan.index.audio_codec,
+                        plan.index.audio_index,
+                        plan.index.video_codec,
+                        plan.index.container,
+                        len(plan.index.segments),
+                        opening,
+                    )
                     # The Apple TV rejects the master wrapper with CoreMedia
                     # -12971. A seek timeline is a single VOD playlist already;
                     # expose it directly so AVPlayer never takes the master hop.
