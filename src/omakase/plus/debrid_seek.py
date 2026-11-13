@@ -228,7 +228,12 @@ class SeekStreams:
                         segments=segments,
                         start_offset=keyframes[0] if keyframes[0] > 0.5 else 0.0,
                         subtitle_offset=round(offset, 3),
-                        measured_timeline=bool(measured),
+                        # Keyframe boundaries from the scan are exact: seeking
+                        # at one lands on it, and the copy tail margin makes the
+                        # produced content match the declared window. That is the
+                        # measured reproducible case, whether or not a separate
+                        # timeline pass was recorded.
+                        measured_timeline=bool(measured) or bool(keyframes),
                     )
                     _LOG.warning(
                         "seek timeline from %d cached demuxer keyframes (first %.3f s)",
