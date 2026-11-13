@@ -351,8 +351,11 @@ def _credit_native_watch(db, grant, *, position, observed_at):
         return None
 
 
-def _playback_languages(grant):
-    if isinstance(grant.hls, NativeHLS):
+def _playback_languages(grant, streams=None):
+    if isinstance(grant.hls, DebridMedia):
+        job = streams.subtitles.get(grant.hls.subtitle_key) if streams is not None else None
+        audio, subtitles = (), (job.tracks if job is not None else ())
+    elif isinstance(grant.hls, NativeHLS):
         audio, subtitles = grant.hls.audio, grant.hls.subtitles
     elif isinstance(grant.hls, NativeCompatibleStream):
         # Plex's compatible stream chooses the audio; only indexed text tracks are enumerated.
@@ -1086,7 +1089,7 @@ def create_native_tv_test_router(
                 "position_seconds": position if 0 < position < target.duration_seconds else 0,
                 **({"access_check": True} if grant.library_key is not None else {}),
                 **episode_metadata,
-                **_playback_languages(grant),
+                **_playback_languages(grant, cloud_streams),
                 **(
                     {
                         "resume_sync": True,
