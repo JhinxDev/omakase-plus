@@ -159,8 +159,16 @@ def main(argv: list[str]) -> int:
         "placeholders": list(PLACEHOLDER_VARIABLES),
     }
     result = remote(args.remote, payload) if args.remote else {}
-    for key in ("inputs", "missing", "identical", "resolved_image_matches_live",
-                "resolved_revision_matches_live", "faithful", "bytes", "live_revision"):
+    for key in (
+        "inputs",
+        "missing",
+        "identical",
+        "resolved_image_matches_live",
+        "resolved_revision_matches_live",
+        "faithful",
+        "bytes",
+        "live_revision",
+    ):
         if key in result:
             print(f"{key}: {result[key]}")
     if "abort" in result:
@@ -169,8 +177,10 @@ def main(argv: list[str]) -> int:
     if "written" in result:
         print("written:", result["written"])
         print("swap command (operator decides when):")
-        print(f"  docker compose --project-directory {args.stack} --env-file {args.stack}/.env "
-              f"-p {args.project} -f {result['written']} up -d --no-deps {args.project}")
+        print(
+            f"  docker compose --project-directory {args.stack} --env-file {args.stack}/.env "
+            f"-p {args.project} -f {result['written']} up -d --no-deps {args.project}"
+        )
     elif not result.get("execute"):
         print("dry run: nothing written")
     return 0 if result.get("faithful") else 1
