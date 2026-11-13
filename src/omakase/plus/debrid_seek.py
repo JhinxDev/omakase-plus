@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -60,6 +61,8 @@ _AUDIO_CODECS = {
 # ffmpeg seeking the remote Matroska file, so a 6 s segment gains about
 # 0.8 s per segment against playback while a 3 s segment would starve.
 _SEGMENT_SECONDS = 6.0
+_LOG = logging.getLogger(__name__)
+_BOUNDARY_TOLERANCE = 0.2
 _MAX_PLANS = 64
 _MAX_SEGMENTS = 4000
 _MAX_INDEX_BYTES = 12 * 1024 * 1024
@@ -129,6 +132,7 @@ class SeekPlan:
     prefetch: asyncio.Task | None = None
     init_task: asyncio.Task | None = None
     touched: float = field(default_factory=time.monotonic)
+    drift: float | None = None
     # Segment the player will open on. Seeded from the saved resume position so
     # the prefetch starts there instead of always walking forward from zero.
     warm_index: int | None = None
@@ -432,7 +436,39 @@ class SeekStreams:
             temporary.unlink(missing_ok=True)
         else:
             temporary.replace(output)
+        self._measure(plan, number, start)
         self._trim(plan)
+
+    def _measure(self, plan, number, start):
+        """Compare a written segment's first timestamp with its declared boundary.
+
+        Stream copy cannot cut exactly at an arbitrary time: it starts at the
+        keyframe at or before the target, and it ends at a keyframe too. The gap
+        between the declared boundary and the real start is what makes playback
+        repeat at each boundary and what makes the playlist drift away from the
+        subtitles, so it is measured for every segment instead of assumed.
+        """
+        try:
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "packet=pts_time", "-read_intervals", "%+#1",
+                 "-of", "csv=p=0", str(plan.root / f"{number:05d}.{plan.index.suffix}")],
+                capture_output=True, text=True, timeout=20,
+            )
+            first = float(result.stdout.strip().splitlines()[0].split(",")[0])
+        except (OSError, IndexError, ValueError, subprocess.SubprocessError):
+            return
+        declared = start - plan.index.segments[0][0]
+        drift = round(first - declared, 3)
+        plan.drift = drift
+        if abs(drift) > _BOUNDARY_TOLERANCE:
+            _LOG.warning(
+                "seek segment %d starts %.3f s from its declared boundary (declared %.3f, first %.3f)",
+                number,
+                drift,
+                declared,
+                first,
+            )
 
     def _prefetch(self, plan, start):
         if plan.prefetch is not None and not plan.prefetch.done():
