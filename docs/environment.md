@@ -69,6 +69,7 @@ plain BYOK/Lite deployment into the authenticated Plus product.
 | `OMAKASE_LLM_URL` | `http://localhost:11434` | LLM base URL for CLI commands. |
 | `OMAKASE_MODEL` | `qwen2.5:7b` | Model name for CLI commands. |
 | `OMAKASE_ANIMETOSHO_ENABLED` | `false` | Enables the AnimeTosho catalog source. |
+| `OMAKASE_ASR_MODEL` | `tiny` | faster-whisper model used by the ASR subtitle fallback for sources with no text or PGS subtitle tracks. |
 | `OMAKASE_ALLOW_LOOPBACK_MEDIA_URLS` | `false` | Allows loopback media URLs for local testing. |
 | `OMAKASE_ALLOW_PRIVATE_CATALOG_URLS` | `false` | Allows private catalog and Prowlarr URLs. In production this must be an explicit decision. |
 | `OMAKASE_ALLOW_PRIVATE_LLM_URLS` | `true` unless production | Allows private LLM endpoints. Defaults to `false` when `OMAKASE_ENV=production`. |
