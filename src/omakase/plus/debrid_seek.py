@@ -471,6 +471,23 @@ class SeekStreams:
         start_drift = round(first - declared_start, 3)
         span_drift = round((last - first) - declared_span, 3)
         plan.drift = span_drift
+        if number < 3 or number % 40 == 0:
+            # Deliberately unconditional for a few segments: the playlist
+            # position, the generator boundary and the file's own first
+            # timestamp must agree, and this is the only place all three are
+            # visible at once.
+            _LOG.warning(
+                "seek sample segment=%d boundary=%.3f declared_start=%.3f first_pts=%.3f "
+                "declared_span=%.3f actual_span=%.3f start_drift=%+.3f span_drift=%+.3f",
+                number,
+                start,
+                declared_start,
+                first,
+                declared_span,
+                round(last - first, 3),
+                start_drift,
+                span_drift,
+            )
         if abs(start_drift) > _BOUNDARY_TOLERANCE or abs(span_drift) > _BOUNDARY_TOLERANCE:
             _LOG.warning(
                 "seek segment %d drift start=%+.3f s span=%+.3f s (declared %.3f/%.3f, actual %.3f/%.3f)",
