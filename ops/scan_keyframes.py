@@ -28,10 +28,10 @@ from pathlib import Path
 
 
 async def resolve(watch_path: str):
+    import httpx
     from fastapi import FastAPI
     from fastapi.templating import Jinja2Templates
     from starlette.requests import Request
-    import httpx
 
     from omakase.plus import debrid_stream, native_tv_test
     from omakase.plus.auth import create_session
