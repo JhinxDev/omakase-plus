@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import re
 import secrets
 import subprocess
@@ -22,6 +23,8 @@ from omakase.plus.debrid_library import CloudSource, DebridLibraryError
 from omakase.plus.debrid_seek import SeekStreams
 from omakase.plus.debrid_subs import SubtitleCache
 from omakase.plus.outbound import OutboundError, _resolved_ips, blocked_address, pin_destination
+
+_LOG = logging.getLogger(__name__)
 
 HEADERS = {
     "Cache-Control": "private, no-store",
@@ -539,6 +542,14 @@ class DebridStreams:
             # -12971. Serve the single provider media playlist directly; the
             # provider already chose one quality. Text subtitles are requested
             # separately and do not require a master for this path.
+            _LOG.warning(
+                "provider index class=%s seek=%s codec=%s master=%s bytes=%d",
+                type(entry).__name__,
+                bool(plan),
+                getattr(getattr(plan, "index", None), "video_codec", None),
+                b"#EXT-X-STREAM-INF" in entry.playlist,
+                len(entry.playlist),
+            )
             return _playlist_reply(entry.playlist, request)
         if asset == "stream.m3u8":
             if (
