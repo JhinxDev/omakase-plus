@@ -729,7 +729,12 @@ class DebridStreams:
                     # answering, because a cold stream copy takes about five
                     # seconds and AVPlayer abandons a segment after five.
                     opening = plan.warm_index if plan.warm_index is not None else 0
-                    await self.seek.ensure(plan, opening, _SEEK_WARM_WAIT)
+                    # The player asks for the opening segment and then for the
+                    # next two immediately. Each cold segment costs about 5.5 s,
+                    # so build that small window before answering instead of
+                    # letting the player wait and fail the item with -12971.
+                    for offset in range(3):
+                        await self.seek.ensure(plan, opening + offset, _SEEK_WARM_WAIT)
                     # The Apple TV rejects the master wrapper with CoreMedia
                     # -12971. A seek timeline is a single VOD playlist already;
                     # expose it directly so AVPlayer never takes the master hop.

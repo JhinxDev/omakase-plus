@@ -431,24 +431,34 @@ class SeekStreams:
         async def run():
             try:
                 limit = 2 if plan.index is not None and plan.index.transcode else _MAX_PREFETCH
+                numbers = []
                 for offset in range(limit):
                     number = start + offset
                     if plan.index is None or number >= len(plan.index.segments):
-                        return
-                    path = plan.root / f"{number:05d}.{plan.index.suffix}"
-                    try:
-                        if path.stat().st_size > 188:
-                            continue
-                    except OSError:
-                        pass
-                    task = plan.segment_tasks.get(number)
-                    if task is None:
-                        task = asyncio.create_task(self._generate(plan, number))
-                        plan.segment_tasks[number] = task
-                    try:
-                        await asyncio.shield(task)
-                    finally:
-                        plan.segment_tasks.pop(number, None)
+                        break
+                    numbers.append(number)
+                # Two generators at once: each one pays a fixed seek cost against
+                # the remote file, so pairing them roughly halves the wait while
+                # the provider link still has headroom at this bitrate.
+                for position in range(0, len(numbers), 2):
+                    pending = []
+                    for number in numbers[position : position + 2]:
+                        path = plan.root / f"{number:05d}.{plan.index.suffix}"
+                        try:
+                            if path.stat().st_size > 188:
+                                continue
+                        except OSError:
+                            pass
+                        task = plan.segment_tasks.get(number)
+                        if task is None:
+                            task = asyncio.create_task(self._generate(plan, number))
+                            plan.segment_tasks[number] = task
+                        pending.append((number, task))
+                    for number, task in pending:
+                        try:
+                            await asyncio.shield(task)
+                        finally:
+                            plan.segment_tasks.pop(number, None)
             except (RuntimeError, LookupError, OSError, asyncio.CancelledError):
                 return
 
