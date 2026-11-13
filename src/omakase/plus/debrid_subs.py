@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -11,6 +12,7 @@ from pathlib import Path
 
 _PGS_CODEC = "hdmv_pgs_subtitle"
 _OCR_TIMEOUT = 1800
+_ASR_TIMEOUT = 1800
 _OCR_LANGUAGES = {
     "eng": "en",
     "en": "en",
@@ -188,9 +190,13 @@ class SubtitleCache:
             if pgs:
                 await self._ocr(job, direct, workdir, pgs)
                 if not job.ready.is_set():
+                    await self._asr(job, direct, workdir)
+                if not job.ready.is_set():
                     job.ready.set()
                 return
-            job.ready.set()
+            await self._asr(job, direct, workdir)
+            if not job.ready.is_set():
+                job.ready.set()
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001 - a source simply has no usable subtitles
@@ -262,7 +268,6 @@ class SubtitleCache:
                 continue
             sup = workdir / f"ocr-{number}.sup"
             mkv = workdir / f"ocr-{number}.mkv"
-            srt = workdir / f"ocr-{number}.srt"
             extract = [
                 "ffmpeg",
                 "-hide_banner",
@@ -303,6 +308,81 @@ class SubtitleCache:
         if ok:
             job.ready.set()
             self._prune(workdir)
+
+    @staticmethod
+    def _vtt_from_segments(rows):
+        def stamp(seconds):
+            total = max(0, int(seconds))
+            return f"{total // 3600:02d}:{(total // 60) % 60:02d}:{total % 60:02d}.{int(round((seconds - total) * 1000)):03d}"
+
+        blocks = [
+            f"{stamp(start)} --> {stamp(end)}\n{text}"
+            for start, end, text in rows
+            if text and end > start
+        ]
+        return ("WEBVTT\n\n" + "\n\n".join(blocks) + "\n").encode("utf-8") if blocks else b""
+
+    def _asr_sync(self, audio_path):
+        import wave
+
+        import numpy as np
+        from faster_whisper import WhisperModel
+
+        with wave.open(audio_path, "rb") as source:
+            frames = source.readframes(source.getnframes())
+            audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        model = WhisperModel(
+            os.getenv("OMAKASE_ASR_MODEL", "tiny"),
+            device="cpu",
+            compute_type="int8",
+            download_root=str(self.root.parent / "whisper") if self.root else None,
+        )
+        segments, info = model.transcribe(audio, beam_size=1, vad_filter=True)
+        rows = [(segment.start, segment.end, segment.text.strip()) for segment in segments]
+        return info.language, rows
+
+    async def _asr(self, job, direct, workdir):
+        audio = workdir / "asr.wav"
+        command = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            direct,
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "pcm_s16le",
+            str(audio),
+        ]
+        if not await self._run_ocr(command, _EXTRACT_TIMEOUT):
+            return
+        vtt = workdir / "asr.vtt"
+        language = "en"
+        if vtt.is_file() and 0 < vtt.stat().st_size <= 8 * 1024 * 1024:
+            data = vtt.read_bytes()
+        else:
+            try:
+                language, rows = await asyncio.wait_for(
+                    asyncio.to_thread(self._asr_sync, str(audio)), _ASR_TIMEOUT
+                )
+            except (TimeoutError, ImportError, OSError, RuntimeError):
+                return
+            data = self._vtt_from_segments(rows)
+            if not data:
+                return
+            vtt.write_bytes(data)
+        code = _OCR_LANGUAGES.get(str(language).lower(), str(language).lower()[:2] or "en")
+        job.tracks = [
+            SubtitleTrack(0, code, _LANGUAGE_NAMES.get(code, code.upper()) + " (ASR)", data)
+        ]
+        job.ready.set()
+        self._prune(workdir)
 
     async def _streams(self, direct):
         try:
