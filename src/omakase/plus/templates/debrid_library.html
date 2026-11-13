@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Cloud files · Omakase Plus{% endblock %}
+{% block page_title %}{{ playing or named_title or ('Torrent files' if folder else 'Cloud files') }}{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="/plus/static/debrid-library.css?v={{ asset_version }}">
+{% if playing %}
+<script src="/plus/static/shaka-player-5.3.3.js?v={{ asset_version }}" defer></script>
+<script src="/plus/static/debrid-player.js?v={{ asset_version }}" defer></script>
+{% endif %}
+{% endblock %}
+{% block content %}
+<section class="cloud-library" aria-label="Real-Debrid files">
+{% if playing or named_title or folder or error %}
+  <a class="cloud-back" href="/plus/cloud">← Cloud files</a>
+{% endif %}
+{% if playing %}
+  <video controls playsinline preload="metadata" data-cloud-playlist="{{ media_path }}"
+         data-cloud-file="{{ cloud_file_key }}" data-cloud-title="{{ cloud_title }}"
+         data-cloud-position="{{ resume_position }}" data-cloud-progress-url="/plus/api/cloud/progress"
+         data-request-value="{{ csrf_token }}" aria-label="{{ playing }}"></video>
+  <p role="status" data-cloud-status>Opening video…</p>
+{% elif named_title %}
+  <form method="post" action="{{ play_action }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button button-primary" type="submit">Play with Real-Debrid</button>
+  </form>
+{% elif disconnected %}
+  <p>Connect Real-Debrid to browse the files in your account.</p>
+  <a class="button button-primary" href="/plus/settings/connections#connection-realdebrid">Connect Real-Debrid</a>
+{% elif error %}
+  <p role="alert">{{ error }}</p>
+{% else %}
+  {% if not folder %}
+  <form class="cloud-search" method="get" action="/plus/cloud" role="search" aria-label="Search Real-Debrid files">
+    <input type="search" name="q" maxlength="120" placeholder="Search cloud files" aria-label="Search cloud files" value="{{ query }}">
+    <button class="button button-secondary" type="submit">Search</button>
+  </form>
+  {% endif %}
+  {% if rows %}
+  <ul class="cloud-rows">
+    {% for row in rows %}
+    {% set saved = resumes.get(row.id) if resumes else none %}
+    <li>
+      <div><strong>{{ row.title }}</strong><span>{{ row.note }}</span>{% if saved %}<span class="cloud-resume">Resume {{ saved.label }}</span>{% endif %}</div>
+      {% if row.folder %}
+      <a class="button button-secondary" href="/plus/cloud?folder={{ row.id }}" aria-label="Open {{ row.title }}">Open files</a>
+      {% elif row.playable %}
+      <a class="button button-primary" href="/plus/watch/cloud/{{ row.id }}?play=1&amp;title={{ row.title | urlencode }}"{% if saved %} aria-label="Resume {{ row.title }}"{% else %} aria-label="Play {{ row.title }}"{% endif %}>{{ 'Resume' if saved else 'Play' }}</a>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+    <p>{{ 'No files match your search.' if query else 'No files here yet.' }}</p>
+  {% endif %}
+  {% if prev_offset is not none or next_offset is not none %}
+  <nav class="cloud-pagination" aria-label="Cloud file pages">
+    {% if prev_offset is not none %}<a href="/plus/cloud?offset={{ prev_offset }}&amp;q={{ query|urlencode }}&amp;folder={{ folder }}">Previous</a>{% endif %}
+    {% if next_offset is not none %}<a href="/plus/cloud?offset={{ next_offset }}&amp;q={{ query|urlencode }}&amp;folder={{ folder }}">Next</a>{% endif %}
+  </nav>
+  {% endif %}
+{% endif %}
+</section>
+{% endblock %}

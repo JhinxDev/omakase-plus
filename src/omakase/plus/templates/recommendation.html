@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}{{ pick.title }} · Omakase{% endblock %}
+{% block eyebrow %}From your tasting menu{% endblock %}
+{% block page_title %}{{ pick.title }}{% endblock %}
+{% block page_intro %}<p class="page-intro">{% if pick.format %}{{ pick.format | title }} · {% endif %}{% if pick.episodes and pick.format != 'MOVIE' %}{{ pick.episodes }} episode{{ 's' if pick.episodes != 1 else '' }} · {% endif %}{{ (pick.airing_status or 'Catalog details') | replace('_', ' ') | title }}</p>{% endblock %}
+{% block page_actions %}<a class="button button-secondary" href="/plus/discover?run={{ run.id }}">Back to your menu</a>{% endblock %}
+{% block content %}
+<section class="recommendation-detail">
+  <div class="recommendation-detail-art poster-frame">{% if (pick.source or run.source) == 'anilist' %}<img src="/plus/media/{{ media_id }}/poster" alt="Poster for {{ pick.title }}" data-poster>{% endif %}</div>
+  <div class="recommendation-detail-copy">
+    {% if pick.genres %}<ul class="genre-chips" aria-label="Genres">{% for genre in pick.genres %}<li>{{ genre }}</li>{% endfor %}</ul>{% endif %}
+    <section aria-labelledby="pick-why">{% if pick.predicted_score is defined and pick.predicted_score is not none %}<span class="page-kicker">Predicted fit {{ pick.predicted_score }}/10</span>{% endif %}<h2 id="pick-why">Why it made your menu</h2><p>{{ pick.reasoning }}</p>{% if pick.best_match_from_history %}<p class="pick-pairing"><span>Because you liked</span> {{ pick.best_match_from_history }}</p>{% endif %}</section>
+    {% if pick.sequence_warning %}<p class="product-notice">{{ pick.sequence_warning }}</p>{% endif %}
+    <section aria-labelledby="pick-story"><h2 id="pick-story">The story</h2><p>{{ pick.description or 'A synopsis was not saved with this earlier run. Open the catalog for the current description.' }}</p>{% if pick.studio %}<p class="muted">Studio: {{ pick.studio }}</p>{% endif %}</section>
+    <div class="recommendation-availability availability-{{ pick.availability_state or 'unknown' }}" role="status"><span class="availability-marker" aria-hidden="true"></span><span>{{ pick.availability or 'Availability not checked' }}</span></div>
+    {% if pick.release_qualities %}<div class="release-quality" role="group" aria-label="Verified release quality">{% for quality in pick.release_qualities %}<span class="{{ 'quality-fallback' if quality == '720p' else '' }}">{{ quality }}{{ ' fallback' if quality == '720p' else ' release' }}</span>{% endfor %}</div>{% endif %}
+    <div class="recommendation-primary-actions">
+      {% if pick.library_id %}<a class="button button-primary" href="/plus/library/{{ pick.library_id }}">Open in your library</a>{% elif (pick.source or run.source) == 'anilist' %}<form method="post" action="/plus/add/preview" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="query" value="https://anilist.co/anime/{{ media_id }}/"><button class="button button-primary" type="submit" data-busy-label="Checking title…">Review &amp; add to library</button></form>{% endif %}
+      {% if pick.url %}<a class="text-action" href="{{ pick.url }}" target="_blank" rel="noopener noreferrer">Open catalog ↗</a>{% endif %}
+    </div>
+    <p class="recommendation-availability-note">Availability is checked before a title is marked ready.</p>
+    <section class="recommendation-history-panel" aria-labelledby="pick-history-heading">
+      <h2 id="pick-history-heading">Your watchlist &amp; history</h2>
+      {% if (pick.source or run.source) == 'anilist' %}
+      <div class="feedback-watchlist-row pick-actions"><p>Keep this pick for later.</p><button class="button button-secondary btn-plan" type="button" data-media-id="{{ media_id }}" data-title="{{ pick.title }}">Save to watchlist</button></div>
+      {% endif %}
+      <div class="feedback-actions recommendation-history-actions" data-title="{{ pick.title }}" data-source="{{ pick.source or run.source }}" data-media-id="{{ media_id }}" data-run-id="{{ run.id }}">
+        <details class="recommendation-watched">
+          <summary>Mark as watched <span aria-hidden="true">+</span></summary>
+          <div class="recommendation-watched-fields">
+            <label for="pick-history-score"><span>Your rating <small>(optional)</small></span><select id="pick-history-score" data-feedback-score><option value="">No rating</option>{% for score in range(10, 0, -1) %}<option value="{{ score }}">{{ score }}/10</option>{% endfor %}</select></label>
+            <button class="button button-secondary btn-feedback" type="button" data-feedback="already_watched">Save watched</button>
+          </div>
+        </details>
+        <div class="recommendation-feedback-quiet"><button class="text-action btn-feedback" type="button" data-feedback="not_for_me">Not for me</button></div>
+      </div>
+    </section>
+  </div>
+</section>
+{% endblock %}

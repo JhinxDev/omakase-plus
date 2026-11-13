@@ -1,0 +1,13 @@
+.status-clarity-health .health-guidance { display: grid; gap: 10px; margin-top: 12px; }
+.status-clarity-health .health-guidance p { margin: 0; font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
+.status-clarity-health .health-next-step { color: #aeb7c7; }
+.status-clarity-health .health-next-step strong { color: #f7f5f0; }
+.status-clarity-health .health-action { justify-self: start; min-height: 44px; max-width: 100%; white-space: normal; text-align: left; }
+.status-clarity-health .health-affected { padding: 20px; margin-top: 24px; }
+.status-clarity-health .health-affected h2 { margin: 0 0 10px; font-size: 20px; }
+.status-clarity-health .health-affected p { color: #aeb7c7; font-size: 14px; line-height: 1.65; }
+.status-clarity-health .health-affected ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.status-clarity-health .health-affected li { display: grid; gap: 3px; min-width: 0; }
+.status-clarity-health .health-affected li a { display: flex; align-items: center; min-height: 44px; font-size: 15px; overflow-wrap: anywhere; }
+.status-clarity-health .health-affected li span { color: #aeb7c7; font-size: 14px; line-height: 1.5; }
+@media (max-width: 480px) { .status-clarity-health .health-affected { padding: 16px; } }

@@ -1,0 +1,115 @@
+{% macro progress_bar(item, compact=false, show_availability=true, force_progress=false) -%}
+{% set series_progress = item.progress_episodes or item.watch_status == 'completed' or (force_progress and item.episode_total) %}
+<div class="media-progress{% if compact %} media-progress-compact{% endif %}">
+  {% if show_availability %}<div class="media-progress-meta">{% endif %}
+  {% if series_progress %}
+  <span class="watched-count">Watched <b>{{ item.progress_episodes }}{% if item.episode_total %}/{{ item.episode_total }}{% endif %}</b></span>
+  {% elif item.partial_playback %}<span class="not-started">Episode in progress</span>
+  {% else %}<span class="not-started">{{ "Not started" if item.last_source_label | default("Not tracked yet") not in ["Not tracked yet", "", "Imported"] else "Not watched" }}</span>{% endif %}
+  {% if show_availability %}{{ ready_badge(item) }}</div>{% endif %}
+  {% if series_progress %}
+  <progress max="100" value="{{ item.progress_percent }}" aria-label="{{ item.title }}: {{ item.progress_episodes }}{% if item.episode_total %} of {{ item.episode_total }}{% endif %} episodes watched"></progress>
+  {% endif %}
+</div>
+{%- endmacro %}
+
+{% macro ready_badge(item) -%}
+{% if item.resurfaced %}
+<span role="status" class="ready-count is-partial" aria-label="New episode {{ item.next_episode }} found. Plex availability is unconfirmed.">Episode {{ item.next_episode }} found</span>
+{% else %}
+{% set usable = item.usable | default(0, true) | int %}
+{% set visible = item.plex_visible | default(0, true) | int %}
+{% set ready = [[usable, visible] | min, 1 if item.play_url else 0] | max %}
+{% set required = item.required | default(0, true) | int %}
+<span role="status" class="ready-count {% if ready >= required and required > 0 and item.state == 'ready' %}is-ready{% elif ready %}is-partial{% else %}is-waiting{% endif %}" aria-label="{{ item.title }}: {{ ready }} of {{ required if required else 'unknown' }} required episodes available">{% if required and ready >= required and item.state == 'ready' %}Available <b>{{ ready }}/{{ required }}</b>{% elif required and ready %}Partial <b>{{ ready }}/{{ required }}</b>{% elif required %}Missing {{ required }} {{ 'episode' if required == 1 else 'episodes' }}{% else %}Availability unknown{% endif %}</span>
+{% endif %}
+{%- endmacro %}
+
+{% macro source_badge(item) -%}
+<span class="source-badge">Updated by {{ item.last_source_label }}</span>
+{%- endmacro %}
+
+{% macro artwork(item, eager=false, wide=false) -%}
+{% set poster = item.artwork_url | default('/plus/media/' ~ item.anilist_id ~ '/poster', true) %}
+<div class="media-art poster-frame" data-fallback-title="{{ item.title }}">
+  <span class="media-art-fallback" aria-hidden="true"><svg viewBox="0 0 32 32" width="40" height="40" fill="none"><rect x="3" y="5" width="26" height="22" rx="4" stroke="currentColor" stroke-width="1.5"/><path d="m13 11 8 5-8 5z" fill="currentColor"/></svg></span>
+  <img src="{{ '/plus/media/' ~ item.anilist_id ~ '/banner' if wide else poster }}" alt="" {% if not eager %}loading="lazy"{% endif %} decoding="async" data-poster{% if wide %} data-poster-fallback="{{ poster }}"{% endif %}>
+</div>
+{%- endmacro %}
+
+{% macro play_icon() -%}
+<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M6 4.6a.9.9 0 0 1 1.4-.75l8 5.4a.9.9 0 0 1 0 1.5l-8 5.4A.9.9 0 0 1 6 15.4z"/></svg>
+{%- endmacro %}
+
+{% macro playback_link(href, label, accessible_name, style='primary') -%}
+<a class="playback-link playback-link--{{ style }}{% if style == 'primary' %} button button-primary{% endif %}" href="{{ href }}" aria-label="{{ accessible_name }}">{{ play_icon() }}<span{% if style == 'episode' %} class="sr-only"{% endif %}>{{ label }}</span></a>
+{%- endmacro %}
+
+{% macro media_card(item, badge='', compact=false, watching=false) -%}
+{% set detail = item.detail_url | default('/plus/library/' ~ item.id, true) %}
+{% set resume = item.episode_resume if watching else none %}
+<article class="media-card{% if compact %} media-card-compact{% endif %}">
+  <a class="media-card-cover" href="{{ item.play_url or detail }}" aria-label="{% if item.play_url %}{{ item.play_label }} {{ item.title }}{% if item.play_episode %}, episode {{ item.play_episode }}{% endif %}{% else %}Open {{ item.title }}{% endif %}">
+    {{ artwork(item, wide=watching) }}
+    {% if item.play_url %}
+    <span class="media-card-transport" aria-hidden="true">{{ play_icon() }}<span>{{ item.play_label }}{% if item.play_episode %}<small>Episode {{ item.play_episode }}</small>{% endif %}</span></span>
+    {% else %}
+    <span class="media-card-transport media-card-transport--details" aria-hidden="true"><svg viewBox="0 0 20 20" width="18" height="18" focusable="false"><path d="M10 9v5m0-8v.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Details</span></span>
+    {% endif %}
+  </a>
+  <div class="media-card-body">
+    {% if badge %}<span class="media-kicker">{{ badge }}</span>{% endif %}
+    <h3 title="{{ item.title }}">{% if item.play_url %}<a class="media-card-detail" href="{{ detail }}">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}</h3>
+    {% if watching and item.play_episode %}<p class="continue-episode">Episode {{ item.play_episode }}{% if resume %} · {{ resume.minutes_left }} min left{% else %} · Up next{% endif %}</p>{% endif %}
+    {{ progress_bar(item, true, not watching, watching) }}
+    {{ source_badge(item) }}
+  </div>
+</article>
+{%- endmacro %}
+
+{% macro media_rail(items, label, badge='', watching=false) -%}
+<div class="media-rail{% if watching %} watching-rail{% endif %}" role="list" aria-label="{{ label }}">
+  {% for item in items %}<div role="listitem">{{ media_card(item, badge, watching=watching) }}</div>{% endfor %}
+</div>
+{%- endmacro %}
+
+{% macro empty_state(title, copy, action_label='', action_href='') -%}
+<div class="stream-empty">
+  <span class="empty-mark" aria-hidden="true"></span>
+  <div><h3>{{ title }}</h3><p>{{ copy }}</p></div>
+  {% if action_href %}<a class="button button-secondary" href="{{ action_href }}">{{ action_label }}</a>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro confirmation_card(item) -%}
+<article class="confirmation-card">
+  {{ artwork(item) }}
+  <div>
+    <span class="media-kicker">Apple TV suggestion</span>
+    <h3>{{ item.title }}</h3>
+    <p>Omakase saw a likely Crunchyroll episode but needs you to confirm the match.</p>
+    <a class="button button-secondary" href="/plus/library/{{ item.id }}">Review episode</a>
+  </div>
+</article>
+{%- endmacro %}
+
+{% macro history_card(item) -%}
+<article class="history-card">
+  <a href="{{ item.detail_url }}" aria-label="{{ item.title }}{% if item.episode %}, episode {{ item.episode }}{% endif %}">
+    {% set primary_art = item.artwork_url or item.series_artwork_url | default(None) %}
+    {% set series_art = item.episode_artwork and not item.artwork_url and item.series_artwork_url %}
+    <div class="history-art">{% if item.episode_artwork %}<span class="history-episode-placeholder" data-history-placeholder role="img" aria-label="{% if item.episode %}Episode {{ item.episode }} image unavailable{% else %}Episode image unavailable{% endif %}" {% if primary_art %}hidden{% endif %}><span aria-hidden="true">{% if item.episode %}E{{ item.episode }}{% else %}{{ 'TV' if item.media_type == 'tv' else 'Anime' }}{% endif %}</span><small aria-hidden="true">Image unavailable</small></span>{% endif %}{% if primary_art %}<img src="{{ primary_art }}" alt="" loading="lazy" decoding="async" {% if item.episode_artwork %}data-history-artwork data-artwork-scope="{{ 'series' if series_art else 'episode' }}"{% if item.series_artwork_url %} data-history-fallback="{{ item.series_artwork_url }}"{% endif %}{% else %}data-poster{% endif %}>{% endif %}<span class="history-stamp history-state-{{ 'completed' if item.status_label in ['Completed', 'Watched'] else 'progress' }}">{{ item.status_label or 'Progress saved' }}</span></div>
+    <div class="history-artwork-caption"><span class="history-artwork-label" data-history-artwork-label {% if not series_art %}hidden{% endif %}>Series artwork</span></div>
+    {% if item.media_type == 'movie' %}
+    <h3 class="history-movie-title" title="{{ item.title }}">{{ item.title }}</h3>
+    <span class="history-kind">Movie</span>
+    {% else %}
+    <span class="history-series" title="{{ item.title }}">{{ item.title }}</span>
+    <h3 title="{% if item.episode %}Episode {{ item.episode }}{% endif %}{% if item.episode_title %}: {{ item.episode_title }}{% endif %}">{% if item.episode %}{% if item.media_type == 'tv' %}S{{ item.season_number }} · {% endif %}E{{ item.episode }}{% if item.episode_title %} · {{ item.episode_title }}{% endif %}{% elif item.episode_title %}{{ item.episode_title }}{% elif item.media_type == 'tv' %}TV series{% else %}{{ item.event_label | default("Progress updated", true) }}{% endif %}</h3>
+    {% endif %}
+  </a>
+  {% if item.media_type == 'movie' or (item.media_type == 'tv' and not item.episode) %}<p class="history-rating">{% if item.rating is not none and item.rating is defined %}<span>Your rating</span> <strong>{{ '%g' | format(item.rating) }}/10</strong>{% else %}Not rated{% endif %}</p>{% endif %}
+  {% if item.source_detail %}<p class="history-source">{{ item.source_detail }}</p>{% endif %}
+  {% if item.watched_at and item.watch_time_known %}<span class="history-source">Watched <time datetime="{{ item.watched_at }}" data-local-datetime="{{ item.watched_at }}">{{ item.watched_at }} UTC</time></span>{% elif item.recorded_at %}<span class="history-source">Observed <time datetime="{{ item.recorded_at }}" data-local-datetime="{{ item.recorded_at }}">{{ item.recorded_at }} UTC</time></span>{% endif %}
+</article>
+{%- endmacro %}

@@ -1,0 +1,65 @@
+/* Semantic status with words; the orb reflects the saved overall result. */
+.status-clarity-health {
+  --health-green: #9be5b5;
+  --health-amber: #f3cd83;
+  --health-red: #ffada7;
+  --health-blue: #afceff;
+}
+.status-clarity-health .health-banner {
+  grid-template-columns: 2.75rem minmax(0, 1fr);
+  gap: 1rem;
+  padding: 1.3rem;
+  border-radius: 16px;
+  background: var(--p-panel, #121c30);
+  --orb-color: var(--health-green);
+}
+.status-clarity-health .health-attention { --orb-color: var(--health-amber); }
+.status-clarity-health .health-setup { --orb-color: var(--health-blue); }
+.status-clarity-health .health-banner::before { display: none; }
+.status-clarity-health .health-orb {
+  display: block;
+  width: 2.4rem;
+  height: 2.4rem;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  color: var(--orb-color);
+  background: radial-gradient(circle at 35% 30%, #fff 0%, var(--orb-color) 28%, #132235 90%);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--orb-color) 10%, transparent);
+  animation: health-orb-breathe 4s ease-in-out infinite;
+}
+@keyframes health-orb-breathe {
+  50% { box-shadow: 0 0 0 9px color-mix(in srgb, var(--orb-color) 4%, transparent); }
+}
+.status-clarity-health .health-banner h2 { font-family: inherit; font-size: 1.35rem; font-weight: 600; }
+.status-clarity-health .health-banner :is(span, p) { font-size: .85rem; }
+.status-clarity-health .health-legend { display: flex; flex-wrap: wrap; gap: .5rem 1.2rem; padding: 0; margin: 1rem 0 1.5rem; list-style: none; font-size: .8rem; }
+.status-clarity-health .health-status-healthy { color: var(--health-green); }
+.status-clarity-health .health-status-degraded { color: var(--health-amber); }
+.status-clarity-health .health-status-error { color: var(--health-red); }
+.status-clarity-health .health-status-unknown { color: var(--health-blue); }
+.status-clarity-health .health-grid { align-items: start; }
+.status-clarity-health .health-check { padding: 1rem 1.1rem; min-width: 0; }
+.status-clarity-health .health-check + .health-check { border-top: 1px solid var(--p-keyline-soft, #2e3d57); }
+.status-clarity-health .health-check-heading { display: flex; flex-wrap: wrap; gap: .35rem 1rem; align-items: baseline; justify-content: space-between; }
+.status-clarity-health .health-check-heading strong { font-size: .95rem; }
+.status-clarity-health .health-status { font-size: .8rem; font-weight: 600; }
+.status-clarity-health .health-check-message { margin: .35rem 0 0; font-size: .85rem; color: var(--p-muted, #c1cbe0); overflow-wrap: anywhere; }
+.status-clarity-health .health-check-details { margin-top: .35rem; font-size: .8rem; color: var(--p-muted, #c1cbe0); }
+.status-clarity-health .health-check-details summary { display: list-item; min-height: 44px; align-content: center; cursor: pointer; width: fit-content; }
+.status-clarity-health .health-check-details :is(p, dd) { overflow-wrap: anywhere; }
+.status-clarity-health .health-check-details dl { display: grid; grid-template-columns: minmax(5rem, auto) minmax(0, 1fr); gap: .5rem .8rem; margin: .3rem 0 .5rem; }
+.status-clarity-health .health-check-details dd { margin: 0; }
+.status-clarity-health .health-check-details dt { font-weight: 600; }
+.history-card .history-rating { display: flex; gap: .4rem; align-items: baseline; margin: .4rem 0; font-size: .85rem; color: var(--p-muted, #c1cbe0); }
+.history-card .history-rating strong { color: var(--p-text, #f7f5f0); font-size: 1rem; font-variant-numeric: tabular-nums; }
+.history-card .history-source { display: block; margin: .3rem 0; font-size: .75rem; line-height: 1.5; }
+.history-card .history-stamp { font-size: .7rem; }
+@media (max-width: 600px) {
+  .status-clarity-health .health-grid { grid-template-columns: minmax(0, 1fr); }
+  .status-clarity-health .health-check { padding: .9rem; }
+  .status-clarity-health .health-check-details dl { grid-template-columns: minmax(0, 1fr); gap: .2rem; }
+  .status-clarity-health .health-check-details dd { margin-bottom: .5rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-clarity-health .health-orb { animation: none; }
+}

@@ -1,0 +1,9 @@
+all:
+  hosts:
+    omakase:
+      ansible_host: 192.0.2.10
+      ansible_user: root
+  vars:
+    omakase_root: /opt/omakase
+    omakase_puid: 1000
+    omakase_pgid: 1000

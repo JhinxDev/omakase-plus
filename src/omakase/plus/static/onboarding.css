@@ -1,0 +1,41 @@
+/* First-run guidance inherits the existing midnight/iris shell and Geist font. */
+.onboarding { max-width: 820px; margin: 0 auto 3rem; }
+.onboarding-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: .5rem; margin-bottom: 1.5rem; }
+.onboarding-steps a { min-height: 48px; display: flex; align-items: center; justify-content: center; gap: .55rem; padding: .65rem .5rem; border: 1px solid #425573; border-radius: 16px; color: #c1cbe0; text-decoration: none; }
+.onboarding-steps a[aria-current] { color: #f7f5f0; border-color: #c3b1ff; background: #1b2942; }
+.onboarding-steps a > span { color: #c3b1ff; font-variant-numeric: tabular-nums; }
+.onboarding-panel { border: 1px solid #425573; border-radius: 20px; padding: clamp(1.1rem, 4vw, 2.5rem); background: #121c30; }
+.onboarding-panel h2 { margin: 0 0 1rem; font-size: clamp(1.5rem, 4vw, 2rem); line-height: 1.2; }
+.onboarding-panel h3 { margin: 0 0 .55rem; font-size: 1.05rem; }
+.onboarding-panel p { color: #c1cbe0; line-height: 1.7; }
+.onboarding-panel a { color: #c3b1ff; }
+.onboarding-kicker { margin: 0 0 .65rem; font-size: .85rem; }
+.onboarding-options { display: grid; gap: .75rem; border: 0; padding: 0; margin: 1.5rem 0; }
+.onboarding-options legend { margin-bottom: .75rem; color: #c1cbe0; }
+.onboarding-options label { display: flex; align-items: flex-start; gap: .85rem; min-height: 64px; padding: 1rem; border: 1px solid #425573; border-radius: 16px; cursor: pointer; }
+.onboarding-options label:has(input:checked) { border-color: #c3b1ff; background: #1b2942; }
+.onboarding-options input { width: 20px; height: 20px; margin: .1rem 0 0; flex-shrink: 0; accent-color: #c3b1ff; }
+.onboarding-options strong, .onboarding-options small { display: block; }
+.onboarding-options small { margin-top: .35rem; color: #c1cbe0; line-height: 1.6; font-size: .9rem; }
+.onboarding-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .8rem 1.25rem; margin-top: 1.75rem; }
+.onboarding-actions > a, .onboarding-actions button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+.onboarding-actions .button-primary { color: #19132c; padding: .8rem 1.15rem; }
+.onboarding-note { padding: 1rem 1.15rem; margin: 1.25rem 0; border-left: 2px solid #c3b1ff; background: #0f182a; }
+.onboarding-note p { margin-bottom: .65rem; }
+.onboarding-links { display: grid; gap: .65rem; margin: 1.25rem 0; }
+.onboarding-links a { padding: 1rem; border: 1px solid #425573; border-radius: 16px; text-decoration: none; }
+.onboarding-links span { display: block; margin-top: .35rem; color: #c1cbe0; font-size: .9rem; line-height: 1.6; }
+.onboarding-details { margin-top: 1.25rem; }
+.onboarding-details summary { cursor: pointer; min-height: 44px; padding: .75rem 0; }
+.onboarding-receipts { list-style: none; margin: 1rem 0; padding: 0; }
+.onboarding-receipts li { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .95rem 0; border-bottom: 1px solid #2e3d57; }
+.onboarding-receipts strong, .onboarding-receipts small, .onboarding-receipts div > span { display: block; }
+.onboarding-receipts div > span, .onboarding-receipts small { color: #c1cbe0; margin-top: .3rem; line-height: 1.5; }
+.onboarding-receipts small { font-size: .8rem; overflow-wrap: anywhere; }
+.onboarding-receipts a { display: flex; align-items: center; min-height: 44px; flex-shrink: 0; }
+.onboarding :focus-visible { outline: 2px solid #c3b1ff; outline-offset: 4px; }
+@media (max-width: 480px) { .onboarding-steps { gap: .35rem; } .onboarding-steps a { flex-direction: column; gap: .2rem; font-size: .8rem; } .onboarding-panel { border-radius: 12px; } .onboarding-actions .button-primary { width: 100%; } }
+@media (prefers-reduced-motion: reduce) { .onboarding *, .onboarding *::before, .onboarding *::after { animation: none !important; transition: none !important; } }
+
+.onboarding-note pre { max-width: 100%; overflow-x: auto; padding: .85rem; background: #121c30; border-radius: 8px; line-height: 1.6; font-size: .8rem; }
+.onboarding-note code { overflow-wrap: anywhere; }

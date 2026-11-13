@@ -1,0 +1,40 @@
+<section class="settings-section">
+    <header class="panel-heading">
+      <div><h2>Search more places</h2></div>
+      <span class="state-tag state-{{ 'ready' if catalog_configuration.state == 'ready' else 'planned' }}">{{ catalog_configuration.label }}</span>
+    </header>
+    <div class="settings-explainer">
+      <strong>{{ catalog_configuration.detail }}</strong>
+      <p>Prowlarr is optional. It lets Omakase search every source you enable there while the built-in anime source remains available. Omakase still applies its own title, season, subtitle, and playback checks before using a result.</p>
+    </div>
+    {% for key_name, label in catalog_keys.items() %}
+    {% if key_name not in ('prowlarr_url', 'prowlarr_api_key') %}
+    <div class="settings-field secret-field">
+      <div>
+        <label for="{{ key_name }}">{{ label }}</label>
+        {% if key_name == 'prowlarr_url' %}<p>For example, <code>http://prowlarr:9696</code> on the bundled private network.</p>{% endif %}
+        {% if key_name == 'prowlarr_api_key' %}<p>Found under Settings → General in Prowlarr. It is encrypted and never returned to the browser.</p>{% endif %}
+        {% if key_name == 'prowlarr_indexer_ids' %}<p>Optional comma-separated Prowlarr IDs. Leave unset to search every enabled source.</p>{% endif %}
+        {% if key_name == 'prowlarr_categories' %}<p>Optional comma-separated Torznab categories. The default searches Anime and TV.</p>{% endif %}
+      </div>
+      <div class="field-control">
+        {% if catalog_stored.get(key_name) %}
+        <div class="stored-secret"><span aria-hidden="true">•••• •••• ••••</span><b>Stored</b></div>
+        <details class="secret-replace"><summary>Replace</summary><input {% if key_name == 'prowlarr_url' %}type="url"{% elif key_name == 'prowlarr_api_key' %}type="password"{% else %}type="text"{% endif %} id="{{ key_name }}" name="{{ key_name }}" placeholder="Enter replacement" autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore="true"></details>
+        <button type="submit" name="delete_{{ key_name }}" value="1" class="text-action text-danger">Forget</button>
+        {% else %}
+        <input {% if key_name == 'prowlarr_url' %}type="url"{% elif key_name == 'prowlarr_api_key' %}type="password"{% else %}type="text"{% endif %} id="{{ key_name }}" name="{{ key_name }}" placeholder="{% if key_name == 'prowlarr_url' %}http://prowlarr:9696{% elif key_name == 'prowlarr_api_key' %}Not configured{% elif key_name == 'prowlarr_indexer_ids' %}All enabled sources{% else %}5070,5000{% endif %}" autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore="true">
+        <span class="setting-state">{{ 'Required' if key_name in ('prowlarr_url', 'prowlarr_api_key') else 'Optional' }}</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </section>
+
+<section class="editorial-panel settings-section" id="animetosho" aria-labelledby="animetosho-heading">
+  <header class="panel-heading"><div><h2 id="animetosho-heading">AnimeTosho metadata</h2></div></header>
+  <p>AnimeTosho is an optional server-managed source of anime release metadata. It does not use a saved personal API key. The Prowlarr filters above do not configure or disable AnimeTosho.</p>
+  <p>If its latest search failed, review the saved receipt in <a href="/plus/health/overview">Service health</a>. This may be a temporary upstream or network problem; the receipt does not establish a disconnected account.</p>
+  <details class="health-check-details"><summary>Administrator setup and disabling</summary><p>The server setting <code>OMAKASE_ANIMETOSHO_ENABLED=true</code> enables this optional source. Ask your server administrator to review upstream connectivity and the saved failure before changing the deployment.</p><p>To disable only this source, the administrator can set <code>OMAKASE_ANIMETOSHO_ENABLED=false</code> in the deployment configuration and apply it through the normal reviewed deployment process. Keep existing service restrictions and source cooldowns intact. This page does not apply that change.</p><p>Existing media, personal history and other configured sources are separate from this optional metadata source.</p></details>
+</section>

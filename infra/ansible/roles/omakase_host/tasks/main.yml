@@ -1,0 +1,72 @@
+---
+- name: Install Docker repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - git
+    state: present
+    update_cache: true
+
+- name: Create apt keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Install Docker signing key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/debian/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+
+- name: Configure the official Docker repository
+  ansible.builtin.deb822_repository:
+    name: docker
+    types: [deb]
+    uris: https://download.docker.com/linux/debian
+    suites: ["{{ ansible_distribution_release }}"]
+    components: [stable]
+    architectures:
+      - "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}.get(ansible_architecture, ansible_architecture) }}"
+    signed_by: /etc/apt/keyrings/docker.asc
+    state: present
+
+- name: Install Docker Engine and Compose
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+
+- name: Enable Docker
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Create private stack root
+  ansible.builtin.file:
+    path: "{{ omakase_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Create Omakase data roots
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ omakase_puid }}"
+    group: "{{ omakase_pgid }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /srv/omakase/import, mode: "0750"}
+    - {path: /srv/omakase/library, mode: "0750"}
+    - {path: /srv/omakase/data, mode: "0700"}
+    - {path: /srv/omakase/plex, mode: "0700"}
+    - {path: /srv/omakase/transcode, mode: "0700"}

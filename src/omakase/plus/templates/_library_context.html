@@ -1,0 +1,23 @@
+{% if current_library %}
+  {% if library_choices | length > 1 %}
+  <div class="library-context" aria-label="Library scope">
+    <details data-library-context>
+      <summary>{{ icon('library') }}<span>{% if current_library.kind == 'household' %}Shared library: {% endif %}{{ current_library.name }}</span><span class="library-context-chevron" aria-hidden="true">⌄</span></summary>
+      <div class="library-context-panel">
+        <form method="post" action="/plus/settings/household/select">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="next" value="{{ request.url.path }}">
+          <label for="active-library-scope">Choose a library</label>
+          <select id="active-library-scope" name="library_id">{% for library in library_choices %}<option value="{{ library.id }}" {% if library.id == current_library.id %}selected{% endif %}>{{ library.name }}</option>{% endfor %}</select>
+          <button type="submit" class="button button-secondary">Switch library</button>
+        </form>
+        <a href="/plus/settings/household">Household settings</a>
+      </div>
+    </details>
+  </div>
+  {% elif current_library.kind == 'household' %}
+  <div class="library-context" aria-label="Library scope"><a href="/plus/settings/household">Shared library: {{ current_library.name }}</a></div>
+  {% endif %}
+{% else %}
+  <div class="library-context library-context-unavailable" role="status"><span>Library selection is temporarily unavailable.</span><a href="/plus/settings/household">Household settings</a></div>
+{% endif %}

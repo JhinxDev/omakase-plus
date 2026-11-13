@@ -1,0 +1,17 @@
+<section class="tracker-connections" aria-label="Personal tracker connections">
+  {% for provider, label in [('anilist','AniList'), ('myanimelist','MyAnimeList')] %}
+  {% set connection = tracker_status.connections[provider] %}
+  <article class="tracker-card">
+    <div><h2>{{ label }}</h2><p>{{ 'Verified as ' ~ connection.name if connection.state == 'verified' else 'Reconnect required' if connection.state == 'reconnect' else 'Not connected to the bridge' }}</p></div>
+    {% if provider == 'myanimelist' %}
+      {% if connection.state == 'reconnect' and mal_oauth_ready %}<form method="post" action="/plus/integrations/myanimelist/connect"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-primary" type="submit">Reconnect MyAnimeList</button></form>{% endif %}
+      {% if connection.state != 'disconnected' %}<form method="post" action="/plus/integrations/myanimelist/disconnect"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit">Disconnect MyAnimeList</button></form>
+      {% elif mal_oauth_ready %}<form method="post" action="/plus/integrations/myanimelist/connect"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-primary" type="submit">Connect MyAnimeList</button></form>
+      {% else %}<p class="tracker-hint">An administrator must configure the MyAnimeList OAuth client and callback first.</p>{% endif %}
+    {% else %}
+      <p><a href="/plus/settings/tracking">Manage AniList connection</a></p>
+      <form method="post" action="/plus/tracker-bridge/verify-anilist"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit">Verify my AniList identity</button></form>
+    {% endif %}
+  </article>
+  {% endfor %}
+</section>

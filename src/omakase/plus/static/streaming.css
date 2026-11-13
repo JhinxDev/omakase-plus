@@ -1,0 +1,194 @@
+/* Omakase watchlist and title surfaces. Discovery owns its own composition. */
+.watchlist-browser {
+  --browse-accent: #e9b565;
+  --browse-surface: #111923;
+  --browse-muted: #b9c2cf;
+}
+.watchlist-browser .library-lifecycle-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem 1.4rem;
+  margin: 0 0 1.5rem;
+  padding: 0;
+  border-bottom: 1px solid var(--stream-keyline-soft);
+}
+.watchlist-browser .library-lifecycle-tabs a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 48px;
+  padding: .45rem 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--browse-muted);
+  font-size: .88rem;
+  white-space: nowrap;
+}
+.watchlist-browser .library-lifecycle-tabs a[aria-current="page"] {
+  border-bottom-color: var(--browse-accent);
+  color: var(--stream-text);
+}
+.watchlist-search {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) minmax(8rem, 11rem) auto;
+  align-items: end;
+  gap: .8rem;
+}
+.watchlist-search label { display: grid; min-width: 0; gap: .4rem; }
+.watchlist-search label > span { color: var(--browse-muted); font-size: .76rem; }
+.watchlist-search :is(input, select) { width: 100%; min-height: 44px; min-width: 0; }
+.watchlist-filter-details { grid-column: 1 / -1; }
+.watchlist-filter-details > summary {
+  width: fit-content;
+  min-height: 44px;
+  align-content: center;
+  color: var(--browse-muted);
+  font-size: .8rem;
+  cursor: pointer;
+}
+.watchlist-extra-filters {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) minmax(8rem, 1fr) auto auto;
+  align-items: end;
+  gap: .8rem;
+  padding: .75rem 0 1rem;
+  border-top: 1px solid var(--stream-keyline-soft);
+}
+.watchlist-extra-filters .filter-reset { min-height: 44px; display: inline-flex; align-items: center; }
+.watchlist-browser .library-count { flex-wrap: wrap; color: var(--browse-muted); margin: .9rem 0 1.25rem; }
+.watchlist-browser .plex-library-status { white-space: normal; line-height: 1.6; }
+.watchlist-browser .watchlist-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 12.5rem), 1fr));
+  gap: 1.8rem 1.1rem;
+  align-items: start;
+  border: 0;
+}
+.watchlist-browser .watchlist-card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+  transform: none;
+}
+.watchlist-browser .watchlist-card:hover { transform: none; }
+.watchlist-browser .watchlist-card::before { display: none; }
+.watchlist-card .library-card-main { padding: 0; }
+.watchlist-card .library-card-main:hover { background: transparent; }
+.watchlist-card .library-poster {
+  aspect-ratio: 2 / 3;
+  border: 1px solid #354251;
+  border-radius: 5px;
+  background: var(--browse-surface);
+}
+.watchlist-card .library-card-main:hover .library-poster { border-color: var(--browse-accent); }
+.watchlist-card .library-card-main:focus-visible { outline-offset: 5px; }
+.watchlist-browser .watchlist-card :is(.library-card-copy, .watch-progress-summary) { padding: .85rem 0 0; }
+
+.watchlist-card .card-meta-line { gap: .5rem; align-items: start; font-size: .7rem; }
+.watchlist-browser .watchlist-card .library-card-copy p { margin-top: .5rem; min-height: 0; color: var(--browse-muted); }
+.watchlist-browser .watchlist-card .state-tag { font-size: .72rem; border: 0; padding: 0; background: transparent; text-transform: none; letter-spacing: normal; }
+.watchlist-browser .watchlist-card .watch-progress-summary { gap: .35rem; padding-top: .7rem; }
+.watchlist-card .watch-progress-summary span { color: var(--browse-muted); }
+.watchlist-card .watchlist-availability { margin: .7rem 0 0; padding: 0; border: 0; background: transparent; font-size: .76rem; line-height: 1.6; color: var(--browse-muted); }
+.watchlist-card .watchlist-availability.state-ready { color: var(--stream-success); }
+.watchlist-card .watchlist-coverage { margin-top: .2rem; border: 0; }
+.watchlist-coverage > summary { min-height: 44px; align-content: center; color: var(--browse-muted); font-size: .72rem; cursor: pointer; }
+.watchlist-browser .watchlist-coverage .coverage-triptych {
+  display: grid;
+  /* Each metric needs its own readable measure, even inside a narrow card. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 5.5rem), 1fr));
+  gap: .45rem;
+  padding: .65rem 0;
+  border-top: 1px solid var(--stream-keyline-soft);
+}
+.watchlist-browser .watchlist-coverage .coverage-triptych > div { min-width: 0; padding: .25rem 0; }
+.watchlist-coverage .coverage-triptych span { font-size: .67rem; white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
+.watchlist-coverage .coverage-triptych strong { white-space: normal; overflow-wrap: anywhere; }
+.watchlist-browser .watchlist-coverage .coverage-track { display: block; margin: 0; width: 100%; }
+.watchlist-coverage > p { margin: .65rem 0; color: var(--browse-muted); font-size: .7rem; line-height: 1.6; }
+.watchlist-browser .watchlist-card footer { margin: 0; padding: 0; border-top: 0; }
+.watchlist-browser .watchlist-card footer a { min-height: 44px; color: #f2ca90; font-size: .76rem; }
+.watchlist-card .completed-title-selector { position: relative; min-height: 44px; padding: .4rem 0; }
+.saved-watchlist { margin: 1rem 0 2rem; }
+.saved-watchlist .stream-section-heading { margin-bottom: 1.25rem; }
+.saved-watchlist .stream-section-heading p, .saved-watchlist .stream-section-heading > span { color: var(--browse-muted); font-size: .8rem; }
+.saved-watchlist-card .library-card-copy h3 { margin: 0 0 .5rem; font-size: 1rem; line-height: 1.4; overflow-wrap: anywhere; }
+.saved-watchlist-badge { color: #e9c99c; font-size: .73rem; }
+.saved-watchlist-actions { margin-top: .85rem; }
+.saved-watchlist-actions .button { width: 100%; padding-inline: .6rem; }
+.saved-watchlist-actions .text-action { min-height: 44px; font-size: .72rem; color: var(--browse-muted); }
+.streaming-title-hero {
+  grid-template-columns: minmax(150px, 220px) minmax(0, 1fr);
+  gap: clamp(1.5rem, 4vw, 3rem);
+  padding: 0 0 2rem;
+  border-radius: 0;
+  background: transparent;
+  border-bottom: 1px solid var(--stream-keyline-soft);
+}
+.streaming-title-hero > .media-art { width: 100%; border: 1px solid #354251; border-radius: 5px; }
+.streaming-title-hero .title-view-progress { padding: 0; }
+.streaming-title-hero .title-view-progress h2 { margin-top: 1.2rem; font-size: 1.1rem; }
+.streaming-title-hero .title-genres { display: flex; flex-wrap: wrap; gap: .45rem .9rem; list-style: none; padding: 0; margin: .85rem 0; }
+.streaming-title-hero .title-genres li { color: #e9c99c; font-size: .8rem; line-height: 1.5; }
+.streaming-title-hero .title-synopsis { max-width: 65ch; margin: .85rem 0 1.4rem; color: #c4cdda; font-size: .96rem; line-height: 1.8; white-space: pre-line; }
+.streaming-title-hero .title-primary-actions { margin: 1.2rem 0; }
+.streaming-title-hero .title-availability-copy { color: #b9c2cf; }
+.streaming-title-hero .title-watch-controls { margin-top: 1rem; }
+.streaming-title-hero .title-watch-controls > summary { color: #c4cdda; }
+.streaming-title-hero .watch-actions { display: grid; gap: 1rem; }
+.streaming-title-hero .watch-actions > form { min-width: 0; }
+.streaming-title-hero :is(input, select) { max-width: 100%; }
+.viewer-episode.is-upcoming { border-style: dashed; background: #111c2e80; }
+.viewer-episode.is-upcoming .episode-readiness { color: #becbea; }
+.episode-release-date { display: block; margin-top: .35rem; color: #becbea; font-size: .75rem; line-height: 1.5; }
+@media (max-width: 700px) {
+  .watchlist-browser .library-lifecycle-tabs { gap: .15rem 1rem; }
+  .watchlist-search { grid-template-columns: minmax(0, 1fr) auto; }
+  .watchlist-search-field { grid-column: 1 / -1; }
+  .watchlist-extra-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .watchlist-browser .watchlist-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.4rem .9rem; }
+
+  .watchlist-browser .library-count > i { display: none; }
+  .watchlist-browser .library-count > span { flex-basis: 100%; }
+  .streaming-title-hero { grid-template-columns: 100px minmax(0, 1fr); gap: 1rem; }
+  .streaming-title-hero > .media-art { width: 100px; }
+  .streaming-title-hero > .media-art { grid-row: 1 / 3; }
+  .streaming-title-hero .title-view-progress { display: contents; }
+  .streaming-title-hero .title-view-progress > div:first-child { display: contents; }
+  .streaming-title-hero .title-view-progress > div:first-child > :not(.state-tag):not(.title-genres) { grid-column: 1 / -1; }
+  .streaming-title-hero .title-view-progress > div:first-child > .state-tag { grid-column: 2; grid-row: 1; align-self: end; }
+  .streaming-title-hero .title-genres { grid-column: 2; grid-row: 2; margin: 0; align-self: start; }
+  .streaming-title-hero .title-watch-controls { grid-column: 1 / -1; }
+}
+@media (max-width: 359px) {
+  .watchlist-browser .watchlist-grid { grid-template-columns: minmax(0, 1fr); }
+  .watchlist-extra-filters { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .watchlist-browser *, .streaming-title-hero * { animation: none !important; transition: none !important; }
+}
+.saved-watchlist .watchlist-card { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 0 1rem; max-width: 35rem; }
+.saved-watchlist .watchlist-card > .library-poster { grid-row: 1 / 3; width: 76px; }
+.saved-watchlist .watchlist-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr)); }
+.saved-watchlist .library-card-copy { padding-top: 0; }
+.saved-watchlist .saved-watchlist-actions { grid-column: 2; }
+
+.watchlist-browser .saved-watchlist .watchlist-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr)); }
+.watchlist-browser .saved-watchlist .library-card-copy { padding-top: 0; }
+.watch-actions .completion-keep {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  min-height: 44px;
+}
+.watch-actions .completion-keep input {
+  width: 20px;
+  min-width: 20px;
+  max-width: 20px;
+  height: 20px;
+  min-height: 20px;
+  flex: none;
+  margin: 0;
+  accent-color: var(--stream-accent);
+}

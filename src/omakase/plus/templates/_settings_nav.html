@@ -1,0 +1,41 @@
+{% macro settings_link(label, href, current=false) -%}
+<a href="{{ href }}" {% if current %}aria-current="page"{% endif %}>
+  <span class="settings-nav-label">{{ label }}</span>
+  <svg class="settings-nav-arrow" aria-hidden="true" focusable="false" viewBox="0 0 16 16"><path d="m6 3 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+</a>
+{%- endmacro %}
+
+{% macro settings_nav(active='preferences', household_enabled=false, devices_enabled=false) -%}
+<nav class="settings-navigation" aria-label="Settings navigation">
+  {{ settings_link('Settings home', '/plus/settings', active == 'overview') }}
+  <section aria-labelledby="settings-account-heading">
+    <h2 id="settings-account-heading">Account</h2>
+    {{ settings_link('Your profile', '/plus/settings/profile', active == 'profile') }}
+    {{ settings_link('Security', '/plus/settings/security', active == 'security') }}
+    {% if devices_enabled or (linked_devices_enabled is defined and linked_devices_enabled()) %}{{ settings_link('Devices', '/plus/settings/devices', active == 'devices') }}{% endif %}
+    {{ settings_link('Sign-in methods', '/plus/auth/google/account', active == 'signin') }}
+    {% if household_enabled | default(false) %}{{ settings_link('Household', '/plus/settings/household', active == 'household') }}{% endif %}
+  </section>
+  <section aria-labelledby="settings-experience-heading">
+    <h2 id="settings-experience-heading">Your experience</h2>
+    {{ settings_link('Recommendations', '/plus/settings/preferences', active == 'preferences') }}
+    {{ settings_link('Watch history', '/plus/settings/tracking', active == 'tracking') }}
+    {% if active == 'languages' or (download_language_settings_enabled is defined and download_language_settings_enabled()) %}{{ settings_link('Audio & subtitles', '/plus/settings/languages', active == 'languages') }}{% endif %}
+    {{ settings_link('Video quality & downloads', '/plus/settings/downloads', active == 'downloads') }}
+  </section>
+  <section aria-labelledby="settings-services-heading">
+    <h2 id="settings-services-heading">Your services</h2>
+    {{ settings_link('Connections', '/plus/settings/connections', active == 'connections') }}
+  </section>
+  <section aria-labelledby="settings-advanced-heading">
+    <h2 id="settings-advanced-heading">Advanced</h2>
+    {{ settings_link('Storage & downloads', '/plus/settings/storage', active == 'storage') }}
+    {{ settings_link('Source filters', '/plus/settings/sources', active == 'sources') }}
+    {{ settings_link('AI provider', '/plus/settings/ai', active == 'ai') }}
+    {{ settings_link('Service health', '/plus/health/overview') }}
+    {{ settings_link('Setup guide', '/plus/setup') }}
+    {{ settings_link('Agent tools', '/plus/settings/agents', active == 'agents') }}
+    {{ settings_link('About & updates', '/plus/settings/updates', active == 'updates') }}
+  </section>
+</nav>
+{%- endmacro %}

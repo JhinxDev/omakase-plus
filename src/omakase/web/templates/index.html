@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Omakase — an anime sommelier</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@500;700;900&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <main class="hero">
+    <div class="hero__inner">
+      <p class="hero__eyebrow">お任せ · Omakase</p>
+      <h1 class="hero__title">An anime sommelier,<br>tuned to your taste.</h1>
+      <p class="hero__lede">
+        Personal anime recommender. Bring your own LLM key.
+        Nothing stored server-side.
+      </p>
+
+      <div class="byok-banner">
+        <span class="byok-banner__icon" aria-hidden="true">🔑</span>
+        <div>
+          <strong>Bring your own LLM key.</strong>
+          Pick any backend — local (Ollama, LM Studio) or cloud (OpenAI, Anthropic, Gemini) —
+          paste your key below, and get a tasting menu from your scored anime history.
+          Your key is used for a single request and never stored or logged.
+        </div>
+      </div>
+
+      <div class="error-banner" id="error-banner">
+        <span id="error-text"></span>
+      </div>
+
+      <form id="setup-form" class="setup" onsubmit="return runRecommendations(event)">
+
+        <!-- Step 1: LLM -->
+        <div class="step">
+          <div class="step__header">
+            <span class="step__number">1</span>
+            <div>
+              <div class="step__title">LLM backend</div>
+              <div class="step__desc">Where the AI runs. Local for free + private, or a cloud API.</div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="llm_type">Backend</label>
+            <select id="llm_type" class="field__select" onchange="onBackendChange()">
+              <optgroup label="Local">
+                <option value="ollama" selected>Ollama</option>
+                <option value="lmstudio">LM Studio</option>
+              </optgroup>
+              <optgroup label="Frontier APIs">
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="gemini">Google Gemini</option>
+                <option value="deepseek">DeepSeek</option>
+              </optgroup>
+              <optgroup label="Aggregators (OpenAI-compatible)">
+                <option value="openrouter">OpenRouter</option>
+                <option value="groq">Groq</option>
+                <option value="together">Together AI</option>
+              </optgroup>
+            </select>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="llm_url">Base URL</label>
+            <input id="llm_url" class="field__input" type="url" value="http://localhost:11434">
+            <div class="field__hint" id="url-hint">Your Ollama instance URL.</div>
+          </div>
+
+          <div class="field" id="api-key-field" style="display:none">
+            <label class="field__label" for="api_key">API Key</label>
+            <input id="api_key" class="field__input" type="password" placeholder="sk-...">
+            <div class="field__hint">Stored only in memory for this session. Or set the OMAKASE_API_KEY env var.</div>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="model">Model</label>
+            <input id="model" class="field__input" type="text" value="qwen2.5:7b">
+            <div id="model-select-wrapper" style="display:none">
+              <div style="display:flex; gap: var(--space-2);">
+                <select id="model-select" class="field__select" style="flex:1"></select>
+                <button type="button" class="btn btn--secondary" onclick="discoverModels()" title="Refresh model list" style="padding: var(--space-2) var(--space-3);">&#x21bb;</button>
+              </div>
+            </div>
+            <div class="field__hint" id="model-hint">Auto-filled by the Fast/Pro toggle. Override here if you want a specific model.</div>
+          </div>
+
+          <div class="field">
+            <label class="field__label">Mode</label>
+            <div style="display:flex; gap: var(--space-2); margin-top: var(--space-1);">
+              <button type="button" id="mode-fast" class="btn btn--primary mode-btn mode-btn--active" onclick="setMode('fast')" style="flex:1;justify-content:center;">
+                <span style="font-family:'JetBrains Mono',monospace;font-size:0.75rem;">⚡</span>
+                <span>Fast</span>
+              </button>
+              <button type="button" id="mode-pro" class="btn btn--secondary mode-btn" onclick="setMode('pro')" style="flex:1;justify-content:center;">
+                <span style="font-family:'JetBrains Mono',monospace;font-size:0.75rem;">🧠</span>
+                <span>Pro</span>
+              </button>
+            </div>
+            <div class="field__hint" id="mode-hint">Fast: cheap and quick. Pro: better reasoning, slower or pricier.</div>
+          </div>
+        </div>
+
+        <!-- Step 2: Source -->
+        <div class="step">
+          <div class="step__header">
+            <span class="step__number">2</span>
+            <div>
+              <div class="step__title">Anime list</div>
+              <div class="step__desc">Where your scored history lives.</div>
+            </div>
+          </div>
+          <div class="field">
+            <label class="field__label" for="source">Source</label>
+            <select id="source" class="field__select" onchange="onSourceChange()">
+              <option value="anilist" selected>AniList</option>
+              <option value="myanimelist">MyAnimeList</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field__label" for="username">Username</label>
+            <input id="username" class="field__input" type="text" placeholder="Your AniList username">
+            <div class="field__hint" id="username-hint">Your public AniList username.</div>
+          </div>
+          <div class="field" id="mal-key-field" style="display:none">
+            <label class="field__label" for="mal_client_id">MAL Client ID</label>
+            <input id="mal_client_id" class="field__input" type="password" placeholder="MAL Client ID">
+            <div class="field__hint">Get one at <a href="https://myanimelist.net/apiconfig" target="_blank" rel="noopener">myanimelist.net/apiconfig</a> (free). <strong>Your list must be Public.</strong></div>
+          </div>
+          <div class="field" id="mal-upload-field" style="display:none">
+            <label class="field__label" for="mal_export_file">Private list? Upload your MAL export instead</label>
+            <div class="upload">
+              <input id="mal_export_file" class="upload__input" type="file" accept=".xml,.gz,application/xml,text/xml,application/gzip" onchange="onMalFileSelected()">
+              <label for="mal_export_file" class="btn btn--secondary upload__trigger">
+                <span style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;">📂</span>
+                <span id="upload-trigger-label">Choose export file</span>
+              </label>
+              <button type="button" class="upload__clear" id="upload-clear" onclick="clearMalFile()" style="display:none" aria-label="Remove uploaded file">×</button>
+            </div>
+            <div class="field__hint">
+              Skips the Client ID + public-list requirement. Download yours at
+              <a href="https://myanimelist.net/panel.php?go=export" target="_blank" rel="noopener">myanimelist.net/panel.php?go=export</a>
+              — pick <em>Anime</em>, then drop the <code>.xml.gz</code> file here.
+            </div>
+          </div>
+          <div class="field">
+            <label class="field__label">
+              <input type="checkbox" id="use_planning" onchange="togglePlanning()" style="margin-right: var(--space-2);">
+              Recommend from my Plan to Watch
+            </label>
+            <div class="field__hint">Pick from anime you already plan to watch instead of the popular pool.</div>
+          </div>
+        </div>
+
+        <!-- Step 3: Taste profile -->
+        <div class="step">
+          <div class="step__header">
+            <span class="step__number">3</span>
+            <div>
+              <div class="step__title">Taste profile</div>
+              <div class="step__desc">Describe what you enjoy, what you avoid, and the patterns that usually make an anime click for you.</div>
+            </div>
+          </div>
+          <div class="field">
+            <label class="field__label">
+              <input type="checkbox" id="skip_profile" onchange="toggleSkipProfile()" style="margin-right: var(--space-2);">
+              Skip the profile — recommend from my scores alone (broader, less personalized)
+            </label>
+            <div class="field__hint">Use this if you'd rather get a wider net based on what you've rated highly — no writing required.</div>
+          </div>
+          <div class="field" id="profile-field">
+            <label class="field__label" for="profile">Profile</label>
+            <textarea id="profile" class="field__textarea" placeholder="## Things I love&#10;- Morally complex protagonists&#10;- Dense world-building&#10;&#10;## Things I bounce off&#10;- ...">{% if default_profile %}{{ default_profile }}{% endif %}</textarea>
+            <div class="field__hint" id="profile-hint">Markdown. Be specific — mention shows, characters, genres, studios. This is what makes the LLM understand you.</div>
+          </div>
+        </div>
+
+        <div style="display:flex; gap: var(--space-3); align-items: center;">
+          <button type="submit" class="btn btn--primary" id="run-btn">
+            <span>Try it with your API key</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:1rem;">→</span>
+          </button>
+          <button type="button" class="btn btn--secondary" onclick="loadProfile()">Load from file</button>
+        </div>
+      </form>
+
+      <div class="loading" id="loading" role="status" aria-live="polite">
+        <div class="spinner"></div>
+        <div class="loading__body">
+          <span class="loading__text" id="loading-text">Fetching your history…</span>
+          <span class="loading__meta">
+            <span id="loading-elapsed">0s</span>
+            <span class="loading__meta-sep">·</span>
+            <span class="loading__hint" id="loading-hint">Cloud LLMs usually take 10–30s · Pro mode can take a minute.</span>
+          </span>
+        </div>
+      </div>
+
+      <div class="results" id="results">
+        <div class="results__header">
+          <h2 class="results__title">Tonight's tasting menu</h2>
+          <span class="results__meta" id="results-meta"></span>
+        </div>
+        <div id="results-list"></div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <a href="https://github.com/HeyiTzSenpai/omakase">Omakase</a> &middot; MIT &middot; from the homelab kitchen
+    <br><small>Plus accounts are private and not currently open.</small>
+  </footer>
+
+  <script>
+    let BACKENDS = { default_urls: {}, presets: {} };
+    let currentMode = 'fast';
+    let malExportB64 = '';  // populated when user uploads a MAL XML export
+    const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+    const REQUIRES_API_KEY = new Set([
+      'openai', 'anthropic', 'gemini', 'deepseek',
+      'openrouter', 'groq', 'together',
+    ]);
+
+    const BACKEND_HINTS = {
+      ollama:     'Your Ollama instance URL.',
+      lmstudio:   'Your LM Studio server URL. Models load from /v1/models.',
+      openai:     'OpenAI API base URL.',
+      anthropic:  'Anthropic /v1/messages endpoint.',
+      gemini:     'Google Generative Language API.',
+      deepseek:   'DeepSeek API base URL.',
+      openrouter: 'OpenRouter (routes to many models).',
+      groq:       'Groq Cloud (extremely fast inference).',
+      together:   'Together AI inference.',
+    };
+
+    async function loadBackendMetadata() {
+      try {
+        const resp = await fetch('/api/backends');
+        BACKENDS = await resp.json();
+      } catch (e) {
+        console.warn('Could not load backend metadata', e);
+      }
+      onBackendChange();
+    }
+
+    function onBackendChange() {
+      const type = document.getElementById('llm_type').value;
+      const urlField = document.getElementById('llm_url');
+      const hint = document.getElementById('url-hint');
+      const apiKeyField = document.getElementById('api-key-field');
+      const modelInput = document.getElementById('model');
+      const modelSelectWrap = document.getElementById('model-select-wrapper');
+
+      if (BACKENDS.default_urls && BACKENDS.default_urls[type]) {
+        urlField.value = BACKENDS.default_urls[type];
+      }
+      hint.textContent = BACKEND_HINTS[type] || '';
+      apiKeyField.style.display = REQUIRES_API_KEY.has(type) ? 'block' : 'none';
+
+      if (type === 'lmstudio') {
+        modelInput.style.display = 'none';
+        modelSelectWrap.style.display = 'block';
+        discoverModels();
+      } else {
+        modelInput.style.display = 'block';
+        modelSelectWrap.style.display = 'none';
+        applyPresetModel();
+      }
+      updateModeHint();
+    }
+
+    function applyPresetModel() {
+      const type = document.getElementById('llm_type').value;
+      const preset = BACKENDS.presets && BACKENDS.presets[type + '-' + currentMode];
+      if (preset) document.getElementById('model').value = preset.model;
+    }
+
+    function setMode(mode) {
+      currentMode = mode;
+      document.getElementById('mode-fast').className = mode === 'fast'
+        ? 'btn btn--primary mode-btn mode-btn--active'
+        : 'btn btn--secondary mode-btn';
+      document.getElementById('mode-pro').className = mode === 'pro'
+        ? 'btn btn--primary mode-btn mode-btn--active'
+        : 'btn btn--secondary mode-btn';
+      applyPresetModel();
+      updateModeHint();
+    }
+
+    function updateModeHint() {
+      const type = document.getElementById('llm_type').value;
+      const preset = BACKENDS.presets && BACKENDS.presets[type + '-' + currentMode];
+      const hint = document.getElementById('mode-hint');
+      if (!preset) {
+        hint.textContent = currentMode === 'fast'
+          ? 'Fast: cheap, quick.'
+          : 'Pro: better reasoning, slower or pricier.';
+        return;
+      }
+      hint.textContent = (currentMode === 'fast' ? 'Fast: ' : 'Pro: ') + preset.model;
+    }
+
+    async function discoverModels() {
+      const url = document.getElementById('llm_url').value.replace(/\/+$/, '');
+      const select = document.getElementById('model-select');
+      const btn = select.parentElement.querySelector('button');
+      btn.textContent = '...';
+      btn.disabled = true;
+      try {
+        const resp = await fetch('/api/models?url=' + encodeURIComponent(url));
+        const data = await resp.json();
+        select.innerHTML = '';
+        if (data.models && data.models.length > 0) {
+          data.models.forEach(function(m) {
+            const opt = document.createElement('option');
+            opt.value = m;
+            opt.textContent = m;
+            select.appendChild(opt);
+          });
+        } else {
+          select.innerHTML = '<option value="">No models found</option>';
+        }
+      } catch {
+        select.innerHTML = '<option value="">Failed to connect</option>';
+      } finally {
+        btn.textContent = '↻';
+        btn.disabled = false;
+      }
+    }
+
+    async function loadProfile() {
+      try {
+        const resp = await fetch('/api/profile');
+        if (!resp.ok) throw new Error('No profile file found');
+        const data = await resp.json();
+        document.getElementById('profile').value = data.profile;
+      } catch {
+        alert('No taste profile file found. Run `omakase init` or write inline.');
+      }
+    }
+
+    // Phased loading: the server is one blocking call, so we simulate the
+    // pipeline's known stages by elapsed time. The LLM step is by far the
+    // longest, so we sit there longest. Honest enough to feel real.
+    let _loadingTimer = null;
+    let _loadingStartedAt = 0;
+    const LOADING_PHASES = [
+      { at: 0,    text: 'Fetching your anime history…' },
+      { at: 3,    text: 'Building the prompt…' },
+      { at: 5,    text: 'Asking the LLM to pair your tasting menu…' },
+      { at: 25,   text: 'The LLM is still thinking. Reasoning models take a while.' },
+      { at: 60,   text: 'Still working… consider switching to Fast mode next time.' },
+      { at: 120,  text: 'This is taking unusually long. Feel free to cancel and try again.' },
+    ];
+
+    function _renderLoading() {
+      const elapsed = Math.floor((Date.now() - _loadingStartedAt) / 1000);
+      let phase = LOADING_PHASES[0];
+      for (const p of LOADING_PHASES) if (elapsed >= p.at) phase = p;
+      document.getElementById('loading-text').textContent = phase.text;
+      document.getElementById('loading-elapsed').textContent = elapsed + 's';
+    }
+
+    function setLoading(active) {
+      const el = document.getElementById('loading');
+      if (active) {
+        _loadingStartedAt = Date.now();
+        el.classList.add('loading--active');
+        _renderLoading();
+        clearInterval(_loadingTimer);
+        _loadingTimer = setInterval(_renderLoading, 1000);
+      } else {
+        clearInterval(_loadingTimer);
+        _loadingTimer = null;
+        el.classList.remove('loading--active');
+      }
+    }
+
+    function showError(msg) {
+      document.getElementById('error-text').textContent = msg;
+      document.getElementById('error-banner').classList.add('error-banner--active');
+    }
+
+    function clearError() {
+      document.getElementById('error-banner').classList.remove('error-banner--active');
+    }
+
+    async function runRecommendations(e) {
+      e.preventDefault();
+      clearError();
+
+      const llmType = document.getElementById('llm_type').value;
+      const model = llmType === 'lmstudio'
+        ? document.getElementById('model-select').value
+        : document.getElementById('model').value;
+
+      const skipProfile = document.getElementById('skip_profile').checked;
+      const config = {
+        llm_type: llmType,
+        llm_url: document.getElementById('llm_url').value.replace(/\/+$/, ''),
+        api_key: document.getElementById('api_key').value,
+        mal_client_id: document.getElementById('mal_client_id').value,
+        mal_export_b64: malExportB64,
+        model: model,
+        source: document.getElementById('source').value,
+        username: document.getElementById('username').value,
+        profile: skipProfile ? '' : document.getElementById('profile').value,
+        mode: currentMode,
+        use_planning: document.getElementById('use_planning').checked,
+        skip_profile: skipProfile,
+      };
+
+      if (!malExportB64 && !config.username.trim()) {
+        showError('Enter a username for the data source, or upload your MAL export.');
+        return;
+      }
+      if (!config.use_planning && !skipProfile && !config.profile.trim()) {
+        showError('Write a taste profile, check "Skip the profile" for broader recs, or check "Recommend from my Plan to Watch".');
+        return;
+      }
+
+      setLoading(true);
+      document.getElementById('results').classList.remove('results--active');
+      document.getElementById('run-btn').disabled = true;
+
+      try {
+        const resp = await fetch('/api/recommend', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || data.error || 'Request failed');
+        displayResults(data);
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        setLoading(false);
+        document.getElementById('run-btn').disabled = false;
+      }
+    }
+
+    function displayResults(data) {
+      const results = document.getElementById('results');
+      const list = document.getElementById('results-list');
+      const meta = document.getElementById('results-meta');
+
+      meta.textContent = `${data.username} · ${data.source} · ${data.recommendations.length} recs`;
+      list.innerHTML = '';
+
+      if (data.recommendations.length === 0) {
+        list.innerHTML = '<div class="empty-state"><span class="empty-state__icon">🤔</span><div class="empty-state__text">No recommendations returned. Check the LLM output.</div></div>';
+        results.classList.add('results--active');
+        return;
+      }
+
+      data.recommendations.forEach(function(rec) {
+        const score = rec.predicted_score;
+        let scoreClass = 'rec-card__score--low';
+        if (score >= 8) scoreClass = 'rec-card__score--high';
+        else if (score >= 6) scoreClass = 'rec-card__score--mid';
+
+        // Render as an <a> if we know where this anime lives on the
+        // selected source. Falls back to a plain <div> so layout stays
+        // intact when no URL is available.
+        const sourceLabel = rec.source === 'myanimelist'
+          ? 'MyAnimeList'
+          : rec.source === 'anilist' ? 'AniList' : '';
+        const cardTag = rec.url ? 'a' : 'div';
+        const card = document.createElement(cardTag);
+        card.className = rec.url ? 'rec-card rec-card--link' : 'rec-card';
+        if (rec.url) {
+          card.href = rec.url;
+          card.target = '_blank';
+          card.rel = 'noopener noreferrer';
+          card.setAttribute(
+            'aria-label',
+            'Open ' + rec.title + (sourceLabel ? ' on ' + sourceLabel : '') + ' in a new tab',
+          );
+        }
+
+        const externalHint = rec.url && sourceLabel
+          ? '<span class="rec-card__external" aria-hidden="true">Open on ' + sourceLabel + ' ↗</span>'
+          : '';
+
+        card.innerHTML =
+          '<div class="rec-card__top">' +
+            '<div class="rec-card__title">' + escapeHtml(rec.title) + '</div>' +
+            '<span class="rec-card__score ' + scoreClass + '">' + score + '/10</span>' +
+          '</div>' +
+          '<div class="rec-card__reasoning">' + escapeHtml(rec.reasoning) + '</div>' +
+          '<div class="rec-card__match">' +
+            '<span>Pairs with: <strong>' + escapeHtml(rec.best_match_from_history) + '</strong></span>' +
+            externalHint +
+          '</div>';
+        list.appendChild(card);
+      });
+
+      results.classList.add('results--active');
+      results.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function onSourceChange() {
+      const source = document.getElementById('source').value;
+      const username = document.getElementById('username');
+      const hint = document.getElementById('username-hint');
+      const malField = document.getElementById('mal-key-field');
+      const malUpload = document.getElementById('mal-upload-field');
+
+      if (source === 'myanimelist') {
+        username.placeholder = 'Your MAL username';
+        hint.textContent = 'Your public MyAnimeList username — or skip this and upload your export below.';
+        malField.style.display = 'block';
+        malUpload.style.display = 'block';
+      } else {
+        username.placeholder = 'Your AniList username';
+        hint.textContent = 'Your public AniList username.';
+        malField.style.display = 'none';
+        malUpload.style.display = 'none';
+        clearMalFile();
+      }
+    }
+
+    function onMalFileSelected() {
+      const input = document.getElementById('mal_export_file');
+      const label = document.getElementById('upload-trigger-label');
+      const clearBtn = document.getElementById('upload-clear');
+      const file = input.files && input.files[0];
+      if (!file) {
+        clearMalFile();
+        return;
+      }
+      if (file.size > MAX_UPLOAD_BYTES) {
+        showError('That file is over 10 MB — much bigger than any real MAL export. Double-check you picked the right file.');
+        clearMalFile();
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = function () {
+        // FileReader's result is a data URL like "data:...;base64,XXXX".
+        const result = reader.result || '';
+        const comma = result.indexOf(',');
+        malExportB64 = comma >= 0 ? result.slice(comma + 1) : '';
+        label.textContent = file.name + ' · ready';
+        clearBtn.style.display = 'inline-flex';
+        clearError();
+      };
+      reader.onerror = function () {
+        showError('Could not read that file. Try a different one.');
+        clearMalFile();
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function clearMalFile() {
+      malExportB64 = '';
+      const input = document.getElementById('mal_export_file');
+      if (input) input.value = '';
+      const label = document.getElementById('upload-trigger-label');
+      if (label) label.textContent = 'Choose export file';
+      const clearBtn = document.getElementById('upload-clear');
+      if (clearBtn) clearBtn.style.display = 'none';
+    }
+
+    function togglePlanning() {
+      const checked = document.getElementById('use_planning').checked;
+      const profileField = document.getElementById('profile');
+      const hint = document.getElementById('profile-hint');
+      if (checked) {
+        profileField.placeholder = '(Optional when using Plan to Watch)';
+        hint.textContent = 'Optional — your planning list already reflects your interests.';
+      } else {
+        profileField.placeholder = '## Things I love\n- Morally complex protagonists\n- Dense world-building\n\n## Things I bounce off\n- ...';
+        hint.textContent = 'Markdown. Be specific — mention shows, characters, genres, studios. This is what makes the LLM understand you.';
+      }
+    }
+
+    function toggleSkipProfile() {
+      const skip = document.getElementById('skip_profile').checked;
+      const field = document.getElementById('profile-field');
+      // Hide the textarea entirely when the user opts out of writing a profile.
+      // The submit handler also strips the textarea value in that case so any
+      // stale draft can't leak into the request.
+      field.style.display = skip ? 'none' : 'block';
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    document.addEventListener('DOMContentLoaded', loadBackendMetadata);
+  </script>
+</body>
+</html>

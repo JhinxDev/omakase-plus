@@ -1,0 +1,27 @@
+# Isolated review stack for a sanitized clone of the private Plus database.
+# It binds only to CT101 loopback and deliberately receives no production secrets.
+services:
+  omakase-plus-staging:
+    container_name: omakase-plus-staging
+    build:
+      context: ./source
+      args:
+        OMAKASE_REVISION: ${OMAKASE_REVISION:?set exact candidate commit}
+    image: omakase-plus-staging:${OMAKASE_REVISION:?set exact candidate commit}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${OMAKASE_STAGING_PORT:-8877}:8765"
+    environment:
+      OMAKASE_ENV: production
+      OMAKASE_PLUS_PRIVATE: "true"
+      OMAKASE_PLUS_REVIEW_MODE: "true"
+      OMAKASE_PLUS_URL: http://127.0.0.1:${OMAKASE_STAGING_PORT:-8877}
+      OMAKASE_ALLOWED_HOSTS: 127.0.0.1,localhost
+      OMAKASE_SESSION_COOKIE_SECURE: "false"
+      OMAKASE_ALLOW_PRIVATE_LLM_URLS: "false"
+      OMAKASE_ALLOW_PRIVATE_CATALOG_URLS: "false"
+      OMAKASE_REVISION: ${OMAKASE_REVISION:?set exact candidate commit}
+      OMAKASE_DATA_DIR: /home/omakase/data
+      OMAKASE_PLUS_APPLE_TV_WATCH_ENABLED: "false"
+    volumes:
+      - ./data:/home/omakase/data
