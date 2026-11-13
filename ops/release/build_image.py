@@ -50,6 +50,10 @@ SOURCE_URL = "https://github.com/JhinxDev/omakase-plus"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIN_FREE_BYTES = 4 * 1024**3
 SSH_OPTIONS = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
+# pip compiles bytecode during install, so an image legitimately contains derived
+# files that are not part of the shipped tree.
+RUNTIME_MARKERS = ("__pycache__",)
+RUNTIME_SUFFIXES = (".pyc", ".pyo")
 
 HASH_READER = """
 import hashlib, importlib.util, json, pathlib
@@ -279,12 +283,22 @@ def compare_trees(
     return changed, missing, unexpected
 
 
+def is_runtime_artifact(path: str) -> bool:
+    """Return True for interpreter bytecode, which is derived and not shipped content."""
+    return path.endswith(RUNTIME_SUFFIXES) or any(marker in path for marker in RUNTIME_MARKERS)
+
+
+def shipped_files(hashes: Mapping[str, str]) -> dict[str, str]:
+    """Drop derived bytecode from a hash map."""
+    return {path: digest for path, digest in hashes.items() if not is_runtime_artifact(path)}
+
+
 def verify_tree(record: object, expected: Mapping[str, str]) -> dict[str, object]:
     """Compare an in-image hash readback with the commit tree and refuse a mismatch."""
     observed = record.get("files") if isinstance(record, dict) else None
     if not isinstance(observed, dict):
         raise ReleaseError("could not read installed files from the built image")
-    changed, missing, unexpected = compare_trees(expected, observed)
+    changed, missing, unexpected = compare_trees(shipped_files(expected), shipped_files(observed))
     if changed or missing or unexpected:
         problems = []
         if missing:

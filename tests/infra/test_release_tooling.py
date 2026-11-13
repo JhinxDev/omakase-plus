@@ -471,6 +471,26 @@ def test_remote_build_defaults_are_local_and_explicit():
     assert build_image.parse_args(["--remote", "omakase-ct", "--readback"]).readback is True
 
 
+def test_build_verification_ignores_installed_bytecode_only():
+    expected = {"alpha.py": "1" * 64}
+    record = {
+        "files": {
+            "alpha.py": "1" * 64,
+            "__pycache__/alpha.cpython-312.pyc": "2" * 64,
+        }
+    }
+    assert build_image.verify_tree(record, expected) is record
+    assert build_image.is_runtime_artifact("__pycache__/alpha.cpython-312.pyc")
+    assert not build_image.is_runtime_artifact("alpha.py")
+
+    with pytest.raises(build_image.ReleaseError, match="content differs"):
+        build_image.verify_tree({"files": {"alpha.py": "9" * 64}}, expected)
+    with pytest.raises(build_image.ReleaseError, match="not in the commit tree"):
+        build_image.verify_tree({"files": {"alpha.py": "1" * 64, "extra.py": "2" * 64}}, expected)
+    with pytest.raises(build_image.ReleaseError, match="missing from image"):
+        build_image.verify_tree({"files": {}}, expected)
+
+
 # Manifest acceptance and dry-run defaults
 def _valid_manifest(commit: str = "c" * 40) -> dict[str, object]:
     hashes = build_image.file_hashes(_fixture_files())
