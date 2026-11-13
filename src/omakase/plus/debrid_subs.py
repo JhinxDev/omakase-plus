@@ -56,6 +56,25 @@ _LANGUAGE_ORDER = (
     "ara",
     "ar",
 )
+_OCR_LANGUAGE_NAMES = {
+    "english": "en",
+    "french": "fr",
+    "german": "de",
+    "spanish": "es",
+    "italian": "it",
+    "portuguese": "pt",
+    "russian": "ru",
+    "arabic": "ar",
+    "danish": "da",
+    "norwegian": "nb",
+    "swedish": "sv",
+    "finnish": "fi",
+    "dutch": "nl",
+    "polish": "pl",
+    "turkish": "tr",
+    "japanese": "ja",
+}
+
 _LANGUAGE_NAMES = {
     "eng": "English",
     "en": "English",
@@ -223,14 +242,24 @@ class SubtitleCache:
         for number, stream in enumerate(candidates[:2]):
             tags = stream.get("tags") or {}
             raw = str(tags.get("language") or "").strip().lower()
-            language = _OCR_LANGUAGES.get(raw, "en")
-            name = str(tags.get("title") or "").strip()[:40] or (
-                _LANGUAGE_NAMES.get(language, language.upper()) + " (OCR)"
-            )
+            name = str(tags.get("title") or "").strip()[:40]
+            language = _OCR_LANGUAGES.get(raw, "")
+            if not language:
+                lowered = name.lower()
+                language = next(
+                    (code for label, code in _OCR_LANGUAGE_NAMES.items() if label in lowered),
+                    "en",
+                )
+            name = name or (_LANGUAGE_NAMES.get(language, language.upper()) + " (OCR)")
             track = job.tracks[number] if number < len(job.tracks) else None
             if track is None:
                 track = SubtitleTrack(int(stream["index"]), language, name)
                 job.tracks.append(track)
+            vtt = workdir / f"ocr-{number}.vtt"
+            if vtt.is_file() and 0 < vtt.stat().st_size <= 8 * 1024 * 1024:
+                track.data = vtt.read_bytes()
+                ok += 1
+                continue
             sup = workdir / f"ocr-{number}.sup"
             mkv = workdir / f"ocr-{number}.mkv"
             srt = workdir / f"ocr-{number}.srt"
@@ -258,11 +287,6 @@ class SubtitleCache:
             ):
                 continue
             if not await self._run_ocr(["pgsrip", "rip", "-l", language, str(mkv)], _OCR_TIMEOUT):
-                continue
-            vtt = workdir / f"ocr-{number}.vtt"
-            if vtt.is_file() and 0 < vtt.stat().st_size <= 8 * 1024 * 1024:
-                track.data = vtt.read_bytes()
-                ok += 1
                 continue
             produced = sorted(workdir.glob(f"ocr-{number}.*.srt"))
             if not produced:
