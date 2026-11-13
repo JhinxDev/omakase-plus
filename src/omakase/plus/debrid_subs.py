@@ -259,10 +259,17 @@ class SubtitleCache:
                 continue
             if not await self._run_ocr(["pgsrip", "rip", "-l", language, str(mkv)], _OCR_TIMEOUT):
                 continue
-            produced = sorted(workdir.glob("ocr-*.srt"))
+            vtt = workdir / f"ocr-{number}.vtt"
+            if vtt.is_file() and 0 < vtt.stat().st_size <= 8 * 1024 * 1024:
+                track.data = vtt.read_bytes()
+                ok += 1
+                continue
+            produced = sorted(workdir.glob(f"ocr-{number}.*.srt"))
             if not produced:
                 continue
             data = self._srt_vtt(produced[0].read_bytes())
+            if data:
+                vtt.write_bytes(data)
             if not data or len(data) > 8 * 1024 * 1024:
                 continue
             track.language = language
