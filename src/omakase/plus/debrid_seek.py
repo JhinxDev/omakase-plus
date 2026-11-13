@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import time
+import urllib.parse
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -840,8 +841,14 @@ def _copyable_audio(url):
 
 
 def keyframes_cache_path(root, url):
-    """Stable cache location for one media URL, shared across sessions."""
-    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
+    """Stable cache location for one media, shared across sessions.
+
+    A provider's direct link rotates its host and token on every play, but the
+    file path inside it identifies the same media, so the cache is keyed from the
+    path alone.
+    """
+    parsed = urllib.parse.urlparse(url)
+    digest = hashlib.sha256(parsed.path.encode("utf-8")).hexdigest()[:32]
     return Path(root) / f"keyframes-{digest}.json"
 
 
