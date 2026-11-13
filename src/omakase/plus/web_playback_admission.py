@@ -13,6 +13,16 @@ class Busy(ValueError):
         self.retry_after = retry_after
 
 
+# A seek asks for the target segment and its neighbours at once. Eight
+# concurrent reads plus a one second wait turned that burst into 429s, which
+# AVPlayer reports as -16845 and a failed item, so the read allowance is higher
+# than the allowance for start and close requests. Tests read these names
+# instead of hardcoding the numbers.
+READ_LIMIT_TOTAL = 24
+READ_LIMIT_VIEWER = 14
+READ_LIMIT_SESSION = 14
+
+
 class Admission:
     """Count preparation before its first asynchronous await.
 
@@ -72,11 +82,12 @@ class Admission:
                 30,
             )
         elif kind == "read":
-            # A seek asks for the target segment and its neighbours together.
-            # Eight concurrent reads plus a one second wait turned that burst
-            # into 429s, which AVPlayer reports as -16845 and a failed item.
             limits, rate_limit = (
-                [((kind,), 24), ((kind, viewer), 14), ((kind, viewer, session), 14)],
+                [
+                    ((kind,), READ_LIMIT_TOTAL),
+                    ((kind, viewer), READ_LIMIT_VIEWER),
+                    ((kind, viewer, session), READ_LIMIT_SESSION),
+                ],
                 self.read_rate_limit,
             )
         else:
