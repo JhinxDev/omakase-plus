@@ -45,6 +45,11 @@ _COLD_SUBTITLE_WAIT = 0.2
 # has to wait for Real-Debrid to generate the next segment mid-playback.
 _SEGMENT_READAHEAD = 8
 _SEGMENT_WAIT = 4.0
+# AVPlayer abandons a segment after roughly five seconds and reports
+# CoreMedia -12889. A provider segment that is not ready inside this budget is
+# answered with the last served segment so the player keeps its connection and
+# recovers on the next request instead of failing the item.
+_SEGMENT_GRACE = 2.5
 _SEGMENT_CACHE_ENTRIES = 64
 _SEGMENT_CACHE_BYTES = 96 * 1024 * 1024
 _SEGMENT_TTL = 180.0
@@ -288,6 +293,36 @@ class DebridStreams:
         self.media_cache = OrderedDict()
         self.cached_bytes = 0
         self.pump = None
+        self.last_served = {}
+
+    @staticmethod
+    def _playback_key(media):
+        return media.segments[0] if media.segments else ""
+
+    def _repeat_last_segment(self, media, index, request, headers):
+        """Answer with the last segment actually served for this media."""
+        record = self.last_served.get(self._playback_key(media))
+        if record is None or record[0] > index:
+            return None
+        data = record[1]
+        if not data or request.method == "HEAD":
+            return None
+        _LOG.warning(
+            "provider segment %05d not ready within %.1fs; repeating segment %05d (%d bytes)",
+            index,
+            _SEGMENT_GRACE,
+            record[0],
+            len(data),
+        )
+        return Response(
+            data,
+            media_type="video/mp2t",
+            headers=headers | {"Content-Length": str(len(data))},
+        )
+
+    def _remember(self, media, index, data):
+        if data:
+            self.last_served[self._playback_key(media)] = (index, data)
 
     def _cache_segment(self, url, data):
         if not data:
@@ -767,20 +802,32 @@ class DebridStreams:
         url = entry.segments[index]
         # Keep later segments generating while this request is being served.
         self._advance(entry, index)
-        if self.segment_cache.get(url) is None:
+        prepared_first = index == 0 and bool(getattr(entry, "first_segment", b""))
+        stored = self.segment_cache.get(url)
+        if stored is None and not prepared_first:
             task = self.warm.get(url)
             if task is not None:
-                # A prepared neighbour is worth a short wait instead of a long
-                # provider round trip that AVPlayer would abandon.
+                # A prepared segment is worth a short wait instead of a long
+                # provider round trip that AVPlayer would abandon. The task
+                # keeps running, so a repeat here is usually replaced on the
+                # player's retry.
                 try:
-                    async with asyncio.timeout(_SEGMENT_WAIT):
+                    async with asyncio.timeout(_SEGMENT_GRACE):
                         await asyncio.shield(task)
                 except (TimeoutError, asyncio.CancelledError):
                     pass
-        stored = self.segment_cache.get(url)
+                stored = self.segment_cache.get(url)
+                if (stored is None or stored[0] <= self.clock()) and not byte_range:
+                    # Real-Debrid stalled a segment it was already generating.
+                    # Answer with the last real segment so AVPlayer keeps the
+                    # item alive and retries, instead of failing with -12889.
+                    repeated = self._repeat_last_segment(entry, index, request, HEADERS.copy())
+                    if repeated is not None:
+                        return repeated
         if stored is not None and stored[0] > self.clock():
             self.segment_cache.move_to_end(url)
             cached_segment = stored[1]
+            self._remember(entry, index, cached_segment)
             if request.method == "GET":
                 return Response(
                     cached_segment,
@@ -813,6 +860,7 @@ class DebridStreams:
                 elif stored is not None:
                     self.first_cache.pop(url, None)
         if index == 0 and cached:
+            self._remember(entry, 0, cached)
             if plan is not None and plan.index is not None and plan.index.video_codec == "hevc":
                 cached = await asyncio.to_thread(_repair_h264_level, cached)
             headers = HEADERS | {"Content-Length": str(len(cached))}
@@ -892,6 +940,7 @@ class DebridStreams:
                 raise _unavailable() from None
         if request.method == "GET" and status == 200 and not byte_range and data:
             self._cache_segment(url, data)
+            self._remember(entry, index, data)
         headers = HEADERS.copy()
         if status == 206:
             value = upstream.get("content-range", "")

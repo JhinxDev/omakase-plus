@@ -135,3 +135,59 @@ def test_stale_segment_cache_entry_is_retried_not_served():
     stored = streams.segment_cache["segment"]
     assert stored[1] == b"fresh"
     assert streams.cached_bytes == len(b"fresh")
+
+
+def test_stalled_provider_segment_repeats_the_last_served_segment():
+    async def scenario():
+        streams = DebridStreams()
+        streams._advance = lambda media, index: None
+        stalled = asyncio.Event()
+
+        async def never_ready(url):
+            await stalled.wait()
+            return None
+
+        streams._fetch_segment = never_ready
+        segments = (
+            "https://s.stream.real-debrid.com/v/00000.ts",
+            "https://s.stream.real-debrid.com/v/00001.ts",
+        )
+        media = DebridMedia(b"#EXTM3U\n", segments, b"\x47first")
+        opening = await streams.deliver(media, "00000.ts", _request(), lambda: None)
+        assert opening.body == b"\x47first"
+        # The provider is already generating segment 1 but has not finished.
+        streams.warm[segments[1]] = asyncio.create_task(asyncio.sleep(60))
+        started = asyncio.get_running_loop().time()
+        next_segment = await streams.deliver(media, "00001.ts", _request(), lambda: None)
+        elapsed = asyncio.get_running_loop().time() - started
+        stalled.set()
+        return opening, next_segment, elapsed
+
+    opening, next_segment, elapsed = asyncio.run(scenario())
+    assert next_segment.status_code == 200
+    assert next_segment.body == opening.body
+    assert elapsed < 4
+
+
+def test_uncached_segment_without_history_uses_the_provider():
+    async def scenario():
+        streams = DebridStreams()
+        streams._advance = lambda media, index: None
+        calls = []
+
+        async def fake_read(url, **kwargs):
+            calls.append(url)
+            return b"\x47fresh", 200, {"content-length": "6"}
+
+        streams._read = fake_read
+        segments = (
+            "https://s.stream.real-debrid.com/v/00000.ts",
+            "https://s.stream.real-debrid.com/v/00001.ts",
+        )
+        media = DebridMedia(b"#EXTM3U\n", segments)
+        response = await streams.deliver(media, "00001.ts", _request(), lambda: None)
+        return response, calls
+
+    response, calls = asyncio.run(scenario())
+    assert response.body == b"\x47fresh"
+    assert calls and calls[0].endswith("00001.ts")
