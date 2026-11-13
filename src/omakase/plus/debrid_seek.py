@@ -133,6 +133,7 @@ class SeekPlan:
     init_task: asyncio.Task | None = None
     touched: float = field(default_factory=time.monotonic)
     drift: float | None = None
+    task_refine: asyncio.Task | None = None
     # Segment the player will open on. Seeded from the saved resume position so
     # the prefetch starts there instead of always walking forward from zero.
     warm_index: int | None = None
@@ -198,25 +199,9 @@ class SeekStreams:
                 return
             plan.index = index
             plan.ready.set()
-            exact = await asyncio.to_thread(self._exact_keyframes, plan)
-            if exact:
-                plan.index = replace(
-                    plan.index,
-                    keyframes=tuple(exact),
-                    segments=tuple(_segments(exact, float(plan.duration))),
-                    start_offset=exact[0] if exact[0] > 0.5 else 0.0,
-                )
-                for stale in plan.root.glob("*.ts"):
-                    stale.unlink(missing_ok=True)
-                for stale in plan.root.glob("*.m4s"):
-                    stale.unlink(missing_ok=True)
-                _LOG.warning(
-                    "seek timeline rebuilt from %d demuxer keyframes (first %.3f s)",
-                    len(exact),
-                    exact[0],
-                )
-                await self._warm(plan)
-                return
+            # Reading every keyframe means reading the whole file, so refine in
+            # the background and keep serving the cue timeline until it lands.
+            plan.task_refine = asyncio.create_task(self._refine_keyframes(plan))
             await self._warm(plan)
         except asyncio.CancelledError:
             raise
@@ -224,6 +209,35 @@ class SeekStreams:
             plan.error = type(error).__name__
         finally:
             plan.ready.set()
+
+    async def _refine_keyframes(self, plan):
+        try:
+            exact = await asyncio.to_thread(self._exact_keyframes, plan)
+            if not exact or plan.index is None or plan.index.video_codec == "hevc":
+                return
+            segments = tuple(_segments(exact, float(plan.duration)))
+            if len(segments) < 2 or len(segments) > _MAX_SEGMENTS:
+                return
+            plan.index = replace(
+                plan.index,
+                keyframes=tuple(exact),
+                segments=segments,
+                start_offset=exact[0] if exact[0] > 0.5 else 0.0,
+            )
+            for stale in plan.root.glob("*.ts"):
+                stale.unlink(missing_ok=True)
+            for stale in plan.root.glob("*.m4s"):
+                stale.unlink(missing_ok=True)
+            _LOG.warning(
+                "seek timeline rebuilt from %d demuxer keyframes (first %.3f s, segments %d)",
+                len(exact),
+                exact[0],
+                len(segments),
+            )
+        except asyncio.CancelledError:
+            raise
+        except (OSError, ValueError, RuntimeError):
+            return
 
     def _exact_keyframes(self, plan):
         """Return the demuxer's own video keyframe list, cached per plan.
