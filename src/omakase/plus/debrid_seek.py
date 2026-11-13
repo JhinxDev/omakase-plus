@@ -52,12 +52,11 @@ _AUDIO_CODECS = {
     "A_OPUS": "opus",
     "A_VORBIS": "vorbis",
 }
-# Three-second segments matter: a stream-copy segment costs roughly one second
-# of download per five megabytes at this host's provider throughput, so a six
-# second segment took about 5.5 s to build and could not reliably beat AVPlayer's
-# five second segment budget. Three seconds halves the wait and keeps the
-# prefetch ahead.
-_SEGMENT_SECONDS = 3.0
+# Segment length must exceed the cost of building one. A stream-copy
+# segment costs about 5.4 s regardless of size, because the fixed cost is
+# ffmpeg seeking the remote Matroska file, so a 6 s segment gains about
+# 0.8 s per segment against playback while a 3 s segment would starve.
+_SEGMENT_SECONDS = 6.0
 _MAX_SEGMENTS = 4000
 _MAX_INDEX_BYTES = 12 * 1024 * 1024
 _MAX_PREFETCH = 6
