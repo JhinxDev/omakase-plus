@@ -587,6 +587,7 @@ async def build_index(url, duration):
             duration=float(duration),
             video_codec=video_codec,
             audio_codec=audio_codec,
+            audio_index=audio_index,
             keyframes=tuple(keyframes),
             segments=tuple(segments),
             container=container,
