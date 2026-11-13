@@ -159,7 +159,9 @@ def test_hevc_seek_generates_exact_h264_segments(tmp_path, monkeypatch):
     assert "libx264" in args and "ultrafast" in args
     assert args[args.index("-output_ts_offset") + 1] == "0.000"
     assert args[args.index("-muxdelay") + 1] == "0"
-    assert args[args.index("-ss") + 1] == "0.000"
+    # The seek is nudged just past the boundary so it cannot round down to the
+    # previous keyframe and replay the tail of the last segment.
+    assert args[args.index("-ss") + 1] == "0.050"
     assert (tmp_path / "00000.ts").read_bytes() == b"x" * 256
 
 
