@@ -57,6 +57,10 @@ _SEGMENT_REPEAT_LIMIT = 3
 _SEGMENT_CACHE_ENTRIES = 64
 _SEGMENT_CACHE_BYTES = 96 * 1024 * 1024
 _SEGMENT_TTL = 180.0
+# A cold stream-copy segment costs about five seconds (the source bitrate is
+# copied, not reduced), so the index waits for the player's opening segment
+# instead of letting AVPlayer abandon its five-second segment budget.
+_SEEK_WARM_WAIT = 14.0
 _MEDIA_ID = re.compile(r"[a-f0-9]{32}")
 _SECRET = re.compile(r"[a-zA-Z0-9_-]{43}")
 
@@ -577,6 +581,9 @@ class DebridStreams:
         # Resume at the saved point and keep a forward window warm, so the
         # first segment AVPlayer asks for is already generated.
         self._advance(media, max(0, index - 1))
+        plan = self.seek.get(getattr(media, "seek_key", ""))
+        if plan is not None:
+            self.seek.warm(plan, position)
 
     async def _fetch_segment(self, url):
         try:
@@ -718,6 +725,11 @@ class DebridStreams:
                 # instead of generating a slow local seek stream.
                 if plan.index is not None and plan.index.video_codec != "hevc":
                     plan.mode = "seek"
+                    # Generate the first segment the player will ask for before
+                    # answering, because a cold stream copy takes about five
+                    # seconds and AVPlayer abandons a segment after five.
+                    opening = plan.warm_index if plan.warm_index is not None else 0
+                    await self.seek.ensure(plan, opening, _SEEK_WARM_WAIT)
                     # The Apple TV rejects the master wrapper with CoreMedia
                     # -12971. A seek timeline is a single VOD playlist already;
                     # expose it directly so AVPlayer never takes the master hop.

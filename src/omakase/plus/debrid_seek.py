@@ -120,6 +120,9 @@ class SeekPlan:
     prefetch: asyncio.Task | None = None
     init_task: asyncio.Task | None = None
     touched: float = field(default_factory=time.monotonic)
+    # Segment the player will open on. Seeded from the saved resume position so
+    # the prefetch starts there instead of always walking forward from zero.
+    warm_index: int | None = None
 
 
 class SeekStreams:
@@ -242,6 +245,42 @@ class SeekStreams:
             raise RuntimeError("init_failed")
         temporary.unlink(missing_ok=True)
         (plan.root / "init.mp4").write_bytes(init)
+
+    def _position_index(self, plan, position):
+        if plan.index is None or not plan.index.segments:
+            return 0
+        position = max(0.0, float(position))
+        for number, (start, end) in enumerate(plan.index.segments):
+            if start <= position < end:
+                return number
+        return len(plan.index.segments) - 1
+
+    def warm(self, plan, position):
+        """Start prefetching at the segment the player is about to open."""
+        if plan is None or plan.index is None:
+            return
+        index = self._position_index(plan, position)
+        plan.warm_index = index
+        self._prefetch(plan, max(0, index - 1))
+
+    async def ensure(self, plan, number, timeout):
+        """Make one segment available, bounded, so the player never waits on it."""
+        if plan is None or plan.index is None or number is None:
+            return False
+        if not 0 <= number < len(plan.index.segments):
+            return False
+        path = plan.root / f"{number:05d}.{plan.index.suffix}"
+        try:
+            if path.stat().st_size > 188:
+                return True
+        except OSError:
+            pass
+        try:
+            async with asyncio.timeout(timeout):
+                await self.segment(plan, number)
+            return True
+        except (TimeoutError, LookupError, RuntimeError, OSError, asyncio.CancelledError):
+            return False
 
     async def segment(self, plan, number):
         if plan.index is None or not 0 <= number < len(plan.index.segments):
