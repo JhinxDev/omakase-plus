@@ -370,7 +370,8 @@ def main(argv):
             break
         planned.append(round(start, 3))
         start = ahead[0]
-    timeline = measure_timeline(direct, planned)
+    limit = int(os.environ.get("OMAKASE_SCAN_LIMIT", "0") or 0)
+    timeline = measure_timeline(direct, planned, limit=limit)
     target.write_text(
         json.dumps({"keyframes": values, "offset": offset, "timeline": timeline}),
         encoding="utf-8",

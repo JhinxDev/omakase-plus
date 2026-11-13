@@ -966,9 +966,11 @@ def _seek_target(plan, start, end):
     """Return the time to ask for so the seek lands on ``start``."""
     if start <= 0.0 or plan.index is None:
         return 0.0
-    if plan.index.measured_timeline:
-        # A measured boundary is a keyframe the demuxer stops on exactly.
-        return float(start)
+    # Without measured targets the demuxer lands on the keyframe before the one
+    # that was asked for, so aiming at the boundary makes each chunk begin with
+    # the tail of the previous one and the picture visibly repeats. Aiming one
+    # keyframe later turns that repeat into a small skip, which is the lesser
+    # defect and the behaviour that removes the visible loop.
     if not _dense_keyframes(plan.index):
         return float(start)
     for value in plan.index.keyframes:
