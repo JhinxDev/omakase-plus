@@ -43,7 +43,13 @@ _MAX_SEGMENTS = 10000
 # fast enough to keep the first index request open so AVPlayer receives the
 # SUBTITLES group immediately. An uncached PGS/ASR job can take minutes.
 _WARM_SUBTITLE_WAIT = 12.0
-_COLD_SUBTITLE_WAIT = 0.2
+# A source whose only subtitle work is copying embedded text tracks to WebVTT
+# costs a demux and no decode, so the first index can wait for it too. The
+# probe wait is how the index learns which kind of job it is holding: the track
+# list arrives when ffprobe returns, and only then can a seconds-long text copy
+# be told apart from a minutes-long OCR or ASR job.
+_SUBTITLE_PROBE_WAIT = 6.0
+_TEXT_SUBTITLE_WAIT = 10.0
 # Keep a forward window of provider segments warm so a resume or a seek never
 # has to wait for Real-Debrid to generate the next segment mid-playback.
 _SEGMENT_READAHEAD = 8
@@ -782,6 +788,31 @@ class DebridStreams:
             raise DebridLibraryError("This subtitle track is unavailable.", 404)
         return job.tracks[index]
 
+    async def _wait_for_subtitles(self, job):
+        """Hold a first index long enough to carry the SUBTITLES group.
+
+        AVPlayer fetches the master playlist once per session, so an index that
+        opens without a subtitle group leaves the television with no subtitle
+        menu for the whole play. Waiting is therefore worth a few seconds, but
+        only for work that finishes in seconds: cached output, or a text-track
+        copy. OCR and ASR can run for minutes and are never waited for.
+        """
+        if job is None or job.done.is_set():
+            return
+        if not job.warm and job.text_only is None:
+            # Wait for the decision, not the work: once the source is known to
+            # need OCR or ASR, the index is released instead of holding the
+            # player for minutes.
+            if job.task is None:
+                return
+            await self.subtitles.wait_decision(job, _SUBTITLE_PROBE_WAIT)
+        if job.done.is_set():
+            return
+        if job.warm:
+            await self.subtitles.wait_tracks(job, _WARM_SUBTITLE_WAIT)
+        elif job.text_only:
+            await self.subtitles.wait_tracks(job, _TEXT_SUBTITLE_WAIT)
+
     def _prepared_title(self, entry):
         """Open the prepared directory for this media, if one was materialized."""
         key = getattr(entry, "prepared_key", "")
@@ -801,10 +832,10 @@ class DebridStreams:
         source, so declaring them over a prepared window would put them on the
         wrong picture.
         """
-        if prepared.subtitles:
+        if prepared.tracks:
             return tuple(
-                _PreparedRendition(f"Subtitles {number + 1}", "und", sidecar=path)
-                for number, path in enumerate(prepared.subtitles)
+                _PreparedRendition(track.name, track.language, sidecar=track.sidecar)
+                for track in prepared.tracks
             )
         job = self.subtitles.get(getattr(entry, "subtitle_key", ""))
         if job is None or not job.tracks or not all(track.data for track in job.tracks):
@@ -827,10 +858,13 @@ class DebridStreams:
             return None
         if not 0 < size <= _PREPARED_SEGMENT_LIMIT:
             return None
+        # fMP4 segments and the initialization segment are MP4 bytes; MPEG-TS
+        # segments are not. The player checks this before it decodes.
+        media_type = "video/mp4" if not asset.endswith(".ts") else "video/mp2t"
         headers = HEADERS | {"Accept-Ranges": "bytes"}
         if request.method == "HEAD":
             headers["Content-Length"] = str(size)
-            return Response(b"", media_type="video/mp2t", headers=headers)
+            return Response(b"", media_type=media_type, headers=headers)
         byte_range = request.headers.get("range")
         if byte_range:
             try:
@@ -851,7 +885,7 @@ class DebridStreams:
             return Response(
                 body,
                 status_code=206,
-                media_type="video/mp2t",
+                media_type=media_type,
                 headers=headers
                 | {
                     "Content-Range": f"bytes {left}-{right}/{size}",
@@ -865,21 +899,18 @@ class DebridStreams:
         if len(body) != size:
             return None
         headers["Content-Length"] = str(size)
-        return Response(body, media_type="video/mp2t", headers=headers)
+        return Response(body, media_type=media_type, headers=headers)
 
     async def _prepared_response(self, entry, prepared, asset, request):
         """Answer one asset from a prepared title, or ``None`` to fall through."""
         if asset == "index.m3u8":
-            if not prepared.subtitles:
-                # Match the on-demand index: a source whose WebVTT files are
-                # already cached only needs them read back, so hold the first
-                # index long enough to declare the renditions. A cold PGS/ASR
-                # job must never hold the player's opening request open.
-                job = self.subtitles.get(getattr(entry, "subtitle_key", ""))
-                if job is not None and not job.done.is_set():
-                    await self.subtitles.wait_tracks(
-                        job, _WARM_SUBTITLE_WAIT if job.warm else _COLD_SUBTITLE_WAIT
-                    )
+            if not prepared.tracks:
+                # No sidecars were written against this timeline, so fall back to
+                # the source's own subtitle job. The wait is bounded and only
+                # spent on work that can finish in seconds.
+                await self._wait_for_subtitles(
+                    self.subtitles.get(getattr(entry, "subtitle_key", ""))
+                )
             renditions = self._prepared_renditions(entry, prepared)
             job = _PreparedSubtitles(renditions) if renditions else None
             return _playlist_reply(_master_playlist(entry, job), request)
@@ -904,9 +935,7 @@ class DebridStreams:
                 try:
                     body = rendition.sidecar.read_bytes()
                 except OSError:
-                    raise DebridLibraryError(
-                        "This subtitle track is unavailable.", 404
-                    ) from None
+                    raise DebridLibraryError("This subtitle track is unavailable.", 404) from None
             if not body:
                 return None
             headers = HEADERS | {"Content-Length": str(len(body))}
@@ -915,6 +944,13 @@ class DebridStreams:
                 media_type="text/vtt",
                 headers=headers,
             )
+        if prepared.init is not None and asset == prepared.init:
+            # The fMP4 initialization segment is part of the timeline and is
+            # fetched before the first media segment.
+            response = self._prepared_segment(prepared, asset, request)
+            if response is None:
+                raise DebridLibraryError("This prepared segment is unavailable.", 404)
+            return response
         if asset in prepared.segments:
             response = self._prepared_segment(prepared, asset, request)
             if response is None:
@@ -943,14 +979,7 @@ class DebridStreams:
         job = self.subtitles.get(getattr(entry, "subtitle_key", ""))
         plan = self.seek.get(getattr(entry, "seek_key", ""))
         if asset == "index.m3u8":
-            if job is not None and not job.done.is_set():
-                # A source whose WebVTT files are already cached only needs them
-                # read back, so hold the first index long enough to serve a
-                # master with a SUBTITLES group. An uncached PGS/ASR job can take
-                # minutes and must not hold the player's index request open.
-                await self.subtitles.wait_tracks(
-                    job, _WARM_SUBTITLE_WAIT if job.warm else _COLD_SUBTITLE_WAIT
-                )
+            await self._wait_for_subtitles(job)
             if plan is not None:
                 if not plan.ready.is_set():
                     try:

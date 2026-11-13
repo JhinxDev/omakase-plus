@@ -73,9 +73,7 @@ def _prepared(root, *, sidecars=(0, 1), playlist=PREPARED_PLAYLIST):
 
 def _playlist_segments(playlist):
     return tuple(
-        line
-        for line in playlist.decode("ascii").splitlines()
-        if line and not line.startswith("#")
+        line for line in playlist.decode("ascii").splitlines() if line and not line.startswith("#")
     )
 
 
@@ -116,9 +114,7 @@ def test_prepared_subtitle_rendition_and_sidecar_are_served(tmp_path):
     directory = _prepared(tmp_path)
     streams = DebridStreams(prepared_root=tmp_path)
 
-    rendition = asyncio.run(
-        streams.deliver(_media(), "subtitles1.m3u8", _request(), lambda: None)
-    )
+    rendition = asyncio.run(streams.deliver(_media(), "subtitles1.m3u8", _request(), lambda: None))
     # The subtitle playlist spans the prepared timeline, not the prediction.
     assert b"#EXTINF:12.888," in rendition.body
     assert b"subtitles1.vtt" in rendition.body
@@ -314,6 +310,91 @@ def test_prepare_records_the_prepared_key_for_the_source_path():
         return media.prepared_key
 
     assert asyncio.run(run()) == prepared_key(DIRECT)
+
+
+def test_fmp4_prepared_title_serves_its_init_and_media_segments(tmp_path):
+    """HEVC is delivered as fMP4: Apple players reject it in MPEG-TS."""
+    playlist = (
+        b"#EXTM3U\n"
+        b"#EXT-X-VERSION:7\n"
+        b"#EXT-X-TARGETDURATION:7\n"
+        b"#EXT-X-PLAYLIST-TYPE:VOD\n"
+        b'#EXT-X-MAP:URI="init.mp4"\n'
+        b"#EXTINF:6.256000,\n"
+        b"00000.m4s\n"
+        b"#EXTINF:6.632000,\n"
+        b"00001.m4s\n"
+        b"#EXT-X-ENDLIST\n"
+    )
+    directory = _prepared(tmp_path, playlist=playlist, sidecars=(0,))
+    (directory / "init.mp4").write_bytes(b"\x00\x00\x00\x18ftypheic")
+    streams = DebridStreams(prepared_root=tmp_path)
+
+    served = asyncio.run(streams.deliver(_media(), "stream.m3u8", _request(), lambda: None))
+    assert served.body == playlist
+
+    init = asyncio.run(streams.deliver(_media(), "init.mp4", _request(), lambda: None))
+    assert init.body == (directory / "init.mp4").read_bytes()
+    assert init.headers["content-type"].startswith("video/mp4")
+
+    segment = asyncio.run(streams.deliver(_media(), "00000.m4s", _request(), lambda: None))
+    assert segment.headers["content-type"].startswith("video/mp4")
+
+
+def test_fmp4_playlist_without_its_init_segment_is_not_served(tmp_path):
+    playlist = (
+        b"#EXTM3U\n"
+        b"#EXT-X-VERSION:7\n"
+        b"#EXT-X-TARGETDURATION:7\n"
+        b'#EXT-X-MAP:URI="init.mp4"\n'
+        b"#EXTINF:6.256000,\n"
+        b"00000.m4s\n"
+        b"#EXT-X-ENDLIST\n"
+    )
+    _prepared(tmp_path, playlist=playlist, sidecars=())
+    streams = DebridStreams(prepared_root=tmp_path)
+
+    response = asyncio.run(streams.deliver(_media(), "stream.m3u8", _request(), lambda: None))
+
+    assert response.body == PROVIDER_PLAYLIST
+
+
+def test_tracks_json_names_the_prepared_renditions(tmp_path):
+    """The preparation pass records the source titles, so the menu reads them."""
+    import json
+
+    directory = _prepared(tmp_path)
+    (directory / "tracks.json").write_text(
+        json.dumps(
+            {
+                "tracks": [
+                    {"name": "English", "language": "en", "file": "subtitles-0.vtt"},
+                    {"name": "Dansk", "language": "da", "file": "subtitles-1.vtt"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    streams = DebridStreams(prepared_root=tmp_path)
+
+    master = asyncio.run(streams.deliver(_media(), "index.m3u8", _request(), lambda: None))
+
+    body = master.body.decode()
+    assert 'NAME="English"' in body and 'LANGUAGE="en"' in body
+    assert 'NAME="Dansk"' in body and 'LANGUAGE="da"' in body
+    assert "Subtitles 1" not in body
+
+
+def test_unreadable_tracks_json_falls_back_to_positional_names(tmp_path):
+    """A corrupt sidecar list must not hide working subtitles."""
+    directory = _prepared(tmp_path)
+    (directory / "tracks.json").write_text("{not json", encoding="utf-8")
+    streams = DebridStreams(prepared_root=tmp_path)
+
+    master = asyncio.run(streams.deliver(_media(), "index.m3u8", _request(), lambda: None))
+
+    assert b'NAME="Subtitles 1"' in master.body
+    assert b"#EXT-X-MEDIA:TYPE=SUBTITLES" in master.body
 
 
 def test_whole_title_prepared_stream_reuses_ready_source_subtitles(tmp_path):

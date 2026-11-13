@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+_LOG = logging.getLogger(__name__)
 
 _PGS_CODEC = "hdmv_pgs_subtitle"
 _OCR_TIMEOUT = 1800
@@ -145,6 +148,10 @@ class SubtitleJob:
     # first index request can wait for the tracks instead of opening without
     # a SUBTITLES group.
     warm: bool = False
+    # True when this source only needs embedded text tracks copied to WebVTT.
+    # That job costs seconds and may run during a pass; OCR and ASR do not, so
+    # their jobs stay False and never hold a player request open.
+    text_only: bool | None = None
 
 
 class SubtitleCache:
@@ -194,6 +201,26 @@ class SubtitleCache:
             if remaining <= 0:
                 return
             await asyncio.sleep(min(0.05, remaining))
+
+    async def wait_decision(self, job, timeout):
+        """Wait until the source's subtitle kinds are known.
+
+        The first index has to decide in a few seconds whether waiting is worth
+        it: a text copy finishes in seconds, while an OCR or ASR job can run for
+        minutes. ``text_only`` is what distinguishes them and it is set as soon
+        as ffprobe returns, so this waits for the decision rather than for data.
+        """
+        if job is None or timeout <= 0:
+            return False
+        deadline = asyncio.get_running_loop().time() + timeout
+        while job.text_only is None:
+            if job.done.is_set():
+                return False
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(0.05, remaining))
+        return True
 
     def start(self, key, direct, duration):
         if not self.root or not direct or not key or duration > 14400:
@@ -248,18 +275,23 @@ class SubtitleCache:
                 )
             )
             job.tracks = tracks[:_MAX_TRACKS]
+            # Record which kind of work this is before any await, so a player
+            # request that is waiting on the decision learns it immediately: a
+            # text copy finishes in seconds, while OCR and ASR can run for
+            # minutes and must never hold the opening request open.
+            job.text_only = bool(job.tracks)
             if job.tracks:
+                # Only an embedded text copy is cheap enough to run during a
+                # pass. A first anime play used to deadlock on the idle wait
+                # below, because the wait can never end while the pass it belongs
+                # to is open, so the tracks stayed empty, the index carried no
+                # SUBTITLES group, and the TV showed no subtitle menu at all.
                 # A source whose WebVTT files are already on disk needs no work
                 # at all: reading them costs no CPU, so it is safe while a pass is
-                # open. Waiting for the playback pause first made a warm job stay
-                # empty for the whole session, the index then carried no SUBTITLES
-                # group, and the player was offered nothing to select. Embedded
-                # text tracks hit that path, while PGS sources skipped it because
-                # their OCR output is checked before the wait.
+                # open.
                 if self._load_cached(job, workdir):
                     job.ready.set()
                     return
-                await self._wait_for_idle()
                 async with self.gate:
                     job.ready.set()
                     await self._convert(job, direct, workdir)
@@ -278,6 +310,9 @@ class SubtitleCache:
             raise
         except Exception as error:  # noqa: BLE001 - a source simply has no usable subtitles
             job.error = type(error).__name__
+            # A playback path must never swallow an error silently: this is the
+            # class of bug that hid a dead timeline for hours.
+            _LOG.warning("%s subtitle job failed: %s", job.key, error)
             job.ready.set()
         finally:
             job.done.set()

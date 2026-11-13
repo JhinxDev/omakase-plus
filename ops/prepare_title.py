@@ -70,7 +70,9 @@ _TEXT_SUBTITLE_CODECS = {
     "stl",
     "vplayer",
 }
-_SEGMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.ts")
+_SEGMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.(?:ts|m4s)")
+_INIT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.mp4")
+_MAP = re.compile(r'#EXT-X-MAP:URI="([^"]{1,64})"')
 _EXTINF = re.compile(r"#EXTINF:([0-9]+(?:\.[0-9]+)?),?")
 
 
@@ -79,15 +81,40 @@ class _Captured(Exception):
 
 
 def _prepared_key(url):
-    from omakase.plus.prepared_hls import prepared_key
+    """The store key for a media link.
 
-    return prepared_key(url)
+    The app module is authoritative and is used whenever it is importable. A
+    preparation run may happen against an image built before that module landed,
+    so the same computation is repeated here as a fallback, and a disagreement
+    would be visible as a title that never becomes servable.
+    """
+    try:
+        from omakase.plus.prepared_hls import prepared_key
+
+        return prepared_key(url)
+    except ImportError:
+        if not isinstance(url, str) or not url:
+            return ""
+        path = urllib.parse.urlsplit(url).path
+        return hashlib.sha256(path.encode("utf-8")).hexdigest() if path else ""
 
 
 def _prepared_root():
-    from omakase.plus.prepared_hls import prepared_root
+    configured = os.getenv("OMAKASE_PREPARED_ROOT", "").strip()
+    if configured:
+        return Path(configured)
+    data = os.getenv("OMAKASE_DATA_DIR", "data").strip() or "data"
+    return Path(data) / "prepared"
 
-    return prepared_root()
+
+def _store():
+    """The app's read side when the image has it, otherwise nothing."""
+    try:
+        from omakase.plus.prepared_hls import PreparedStore
+
+        return PreparedStore(_prepared_root())
+    except ImportError:
+        return None
 
 
 async def _resolve(watch_path):
@@ -117,7 +144,9 @@ async def _resolve(watch_path):
     debrid_stream.DebridStreams._start_seek = lambda self, source: None
     try:
         data = Path(_resolved_data_dir()).resolve()
-        connection = sqlite3.connect(f"file:{data / 'omakase-plus.db'}?mode=ro", uri=True, timeout=5)
+        connection = sqlite3.connect(
+            f"file:{data / 'omakase-plus.db'}?mode=ro", uri=True, timeout=5
+        )
         connection.row_factory = sqlite3.Row
         actor = connection.execute(
             "SELECT id AS user_id FROM users ORDER BY id LIMIT 1"
@@ -205,9 +234,13 @@ def _probe_streams(direct):
     if done.returncode != 0:
         return None, done.stderr.strip()[:400]
     try:
-        return json.loads(done.stdout), None
+        payload = json.loads(done.stdout)
     except ValueError as error:
         return None, str(error)
+    streams = payload.get("streams") if isinstance(payload, dict) else None
+    if not isinstance(streams, list):
+        return None, "ffprobe returned no stream list"
+    return streams, None
 
 
 def _audio_index(streams):
@@ -216,6 +249,20 @@ def _audio_index(streams):
         if stream.get("codec_type") == "audio":
             return stream.get("index")
     return None
+
+
+def _recipe(streams):
+    """Container for the segments: fMP4 for HEVC, MPEG-TS otherwise.
+
+    Apple players do not play HEVC from MPEG-TS segments. They do play it from
+    fMP4 (the HLS authoring specification requires it), so the recipe follows the
+    codec instead of being fixed. MPEG-TS stays for H.264 because that is the
+    form already measured on the device.
+    """
+    for stream in streams:
+        if stream.get("codec_type") == "video" and stream.get("codec_name") == "hevc":
+            return "fmp4"
+    return "mpegts"
 
 
 def _text_tracks(streams):
@@ -255,12 +302,15 @@ def _verify(directory, expected_duration=None):
     if "#EXT-X-ENDLIST" not in lines:
         errors.append("playlist has no #EXT-X-ENDLIST, so the pass did not finish")
     names, durations = [], []
+    init = None
     for line in lines[1:]:
         if not line:
             continue
         if line.startswith("#"):
             if match := _EXTINF.fullmatch(line):
                 durations.append(float(match[1]))
+            elif match := _MAP.fullmatch(line):
+                init = match[1]
             continue
         names.append(line)
     if not names:
@@ -279,6 +329,16 @@ def _verify(directory, expected_duration=None):
             continue
         if size <= 0:
             errors.append(f"segment {name} is empty")
+    if init is not None:
+        # fMP4 needs its initialization segment before the first media segment.
+        if not _INIT_NAME.fullmatch(init):
+            errors.append(f"unexpected initialization segment name {init!r}")
+        else:
+            try:
+                if (directory / init).stat().st_size <= 0:
+                    errors.append(f"initialization segment {init} is empty")
+            except OSError:
+                errors.append(f"initialization segment {init} is missing")
     if durations:
         if min(durations) <= 0.5:
             errors.append(f"shortest declared duration {min(durations):.3f} s is not usable")
@@ -301,7 +361,7 @@ def _verify(directory, expected_duration=None):
     }
 
 
-def _materialize(direct, key, partial, duration, tracks, log_path):
+def _materialize(direct, key, partial, duration, tracks, log_path, limit=None, recipe="mpegts"):
     """One ffmpeg pass: the segments, the playlist and the text sidecars."""
     command = [
         "ffmpeg",
@@ -310,6 +370,12 @@ def _materialize(direct, key, partial, duration, tracks, log_path):
         "-y",
         "-loglevel",
         "info",
+    ]
+    if limit:
+        # An input limit keeps a smoke run cheap: ffmpeg stops reading the
+        # remote file instead of writing a whole title.
+        command += ["-t", str(limit)]
+    command += [
         "-i",
         direct,
         "-map",
@@ -325,6 +391,11 @@ def _materialize(direct, key, partial, duration, tracks, log_path):
         "-ac",
         "2",
         "-sn",
+    ]
+    if recipe == "fmp4":
+        # Apple requires the hvc1 tag for HEVC; the default hev1 is refused.
+        command += ["-tag:v", "hvc1"]
+    command += [
         "-f",
         "hls",
         "-hls_time",
@@ -333,10 +404,19 @@ def _materialize(direct, key, partial, duration, tracks, log_path):
         "vod",
         "-hls_flags",
         "independent_segments",
-        "-hls_segment_filename",
-        str(partial / "%05d.ts"),
-        str(partial / "stream.m3u8"),
     ]
+    if recipe == "fmp4":
+        command += [
+            "-hls_segment_type",
+            "fmp4",
+            "-hls_fmp4_init_filename",
+            "init.mp4",
+            "-hls_segment_filename",
+            str(partial / "%05d.m4s"),
+        ]
+    else:
+        command += ["-hls_segment_filename", str(partial / "%05d.ts")]
+    command += [str(partial / "stream.m3u8")]
     sidecars = []
     for number, track in enumerate(tracks):
         name = f"subtitles-{number}.vtt"
@@ -373,13 +453,11 @@ async def main(argv):
     if not argv:
         print("usage: prepare_title.py <watch-path> [--force] | --verify <key>")
         return 2
-    from omakase.plus.prepared_hls import PreparedStore
-
     root = _prepared_root()
-    store = PreparedStore(root)
+    store = _store()
     if argv[0] == "--verify":
         key = argv[1] if len(argv) > 1 else ""
-        opened = store.open(key)
+        opened = store.open(key) if store is not None else None
         if opened is None:
             print(json.dumps({"key": key, "ok": False, "error": "not a complete prepared title"}))
             return 4
@@ -389,6 +467,15 @@ async def main(argv):
 
     watch_path = argv[0]
     force = "--force" in argv[1:]
+    smoke = next((item for item in argv[1:] if item.startswith("--smoke")), "")
+    probe_only = "--probe" in argv[1:]
+    smoke_limit = 30
+    if smoke and "=" in smoke:
+        smoke_limit = max(10, min(180, int(smoke.split("=", 1)[1])))
+    if smoke:
+        # A smoke run writes under the data volume so it never touches the real
+        # store, and it is deleted after verifying.
+        root = Path(os.getenv("OMAKASE_DATA_DIR", "data")).resolve() / "prepared-smoke"
     source, error = await _resolve(watch_path)
     if source is None:
         print(json.dumps({"watch_path": watch_path, "ok": False, "error": error}))
@@ -406,29 +493,58 @@ async def main(argv):
         "audio_codec": getattr(source, "audio_codec", ""),
         "container": getattr(source, "container", ""),
     }
-    if not force and store.open(key) is not None:
+    if not force and store is not None and store.open(key) is not None:
         result = _verify(target, duration)
         report.update({"ok": True, "skipped": "already prepared and verified", **result})
         print(json.dumps(report, indent=1))
         return 0
     root.mkdir(parents=True, exist_ok=True)
-    partial = root / f"{key}.partial"
-    if partial.exists():
-        shutil.rmtree(partial, ignore_errors=True)
-    partial.mkdir(parents=True)
     streams, probe_error = _probe_streams(direct)
     if streams is None:
         report.update({"ok": False, "error": f"ffprobe failed: {probe_error}"})
         print(json.dumps(report, indent=1))
         return 2
+    if probe_only:
+        # Report what the container would cut before spending provider read on a
+        # whole title. HEVC has to go into fMP4 segments for Apple hardware;
+        # MPEG-TS carries it but AVPlayer will not play it from there.
+        report.update(
+            {
+                "ok": True,
+                "probe_only": True,
+                "ffmpeg_recipe": _recipe(streams),
+                "video": [
+                    {"codec": stream.get("codec_name"), "index": stream.get("index")}
+                    for stream in streams
+                    if stream.get("codec_type") == "video"
+                ],
+                "audio": [
+                    {"codec": stream.get("codec_name"), "index": stream.get("index")}
+                    for stream in streams
+                    if stream.get("codec_type") == "audio"
+                ],
+                "subtitles": [
+                    {"codec": stream.get("codec_name"), "index": stream.get("index")}
+                    for stream in streams
+                    if stream.get("codec_type") == "subtitle"
+                ],
+            }
+        )
+        print(json.dumps(report, indent=1))
+        return 0
     audio_index = _audio_index(streams)
     tracks = _text_tracks(streams)
+    recipe = _recipe(streams)
     report.update(
         {
             "audio_index": audio_index,
             "text_tracks": len(tracks),
+            "recipe": recipe,
             "subtitle_tracks": [
-                {"codec": stream.get("codec_name"), "language": (stream.get("tags") or {}).get("language", "")}
+                {
+                    "codec": stream.get("codec_name"),
+                    "language": (stream.get("tags") or {}).get("language", ""),
+                }
                 for stream in streams
                 if stream.get("codec_type") == "subtitle"
             ],
@@ -438,7 +554,22 @@ async def main(argv):
         report.update({"ok": False, "error": "duration is implausible, refusing to prepare"})
         print(json.dumps(report, indent=1))
         return 3
-    run = _materialize(direct, key, partial, duration, tracks, partial / "ffmpeg.log")
+    # Written into a partial directory and renamed only after verification, so
+    # an unfinished run can never be served.
+    partial = root / f"{key}.partial"
+    if partial.exists():
+        shutil.rmtree(partial, ignore_errors=True)
+    partial.mkdir(parents=True)
+    run = _materialize(
+        direct,
+        key,
+        partial,
+        duration,
+        tracks,
+        partial / "ffmpeg.log",
+        limit=smoke_limit if smoke else None,
+        recipe=recipe,
+    )
     report["ffmpeg"] = {name: run[name] for name in ("exit", "seconds", "sidecars")}
     if run["exit"] != 0:
         report.update(
@@ -466,12 +597,19 @@ async def main(argv):
         (partial / "tracks.json").write_text(
             json.dumps({"tracks": sidecars}, indent=1) + "\n", encoding="utf-8"
         )
-    verified = _verify(partial, duration)
+    verified = _verify(partial, duration if not smoke else float(smoke_limit))
     report.update(verified)
     if not verified["ok"]:
         report["partial"] = str(partial)
         print(json.dumps(report, indent=1))
         return 4
+    if smoke:
+        # A smoke run proves the recipe and the extractor on the real media and
+        # then removes its own output, so the store never sees a partial title.
+        shutil.rmtree(partial, ignore_errors=True)
+        report.update({"ok": True, "smoke_seconds": smoke_limit})
+        print(json.dumps(report, indent=1))
+        return 0
     (partial / "ffmpeg.log").unlink(missing_ok=True)
     completed = root / key
     if completed.exists():
@@ -490,7 +628,11 @@ async def main(argv):
             "declared_total_s": verified["declared_total_s"],
             "prepared_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "ffmpeg_seconds": run["seconds"],
-            "sidecars": [{"name": item["name"], "language": item["language"], "file": item["file"]} for item in sidecars],
+            "recipe": recipe,
+            "sidecars": [
+                {"name": item["name"], "language": item["language"], "file": item["file"]}
+                for item in sidecars
+            ],
         },
     )
     report["ok"] = True

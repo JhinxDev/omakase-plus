@@ -12,8 +12,10 @@ This module is the read side of that store. Nothing here writes or transcodes.
 Layout::
 
     <root>/<key>/stream.m3u8             playlist written by the prep pass
-    <root>/<key>/s000.ts, s001.ts, ...   segments named by -hls_segment_filename
+    <root>/<key>/00000.ts, 00001.ts, ... MPEG-TS segments for H.264 titles
+    <root>/<key>/init.mp4, 00000.m4s,..  fMP4 segments for HEVC titles
     <root>/<key>/subtitles-0.vtt, ...    optional WebVTT renditions
+    <root>/<key>/tracks.json             optional names and languages for them
 
 ``<key>`` is the SHA-256 of the media URL path, never of the whole link:
 Real-Debrid rotates the host and the token on every play, but the path
@@ -40,6 +42,7 @@ runs ffmpeg; it only reads what that single pass wrote.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import stat
@@ -49,16 +52,21 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PLAYLIST_NAME = "stream.m3u8"
+TRACKS_NAME = "tracks.json"
 _PLAYLIST_LIMIT = 1024 * 1024
 # One prepared title cannot legitimately exceed this many segments; the bound
 # keeps a corrupt playlist from turning every request into a long read loop.
 _MAX_SEGMENTS = 10000
-_SEGMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.ts")
+_SEGMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.(?:ts|m4s)")
+_INIT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.mp4")
 _SIDECAR_NAME = re.compile(r"subtitles-([0-9]{1,2})\.vtt")
 _EXTINF = re.compile(r"#EXTINF:([0-9]+(?:\.[0-9]+)?),?")
+_MAP = re.compile(r'#EXT-X-MAP:URI="([^"]{1,64})"')
 _KEY = re.compile(r"[a-f0-9]{64}")
+_LANGUAGE = re.compile(r"[a-z]{2,3}")
 # A WebVTT rendition larger than this is not a text track the player can use.
 _SUBTITLE_LIMIT = 8 * 1024 * 1024
+_TRACKS_LIMIT = 64 * 1024
 
 
 def prepared_key(url):
@@ -88,6 +96,15 @@ def prepared_root():
 
 
 @dataclass(frozen=True)
+class PreparedTrack:
+    """One subtitle rendition written against this exact prepared timeline."""
+
+    name: str
+    language: str
+    sidecar: Path
+
+
+@dataclass(frozen=True)
 class PreparedTitle:
     """One validated prepared title read back from disk."""
 
@@ -95,12 +112,16 @@ class PreparedTitle:
     directory: Path
     playlist: bytes
     segments: tuple[str, ...]
-    subtitles: tuple[Path, ...]
+    tracks: tuple[PreparedTrack, ...]
     duration: float
+    # fMP4 preparation writes an initialization segment and names it in an
+    # EXT-X-MAP tag. HEVC has to be delivered that way: Apple players do not
+    # play HEVC from MPEG-TS segments, which is why the recipe follows the codec.
+    init: str | None = None
 
 
 def _parse_playlist(data):
-    """Return ``(segment names, total duration)`` for a complete VOD playlist."""
+    """Return ``(segment names, total duration, init name)`` for a VOD playlist."""
     try:
         lines = [line.strip() for line in data.decode("ascii").splitlines()]
     except UnicodeDecodeError:
@@ -110,6 +131,7 @@ def _parse_playlist(data):
     names = []
     duration = 0.0
     ended = False
+    init = None
     for line in lines[1:]:
         if not line:
             continue
@@ -119,6 +141,10 @@ def _parse_playlist(data):
         if line.startswith("#"):
             if match := _EXTINF.fullmatch(line):
                 duration += float(match[1])
+            elif match := _MAP.fullmatch(line):
+                if not _INIT_NAME.fullmatch(match[1]):
+                    return None
+                init = match[1]
             continue
         if ended or len(names) >= _MAX_SEGMENTS or not _SEGMENT_NAME.fullmatch(line):
             return None
@@ -127,7 +153,7 @@ def _parse_playlist(data):
     # the playlist still describes a run in progress.
     if not ended or not names or duration <= 0:
         return None
-    return tuple(names), duration
+    return tuple(names), duration, init
 
 
 def _sidecars(directory):
@@ -152,6 +178,66 @@ def _sidecars(directory):
         found.append((int(match[1]), path))
     found.sort(key=lambda item: item[0])
     return tuple(path for _, path in found)
+
+
+def _usable(path):
+    """True when a subtitle sidecar is a real, bounded regular file."""
+    try:
+        info = path.stat()
+    except OSError:
+        return False
+    return (
+        not path.is_symlink() and stat.S_ISREG(info.st_mode) and 0 < info.st_size <= _SUBTITLE_LIMIT
+    )
+
+
+def _clean_name(value, fallback):
+    name = str(value or "").replace('"', "'").strip()[:40]
+    return name or fallback
+
+
+def _tracks(directory):
+    """Named subtitle renditions, falling back to plain sidecar discovery.
+
+    The preparation pass writes ``tracks.json`` with the language and title it
+    found in the source, so the player's menu reads "English" instead of
+    "Subtitles 1". A directory prepared without that file still serves its
+    sidecars under positional names.
+    """
+    metadata = directory / TRACKS_NAME
+    named: list[PreparedTrack] = []
+    try:
+        raw = metadata.read_bytes()
+        if 0 < len(raw) <= _TRACKS_LIMIT:
+            payload = json.loads(raw.decode("utf-8"))
+            entries = payload.get("tracks") if isinstance(payload, dict) else None
+            if isinstance(entries, list):
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    filename = str(entry.get("file") or "")
+                    if not _SIDECAR_NAME.fullmatch(filename):
+                        continue
+                    path = directory / filename
+                    if not _usable(path):
+                        continue
+                    language = str(entry.get("language") or "").strip().lower()
+                    language = language if _LANGUAGE.fullmatch(language) else "und"
+                    named.append(
+                        PreparedTrack(
+                            _clean_name(entry.get("name"), f"Subtitles {len(named) + 1}"),
+                            language,
+                            path,
+                        )
+                    )
+    except (OSError, ValueError, UnicodeDecodeError):
+        named = []
+    if named:
+        return tuple(named)
+    return tuple(
+        PreparedTrack(f"Subtitles {number + 1}", "und", path)
+        for number, path in enumerate(_sidecars(directory))
+    )
 
 
 class PreparedStore:
@@ -184,7 +270,7 @@ class PreparedStore:
         parsed = _parse_playlist(data)
         if parsed is None:
             return None
-        names, duration = parsed
+        names, duration, init = parsed
         for name in names:
             path = directory / name
             try:
@@ -195,13 +281,22 @@ class PreparedStore:
                 return None
             if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_size <= 0:
                 return None
+        if init is not None:
+            path = directory / init
+            try:
+                info = path.stat()
+            except OSError:
+                return None
+            if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_size <= 0:
+                return None
         return PreparedTitle(
             key=key,
             directory=directory,
             playlist=data,
             segments=names,
-            subtitles=_sidecars(directory),
+            tracks=_tracks(directory),
             duration=duration,
+            init=init,
         )
 
 
