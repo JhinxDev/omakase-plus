@@ -969,7 +969,7 @@ class DebridStreams:
             # this store does not own falls through unchanged.
             response = await self._prepared_response(entry, prepared, asset, request)
             if response is not None:
-                _LOG.info(
+                _LOG.warning(
                     "prepared timeline served segments=%d key=%s asset=%s",
                     len(prepared.segments),
                     prepared.key,

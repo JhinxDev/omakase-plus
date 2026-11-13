@@ -218,14 +218,14 @@ async def _resolve(watch_path):
 
 
 def _probe_streams(direct):
-    """Read the container's stream list without decoding the file."""
+    """Read the container's stream list and container bitrate without decoding."""
     command = [
         "ffprobe",
         "-hide_banner",
         "-v",
         "error",
         "-show_entries",
-        "stream=index,codec_type,codec_name:stream_tags=language,title",
+        "stream=index,codec_type,codec_name:stream_tags=language,title:format=bit_rate,duration",
         "-of",
         "json",
         direct,
@@ -237,10 +237,24 @@ def _probe_streams(direct):
         payload = json.loads(done.stdout)
     except ValueError as error:
         return None, str(error)
-    streams = payload.get("streams") if isinstance(payload, dict) else None
-    if not isinstance(streams, list):
+    if not isinstance(payload, dict) or not isinstance(payload.get("streams"), list):
         return None, "ffprobe returned no stream list"
-    return streams, None
+    return payload, None
+
+
+def _estimated_bytes(probe, duration):
+    """Rough prepared size, so a run cannot fill the disk it writes into."""
+    bit_rate = str((probe.get("format") or {}).get("bit_rate") or "")
+    if not bit_rate.isdecimal():
+        return 0
+    return int(int(bit_rate) / 8 * duration)
+
+
+def _free_bytes(path):
+    try:
+        return shutil.disk_usage(path).free
+    except OSError:
+        return 0
 
 
 def _audio_index(streams):
@@ -266,6 +280,12 @@ def _recipe(streams):
 
 
 def _text_tracks(streams):
+    """Text subtitle tracks to extract, English first, at most eight.
+
+    A movie release can carry twenty text tracks. The player's subtitle menu is
+    unusable that long, so the list is capped, but never at the cost of English,
+    which is what the household gets by default.
+    """
     tracks = []
     for stream in streams:
         if stream.get("codec_type") != "subtitle":
@@ -282,7 +302,11 @@ def _text_tracks(streams):
                 "codec": codec,
             }
         )
-    return tracks
+    if not tracks:
+        return []
+    english = [track for track in tracks if track["language"] in {"eng", "en"}]
+    others = [track for track in tracks if track["language"] not in {"eng", "en"}]
+    return (english + others)[:8]
 
 
 def _verify(directory, expected_duration=None):
@@ -370,6 +394,12 @@ def _materialize(direct, key, partial, duration, tracks, log_path, limit=None, r
         "-y",
         "-loglevel",
         "info",
+        # The app container runs with a low process cap. Every output would
+        # otherwise start a thread pool sized to the host cores, and a movie
+        # with several subtitle outputs crossed the cap and died with
+        # "pthread_create() failed: Resource temporarily unavailable".
+        "-filter_threads",
+        "1",
     ]
     if limit:
         # An input limit keeps a smoke run cheap: ffmpeg stops reading the
@@ -416,6 +446,7 @@ def _materialize(direct, key, partial, duration, tracks, log_path, limit=None, r
         ]
     else:
         command += ["-hls_segment_filename", str(partial / "%05d.ts")]
+    command += ["-threads", "1"]
     command += [str(partial / "stream.m3u8")]
     sidecars = []
     for number, track in enumerate(tracks):
@@ -426,6 +457,8 @@ def _materialize(direct, key, partial, duration, tracks, log_path, limit=None, r
             f"0:{track['index']}",
             "-c:s",
             "webvtt",
+            "-threads",
+            "1",
             str(partial / name),
         ]
     started = time.monotonic()
@@ -499,11 +532,12 @@ async def main(argv):
         print(json.dumps(report, indent=1))
         return 0
     root.mkdir(parents=True, exist_ok=True)
-    streams, probe_error = _probe_streams(direct)
-    if streams is None:
+    probe, probe_error = _probe_streams(direct)
+    if probe is None:
         report.update({"ok": False, "error": f"ffprobe failed: {probe_error}"})
         print(json.dumps(report, indent=1))
         return 2
+    streams = probe["streams"]
     if probe_only:
         # Report what the container would cut before spending provider read on a
         # whole title. HEVC has to go into fMP4 segments for Apple hardware;
@@ -513,6 +547,7 @@ async def main(argv):
                 "ok": True,
                 "probe_only": True,
                 "ffmpeg_recipe": _recipe(streams),
+                "estimated_bytes": _estimated_bytes(probe, duration or 0),
                 "video": [
                     {"codec": stream.get("codec_name"), "index": stream.get("index")}
                     for stream in streams
@@ -552,6 +587,22 @@ async def main(argv):
     )
     if duration and duration > 3600 * 4:
         report.update({"ok": False, "error": "duration is implausible, refusing to prepare"})
+        print(json.dumps(report, indent=1))
+        return 3
+    estimate = _estimated_bytes(probe, duration or 0)
+    free = _free_bytes(root)
+    report["estimated_bytes"] = estimate
+    report["free_bytes_before"] = free
+    if estimate and free < estimate * 1.2:
+        report.update(
+            {
+                "ok": False,
+                "error": (
+                    f"needs about {estimate} bytes but the store has {free} free; "
+                    "refusing to fill the disk"
+                ),
+            }
+        )
         print(json.dumps(report, indent=1))
         return 3
     # Written into a partial directory and renamed only after verification, so
