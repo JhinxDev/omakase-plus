@@ -6,10 +6,13 @@ import asyncio
 import hashlib
 import re
 import secrets
+import subprocess
+import tempfile
 import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -208,6 +211,45 @@ class CloudPass:
     first_segment: bytes = b""
     subtitle_key: str = ""
     seek_key: str = ""
+
+
+def _repair_h264_level(data):
+    """Upgrade an invalid 1080p H.264 level to 4.0 without re-encoding."""
+    if len(data) < 188 or len(data) > _SEGMENT_LIMIT:
+        return data
+    with tempfile.TemporaryDirectory(prefix="omakase-level-") as folder:
+        source = Path(folder) / "segment.ts"
+        target = Path(folder) / "fixed.ts"
+        source.write_bytes(data)
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-i",
+                    str(source),
+                    "-c",
+                    "copy",
+                    "-bsf:v",
+                    "h264_metadata=level=4.0",
+                    "-muxdelay",
+                    "0",
+                    "-f",
+                    "mpegts",
+                    str(target),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=20,
+            )
+            if result.returncode == 0 and target.stat().st_size > 188:
+                return target.read_bytes()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return data
 
 
 class DebridStreams:
@@ -603,6 +645,8 @@ class DebridStreams:
                 elif stored is not None:
                     self.first_cache.pop(url, None)
         if index == 0 and cached:
+            if plan is not None and plan.index is not None and plan.index.video_codec == "hevc":
+                cached = await asyncio.to_thread(_repair_h264_level, cached)
             headers = HEADERS | {"Content-Length": str(len(cached))}
             if request.method == "HEAD":
                 return Response(b"", headers=headers)
@@ -688,6 +732,14 @@ class DebridStreams:
             if request.method == "GET" and len(data) != right - left + 1:
                 raise _unavailable()
             headers["Content-Range"] = value
+        if (
+            plan is not None
+            and plan.index is not None
+            and plan.index.video_codec == "hevc"
+            and request.method == "GET"
+            and status == 200
+        ):
+            data = await asyncio.to_thread(_repair_h264_level, data)
         length = upstream.get("content-length", "")
         if request.method == "HEAD" and length.isdecimal() and len(length) <= 9:
             headers["Content-Length"] = length
