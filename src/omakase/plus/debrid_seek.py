@@ -63,6 +63,7 @@ _AUDIO_CODECS = {
 _SEGMENT_SECONDS = 6.0
 _LOG = logging.getLogger(__name__)
 _REFINE_KEYFRAMES = False
+_SEEK_EPSILON = 0.05
 _BOUNDARY_TOLERANCE = 0.2
 _MAX_PLANS = 64
 _MAX_SEGMENTS = 4000
@@ -444,7 +445,11 @@ class SeekStreams:
             "error",
             "-y",
             "-ss",
-            f"{start:.3f}",
+            # A boundary that equals a keyframe rounds down under "seek to the
+            # keyframe at or before", which lands on the previous keyframe and
+            # replays about a second of the last segment. Nudging past the
+            # boundary keeps the seek on the intended keyframe.
+            f"{start + _SEEK_EPSILON:.3f}",
             "-i",
             plan.url,
             "-t",
