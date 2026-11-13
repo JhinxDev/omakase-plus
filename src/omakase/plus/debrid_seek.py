@@ -15,7 +15,7 @@ import re
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import httpx
@@ -451,9 +451,21 @@ class SeekStreams:
         path = plan.root / f"{number:05d}.{plan.index.suffix}"
         try:
             result = subprocess.run(
-                ["ffprobe", "-v", "error", "-select_streams", "v:0",
-                 "-show_entries", "packet=pts_time", "-of", "csv=p=0", str(path)],
-                capture_output=True, text=True, timeout=60,
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "packet=pts_time",
+                    "-of",
+                    "csv=p=0",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             values = []
             for line in result.stdout.splitlines():
@@ -471,6 +483,33 @@ class SeekStreams:
         start_drift = round(first - declared_start, 3)
         span_drift = round((last - first) - declared_span, 3)
         plan.drift = span_drift
+        if not plan.calibrated and number >= 1 and abs(start_drift) > 0.3:
+            # The container index and the demuxer disagree about where the
+            # keyframes are: every seek lands about a second before the boundary
+            # the playlist declares. Shift the boundaries by the measured offset
+            # so the playlist, the generator and the player share one timeline,
+            # then drop the segments built on the old one.
+            shift = start_drift
+            shifted = tuple(
+                (
+                    max(0.0, first_value + (shift if index else 0.0)),
+                    max(0.1, second_value + (shift if index else 0.0)),
+                )
+                for index, (first_value, second_value) in enumerate(plan.index.segments)
+            )
+            plan.index = replace(plan.index, segments=shifted)
+            plan.calibrated = True
+            for stale in plan.root.glob("*.ts"):
+                stale.unlink(missing_ok=True)
+            for stale in plan.root.glob("*.m4s"):
+                stale.unlink(missing_ok=True)
+            _LOG.warning(
+                "seek timeline shifted by %+.3f s after segment %d (declared %.3f, first %.3f)",
+                shift,
+                number,
+                declared_start,
+                first,
+            )
         if number < 3 or number % 40 == 0:
             # Deliberately unconditional for a few segments: the playlist
             # position, the generator boundary and the file's own first
