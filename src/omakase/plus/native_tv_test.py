@@ -1065,6 +1065,8 @@ def create_native_tv_test_router(
             grant.resume_cursor = (previous["revision"], previous["updated_at"])
             if store.native_resume_barrier(db, target) in (None, grant.resume_barrier):
                 position = previous["position_seconds"]
+        if isinstance(grant.hls, DebridMedia) and position > 0:
+            cloud_streams.warm_position(grant.hls, position)
         resume_sync = grant.library_key is not None and bool(
             re.fullmatch(r"[a-f0-9]{64}", getattr(grant.source, "source_identity", "") or "")
         )
