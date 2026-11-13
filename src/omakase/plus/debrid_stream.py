@@ -23,6 +23,9 @@ from omakase.plus.debrid_library import CloudSource, DebridLibraryError
 from omakase.plus.debrid_seek import SeekStreams
 from omakase.plus.debrid_subs import SubtitleCache
 from omakase.plus.outbound import OutboundError, _resolved_ips, blocked_address, pin_destination
+from omakase.plus.prepared_hls import PreparedStore, prepared_key
+from omakase.plus.web_playback_delivery import DeliveryError as FileDeliveryError
+from omakase.plus.web_playback_delivery import parse_range
 
 _LOG = logging.getLogger(__name__)
 
@@ -57,6 +60,9 @@ _SEGMENT_REPEAT_LIMIT = 3
 _SEGMENT_CACHE_ENTRIES = 64
 _SEGMENT_CACHE_BYTES = 96 * 1024 * 1024
 _SEGMENT_TTL = 180.0
+# A prepared segment is a few seconds of a stream copy read back from local
+# disk; the ceiling only refuses a pathological file, never a normal segment.
+_PREPARED_SEGMENT_LIMIT = 256 * 1024 * 1024
 # A cold stream-copy segment costs about five seconds (the source bitrate is
 # copied, not reduced), so the index waits for the player's opening segment
 # instead of letting AVPlayer abandon its five-second segment budget.
@@ -268,6 +274,9 @@ class DebridMedia:
     first_segment: bytes = b""
     subtitle_key: str = ""
     seek_key: str = ""
+    # Set when the source path has a prepared directory, so delivery can serve
+    # the materialized timeline instead of generating chunks on demand.
+    prepared_key: str = ""
 
 
 @dataclass(frozen=True, repr=False)
@@ -329,12 +338,36 @@ def subtitle_cache_key(source):
     return hashlib.sha256(path.encode("utf-8")).hexdigest()
 
 
+@dataclass(frozen=True)
+class _PreparedRendition:
+    """A subtitle rendition declared by a prepared title's master playlist."""
+
+    name: str
+    language: str
+    sidecar: Path | None = None
+    data: bytes = b""
+
+
+@dataclass(frozen=True)
+class _PreparedSubtitles:
+    # The master helper reads ``tracks`` and their name/language attributes.
+    tracks: tuple[_PreparedRendition, ...]
+
+
 class DebridStreams:
-    def __init__(self, transport=None, clock=time.monotonic, subtitle_root=None, seek_root=None):
+    def __init__(
+        self,
+        transport=None,
+        clock=time.monotonic,
+        subtitle_root=None,
+        seek_root=None,
+        prepared_root=None,
+    ):
         self.transport = transport
         self.clock = clock
         self.subtitles = SubtitleCache(subtitle_root, clock)
         self.seek = SeekStreams(seek_root, clock)
+        self.prepared = PreparedStore(prepared_root)
         self.passes = {}
         self.reads = asyncio.Semaphore(8)
         # First segments that are being warmed without blocking the play reply.
@@ -574,11 +607,17 @@ class DebridStreams:
         urls = [source.playlist]
         if source.playlist_alt:
             urls.append(source.playlist_alt)
+        # The prepared store is keyed from the direct link's path, computed once
+        # here because the provider link itself rotates on every play.
+        media_prepared_key = prepared_key(source.direct)
 
         async def load(url):
             try:
                 data, _, _ = await self._read(url, limit=_PLAYLIST_LIMIT, timeout=15, attempts=2)
-                return DebridMedia(*parse_playlist(data, url, source.duration))
+                return DebridMedia(
+                    *parse_playlist(data, url, source.duration),
+                    prepared_key=media_prepared_key,
+                )
             except DebridLibraryError:
                 return None
 
@@ -743,8 +782,164 @@ class DebridStreams:
             raise DebridLibraryError("This subtitle track is unavailable.", 404)
         return job.tracks[index]
 
+    def _prepared_title(self, entry):
+        """Open the prepared directory for this media, if one was materialized."""
+        key = getattr(entry, "prepared_key", "")
+        if not key:
+            # A cloud pass keeps the resolved source, whose direct link carries
+            # the stable provider path the store is keyed from.
+            source = getattr(entry, "source", None)
+            key = prepared_key(getattr(source, "direct", ""))
+        return self.prepared.open(key) if key else None
+
+    def _prepared_renditions(self, entry, prepared):
+        """Subtitle renditions a prepared title can declare to the player.
+
+        The sidecars are authoritative because they were written against this
+        exact timeline. Without sidecars only a whole-title preparation may
+        reuse the source subtitle tracks: their cues are timed against the
+        source, so declaring them over a prepared window would put them on the
+        wrong picture.
+        """
+        if prepared.subtitles:
+            return tuple(
+                _PreparedRendition(f"Subtitles {number + 1}", "und", sidecar=path)
+                for number, path in enumerate(prepared.subtitles)
+            )
+        job = self.subtitles.get(getattr(entry, "subtitle_key", ""))
+        if job is None or not job.tracks or not all(track.data for track in job.tracks):
+            return ()
+        provider = _media_duration(getattr(entry, "playlist", b""))
+        if abs(prepared.duration - provider) > max(15.0, provider * 0.02):
+            return ()
+        return tuple(
+            _PreparedRendition(track.name, track.language, data=track.data) for track in job.tracks
+        )
+
+    def _prepared_segment(self, prepared, asset, request):
+        """Serve one prepared segment from disk, honouring a byte range."""
+        path = prepared.directory / asset
+        if path.is_symlink():
+            return None
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return None
+        if not 0 < size <= _PREPARED_SEGMENT_LIMIT:
+            return None
+        headers = HEADERS | {"Accept-Ranges": "bytes"}
+        if request.method == "HEAD":
+            headers["Content-Length"] = str(size)
+            return Response(b"", media_type="video/mp2t", headers=headers)
+        byte_range = request.headers.get("range")
+        if byte_range:
+            try:
+                left, right = parse_range(byte_range, size)
+            except FileDeliveryError:
+                return Response(
+                    status_code=416,
+                    headers=headers | {"Content-Range": f"bytes */{size}"},
+                )
+            try:
+                with path.open("rb") as stream:
+                    stream.seek(left)
+                    body = stream.read(right - left + 1)
+            except OSError:
+                return None
+            if len(body) != right - left + 1:
+                return None
+            return Response(
+                body,
+                status_code=206,
+                media_type="video/mp2t",
+                headers=headers
+                | {
+                    "Content-Range": f"bytes {left}-{right}/{size}",
+                    "Content-Length": str(len(body)),
+                },
+            )
+        try:
+            body = path.read_bytes()
+        except OSError:
+            return None
+        if len(body) != size:
+            return None
+        headers["Content-Length"] = str(size)
+        return Response(body, media_type="video/mp2t", headers=headers)
+
+    async def _prepared_response(self, entry, prepared, asset, request):
+        """Answer one asset from a prepared title, or ``None`` to fall through."""
+        if asset == "index.m3u8":
+            if not prepared.subtitles:
+                # Match the on-demand index: a source whose WebVTT files are
+                # already cached only needs them read back, so hold the first
+                # index long enough to declare the renditions. A cold PGS/ASR
+                # job must never hold the player's opening request open.
+                job = self.subtitles.get(getattr(entry, "subtitle_key", ""))
+                if job is not None and not job.done.is_set():
+                    await self.subtitles.wait_tracks(
+                        job, _WARM_SUBTITLE_WAIT if job.warm else _COLD_SUBTITLE_WAIT
+                    )
+            renditions = self._prepared_renditions(entry, prepared)
+            job = _PreparedSubtitles(renditions) if renditions else None
+            return _playlist_reply(_master_playlist(entry, job), request)
+        if asset == "stream.m3u8":
+            # Byte for byte: this playlist was written by the same pass that
+            # wrote the segments, so its durations cannot disagree with them.
+            # Its segment URIs are relative names, so no rewriting is needed.
+            return _playlist_reply(prepared.playlist, request)
+        if match := re.fullmatch(r"subtitles([0-9]{1,2})\.m3u8", asset):
+            number = int(match[1])
+            if number >= len(self._prepared_renditions(entry, prepared)):
+                return None
+            return _playlist_reply(_subtitle_playlist(prepared, number), request)
+        if match := re.fullmatch(r"subtitles([0-9]{1,2})\.vtt", asset):
+            renditions = self._prepared_renditions(entry, prepared)
+            number = int(match[1])
+            if number >= len(renditions):
+                return None
+            rendition = renditions[number]
+            body = rendition.data
+            if rendition.sidecar is not None:
+                try:
+                    body = rendition.sidecar.read_bytes()
+                except OSError:
+                    raise DebridLibraryError(
+                        "This subtitle track is unavailable.", 404
+                    ) from None
+            if not body:
+                return None
+            headers = HEADERS | {"Content-Length": str(len(body))}
+            return Response(
+                b"" if request.method == "HEAD" else body,
+                media_type="text/vtt",
+                headers=headers,
+            )
+        if asset in prepared.segments:
+            response = self._prepared_segment(prepared, asset, request)
+            if response is None:
+                # The store owns this name, so a fall through to the provider
+                # path could answer with content from a different timeline.
+                raise DebridLibraryError("This prepared segment is unavailable.", 404)
+            return response
+        return None
+
     async def deliver(self, entry, asset, request, authorize: Callable[[], None]):
         authorize()
+        prepared = self._prepared_title(entry)
+        if prepared is not None:
+            # A prepared title is a complete timeline written by one pass, so it
+            # is served ahead of the predictive on-demand seek path. Any asset
+            # this store does not own falls through unchanged.
+            response = await self._prepared_response(entry, prepared, asset, request)
+            if response is not None:
+                _LOG.info(
+                    "prepared timeline served segments=%d key=%s asset=%s",
+                    len(prepared.segments),
+                    prepared.key,
+                    asset,
+                )
+                return response
         job = self.subtitles.get(getattr(entry, "subtitle_key", ""))
         plan = self.seek.get(getattr(entry, "seek_key", ""))
         if asset == "index.m3u8":

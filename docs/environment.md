@@ -48,6 +48,7 @@ plain BYOK/Lite deployment into the authenticated Plus product.
 | `OMAKASE_PLAYBACK_STREAMING` | `false` | Enables MKV streaming and the Plex audio compatibility path for qualified films and TV episodes. |
 | `OMAKASE_PLAYBACK_STREAM_CACHE_ROOT` | `/home/omakase/data/playback-streams` | Disk-backed cache directory for direct-stream HLS segments. |
 | `OMAKASE_PLAYBACK_STREAM_CACHE_MAX_BYTES` | `6442450944` (6 GiB) | Maximum stream-cache size; oldest inactive sessions are pruned above it. |
+| `OMAKASE_PREPARED_ROOT` | `$OMAKASE_DATA_DIR/prepared` | Read-only store of pre-materialized HLS titles, one directory per provider path containing `stream.m3u8`, its segments and optional `subtitles-<n>.vtt` sidecars. A title is served ahead of on-demand seek generation only when its playlist is complete and every segment it names is on disk. See `omakase.plus.prepared_hls`. |
 | `OMAKASE_LIBRARY_MANIFEST_TOKEN` | empty | Bearer token for the curator manifest endpoints. |
 | `OMAKASE_LIBRARY_ROOT` | `/media/library` | Media library root used by onboarding and language checks. |
 | `OMAKASE_IMPORT_ROOT` | `/media/import` | Local import root used by onboarding and storage checks. |
