@@ -434,47 +434,8 @@ class SeekStreams:
                 raise RuntimeError("segment_failed")
             output.write_bytes(media)
             temporary.unlink(missing_ok=True)
-        elif plan.index.transcode:
-            temporary.replace(output)
         else:
-            # Stream copy starts at a keyframe at or before the requested time,
-            # so the raw segment carries up to a second of the previous
-            # segment's tail and its timestamps do not begin at the boundary the
-            # playlist declares. The demuxer keeps source timestamps for copied
-            # packets, so a second local pass can cut the exact window and set
-            # its offset without touching the picture.
-            trimmed = plan.root / f".{number:05d}.trim"
-            cut = [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-nostdin",
-                "-ss",
-                f"{start:.3f}",
-                "-i",
-                str(temporary),
-                "-t",
-                f"{max(0.1, end - start):.3f}",
-                "-map",
-                "0:v:0",
-                "-map",
-                "0:a:0?",
-                "-c",
-                "copy",
-                "-output_ts_offset",
-                f"{start - plan.index.segments[0][0]:.3f}",
-                "-f",
-                "mpegts",
-                str(trimmed),
-            ]
-            await _run_ffmpeg(cut)
-            if not trimmed.is_file() or trimmed.stat().st_size <= 188:
-                trimmed.unlink(missing_ok=True)
-                temporary.unlink(missing_ok=True)
-                raise RuntimeError("segment_trim_failed")
-            trimmed.replace(output)
-            temporary.unlink(missing_ok=True)
+            temporary.replace(output)
         await asyncio.to_thread(self._measure, plan, number, start)
         self._trim(plan)
 
@@ -490,21 +451,9 @@ class SeekStreams:
         path = plan.root / f"{number:05d}.{plan.index.suffix}"
         try:
             result = subprocess.run(
-                [
-                    "ffprobe",
-                    "-v",
-                    "error",
-                    "-select_streams",
-                    "v:0",
-                    "-show_entries",
-                    "packet=pts_time",
-                    "-of",
-                    "csv=p=0",
-                    str(path),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "packet=pts_time", "-of", "csv=p=0", str(path)],
+                capture_output=True, text=True, timeout=60,
             )
             values = []
             for line in result.stdout.splitlines():
