@@ -443,6 +443,7 @@ def create_native_tv_test_router(
     )
     resolved_cache = OrderedDict()
     preload_tasks = {}
+    subtitle_prewarm_tasks = {}
     warm_paths = set()
 
     async def close_hls(job):
@@ -1573,6 +1574,27 @@ def create_native_tv_test_router(
             raise HTTPException(404, "Details unavailable", headers=NO_STORE) from None
         except PlaybackSourceError:
             raise HTTPException(404, "Details unavailable", headers=NO_STORE) from None
+
+        async def prewarm_subtitles():
+            try:
+                if playback_provider(db, scope.viewer_id) == "plex":
+                    return
+                async with asyncio.timeout(60):
+                    candidate = await debrid_source(db, scope, path)
+                    if candidate:
+                        await cloud_streams.prepare(candidate[0].cloud, wait_first=False)
+            except (
+                DebridLibraryError,
+                TimeoutError,
+                households.HouseholdError,
+                PlaybackSourceError,
+            ):
+                return
+
+        if not path.startswith(CLOUD):
+            task = subtitle_prewarm_tasks.get(path)
+            if task is None or task.done():
+                subtitle_prewarm_tasks[path] = asyncio.create_task(prewarm_subtitles())
         return JSONResponse(payload, headers=NO_STORE)
 
     @router.post(LIBRARY_API + "/play")
