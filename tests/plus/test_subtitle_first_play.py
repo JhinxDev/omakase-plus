@@ -191,3 +191,27 @@ def test_uncached_segment_without_history_uses_the_provider():
     response, calls = asyncio.run(scenario())
     assert response.body == b"\x47fresh"
     assert calls and calls[0].endswith("00001.ts")
+
+
+def test_a_long_provider_stall_fails_instead_of_looping_forever():
+    from omakase.plus.debrid_library import DebridLibraryError
+
+    async def scenario():
+        streams = DebridStreams()
+        streams._advance = lambda media, index: None
+        segments = tuple(f"https://s.stream.real-debrid.com/v/{n:05d}.ts" for n in range(8))
+        media = DebridMedia(b"#EXTM3U\n", segments, b"\x47first")
+        await streams.deliver(media, "00000.ts", _request(), lambda: None)
+        outcomes = []
+        for index in range(1, 6):
+            streams.warm[segments[index]] = asyncio.create_task(asyncio.sleep(60))
+            try:
+                response = await streams.deliver(media, f"{index:05d}.ts", _request(), lambda: None)
+                outcomes.append(response.status_code)
+            except DebridLibraryError as error:
+                outcomes.append(error.status)
+        return outcomes
+
+    outcomes = asyncio.run(scenario())
+    assert outcomes[:3] == [200, 200, 200]
+    assert outcomes[3] == 503

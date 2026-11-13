@@ -50,6 +50,10 @@ _SEGMENT_WAIT = 4.0
 # answered with the last served segment so the player keeps its connection and
 # recovers on the next request instead of failing the item.
 _SEGMENT_GRACE = 2.5
+# Repeating one stored segment keeps the player alive through a short provider
+# hiccup, but a long outage must fail honestly: looping a frozen picture while
+# the subtitle timeline advances desyncs captions and hides the real problem.
+_SEGMENT_REPEAT_LIMIT = 3
 _SEGMENT_CACHE_ENTRIES = 64
 _SEGMENT_CACHE_BYTES = 96 * 1024 * 1024
 _SEGMENT_TTL = 180.0
@@ -294,6 +298,7 @@ class DebridStreams:
         self.cached_bytes = 0
         self.pump = None
         self.last_served = {}
+        self.repeat_streak = {}
 
     @staticmethod
     def _playback_key(media):
@@ -301,12 +306,24 @@ class DebridStreams:
 
     def _repeat_last_segment(self, media, index, request, headers):
         """Answer with the last segment actually served for this media."""
-        record = self.last_served.get(self._playback_key(media))
+        key = self._playback_key(media)
+        record = self.last_served.get(key)
         if record is None or record[0] > index:
             return None
         data = record[1]
         if not data or request.method == "HEAD":
             return None
+        streak = self.repeat_streak.get(key, 0) + 1
+        self.repeat_streak[key] = streak
+        if streak > _SEGMENT_REPEAT_LIMIT:
+            _LOG.warning(
+                "provider segment %05d still not ready after %d repeats; failing the segment",
+                index,
+                streak,
+            )
+            raise DebridLibraryError(
+                "Real-Debrid is not delivering this part of the video right now.", 503
+            )
         _LOG.warning(
             "provider segment %05d not ready within %.1fs; repeating segment %05d (%d bytes)",
             index,
@@ -322,7 +339,9 @@ class DebridStreams:
 
     def _remember(self, media, index, data):
         if data:
-            self.last_served[self._playback_key(media)] = (index, data)
+            key = self._playback_key(media)
+            self.last_served[key] = (index, data)
+            self.repeat_streak[key] = 0
 
     def _cache_segment(self, url, data):
         if not data:
