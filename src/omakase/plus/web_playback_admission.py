@@ -17,7 +17,7 @@ class Admission:
     """Count preparation before its first asynchronous await.
 
     Starts: four globally, one per viewer, six per viewer/minute.
-    Reads: sixteen globally, eight per viewer and session, 180/minute by default.
+    Reads: twenty four globally, fourteen per viewer and session, 180/minute by default.
     A seek overlaps old audio/video bodies, new init/segment pairs and ASS fonts;
     one session may use the viewer's existing allowance without increasing it.
     Rate records expire after a minute and are capped at 1024 viewer/kind pairs.
@@ -29,7 +29,7 @@ class Admission:
         self.read_rate_limit = read_rate_limit
         self.active = Counter()
         self.rates = {}
-        self._waiting_reads = asyncio.Semaphore(16)
+        self._waiting_reads = asyncio.Semaphore(28)
         self._read_released: asyncio.Event | None = None
 
     async def acquire_buffered_read(self, viewer, session):
@@ -41,7 +41,9 @@ class Admission:
                 raise
 
         try:
-            async with self._waiting_reads, asyncio.timeout(1):
+            # A seek requests several segments at once and each one takes
+            # seconds to build, so wait rather than reject.
+            async with self._waiting_reads, asyncio.timeout(6):
                 while True:
                     try:
                         return self.acquire("read", viewer, session)
@@ -70,8 +72,11 @@ class Admission:
                 30,
             )
         elif kind == "read":
+            # A seek asks for the target segment and its neighbours together.
+            # Eight concurrent reads plus a one second wait turned that burst
+            # into 429s, which AVPlayer reports as -16845 and a failed item.
             limits, rate_limit = (
-                [((kind,), 16), ((kind, viewer), 8), ((kind, viewer, session), 8)],
+                [((kind,), 24), ((kind, viewer), 14), ((kind, viewer, session), 14)],
                 self.read_rate_limit,
             )
         else:

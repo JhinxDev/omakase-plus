@@ -193,7 +193,10 @@ def _master_playlist(entry, job=None):
                 f'LANGUAGE="{language}",DEFAULT={default},AUTOSELECT=YES,FORCED=NO,'
                 f'URI="subtitles{number}.m3u8"'
             )
-    stream = "#EXT-X-STREAM-INF:BANDWIDTH=8000000"
+    # The Apple TV logs "segment exceeds specified bandwidth for variant" when
+    # a segment is far above the declared rate, so declare a ceiling above this
+    # library's remux bitrate instead of a streaming-profile guess.
+    stream = "#EXT-X-STREAM-INF:BANDWIDTH=40000000"
     if job is not None:
         stream += ',SUBTITLES="subs"'
     lines.append(stream)

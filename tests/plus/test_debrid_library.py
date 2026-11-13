@@ -477,7 +477,7 @@ def test_embedded_subtitles_are_served_as_hls_renditions():
         body = master.body.decode()
         assert "#EXT-X-MEDIA:TYPE=SUBTITLES" in body
         assert 'NAME="English"' in body and 'NAME="French"' in body
-        assert 'STREAM-INF:BANDWIDTH=8000000,SUBTITLES="subs"' in body
+        assert 'STREAM-INF:BANDWIDTH=40000000,SUBTITLES="subs"' in body
         assert body.rstrip().endswith("stream.m3u8")
         media_playlist = await streams.deliver(media, "stream.m3u8", request, lambda: None)
         assert media_playlist.body == playlist

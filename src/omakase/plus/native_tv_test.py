@@ -2004,13 +2004,13 @@ def create_native_tv_test_router(
         ):
             raise HTTPException(404, "Apple TV media unavailable", headers=NO_STORE)
         checked(db, grant)
-        if grant.hls:
-            try:
-                release = await admission.acquire_buffered_read(grant.target.user_id, media_id)
-            except Busy as error:
-                raise admission_rejected(error) from None
-        else:
-            release = acquire("read", grant.target.user_id, media_id)
+        # Both paths queue for a read slot. The direct-file path used to reject
+        # immediately, so a seek (which asks for several segments at once)
+        # answered 429 and AVPlayer failed the item with -16845.
+        try:
+            release = await admission.acquire_buffered_read(grant.target.user_id, media_id)
+        except Busy as error:
+            raise admission_rejected(error) from None
 
         async def authorize():
             _guard()
