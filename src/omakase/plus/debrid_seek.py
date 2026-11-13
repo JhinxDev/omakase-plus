@@ -436,38 +436,51 @@ class SeekStreams:
             temporary.unlink(missing_ok=True)
         else:
             temporary.replace(output)
-        self._measure(plan, number, start)
+        await asyncio.to_thread(self._measure, plan, number, start)
         self._trim(plan)
 
     def _measure(self, plan, number, start):
-        """Compare a written segment's first timestamp with its declared boundary.
+        """Compare a written segment's content with the boundaries it declares.
 
-        Stream copy cannot cut exactly at an arbitrary time: it starts at the
-        keyframe at or before the target, and it ends at a keyframe too. The gap
-        between the declared boundary and the real start is what makes playback
-        repeat at each boundary and what makes the playlist drift away from the
-        subtitles, so it is measured for every segment instead of assumed.
+        Stream copy cannot cut at an arbitrary time: it starts at a keyframe at
+        or before the target and ends at a keyframe at or after it, so a segment
+        can carry more content than its EXTINF claims. That extra content is what
+        replays at each boundary and what pushes the picture behind the subtitle
+        clock, so both the start and the length are measured for every segment.
         """
+        path = plan.root / f"{number:05d}.{plan.index.suffix}"
         try:
             result = subprocess.run(
                 ["ffprobe", "-v", "error", "-select_streams", "v:0",
-                 "-show_entries", "packet=pts_time", "-read_intervals", "%+#1",
-                 "-of", "csv=p=0", str(plan.root / f"{number:05d}.{plan.index.suffix}")],
-                capture_output=True, text=True, timeout=20,
+                 "-show_entries", "packet=pts_time", "-of", "csv=p=0", str(path)],
+                capture_output=True, text=True, timeout=60,
             )
-            first = float(result.stdout.strip().splitlines()[0].split(",")[0])
-        except (OSError, IndexError, ValueError, subprocess.SubprocessError):
+            values = []
+            for line in result.stdout.splitlines():
+                try:
+                    values.append(float(line.strip().split(",")[0]))
+                except ValueError:
+                    continue
+        except (OSError, subprocess.SubprocessError):
             return
-        declared = start - plan.index.segments[0][0]
-        drift = round(first - declared, 3)
-        plan.drift = drift
-        if abs(drift) > _BOUNDARY_TOLERANCE:
+        if not values:
+            return
+        first, last = min(values), max(values)
+        declared_start = start - plan.index.segments[0][0]
+        declared_span = plan.index.segments[number][1] - plan.index.segments[number][0]
+        start_drift = round(first - declared_start, 3)
+        span_drift = round((last - first) - declared_span, 3)
+        plan.drift = span_drift
+        if abs(start_drift) > _BOUNDARY_TOLERANCE or abs(span_drift) > _BOUNDARY_TOLERANCE:
             _LOG.warning(
-                "seek segment %d starts %.3f s from its declared boundary (declared %.3f, first %.3f)",
+                "seek segment %d drift start=%+.3f s span=%+.3f s (declared %.3f/%.3f, actual %.3f/%.3f)",
                 number,
-                drift,
-                declared,
+                start_drift,
+                span_drift,
+                declared_start,
+                declared_span,
                 first,
+                round(last - first, 3),
             )
 
     def _prefetch(self, plan, start):
