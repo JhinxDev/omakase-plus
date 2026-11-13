@@ -427,7 +427,7 @@ class DebridStreams:
         if job is None:
             return
         try:
-            async with asyncio.timeout(3):
+            async with asyncio.timeout(0.4):
                 await job.ready.wait()
         except TimeoutError:
             return
@@ -570,8 +570,10 @@ class DebridStreams:
         plan = self.seek.get(getattr(entry, "seek_key", ""))
         if asset == "index.m3u8":
             if job is not None and not job.ready.is_set():
+                # An uncached PGS/ASR job can take minutes. Do not hold the
+                # player's index request open for work that cannot finish now.
                 try:
-                    async with asyncio.timeout(6):
+                    async with asyncio.timeout(0.2):
                         await job.ready.wait()
                 except TimeoutError:
                     pass
