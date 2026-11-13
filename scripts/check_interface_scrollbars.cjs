@@ -1,15 +1,21 @@
 /* Native Windows Edge scrollbars and footer; no provider or account requests. */
+const { qaRuntime, qaPython } = require('./qa-environment.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
-const runtime = process.env.OMAKASE_QA_NODE_MODULES || path.join(root, 'node_modules');
+// Pinned browser on purpose: this check measures native Windows scrollbar
+// rendering, so it needs the installed msedge channel and must keep the default
+// --hide-scrollbars argument removed. qaBrowser() cannot express that, and an
+// executable override would silently change what is being measured. The entry is
+// registered in scripts/qa-environment.test.cjs as a documented exception.
+const runtime = qaRuntime();
 const { chromium } = require(require.resolve('playwright', { paths: [runtime] }));
 const output = process.env.OMAKASE_INTERFACE_QA_OUTPUT || path.join(root, '.qa-artifacts/interface');
 fs.mkdirSync(output, { recursive: true });
-const html = execFileSync(process.env.OMAKASE_QA_PYTHON || path.join(root, '.venv/Scripts/python.exe'), ['-c', "import runpy; f=runpy.run_path('tests/plus/test_global_search_ui.py'); print(f['render_search'](kind='anime',query=''))"], { cwd: root, encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
+const html = execFileSync(qaPython(), ['-c', "import runpy; f=runpy.run_path('tests/plus/test_global_search_ui.py'); print(f['render_search'](kind='anime',query=''))"], { cwd: root, encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
 const source = {};
 for (const name of ['interface.css', 'search.js']) source[name] = crypto.createHash('sha256').update(fs.readFileSync(path.join(root, 'src/omakase/plus/static', name))).digest('hex');
 const receipt = { source, checks: [], writes: [], errors: [], engine: 'Windows Edge, headless; only --hide-scrollbars default removed', limitations: ['Intercepted title fixtures; emulated narrow viewports and forced colors, not physical device acceptance. Footer destinations separately verified public.'] };

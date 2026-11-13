@@ -20,7 +20,11 @@ const results=[];
    {name:'low-resolution-banner',width:1440,art:[900,300],state:'contained'},
    {name:'portrait-banner',width:1440,art:[480,720],state:'contained'},
    {name:'transparent-placeholder',width:1440,art:[2,3],transparent:true,state:'unavailable'},
-   {name:'mobile-poster',width:390,art:[2560,1440],state:'contained',dpr:2},
+   // hero-quality.js keeps a landscape source on the cover path at every width
+   // (see check_hero_layout.cjs: landscape means cover). The mobile composed case
+   // is a portrait source, so this scenario carries poster artwork and expects the
+   // contained state rather than asking a 2560x1440 banner to become contained.
+   {name:'mobile-poster',width:390,art:[480,720],state:'contained',dpr:2},
    {name:'no-javascript',width:1440,art:[900,300],noJS:true},
   ]) {
    const context=await browser.newContext({viewport:{width:scenario.width,height:900},deviceScaleFactor:scenario.dpr||1,javaScriptEnabled:!scenario.noJS,reducedMotion:'reduce'});
@@ -47,10 +51,18 @@ const results=[];
    if(scenario.state)await page.waitForFunction(state=>document.querySelector('picture[data-hero-quality]').dataset.heroState===state,scenario.state);
    const proof=await picture.evaluate(node=>{
     const image=node.querySelector('img');const style=getComputedStyle(image);const bounds=image.getBoundingClientRect();
-    return {state:node.dataset.heroState,fit:style.objectFit,natural:[image.naturalWidth,image.naturalHeight],box:[bounds.width,bounds.height],visibility:style.visibility};
+    const drawn=image.naturalWidth&&image.naturalHeight?(style.objectFit==='cover'?Math.max(bounds.width/image.naturalWidth,bounds.height/image.naturalHeight):Math.min(bounds.width/image.naturalWidth,bounds.height/image.naturalHeight)):0;
+    return {state:node.dataset.heroState,fit:style.objectFit,natural:[image.naturalWidth,image.naturalHeight],box:[bounds.width,bounds.height],visibility:style.visibility,drawn};
    });
    if(scenario.state)assert.equal(proof.state,scenario.state,scenario.name);
-   if(proof.state!=='cover')assert.equal(proof.fit,'scale-down',scenario.name);
+   // hero-quality.css composes non-cover art with object-fit: contain, and the
+   // intrinsic caps (width:auto, height:auto, max-width/max-height bounded by the
+   // --hero-native-width/--hero-native-height values that hero-quality.js sets from
+   // the natural size) are what keep the source pixels from being enlarged. Assert
+   // the shipped value and the drawn scale, so a later switch to a stretching fit
+   // still fails here even though contain itself is intentional.
+   if(proof.state!=='cover')assert.equal(proof.fit,'contain',scenario.name);
+   if(proof.state!=='cover')assert(proof.drawn<=1.0001,scenario.name+' must not draw above source pixels');
    if(proof.state==='contained')assert(proof.box[0]<=proof.natural[0]&&proof.box[1]<=proof.natural[1],scenario.name+' must not enlarge source');
    if(scenario.transparent)assert.equal(proof.visibility,'hidden');
    assert.equal(await page.locator('#featured-title').isVisible(),true);
@@ -60,7 +72,16 @@ const results=[];
    if(scenario.name==='low-resolution-banner') {
     await page.setViewportSize({width:390,height:844});
     await page.waitForFunction(()=>document.querySelector('picture[data-hero-quality]').dataset.heroState==='contained');
-    assert.equal(await picture.locator('img').evaluate(image=>getComputedStyle(image).objectFit),'scale-down');
+    const narrow=await picture.locator('img').evaluate(image=>{
+     const style=getComputedStyle(image),bounds=image.getBoundingClientRect();
+     const drawn=Math.min(bounds.width/image.naturalWidth,bounds.height/image.naturalHeight);
+     return {fit:style.objectFit,drawn,box:[bounds.width,bounds.height],natural:[image.naturalWidth,image.naturalHeight]};
+    });
+    // Same shipped contract on the narrow viewport: contain, never drawn above
+    // the source. The mobile rule in hero-quality.css caps max-width at 100% and
+    // at --hero-native-width, so a 900 px banner is not stretched at 390 px.
+    assert.equal(narrow.fit,'contain','low-resolution-banner narrow fit');
+    assert(narrow.drawn<=1.0001,'low-resolution-banner narrow must not draw above source pixels');
    }
    results.push({name:scenario.name,...proof,errors});
    await context.close();
