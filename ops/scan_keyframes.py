@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -118,10 +119,12 @@ async def resolve(watch_path: str):
 
 
 def main(argv):
-    if len(argv) != 1:
+    # The app container has a read-only root, so this also runs from stdin:
+    #   docker exec -e OMAKASE_SCAN_WATCH_PATH=... -i omakase-plus python - < ops/scan_keyframes.py
+    watch_path = argv[0] if argv else os.environ.get("OMAKASE_SCAN_WATCH_PATH", "")
+    if not watch_path:
         print(__doc__)
         return 1
-    watch_path = argv[0]
     direct, duration = asyncio.run(resolve(watch_path))
     if not direct:
         print(json.dumps({"error": "no direct source", "watch_path": watch_path}))
