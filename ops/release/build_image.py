@@ -14,10 +14,17 @@ Commands, from the repository root:
 
     python ops/release/build_image.py --dry-run --manifest release/manifest.json
     python ops/release/build_image.py --commit <sha> --manifest release/manifest.json
+    python ops/release/build_image.py --commit <sha> --remote omakase-ct --readback
 
 ``--dry-run`` writes the manifest and prints the plan without touching Docker.
 A real build also proves that the image content equals the commit tree by
 hashing every installed file inside the built image.
+
+``--remote HOST`` builds on the Docker host instead of the workstation. The
+context is still the exact commit archive, streamed over ssh, and the host free
+space is checked against the minimum before the build starts. The resulting
+image carries the revision label and is verified with the same in-image hash
+readback.
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ import argparse
 import hashlib
 import io
 import json
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -40,6 +48,12 @@ IMAGE_REPOSITORY = "omakase-plus"
 PACKAGE_TREE = "src/omakase/plus"
 SOURCE_URL = "https://github.com/JhinxDev/omakase-plus"
 REPO_ROOT = Path(__file__).resolve().parents[2]
+MIN_FREE_BYTES = 4 * 1024**3
+SSH_OPTIONS = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
+# pip compiles bytecode during install, so an image legitimately contains derived
+# files that are not part of the shipped tree.
+RUNTIME_MARKERS = ("__pycache__",)
+RUNTIME_SUFFIXES = (".pyc", ".pyo")
 
 HASH_READER = """
 import hashlib, importlib.util, json, pathlib
@@ -53,6 +67,23 @@ for path in sorted(root.rglob("*")):
     if path.is_file():
         files[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
 print(json.dumps({"package": str(root), "files": files}))
+"""
+
+TOOL_READBACK = """
+import importlib, importlib.metadata, json, shutil, subprocess
+
+report = {}
+for binary in ("tesseract", "mkvmerge", "ffmpeg"):
+    path = shutil.which(binary)
+    if path is None:
+        raise SystemExit("missing binary " + binary)
+    output = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=60)
+    lines = (output.stdout or output.stderr).splitlines()
+    report[binary] = {"path": path, "version": lines[0].strip() if lines else "unknown"}
+for module, distribution in (("faster_whisper", "faster-whisper"), ("pgsrip", "pgsrip")):
+    importlib.import_module(module)
+    report[module] = {"version": importlib.metadata.version(distribution)}
+print(json.dumps(report))
 """
 
 
@@ -252,6 +283,34 @@ def compare_trees(
     return changed, missing, unexpected
 
 
+def is_runtime_artifact(path: str) -> bool:
+    """Return True for interpreter bytecode, which is derived and not shipped content."""
+    return path.endswith(RUNTIME_SUFFIXES) or any(marker in path for marker in RUNTIME_MARKERS)
+
+
+def shipped_files(hashes: Mapping[str, str]) -> dict[str, str]:
+    """Drop derived bytecode from a hash map."""
+    return {path: digest for path, digest in hashes.items() if not is_runtime_artifact(path)}
+
+
+def verify_tree(record: object, expected: Mapping[str, str]) -> dict[str, object]:
+    """Compare an in-image hash readback with the commit tree and refuse a mismatch."""
+    observed = record.get("files") if isinstance(record, dict) else None
+    if not isinstance(observed, dict):
+        raise ReleaseError("could not read installed files from the built image")
+    changed, missing, unexpected = compare_trees(shipped_files(expected), shipped_files(observed))
+    if changed or missing or unexpected:
+        problems = []
+        if missing:
+            problems.append(f"missing from image: {', '.join(missing[:10])}")
+        if unexpected:
+            problems.append(f"not in the commit tree: {', '.join(unexpected[:10])}")
+        if changed:
+            problems.append(f"content differs: {', '.join(changed[:10])}")
+        raise ReleaseError("image content does not match the commit tree: " + "; ".join(problems))
+    return record
+
+
 def verify_image(reference: str, expected: Mapping[str, str]) -> dict[str, object]:
     """Prove that the installed package inside an image equals the commit tree."""
     raw = _docker(
@@ -270,21 +329,137 @@ def verify_image(reference: str, expected: Mapping[str, str]) -> dict[str, objec
         HASH_READER,
         timeout=300,
     )
-    record = json.loads(raw)
-    observed = record.get("files") if isinstance(record, dict) else None
-    if not isinstance(observed, dict):
-        raise ReleaseError("could not read installed files from the built image")
-    changed, missing, unexpected = compare_trees(expected, observed)
-    if changed or missing or unexpected:
-        problems = []
-        if missing:
-            problems.append(f"missing from image: {', '.join(missing[:10])}")
-        if unexpected:
-            problems.append(f"not in the commit tree: {', '.join(unexpected[:10])}")
-        if changed:
-            problems.append(f"content differs: {', '.join(changed[:10])}")
-        raise ReleaseError("image content does not match the commit tree: " + "; ".join(problems))
-    return record
+    return verify_tree(json.loads(raw), expected)
+
+
+def tool_readback(reference: str) -> dict[str, object]:
+    """Read back the subtitle tooling inside a local image."""
+    raw = _docker(
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--entrypoint",
+        "python",
+        reference,
+        "-B",
+        "-c",
+        TOOL_READBACK,
+        timeout=300,
+    )
+    return json.loads(raw)
+
+
+def disk_refusal(available: int, minimum: int = MIN_FREE_BYTES) -> str | None:
+    """Refuse a build when the target host has less than the minimum free space."""
+    if available < minimum:
+        return f"refusing to build: {available} bytes free is under the {minimum} byte minimum"
+    return None
+
+
+def _ssh(host: str, command: str, *, stdin: bytes | None = None, timeout: int = 900) -> bytes:
+    try:
+        result = subprocess.run(
+            ["ssh", *SSH_OPTIONS, host, command],
+            input=stdin,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError as error:
+        raise ReleaseError("ssh is not available on PATH") from error
+    except subprocess.TimeoutExpired as error:
+        raise ReleaseError(f"remote command timed out after {timeout}s") from error
+    if result.returncode:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        raise ReleaseError(f"remote command failed on {host}:\n{detail[-4000:]}")
+    return result.stdout
+
+
+def remote_free_bytes(host: str, path: str = "/var/lib/docker") -> int:
+    """Read free bytes on the Docker host without changing anything."""
+    command = f"df -B1 --output=avail {shlex.quote(path)} | tail -1"
+    return int(_ssh(host, command, timeout=60).decode("ascii").strip())
+
+
+def remote_docker_root(host: str) -> str:
+    """Read the Docker root directory on the host."""
+    return _ssh(host, "docker info --format '{{.DockerRootDir}}'", timeout=60).decode().strip()
+
+
+def remote_image_details(host: str, reference: str) -> dict[str, object]:
+    """Return the inspect record for one image on the host."""
+    raw = _ssh(host, shlex.join(["docker", "image", "inspect", reference]), timeout=120)
+    details = json.loads(raw)
+    if not isinstance(details, list) or not details or not isinstance(details[0], dict):
+        raise ReleaseError(f"image {reference} is not present on {host}")
+    return details[0]
+
+
+def remote_build_image(host: str, context: bytes, revision: str, tag: str, timeout: int) -> None:
+    """Build the exact commit context on the Docker host over ssh."""
+    command = shlex.join(
+        [
+            "docker",
+            "build",
+            "--network",
+            "host",
+            "--build-arg",
+            f"OMAKASE_REVISION={revision}",
+            "--label",
+            f"{REVISION_LABEL}={revision}",
+            "--tag",
+            tag,
+            "-",
+        ]
+    )
+    _ssh(host, command, stdin=context, timeout=timeout)
+
+
+def remote_verify_image(
+    host: str, reference: str, expected: Mapping[str, str]
+) -> dict[str, object]:
+    """Hash the installed package inside a host image and compare with the tree."""
+    command = shlex.join(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--read-only",
+            "--env",
+            "PYTHONDONTWRITEBYTECODE=1",
+            "--entrypoint",
+            "python",
+            reference,
+            "-B",
+            "-c",
+            HASH_READER,
+        ]
+    )
+    return verify_tree(json.loads(_ssh(host, command, timeout=300)), expected)
+
+
+def remote_tool_readback(host: str, reference: str) -> dict[str, object]:
+    """Read back the subtitle tooling inside a host image."""
+    command = shlex.join(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--read-only",
+            "--entrypoint",
+            "python",
+            reference,
+            "-B",
+            "-c",
+            TOOL_READBACK,
+        ]
+    )
+    return json.loads(_ssh(host, command, timeout=300))
 
 
 def build_image(repo: Path, commit: str, revision: str, tag: str, timeout: int) -> str:
@@ -292,6 +467,8 @@ def build_image(repo: Path, commit: str, revision: str, tag: str, timeout: int) 
     context = commit_archive(repo, commit)
     _docker(
         "build",
+        "--network",
+        "host",
         "--build-arg",
         f"OMAKASE_REVISION={revision}",
         "--label",
@@ -316,6 +493,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--commit", default="HEAD", help="commit or ref to build")
     parser.add_argument("--tag", default=None, help="image tag, default omakase-plus:<revision>")
     parser.add_argument("--manifest", type=Path, default=None, help="manifest output path")
+    parser.add_argument(
+        "--remote",
+        default=None,
+        help="build on this ssh host instead of the local Docker daemon",
+    )
+    parser.add_argument(
+        "--min-free-bytes",
+        type=int,
+        default=MIN_FREE_BYTES,
+        help="refuse the build when the target has less free space than this",
+    )
+    parser.add_argument(
+        "--readback",
+        action="store_true",
+        help="read back tesseract, mkvmerge, faster_whisper and pgsrip from the image",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -351,6 +544,48 @@ def main(argv: list[str] | None = None) -> int:
             "tag": tag,
             "manifest": str(args.manifest) if args.manifest is not None else None,
         }
+        if args.remote is not None:
+            docker_root = remote_docker_root(args.remote)
+            room = remote_free_bytes(args.remote, docker_root)
+            plan.update(
+                {
+                    "remote": args.remote,
+                    "docker_root": docker_root,
+                    "available_bytes_before": room,
+                    "min_free_bytes": args.min_free_bytes,
+                }
+            )
+            refusal = disk_refusal(room, args.min_free_bytes)
+            if refusal:
+                raise ReleaseError(refusal)
+            if args.dry_run:
+                plan["image"] = None
+                plan["verified_files"] = 0
+                print(json.dumps(plan, indent=2))
+                print(
+                    "DRY RUN: manifest written and the remote disk gate passed; no image was built",
+                    file=sys.stderr,
+                )
+                return 0
+            remote_build_image(
+                args.remote, commit_archive(args.repo, commit), revision, tag, args.timeout
+            )
+            details = remote_image_details(args.remote, tag)
+            image = str(details.get("Id", ""))
+            label = image_label(details)
+            if label != revision:
+                raise ReleaseError(f"image label {label!r} does not match revision {revision!r}")
+            plan["image"] = image
+            plan["label"] = label
+            plan["image_size_bytes"] = details.get("Size")
+            if not args.skip_verify:
+                remote_verify_image(args.remote, tag, hashes)
+                plan["verified_files"] = len(hashes)
+            if args.readback:
+                plan["readback"] = remote_tool_readback(args.remote, tag)
+            plan["available_bytes_after"] = remote_free_bytes(args.remote, docker_root)
+            print(json.dumps(plan, indent=2))
+            return 0
         if args.dry_run:
             plan["image"] = None
             plan["verified_files"] = 0
@@ -362,16 +597,15 @@ def main(argv: list[str] | None = None) -> int:
         label = image_label(details)
         if label != revision:
             raise ReleaseError(f"image label {label!r} does not match revision {revision!r}")
-        if args.skip_verify:
-            plan["image"] = image
-            plan["verified_files"] = 0
-            plan["label"] = label
-            print(json.dumps(plan, indent=2))
-            return 0
-        verify_image(image, hashes)
         plan["image"] = image
         plan["label"] = label
-        plan["verified_files"] = len(hashes)
+        plan["image_size_bytes"] = details.get("Size")
+        plan["verified_files"] = 0
+        if not args.skip_verify:
+            verify_image(image, hashes)
+            plan["verified_files"] = len(hashes)
+        if args.readback:
+            plan["readback"] = tool_readback(image)
         print(json.dumps(plan, indent=2))
         return 0
     except ReleaseError as error:

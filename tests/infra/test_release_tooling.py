@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).parents[2]
 RELEASE_DIR = REPO_ROOT / "ops" / "release"
+DOCKERFILE = REPO_ROOT / "Dockerfile"
+SUBTITLES_REQUIREMENTS = REPO_ROOT / "requirements-subtitles.txt"
 FIXTURES = Path(__file__).parent / "fixtures" / "release"
 GIT = shutil.which("git")
 IMAGE_A = "sha256:" + "1" * 64
@@ -417,9 +420,78 @@ def test_tree_problems_reports_content_missing_and_unexpected():
     assert promote.tree_problems({"a.py": "1" * 64}, {"a.py": "1" * 64}) == []
 
 
+# Subtitle runtime parity with the production overlay
+
+
+def test_dockerfile_declares_the_subtitle_runtime():
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "tesseract-ocr" in dockerfile
+    assert "mkvtoolnix" in dockerfile
+    assert "ffmpeg" in dockerfile
+    assert "requirements-subtitles.txt" in dockerfile
+    assert "--require-hashes" in dockerfile
+    for marker in ("tesseract", "mkvmerge", "faster_whisper", "pgsrip"):
+        assert marker in build_image.TOOL_READBACK
+
+
+def test_subtitle_requirements_are_complete_and_hash_pinned():
+    text = SUBTITLES_REQUIREMENTS.read_text(encoding="utf-8")
+    entries = dict(re.findall(r"(?m)^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\s\\]+)", text))
+    names = {name.lower().replace("_", "-") for name in entries}
+
+    assert {"faster-whisper", "pgsrip"} <= names
+    assert entries["faster-whisper"] == "1.2.1"
+    assert entries["pgsrip"] == "0.3.0"
+    # Shared packages are pinned to the application versions so the subtitle
+    # install can never rewrite the app stack.
+    assert entries["anyio"] == "4.14.2"
+    assert entries["typing-extensions"] == "4.15.0"
+    blocks = re.split(r"(?m)^(?=[A-Za-z0-9][A-Za-z0-9_.-]*==)", text)
+    assert len(blocks) > 1
+    for block in blocks[1:]:
+        assert "--hash=sha256:" in block, block.splitlines()[0]
+
+
+def test_remote_build_refuses_under_the_free_space_floor():
+    floor = build_image.MIN_FREE_BYTES
+    assert floor == 4 * 1024**3
+    assert build_image.disk_refusal(floor + 1) is None
+    assert build_image.disk_refusal(floor) is None
+    message = build_image.disk_refusal(floor - 1)
+    assert message is not None
+    assert "refusing to build" in message
+
+
+def test_remote_build_defaults_are_local_and_explicit():
+    args = build_image.parse_args([])
+    assert args.remote is None
+    assert args.min_free_bytes == build_image.MIN_FREE_BYTES
+    assert args.readback is False
+    assert build_image.parse_args(["--remote", "omakase-ct", "--readback"]).readback is True
+
+
+def test_build_verification_ignores_installed_bytecode_only():
+    expected = {"alpha.py": "1" * 64}
+    record = {
+        "files": {
+            "alpha.py": "1" * 64,
+            "__pycache__/alpha.cpython-312.pyc": "2" * 64,
+        }
+    }
+    assert build_image.verify_tree(record, expected) is record
+    assert build_image.is_runtime_artifact("__pycache__/alpha.cpython-312.pyc")
+    assert not build_image.is_runtime_artifact("alpha.py")
+
+    with pytest.raises(build_image.ReleaseError, match="content differs"):
+        build_image.verify_tree({"files": {"alpha.py": "9" * 64}}, expected)
+    with pytest.raises(build_image.ReleaseError, match="not in the commit tree"):
+        build_image.verify_tree({"files": {"alpha.py": "1" * 64, "extra.py": "2" * 64}}, expected)
+    with pytest.raises(build_image.ReleaseError, match="missing from image"):
+        build_image.verify_tree({"files": {}}, expected)
+
+
 # Manifest acceptance and dry-run defaults
-
-
 def _valid_manifest(commit: str = "c" * 40) -> dict[str, object]:
     hashes = build_image.file_hashes(_fixture_files())
     return build_image.build_manifest(commit, hashes)
