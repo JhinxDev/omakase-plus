@@ -462,12 +462,13 @@ class SeekStreams:
             "error",
             "-y",
             "-ss",
-            # Seeking to a keyframe lands on the keyframe before it, measured
-            # repeatedly on local samples: asking for 1.001 starts at 0.0, and
-            # asking for 1.877 starts at 1.001. Aiming at the end of the window
-            # therefore starts exactly on its first keyframe, which makes the
-            # segment content match the boundary the playlist declares.
-            f"{0.0 if start <= 0.0 else end:.3f}",
+            # Seeking to a keyframe lands on the keyframe before it, measured on
+            # local samples: asking for 1.001 starts at 0.0 and asking for 1.877
+            # starts at 1.001. Aiming at the next keyframe after this segment's
+            # start therefore starts content exactly on the start boundary.
+            # Aiming at the end instead overshoots a whole segment, because the
+            # media has far denser keyframes than the timeline uses.
+            f"{_seek_target(plan, start, end):.3f}",
             "-i",
             plan.url,
             "-t",
@@ -872,6 +873,35 @@ def _cached_keyframes(plan):
             return None
         values.append(round(value, 3))
     return sorted(set(values))
+
+
+def _dense_keyframes(index):
+    """True when the keyframe list is dense enough for the nudge to work.
+
+    The rule depends on there being a keyframe between this segment's start and
+    its end. A cue table that only lists the boundaries themselves cannot supply
+    one, and aiming at the end in that case overshoots a whole segment.
+    """
+    values = index.keyframes if index is not None else ()
+    if len(values) < 4:
+        return False
+    gaps = sorted(b - a for a, b in zip(values, values[1:]) if b > a)
+    if not gaps:
+        return False
+    median = gaps[len(gaps) // 2]
+    return median <= 3.0
+
+
+def _seek_target(plan, start, end):
+    """Return the time to ask for so the seek lands on ``start``."""
+    if start <= 0.0 or plan.index is None:
+        return 0.0
+    if not _dense_keyframes(plan.index):
+        return float(start)
+    for value in plan.index.keyframes:
+        if value > start + 0.001:
+            return float(value)
+    return float(start)
 
 
 def _audio_args(audio):

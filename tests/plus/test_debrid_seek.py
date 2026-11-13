@@ -179,37 +179,52 @@ def test_audio_policy_copies_ts_compatible_codecs_and_transcodes_the_rest():
         assert args[args.index("-ac") + 1] == "2", codec
 
 
-def test_later_segments_aim_at_their_end_so_the_seek_lands_on_the_start(tmp_path, monkeypatch):
+def test_seek_aims_at_the_next_keyframe_only_when_keyframes_are_dense(tmp_path, monkeypatch):
     """The demuxer starts one keyframe before the time it is asked for.
 
     Measured on a local sample: asking for 1.001 starts at 0.0 and asking for
-    1.877 starts at 1.001. Aiming at a segment's end therefore starts exactly on
-    the keyframe the playlist declares, which is what stops the repeat at every
-    boundary.
+    1.877 starts at 1.001. So with a dense keyframe list the seek must ask for
+    the next keyframe after the segment start. With only boundary keyframes there
+    is no in-between keyframe, and aiming later overshoots a whole segment, so
+    the plain start is used instead.
     """
     import omakase.plus.debrid_seek as seek
 
-    calls = []
+    async def generate(tmp_path, keyframes, segments, number):
+        calls = []
 
-    async def fake_ffmpeg(args):
-        calls.append(args)
-        Path(args[-1]).write_bytes(b"x" * 256)
+        async def fake_ffmpeg(args):
+            calls.append(args)
+            Path(args[-1]).write_bytes(b"x" * 256)
 
-    monkeypatch.setattr(seek, "_run_ffmpeg", fake_ffmpeg)
-    index = SeekIndex(
-        url="https://chi9-4.download.real-debrid.com/x/y.mkv",
-        duration=12.0,
-        video_codec="h264",
-        audio_codec="aac",
-        keyframes=(0.0, 6.0, 12.0),
-        segments=((0.0, 6.0), (6.0, 12.0)),
-        container="ts",
+        monkeypatch.setattr(seek, "_run_ffmpeg", fake_ffmpeg)
+        index = SeekIndex(
+            url="https://chi9-4.download.real-debrid.com/x/y.mkv",
+            duration=12.0,
+            video_codec="h264",
+            audio_codec="aac",
+            keyframes=keyframes,
+            segments=segments,
+            container="ts",
+        )
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        plan = SeekPlan(key="aim", url=index.url, duration=12.0, root=tmp_path)
+        plan.index = index
+        plan.ready.set()
+        streams = SeekStreams(root=tmp_path)
+        await streams._generate(plan, number)
+        args = calls[0]
+        return args[args.index("-ss") + 1], args[args.index("-t") + 1]
+
+    dense = (0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0)
+    target, duration = asyncio.run(
+        generate(tmp_path / "dense", dense, ((0.0, 6.0), (6.0, 12.0)), 1)
     )
-    plan = SeekPlan(key="aim", url=index.url, duration=12.0, root=tmp_path)
-    plan.index = index
-    plan.ready.set()
-    streams = SeekStreams(root=tmp_path)
-    asyncio.run(streams._generate(plan, 1))
-    args = calls[0]
-    assert args[args.index("-ss") + 1] == "12.000"
-    assert args[args.index("-t") + 1] == "6.000"
+    assert target == "7.000"
+    assert duration == "6.000"
+    sparse = (0.0, 6.0, 12.0)
+    target, duration = asyncio.run(
+        generate(tmp_path / "sparse", sparse, ((0.0, 6.0), (6.0, 12.0)), 1)
+    )
+    assert target == "6.000"
+    assert duration == "6.000"
