@@ -599,16 +599,13 @@ async def _range(client, url, start, end):
 
 
 def _audio_args(audio):
+    # AVPlayer accepts AAC in MPEG-TS universally. Dolby and lossless sources
+    # were being transcoded to E-AC3 5.1, which the Apple TV started and then
+    # rejected with CoreMedia -12971 after the first frame. Stereo AAC is the
+    # compatible choice; surround can come back once playback is stable.
     if audio == "aac":
         return ["-c:a", "copy"]
-    if audio in {"ac3", "eac3"}:
-        # Dolby audio inside MPEG-TS is accepted inconsistently by AVPlayer: the
-        # item starts, shows a frame and then fails with CoreMedia -12971. An
-        # audio-only transcode costs almost nothing and keeps it playable.
-        return ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
-    if audio in {"dts", "truehd", "flac", "opus", "vorbis"} or not audio:
-        return ["-c:a", "eac3", "-b:a", "640k", "-ac", "6"]
-    return ["-c:a", "aac", "-b:a", "384k"]
+    return ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
 
 
 async def _run_ffmpeg(args):
