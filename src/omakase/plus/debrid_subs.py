@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -131,9 +132,16 @@ class SubtitleCache:
         self.disk_budget = 512 * 1024 * 1024
         self.playing = False
         self.gate = asyncio.Semaphore(1)
+        self.processes = set()
 
     def set_playing(self, playing):
         self.playing = bool(playing)
+        if self.playing:
+            for process in tuple(self.processes):
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
 
     async def _wait_for_idle(self):
         while self.playing:
@@ -231,18 +239,27 @@ class SubtitleCache:
         return ("WEBVTT\n\n" + "\n\n".join(blocks) + "\n").encode("utf-8")
 
     async def _run_ocr(self, command, timeout):
+        prefix = []
+        if shutil.which("nice"):
+            prefix += ["nice", "-n", "19"]
+        if shutil.which("taskset"):
+            prefix += ["taskset", "-c", "0"]
         try:
             process = await asyncio.create_subprocess_exec(
+                *prefix,
                 *command,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
+            self.processes.add(process)
             try:
                 await asyncio.wait_for(process.communicate(), timeout)
             except TimeoutError:
                 process.kill()
                 await process.wait()
                 return False
+            finally:
+                self.processes.discard(process)
         except OSError:
             return False
         return process.returncode == 0
