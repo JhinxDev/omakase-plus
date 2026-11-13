@@ -546,6 +546,8 @@ class DebridStreams:
                     # -12971. A seek timeline is a single VOD playlist already;
                     # expose it directly so AVPlayer never takes the master hop.
                     return _playlist_reply(plan.index.playlist, request)
+            if job is not None and job.tracks and all(track.data for track in job.tracks):
+                return _playlist_reply(_master_playlist(entry, job), request)
             # AVPlayer rejects the provider's master wrapper with CoreMedia
             # -12971. Serve the single provider media playlist directly; the
             # provider already chose one quality. Text subtitles are requested
