@@ -495,3 +495,16 @@ def test_embedded_subtitles_are_served_as_hls_renditions():
         assert head.body == b""
 
     asyncio.run(run())
+
+
+def test_webvtt_shift_moves_cues_onto_the_picture():
+    import omakase.plus.debrid_stream as stream
+
+    body = (
+        b"WEBVTT\n\n00:00:01.668 --> 00:00:04.588\nHello\n\n00:00:00.200 --> 00:00:00.900\nEarly\n"
+    )
+    shifted = stream._shift_webvtt(body, 0.4).decode()
+    assert "00:00:01.268 --> 00:00:04.188" in shifted
+    # A cue that would fall before zero is clamped rather than negative.
+    assert "00:00:00.000 --> 00:00:00.500" in shifted
+    assert stream._shift_webvtt(body, 0.0) == body

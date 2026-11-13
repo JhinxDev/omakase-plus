@@ -118,6 +118,138 @@ async def resolve(watch_path: str):
     return (direct or None), duration
 
 
+def frame_hashes(path, limit=None):
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path), "-map", "0:v:0"]
+    if limit:
+        args += ["-frames:v", str(limit)]
+    args += ["-f", "framemd5", "-"]
+    result = subprocess.run(args, capture_output=True, text=True, timeout=1800)
+    out = []
+    for line in result.stdout.splitlines():
+        if line.startswith("#") or not line.strip():
+            continue
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) >= 6:
+            out.append(parts[5])
+    return out
+
+
+def measure_offset(direct, keyframes):
+    """Measure how far past its boundary the picture actually starts.
+
+    The demuxer can only begin at a keyframe, so a generated chunk can start a
+    little after the time the playlist declares. That constant is what makes
+    subtitles run early. One small local sample plus one generated chunk measure
+    it exactly; when the measurement is not possible this returns 0.0 and leaves
+    behaviour unchanged.
+    """
+    work = Path("/home/omakase/data/seeklab")
+    try:
+        work.mkdir(parents=True, exist_ok=True)
+        boundary = next((value for value in keyframes if value >= 60.0), None)
+        if boundary is None:
+            return 0.0
+        following = [value for value in keyframes if value > boundary + 0.001]
+        if not following:
+            return 0.0
+        target = following[0]
+        sample_start = max(0.0, boundary - 10.0)
+        sample = work / "offset-sample.mkv"
+        built = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-ss",
+                f"{sample_start:.3f}",
+                "-i",
+                direct,
+                "-t",
+                "25.000",
+                "-map",
+                "0:v:0",
+                "-c",
+                "copy",
+                "-y",
+                str(sample),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+        if built.returncode != 0 or not sample.is_file():
+            return 0.0
+        reference = frame_hashes(sample)
+        index_of = {}
+        for number, value in enumerate(reference):
+            index_of.setdefault(value, number)
+        rate = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=r_frame_rate",
+                "-of",
+                "csv=p=0",
+                direct,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        ).stdout.strip()
+        try:
+            numerator, denominator = rate.split("/")
+            fps = float(numerator) / float(denominator)
+        except (ValueError, ZeroDivisionError):
+            fps = 24000 / 1001
+        chunk = work / "offset-chunk.ts"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-ss",
+                f"{target:.3f}",
+                "-i",
+                direct,
+                "-t",
+                "2.000",
+                "-map",
+                "0:v:0",
+                "-c",
+                "copy",
+                "-f",
+                "mpegts",
+                "-y",
+                str(chunk),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+        head = frame_hashes(chunk, limit=1)
+        position = index_of.get(head[0]) if head else None
+        if position is None:
+            return 0.0
+        content_start = sample_start + position / fps
+        return round(content_start - boundary, 3)
+    except (OSError, subprocess.SubprocessError):
+        return 0.0
+    finally:
+        for leftover in ("offset-sample.mkv", "offset-chunk.ts"):
+            try:
+                (work / leftover).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def main(argv):
     # The app container has a read-only root, so this also runs from stdin:
     #   docker exec -e OMAKASE_SCAN_WATCH_PATH=... -i omakase-plus python - < ops/scan_keyframes.py
@@ -165,17 +297,19 @@ def main(argv):
             )
         )
         return 3
+    offset = measure_offset(direct, values)
     from omakase.plus.debrid_seek import keyframes_cache_path
 
     root = Path("/home/omakase/data/seek")
     root.mkdir(parents=True, exist_ok=True)
     target = keyframes_cache_path(root, direct)
-    target.write_text(json.dumps(values), encoding="utf-8")
+    target.write_text(json.dumps({"keyframes": values, "offset": offset}), encoding="utf-8")
     print(
         json.dumps(
             {
                 "cached": str(target),
                 "keyframes": len(values),
+                "offset": offset,
                 "first": values[:4],
                 "last": values[-2:],
                 "duration": duration,

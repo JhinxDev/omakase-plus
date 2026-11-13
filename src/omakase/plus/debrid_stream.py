@@ -204,6 +204,46 @@ def _master_playlist(entry, job=None):
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+_VTT_TIME = re.compile(r"^(\d{2}):(\d{2}):(\d{2})\.(\d{3})$")
+
+
+def _shift_webvtt(data, offset):
+    """Move every cue earlier by ``offset`` seconds, clamped at zero."""
+    if not offset or abs(offset) < 0.02 or not data:
+        return data
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data
+    out = []
+    for line in text.splitlines():
+        if "-->" not in line:
+            out.append(line)
+            continue
+        parts = line.split("-->")
+        shifted = []
+        for part in parts:
+            token = part.strip()
+            pieces = token.split(" ")
+            stamp = pieces[0]
+            match = _VTT_TIME.match(stamp)
+            if not match:
+                shifted.append(part)
+                continue
+            hours, minutes, seconds, millis = (int(value) for value in match.groups())
+            total = hours * 3600 + minutes * 60 + seconds + millis / 1000 - offset
+            total = max(0.0, total)
+            whole = int(total)
+            stamp = (
+                f"{whole // 3600:02d}:{(whole % 3600) // 60:02d}:{whole % 60:02d}"
+                f".{round((total - whole) * 1000):03d}"
+            )
+            pieces[0] = stamp
+            shifted.append(" ".join(pieces))
+        out.append(" --> ".join(shifted))
+    return ("\n".join(out) + "\n").encode("utf-8")
+
+
 def _subtitle_playlist(entry, number):
     duration = _media_duration(entry.playlist)
     target = max(1, int(duration + 0.999))
@@ -761,11 +801,7 @@ class DebridStreams:
                     # only offers subtitles that the master declares. Serve one
                     # only when the tracks are already readable, so a sub-less
                     # source still opens without the master hop.
-                    if (
-                        job is not None
-                        and job.tracks
-                        and all(track.data for track in job.tracks)
-                    ):
+                    if job is not None and job.tracks and all(track.data for track in job.tracks):
                         return _playlist_reply(_master_playlist(entry, job), request)
                     return _playlist_reply(plan.index.playlist, request)
             if job is not None and job.tracks and all(track.data for track in job.tracks):
@@ -797,9 +833,15 @@ class DebridStreams:
             return _playlist_reply(_subtitle_playlist(entry, int(match[1])), request)
         if match := re.fullmatch(r"subtitles([0-9]{1,2})\.vtt", asset):
             track = await self._subtitle_track(job, int(match[1]))
-            headers = HEADERS | {"Content-Length": str(len(track.data))}
+            body = track.data
+            if plan is not None and plan.index is not None:
+                # The generated timeline starts a measured distance after the
+                # source, so cues timed against the source run early. Shifting
+                # them by that same constant puts them back on the picture.
+                body = _shift_webvtt(body, plan.index.subtitle_offset)
+            headers = HEADERS | {"Content-Length": str(len(body))}
             return Response(
-                b"" if request.method == "HEAD" else track.data,
+                b"" if request.method == "HEAD" else body,
                 media_type="text/vtt",
                 headers=headers,
             )

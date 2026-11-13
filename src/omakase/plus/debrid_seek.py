@@ -88,6 +88,7 @@ class SeekIndex:
     container: str = "ts"
     transcode: bool = False
     start_offset: float = 0.0
+    subtitle_offset: float = 0.0
     audio_index: int | None = None
 
     @property
@@ -208,13 +209,15 @@ class SeekStreams:
             # sessions and this only reads it.
             cached = _cached_keyframes(plan)
             if cached:
-                segments = tuple(_segments(cached, float(plan.duration)))
+                keyframes, offset = cached
+                segments = tuple(_segments(keyframes, float(plan.duration)))
                 if 2 <= len(segments) <= _MAX_SEGMENTS:
                     plan.index = replace(
                         plan.index,
-                        keyframes=tuple(cached),
+                        keyframes=tuple(keyframes),
                         segments=segments,
-                        start_offset=cached[0] if cached[0] > 0.5 else 0.0,
+                        start_offset=keyframes[0] if keyframes[0] > 0.5 else 0.0,
+                        subtitle_offset=round(offset, 3),
                     )
                     _LOG.warning(
                         "seek timeline from %d cached demuxer keyframes (first %.3f s)",
@@ -861,6 +864,16 @@ def _cached_keyframes(plan):
         stored = json.loads(cached.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    offset = 0.0
+    if isinstance(stored, dict):
+        # The scan also records how far past its declared boundary the picture
+        # actually starts. A constant offset is harmless to the playlist but it
+        # puts the subtitles early, so it is carried alongside the keyframes.
+        try:
+            offset = float(stored.get("offset") or 0.0)
+        except (TypeError, ValueError):
+            offset = 0.0
+        stored = stored.get("keyframes")
     if not isinstance(stored, list) or len(stored) < 2:
         return None
     values = []
@@ -872,7 +885,7 @@ def _cached_keyframes(plan):
         if value < 0:
             return None
         values.append(round(value, 3))
-    return sorted(set(values))
+    return sorted(set(values)), offset
 
 
 def _dense_keyframes(index):
