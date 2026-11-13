@@ -129,6 +129,15 @@ class SubtitleCache:
         self.clock = clock
         self.jobs: dict[str, SubtitleJob] = {}
         self.disk_budget = 512 * 1024 * 1024
+        self.playing = False
+        self.gate = asyncio.Semaphore(1)
+
+    def set_playing(self, playing):
+        self.playing = bool(playing)
+
+    async def _wait_for_idle(self):
+        while self.playing:
+            await asyncio.sleep(0.5)
 
     def start(self, key, direct, duration):
         if not self.root or not direct or not key or duration > 14400:
@@ -184,8 +193,10 @@ class SubtitleCache:
             )
             job.tracks = tracks[:_MAX_TRACKS]
             if job.tracks:
-                job.ready.set()
-                await self._convert(job, direct, workdir)
+                await self._wait_for_idle()
+                async with self.gate:
+                    job.ready.set()
+                    await self._convert(job, direct, workdir)
                 return
             if pgs:
                 await self._ocr(job, direct, workdir, pgs)
@@ -244,6 +255,17 @@ class SubtitleCache:
         ]
         if not candidates:
             return
+        missing = [
+            number
+            for number in range(len(candidates[:2]))
+            if not (workdir / f"ocr-{number}.vtt").is_file()
+        ]
+        if missing:
+            await self._wait_for_idle()
+        async with self.gate:
+            await self._ocr_locked(job, direct, workdir, candidates)
+
+    async def _ocr_locked(self, job, direct, workdir, candidates):
         ok = 0
         for number, stream in enumerate(candidates[:2]):
             tags = stream.get("tags") or {}
@@ -342,6 +364,13 @@ class SubtitleCache:
         return info.language, rows
 
     async def _asr(self, job, direct, workdir):
+        vtt = workdir / "asr.vtt"
+        if not vtt.is_file():
+            await self._wait_for_idle()
+        async with self.gate:
+            await self._asr_locked(job, direct, workdir)
+
+    async def _asr_locked(self, job, direct, workdir):
         audio = workdir / "asr.wav"
         command = [
             "ffmpeg",

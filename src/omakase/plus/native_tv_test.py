@@ -1584,12 +1584,16 @@ def create_native_tv_test_router(
         if not isinstance(path, str):
             raise HTTPException(400, "Choose a title", headers=NO_STORE)
         release = acquire("start", library.actor)
+        cloud_streams.subtitles.set_playing(True)
         try:
             if path.startswith(CLOUD):
                 return await open_cloud_pass(
                     request, db, key, library, scope, path.removeprefix(CLOUD)
                 )
             return await open_library_pass(request, db, key, library, scope, path)
+        except Exception:
+            cloud_streams.subtitles.set_playing(False)
+            raise
         finally:
             release()
 
@@ -1648,6 +1652,7 @@ def create_native_tv_test_router(
         if current is None or current.library_key != key:
             raise HTTPException(404, "Apple TV media unavailable", headers=NO_STORE)
         release = acquire("start", library.actor)
+        cloud_streams.subtitles.set_playing(True)
         try:
             checked(db, current)
             path = next_watch_path(db, current.source, anime_monitor_id=current.anime_monitor_id)
@@ -1829,6 +1834,7 @@ def create_native_tv_test_router(
         grant = passes.get(media_id)
         if grant is not None and grant.library_key == key:
             drop_pass(media_id)
+        cloud_streams.subtitles.set_playing(False)
         return JSONResponse({"closed": True}, headers=NO_STORE)
 
     def checked_library_media(db, key, media_id):
