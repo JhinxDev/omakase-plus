@@ -42,6 +42,7 @@ _VIDEO_CODECS = {
     "V_AV1": "av1",
     "V_MPEG2": "mpeg2",
 }
+_COPYABLE_AUDIO = {"aac", "ac3", "eac3", "mp3"}
 _AUDIO_CODECS = {
     "A_AAC": "aac",
     "A_AC3": "ac3",
@@ -77,6 +78,7 @@ class SeekIndex:
     container: str = "ts"
     transcode: bool = False
     start_offset: float = 0.0
+    audio_number: int | None = None
 
     @property
     def suffix(self):
@@ -235,7 +237,7 @@ class SeekStreams:
             "-map",
             "0:v:0",
             "-map",
-            "0:a:0?",
+            f"0:{plan.index.audio_number}" if plan.index.audio_number else "0:a:0?",
             "-c:v",
             "copy",
         ]
@@ -346,7 +348,7 @@ class SeekStreams:
             "-map",
             "0:v:0",
             "-map",
-            "0:a:0?",
+            f"0:{plan.index.audio_number}" if plan.index.audio_number else "0:a:0?",
         ]
         if plan.index.transcode:
             args.extend(
@@ -521,7 +523,7 @@ async def build_index(url, duration):
         if header is None:
             return None
         segment_start, tracks, info, seekhead = header
-        video_number, video_codec, audio_codec = _track_info(first, tracks)
+        video_number, video_codec, audio_codec, audio_number = _track_info(first, tracks)
         if video_number is None:
             return None
         if video_codec == "hevc":
@@ -543,6 +545,7 @@ async def build_index(url, duration):
                 duration=float(duration),
                 video_codec=video_codec,
                 audio_codec=audio_codec,
+                audio_number=audio_number,
                 keyframes=(),
                 segments=segments,
                 container="ts",
@@ -603,7 +606,7 @@ def _audio_args(audio):
     # were being transcoded to E-AC3 5.1, which the Apple TV started and then
     # rejected with CoreMedia -12971 after the first frame. Stereo AAC is the
     # compatible choice; surround can come back once playback is stable.
-    if audio == "aac":
+    if audio in _COPYABLE_AUDIO:
         return ["-c:a", "copy"]
     return ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
 
@@ -742,6 +745,8 @@ def _track_info(data, track_range):
     video_number = None
     video_codec = ""
     audio_codec = ""
+    audio_number = None
+    first_audio = None
     for entry_start, entry_end in _children(data, start, end, {_TRACK_ENTRY}).get(_TRACK_ENTRY, []):
         fields = _children(data, entry_start, entry_end, {_TRACK_NUMBER, _TRACK_TYPE, _CODEC_ID})
         if _TRACK_NUMBER not in fields or _TRACK_TYPE not in fields:
@@ -759,9 +764,20 @@ def _track_info(data, track_range):
         if track_type == 1 and video_number is None:
             video_number = number
             video_codec = _VIDEO_CODECS.get(codec, codec.lower())
-        elif track_type == 2 and not audio_codec:
-            audio_codec = _AUDIO_CODECS.get(codec, codec.lower())
-    return video_number, video_codec, audio_codec
+        elif track_type == 2:
+            name = _AUDIO_CODECS.get(codec, codec.lower())
+            if first_audio is None:
+                first_audio = (number, name)
+            # Copying a track keeps the source's own audio offset, so a
+            # transcoded track that starts at the seek point drifts about a
+            # second away from the copied video. Prefer a codec that muxes
+            # into MPEG-TS unchanged.
+            if audio_number is None and name in _COPYABLE_AUDIO:
+                audio_number = number
+                audio_codec = name
+    if audio_number is None and first_audio is not None:
+        audio_number, audio_codec = first_audio
+    return video_number, video_codec, audio_codec, audio_number
 
 
 def _timecode_scale(data, info_range):

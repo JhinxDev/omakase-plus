@@ -4,7 +4,7 @@ from pathlib import Path
 import httpx
 from starlette.requests import Request
 
-from omakase.plus.debrid_seek import SeekIndex, SeekPlan, SeekStreams, _segments
+from omakase.plus.debrid_seek import SeekIndex, SeekPlan, SeekStreams, _audio_args, _segments
 from omakase.plus.debrid_stream import DebridMedia, DebridStreams
 
 ORIGIN = "https://example.stream.real-debrid.com"
@@ -161,3 +161,18 @@ def test_hevc_seek_generates_exact_h264_segments(tmp_path, monkeypatch):
     assert args[args.index("-muxdelay") + 1] == "0"
     assert args[args.index("-ss") + 1] == "0.000"
     assert (tmp_path / "00000.ts").read_bytes() == b"x" * 256
+
+
+def test_audio_policy_copies_ts_compatible_codecs_and_transcodes_the_rest():
+    """AVPlayer needs audio that muxes into MPEG-TS unchanged.
+
+    A transcoded track starts at the seek point while copied video starts at the
+    keyframe, which measured about a second of drift per segment and made the
+    Apple TV reject the item with CoreMedia -12971.
+    """
+    for codec in ("aac", "ac3", "eac3", "mp3"):
+        assert _audio_args(codec) == ["-c:a", "copy"], codec
+    for codec in ("truehd", "dts", "flac", "opus", "vorbis", ""):
+        args = _audio_args(codec)
+        assert args[:2] == ["-c:a", "aac"], codec
+        assert args[args.index("-ac") + 1] == "2", codec
