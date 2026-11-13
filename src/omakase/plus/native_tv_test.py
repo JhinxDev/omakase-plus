@@ -1544,6 +1544,19 @@ def create_native_tv_test_router(
             raise HTTPException(404, "Artwork unavailable", headers=NO_STORE) from None
         return Response(data, media_type=media_type, headers=NO_STORE)
 
+    @router.post(LIBRARY_API + "/diagnostic")
+    async def library_diagnostic(request: Request, db=Depends(get_db)):
+        _, _, scope = requested_scope(request, db)
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        message = payload.get("message") if isinstance(payload, dict) else ""
+        if not isinstance(message, str):
+            message = ""
+        _LOG.warning("Apple TV playback diagnostic actor=%s: %s", scope.viewer_id, message[:1000])
+        return JSONResponse({"ok": True}, headers=NO_STORE)
+
     @router.get(LIBRARY_API + "/details")
     async def library_details(
         request: Request, path: str = Query("", max_length=512), db=Depends(get_db)
