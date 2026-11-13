@@ -104,6 +104,27 @@ _EXTRACT_TIMEOUT = 900
 _LANGUAGE = re.compile(r"[a-z]{2,3}")
 
 
+def _local_model_path(root, model_name):
+    """Return a cached model directory when one exists, else the model name.
+
+    faster-whisper accepts either a size name or a path. A path skips the
+    huggingface_hub lookup completely, which is what keeps transcription working
+    even when the Hub client and its transfer layer disagree on versions.
+    """
+    if not root or not model_name:
+        return model_name
+    cache = Path(root).parent / "whisper"
+    pattern = f"models--Systran--faster-whisper-{model_name}/snapshots/*"
+    try:
+        snapshots = sorted(cache.glob(pattern))
+    except OSError:
+        return model_name
+    for snapshot in snapshots:
+        if (snapshot / "model.bin").is_file():
+            return str(snapshot)
+    return model_name
+
+
 @dataclass
 class SubtitleTrack:
     index: int
@@ -397,8 +418,12 @@ class SubtitleCache:
         with wave.open(audio_path, "rb") as source:
             frames = source.readframes(source.getnframes())
             audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        # Load the cached model directory directly. Going through the Hub asks
+        # huggingface_hub to resolve the repo on every start, and a version skew
+        # inside the pinned subtitle stack made that raise before a single cue
+        # was produced. A local snapshot needs no network and no Hub API.
         model = WhisperModel(
-            os.getenv("OMAKASE_ASR_MODEL", "tiny"),
+            _local_model_path(self.root, os.getenv("OMAKASE_ASR_MODEL", "tiny")),
             device="cpu",
             compute_type="int8",
             download_root=str(self.root.parent / "whisper") if self.root else None,

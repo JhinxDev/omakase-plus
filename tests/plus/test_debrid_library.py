@@ -508,3 +508,27 @@ def test_webvtt_shift_moves_cues_onto_the_picture():
     # A cue that would fall before zero is clamped rather than negative.
     assert "00:00:00.000 --> 00:00:00.500" in shifted
     assert stream._shift_webvtt(body, 0.0) == body
+
+
+def test_asr_uses_a_local_snapshot_when_one_is_cached(tmp_path):
+    """Transcription must not depend on the Hugging Face Hub at runtime.
+
+    A version skew between huggingface_hub and its transfer layer raised before a
+    single cue was produced, so the cached snapshot is loaded by path instead.
+    """
+    import omakase.plus.debrid_subs as subs
+
+    root = tmp_path / "subtitles" / "mediahash"
+    root.mkdir(parents=True)
+    snapshot = (
+        tmp_path
+        / "subtitles"
+        / "whisper"
+        / ("models--Systran--faster-whisper-tiny/snapshots/abc123")
+    )
+    snapshot.mkdir(parents=True)
+    assert subs._local_model_path(root, "tiny") == "tiny"
+    (snapshot / "model.bin").write_bytes(b"x")
+    assert subs._local_model_path(root, "tiny") == str(snapshot)
+    assert subs._local_model_path(None, "tiny") == "tiny"
+    assert subs._local_model_path(root, "small") == "small"
