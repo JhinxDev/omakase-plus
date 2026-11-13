@@ -15,7 +15,7 @@ import re
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import httpx
@@ -198,6 +198,25 @@ class SeekStreams:
                 return
             plan.index = index
             plan.ready.set()
+            exact = await asyncio.to_thread(self._exact_keyframes, plan)
+            if exact:
+                plan.index = replace(
+                    plan.index,
+                    keyframes=tuple(exact),
+                    segments=tuple(_segments(exact, float(plan.duration))),
+                    start_offset=exact[0] if exact[0] > 0.5 else 0.0,
+                )
+                for stale in plan.root.glob("*.ts"):
+                    stale.unlink(missing_ok=True)
+                for stale in plan.root.glob("*.m4s"):
+                    stale.unlink(missing_ok=True)
+                _LOG.warning(
+                    "seek timeline rebuilt from %d demuxer keyframes (first %.3f s)",
+                    len(exact),
+                    exact[0],
+                )
+                await self._warm(plan)
+                return
             await self._warm(plan)
         except asyncio.CancelledError:
             raise
@@ -205,6 +224,59 @@ class SeekStreams:
             plan.error = type(error).__name__
         finally:
             plan.ready.set()
+
+    def _exact_keyframes(self, plan):
+        """Return the demuxer's own video keyframe list, cached per plan.
+
+        The Matroska cue table and the demuxer do not always agree, and a
+        boundary that the demuxer does not consider a keyframe makes every
+        segment start about a second early. ffprobe is authority for its own
+        mapping, so ask it once and cache the answer with the plan.
+        """
+        cache = plan.root / "keyframes.json"
+        try:
+            if cache.is_file():
+                stored = json.loads(cache.read_text(encoding="utf-8"))
+                if isinstance(stored, list) and len(stored) >= 2:
+                    return [float(value) for value in stored]
+        except (OSError, ValueError):
+            pass
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-skip_frame",
+                    "nokey",
+                    "-show_entries",
+                    "frame=pts_time",
+                    "-of",
+                    "csv=p=0",
+                    plan.url,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        values = []
+        for line in result.stdout.splitlines():
+            try:
+                values.append(round(float(line.strip().split(",")[0]), 3))
+            except ValueError:
+                continue
+        values = sorted({value for value in values if value >= 0})
+        if len(values) < 2:
+            return None
+        try:
+            cache.write_text(json.dumps(values), encoding="utf-8")
+        except OSError:
+            pass
+        return values
 
     async def _warm(self, plan):
         try:
@@ -451,9 +523,21 @@ class SeekStreams:
         path = plan.root / f"{number:05d}.{plan.index.suffix}"
         try:
             result = subprocess.run(
-                ["ffprobe", "-v", "error", "-select_streams", "v:0",
-                 "-show_entries", "packet=pts_time", "-of", "csv=p=0", str(path)],
-                capture_output=True, text=True, timeout=60,
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "packet=pts_time",
+                    "-of",
+                    "csv=p=0",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             values = []
             for line in result.stdout.splitlines():
