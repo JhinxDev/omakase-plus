@@ -250,6 +250,79 @@ def measure_offset(direct, keyframes):
                 pass
 
 
+def measure_timeline(direct, segment_seconds=6.0):
+    """Cut the whole title once with the segmenter and keep the exact spans.
+
+    The playlist must declare what the chunks contain. Predicting that from a
+    keyframe list does not work: the cut lands on the next keyframe after the
+    requested end, one to five frames later than predicted, so the declared
+    lengths drift from the real ones. One pass of the segmenter over the file
+    produces a self consistent list, and regenerating a chunk from a recorded
+    boundary with the copy tail margin reproduces those frames exactly.
+
+    The segment files are deleted as they are read, so this costs one pass over
+    the media and no lasting disk.
+    """
+    work = Path("/home/omakase/data/seeklab/timeline")
+    listing = work.parent / "timeline.csv"
+    try:
+        work.mkdir(parents=True, exist_ok=True)
+        for leftover in work.glob("*.ts"):
+            leftover.unlink()
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-i",
+                direct,
+                "-map",
+                "0:v:0",
+                "-c",
+                "copy",
+                "-f",
+                "segment",
+                "-segment_time",
+                f"{segment_seconds:.3f}",
+                "-segment_list",
+                str(listing),
+                "-segment_list_type",
+                "csv",
+                "-reset_timestamps",
+                "0",
+                str(work / "s%05d.ts"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3600,
+        )
+        if result.returncode != 0 or not listing.is_file():
+            return []
+        rows = []
+        for line in listing.read_text(encoding="utf-8").splitlines():
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) < 3:
+                continue
+            try:
+                start = round(float(parts[1]), 3)
+                end = round(float(parts[2]), 3)
+            except ValueError:
+                continue
+            if end > start:
+                rows.append([start, round(end - start, 3)])
+        return rows
+    except (OSError, subprocess.SubprocessError):
+        return []
+    finally:
+        for leftover in list(work.glob("*.ts")) + [listing]:
+            try:
+                leftover.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def main(argv):
     # The app container has a read-only root, so this also runs from stdin:
     #   docker exec -e OMAKASE_SCAN_WATCH_PATH=... -i omakase-plus python - < ops/scan_keyframes.py
@@ -303,13 +376,18 @@ def main(argv):
     root = Path("/home/omakase/data/seek")
     root.mkdir(parents=True, exist_ok=True)
     target = keyframes_cache_path(root, direct)
-    target.write_text(json.dumps({"keyframes": values, "offset": offset}), encoding="utf-8")
+    timeline = measure_timeline(direct)
+    target.write_text(
+        json.dumps({"keyframes": values, "offset": offset, "timeline": timeline}),
+        encoding="utf-8",
+    )
     print(
         json.dumps(
             {
                 "cached": str(target),
                 "keyframes": len(values),
                 "offset": offset,
+                "timeline_segments": len(timeline),
                 "first": values[:4],
                 "last": values[-2:],
                 "duration": duration,

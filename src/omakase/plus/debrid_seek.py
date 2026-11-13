@@ -66,6 +66,10 @@ _SEGMENT_SECONDS = 6.0
 _LOG = logging.getLogger(__name__)
 _REFINE_KEYFRAMES = False
 _SEEK_EPSILON = 0.05
+# A copied window ends on the keyframe after its requested end, measured about
+# eight frames late on a 23.976 fps remux. Requesting this much less lands the
+# tail exactly on the declared boundary.
+_COPY_TAIL_MARGIN = 0.34
 _BOUNDARY_TOLERANCE = 0.2
 _MAX_PLANS = 64
 _MAX_SEGMENTS = 4000
@@ -89,6 +93,9 @@ class SeekIndex:
     transcode: bool = False
     start_offset: float = 0.0
     subtitle_offset: float = 0.0
+    # True when the boundaries and spans were measured from a segmenter pass
+    # instead of predicted, which lets the copy request stop exactly on a boundary.
+    measured_timeline: bool = False
     audio_index: int | None = None
 
     @property
@@ -210,7 +217,10 @@ class SeekStreams:
             cached = _cached_keyframes(plan)
             if cached:
                 keyframes, offset = cached
-                segments = tuple(_segments(keyframes, float(plan.duration)))
+                measured = _cached_timeline(plan)
+                segments = (
+                    tuple(measured) if measured else tuple(_segments(keyframes, float(plan.duration)))
+                )
                 if 2 <= len(segments) <= _MAX_SEGMENTS:
                     plan.index = replace(
                         plan.index,
@@ -218,6 +228,7 @@ class SeekStreams:
                         segments=segments,
                         start_offset=keyframes[0] if keyframes[0] > 0.5 else 0.0,
                         subtitle_offset=round(offset, 3),
+                        measured_timeline=bool(measured),
                     )
                     _LOG.warning(
                         "seek timeline from %d cached demuxer keyframes (first %.3f s)",
@@ -475,7 +486,7 @@ class SeekStreams:
             "-i",
             plan.url,
             "-t",
-            f"{max(0.1, end - start):.3f}",
+            f"{_copy_duration(plan, start, end):.3f}",
             "-map",
             "0:v:0",
             "-map",
@@ -888,6 +899,31 @@ def _cached_keyframes(plan):
     return sorted(set(values)), offset
 
 
+def _cached_timeline(plan):
+    """Return measured (start, end) pairs for this media, if a scan recorded them."""
+    try:
+        cached = keyframes_cache_path(plan.root.parent, plan.url)
+        stored = json.loads(cached.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(stored, dict):
+        return None
+    timeline = stored.get("timeline")
+    if not isinstance(timeline, list) or len(timeline) < 2:
+        return None
+    pairs = []
+    for start, duration in timeline:
+        try:
+            left = float(start)
+            right = left + float(duration)
+        except (TypeError, ValueError):
+            return None
+        if left < 0 or right <= left:
+            return None
+        pairs.append((round(left, 3), round(right, 3)))
+    return tuple(pairs)
+
+
 def _dense_keyframes(index):
     """True when the keyframe list is dense enough for the nudge to work.
 
@@ -905,10 +941,28 @@ def _dense_keyframes(index):
     return median <= 3.0
 
 
+def _copy_duration(plan, start, end):
+    """Return the copy duration that makes the tail land on the declared end.
+
+    A measured timeline came from the segmenter, which stops on a keyframe. A copy
+    asked for the full span runs about eight frames past it, so the request is
+    shortened by that margin and the produced content matches the declared window
+    exactly. Measured on a real file: three consecutive segments then reproduce
+    the segmenter's own frames with no extras.
+    """
+    span = end - start
+    if plan.index is not None and plan.index.measured_timeline:
+        return max(0.5, span - _COPY_TAIL_MARGIN)
+    return max(0.1, span)
+
+
 def _seek_target(plan, start, end):
     """Return the time to ask for so the seek lands on ``start``."""
     if start <= 0.0 or plan.index is None:
         return 0.0
+    if plan.index.measured_timeline:
+        # A measured boundary is a keyframe the demuxer stops on exactly.
+        return float(start)
     if not _dense_keyframes(plan.index):
         return float(start)
     for value in plan.index.keyframes:
