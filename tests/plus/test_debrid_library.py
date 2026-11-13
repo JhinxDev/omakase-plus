@@ -282,7 +282,11 @@ def test_first_segment_gets_a_cold_start_deadline():
         assert second.body.startswith(b"\x47")
         assert captured[0][0].endswith("00000.ts")
         assert captured[0][1]["timeout"] == 15 and captured[0][1]["attempts"] == 1
-        assert captured[1][1]["timeout"] == 20 and captured[1][1]["attempts"] == 2
+        # A later segment gets one long attempt inside a wider outer budget.
+        # The old 35 s wrapper around two 20 s attempts could never let the
+        # retry finish, so a slow but valid provider segment always surfaced
+        # as a 502 and was thrown away instead of being cached.
+        assert captured[1][1]["timeout"] == 60 and captured[1][1]["attempts"] == 1
 
     asyncio.run(run())
 
@@ -412,7 +416,7 @@ def test_cached_first_segment_is_served_without_upstream_reads():
 
 
 def test_prepare_can_return_before_the_first_segment_is_ready():
-    calls = {"segment": 0}
+    calls = {"segment": 0, "paths": []}
     playlist = (
         b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n"
         b"#EXTINF:5,\n00000.ts\n#EXTINF:5,\n00001.ts\n#EXT-X-ENDLIST\n"
@@ -422,6 +426,7 @@ def test_prepare_can_return_before_the_first_segment_is_ready():
         if request.url.path.endswith(".m3u8"):
             return httpx.Response(200, stream=Stream(playlist))
         calls["segment"] += 1
+        calls["paths"].append(request.url.path)
         return httpx.Response(200, stream=Stream(b"\x47warm"))
 
     async def run():
@@ -432,7 +437,9 @@ def test_prepare_can_return_before_the_first_segment_is_ready():
         request = Request({"type": "http", "method": "GET", "headers": []})
         response = await streams.deliver(media, "00000.ts", request, lambda: None)
         assert response.body == b"\x47warm"
-        assert calls["segment"] == 1
+        # The warmed segment is reused, not fetched a second time. Any other
+        # upstream read here is the forward readahead for the next segment.
+        assert [path for path in calls["paths"] if path.endswith("00000.ts")] == ["/00000.ts"]
 
     asyncio.run(run())
 
