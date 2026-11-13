@@ -159,9 +159,8 @@ def test_hevc_seek_generates_exact_h264_segments(tmp_path, monkeypatch):
     assert "libx264" in args and "ultrafast" in args
     assert args[args.index("-output_ts_offset") + 1] == "0.000"
     assert args[args.index("-muxdelay") + 1] == "0"
-    # The seek is nudged just past the boundary so it cannot round down to the
-    # previous keyframe and replay the tail of the last segment.
-    assert args[args.index("-ss") + 1] == "0.050"
+    # Segment zero seeks to the start of the media.
+    assert args[args.index("-ss") + 1] == "0.000"
     assert (tmp_path / "00000.ts").read_bytes() == b"x" * 256
 
 
@@ -178,3 +177,39 @@ def test_audio_policy_copies_ts_compatible_codecs_and_transcodes_the_rest():
         args = _audio_args(codec)
         assert args[:2] == ["-c:a", "aac"], codec
         assert args[args.index("-ac") + 1] == "2", codec
+
+
+def test_later_segments_aim_at_their_end_so_the_seek_lands_on_the_start(tmp_path, monkeypatch):
+    """The demuxer starts one keyframe before the time it is asked for.
+
+    Measured on a local sample: asking for 1.001 starts at 0.0 and asking for
+    1.877 starts at 1.001. Aiming at a segment's end therefore starts exactly on
+    the keyframe the playlist declares, which is what stops the repeat at every
+    boundary.
+    """
+    import omakase.plus.debrid_seek as seek
+
+    calls = []
+
+    async def fake_ffmpeg(args):
+        calls.append(args)
+        Path(args[-1]).write_bytes(b"x" * 256)
+
+    monkeypatch.setattr(seek, "_run_ffmpeg", fake_ffmpeg)
+    index = SeekIndex(
+        url="https://chi9-4.download.real-debrid.com/x/y.mkv",
+        duration=12.0,
+        video_codec="h264",
+        audio_codec="aac",
+        keyframes=(0.0, 6.0, 12.0),
+        segments=((0.0, 6.0), (6.0, 12.0)),
+        container="ts",
+    )
+    plan = SeekPlan(key="aim", url=index.url, duration=12.0, root=tmp_path)
+    plan.index = index
+    plan.ready.set()
+    streams = SeekStreams(root=tmp_path)
+    asyncio.run(streams._generate(plan, 1))
+    args = calls[0]
+    assert args[args.index("-ss") + 1] == "12.000"
+    assert args[args.index("-t") + 1] == "6.000"

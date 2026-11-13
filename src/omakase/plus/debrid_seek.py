@@ -462,11 +462,12 @@ class SeekStreams:
             "error",
             "-y",
             "-ss",
-            # A boundary that equals a keyframe rounds down under "seek to the
-            # keyframe at or before", which lands on the previous keyframe and
-            # replays about a second of the last segment. Nudging past the
-            # boundary keeps the seek on the intended keyframe.
-            f"{start + _SEEK_EPSILON:.3f}",
+            # Seeking to a keyframe lands on the keyframe before it, measured
+            # repeatedly on local samples: asking for 1.001 starts at 0.0, and
+            # asking for 1.877 starts at 1.001. Aiming at the end of the window
+            # therefore starts exactly on its first keyframe, which makes the
+            # segment content match the boundary the playlist declares.
+            f"{0.0 if start <= 0.0 else end:.3f}",
             "-i",
             plan.url,
             "-t",
