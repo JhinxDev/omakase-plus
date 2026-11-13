@@ -69,6 +69,7 @@ class SeekIndex:
     segments: tuple[tuple[float, float], ...]
     container: str = "ts"
     transcode: bool = False
+    start_offset: float = 0.0
 
     @property
     def suffix(self):
@@ -312,7 +313,7 @@ class SeekStreams:
                 ]
             )
         else:
-            args.extend(["-output_ts_offset", f"{start:.3f}", "-c:v", "copy"])
+            args.extend(["-output_ts_offset", f"{-(plan.index.start_offset):.3f}", "-c:v", "copy"])
             args.extend(_audio_args(plan.index.audio_codec))
         if plan.index.container == "fmp4":
             args.extend(
@@ -494,6 +495,7 @@ async def build_index(url, duration):
             keyframes=tuple(keyframes),
             segments=tuple(segments),
             container=container,
+            start_offset=keyframes[0] if keyframes and keyframes[0] > 0.5 else 0.0,
         )
 
 
