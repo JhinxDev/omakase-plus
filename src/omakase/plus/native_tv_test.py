@@ -1723,6 +1723,16 @@ def create_native_tv_test_router(
         except ValueError as error:
             raise HTTPException(415, str(error), headers=NO_STORE) from None
         grant.hls = prepared
+        _LOG.warning(
+            "library play title=%s handler=%s prepared=%s hls=%s compatible=%s source=%s/%s",
+            title,
+            type(prepared).__name__ if prepared is not None else "native",
+            prepared is not None,
+            hls,
+            compatible,
+            getattr(source, "video_codec", "?"),
+            getattr(source, "audio_codec", "?"),
+        )
         checked(db, grant)
         if match := ANIME.fullmatch(path):
             grant.anime_monitor_id = int(match[1])
@@ -1956,6 +1966,11 @@ def create_native_tv_test_router(
         try:
             if passes.get(media_id) is not grant:
                 raise DeliveryError("Apple TV pass revoked", 404)
+            _LOG.warning(
+                "library media asset=%s handler=%s",
+                asset,
+                type(grant.hls).__name__ if grant.hls is not None else "source",
+            )
             if isinstance(grant.hls, DebridMedia):
 
                 def authorize_debrid():
