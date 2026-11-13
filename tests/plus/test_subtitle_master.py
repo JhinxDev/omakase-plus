@@ -41,3 +41,19 @@ def test_provider_index_stays_media_without_subtitle_data():
     response = asyncio.run(streams.deliver(media, "index.m3u8", request, lambda: None))
     assert b"#EXT-X-MEDIA:TYPE=SUBTITLES" not in response.body
     assert response.body == media.playlist
+
+
+def test_pending_subtitle_job_does_not_hold_index():
+    import time
+
+    job = SubtitleJob("version")
+    streams = DebridStreams()
+    streams.subtitles.jobs["version"] = job
+    media = DebridMedia(
+        b"#EXTM3U\n#EXTINF:5,\n00000.ts\n#EXT-X-ENDLIST\n", (), subtitle_key="version"
+    )
+    request = Request({"type": "http", "method": "GET", "headers": []})
+    started = time.monotonic()
+    response = asyncio.run(streams.deliver(media, "index.m3u8", request, lambda: None))
+    assert response.body == media.playlist
+    assert time.monotonic() - started < 2
