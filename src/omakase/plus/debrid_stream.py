@@ -36,6 +36,18 @@ PLAYLIST_TYPE = "application/vnd.apple.mpegurl"
 _PLAYLIST_LIMIT = 512 * 1024
 _SEGMENT_LIMIT = 32 * 1024 * 1024
 _MAX_SEGMENTS = 10000
+# A cached subtitle source only needs its WebVTT files read from disk, which is
+# fast enough to keep the first index request open so AVPlayer receives the
+# SUBTITLES group immediately. An uncached PGS/ASR job can take minutes.
+_WARM_SUBTITLE_WAIT = 12.0
+_COLD_SUBTITLE_WAIT = 0.2
+# Keep a forward window of provider segments warm so a resume or a seek never
+# has to wait for Real-Debrid to generate the next segment mid-playback.
+_SEGMENT_READAHEAD = 8
+_SEGMENT_WAIT = 4.0
+_SEGMENT_CACHE_ENTRIES = 64
+_SEGMENT_CACHE_BYTES = 96 * 1024 * 1024
+_SEGMENT_TTL = 180.0
 _MEDIA_ID = re.compile(r"[a-f0-9]{32}")
 _SECRET = re.compile(r"[a-zA-Z0-9_-]{43}")
 
@@ -274,6 +286,74 @@ class DebridStreams:
         self.first_cache = OrderedDict()
         self.segment_cache = OrderedDict()
         self.media_cache = OrderedDict()
+        self.cached_bytes = 0
+        self.pump = None
+
+    def _cache_segment(self, url, data):
+        if not data:
+            return
+        previous = self.segment_cache.pop(url, None)
+        if previous is not None:
+            self.cached_bytes -= len(previous[1])
+        self.segment_cache[url] = (self.clock() + _SEGMENT_TTL, data)
+        self.cached_bytes += len(data)
+        while self.segment_cache and (
+            self.cached_bytes > _SEGMENT_CACHE_BYTES
+            or len(self.segment_cache) > _SEGMENT_CACHE_ENTRIES
+        ):
+            _, (_, evicted) = self.segment_cache.popitem(last=False)
+            self.cached_bytes -= len(evicted)
+
+    def _advance(self, media, index):
+        """Keep provider segments ahead of playback without blocking it."""
+        if not media.segments:
+            return
+        target = min(len(media.segments), index + 1 + _SEGMENT_READAHEAD)
+        state = self.pump
+        if state is None or state["segments"] is not media.segments:
+            self.pump = {"segments": media.segments, "next": index + 1, "target": target}
+            state = self.pump
+        else:
+            state["next"] = max(state["next"], index + 1)
+            state["target"] = max(state["target"], target)
+        task = state.get("task")
+        if task is not None and not task.done():
+            return
+        pump = self._pump(state)
+        try:
+            state["task"] = asyncio.create_task(pump)
+        except RuntimeError:
+            # No running loop (a sync caller): the next async call restarts it.
+            pump.close()
+            state["task"] = None
+
+    async def _pump(self, state):
+        segments = state["segments"]
+        try:
+            while state["next"] < len(segments) and state["next"] < state["target"]:
+                url = segments[state["next"]]
+                stored = self.segment_cache.get(url)
+                if stored is not None and stored[0] > self.clock():
+                    state["next"] += 1
+                    continue
+                task = self.warm.get(url)
+                owns = task is None
+                if owns:
+                    task = asyncio.create_task(self._fetch_segment(url))
+                    self.warm[url] = task
+                try:
+                    await asyncio.shield(task)
+                except TimeoutError:
+                    return
+                except asyncio.CancelledError:
+                    if owns:
+                        task.cancel()
+                    return
+                finally:
+                    self.warm.pop(url, None)
+                state["next"] += 1
+        finally:
+            state["task"] = None
 
     async def _read(
         self, url, *, limit, method="GET", byte_range=None, authorize=None, timeout=12, attempts=3
@@ -438,14 +518,9 @@ class DebridStreams:
         duration = _media_duration(media.playlist) or max(1.0, len(media.segments) * 5.0)
         step = max(1.0, duration / len(media.segments))
         index = min(len(media.segments) - 1, max(0, int(position / step)))
-        for number in range(max(0, index - 1), min(len(media.segments), index + 2)):
-            url = media.segments[number]
-            stored = self.segment_cache.get(url)
-            if stored is not None and stored[0] > self.clock():
-                continue
-            if url in self.warm:
-                continue
-            self.warm[url] = asyncio.create_task(self._fetch_segment(url))
+        # Resume at the saved point and keep a forward window warm, so the
+        # first segment AVPlayer asks for is already generated.
+        self._advance(media, max(0, index - 1))
 
     async def _fetch_segment(self, url):
         try:
@@ -453,9 +528,7 @@ class DebridStreams:
         except (DebridLibraryError, TimeoutError, asyncio.CancelledError):
             return None
         if status == 200 and data:
-            self.segment_cache[url] = (self.clock() + 120, data)
-            while len(self.segment_cache) > 12:
-                self.segment_cache.popitem(last=False)
+            self._cache_segment(url, data)
         return data
 
     def _start_warm(self, media):
@@ -569,14 +642,14 @@ class DebridStreams:
         job = self.subtitles.get(getattr(entry, "subtitle_key", ""))
         plan = self.seek.get(getattr(entry, "seek_key", ""))
         if asset == "index.m3u8":
-            if job is not None and not job.ready.is_set():
-                # An uncached PGS/ASR job can take minutes. Do not hold the
-                # player's index request open for work that cannot finish now.
-                try:
-                    async with asyncio.timeout(0.2):
-                        await job.ready.wait()
-                except TimeoutError:
-                    pass
+            if job is not None and not job.done.is_set():
+                # A source whose WebVTT files are already cached only needs them
+                # read back, so hold the first index long enough to serve a
+                # master with a SUBTITLES group. An uncached PGS/ASR job can take
+                # minutes and must not hold the player's index request open.
+                await self.subtitles.wait_tracks(
+                    job, _WARM_SUBTITLE_WAIT if job.warm else _COLD_SUBTITLE_WAIT
+                )
             if plan is not None:
                 if not plan.ready.is_set():
                     try:
@@ -692,6 +765,18 @@ class DebridStreams:
         if byte_range and not re.fullmatch(r"bytes=[0-9]{1,9}-[0-9]{0,9}", byte_range):
             return Response(status_code=416, headers=HEADERS)
         url = entry.segments[index]
+        # Keep later segments generating while this request is being served.
+        self._advance(entry, index)
+        if self.segment_cache.get(url) is None:
+            task = self.warm.get(url)
+            if task is not None:
+                # A prepared neighbour is worth a short wait instead of a long
+                # provider round trip that AVPlayer would abandon.
+                try:
+                    async with asyncio.timeout(_SEGMENT_WAIT):
+                        await asyncio.shield(task)
+                except (TimeoutError, asyncio.CancelledError):
+                    pass
         stored = self.segment_cache.get(url)
         if stored is not None and stored[0] > self.clock():
             self.segment_cache.move_to_end(url)
@@ -789,22 +874,24 @@ class DebridStreams:
                             raise _unavailable()
                         data, status, upstream = result
                 else:
-                    async with asyncio.timeout(35):
+                    async with asyncio.timeout(65):
+                        # One long attempt inside a wider budget: the previous
+                        # 35 s wrapper around two 20 s attempts could never let
+                        # the retry finish, so a slow but valid provider segment
+                        # always surfaced as a 502.
                         data, status, upstream = await self._read(
                             entry.segments[index],
                             limit=_SEGMENT_LIMIT,
                             method=request.method,
                             byte_range=byte_range,
                             authorize=authorize,
-                            timeout=20,
-                            attempts=2,
+                            timeout=60,
+                            attempts=1,
                         )
             except TimeoutError:
                 raise _unavailable() from None
         if request.method == "GET" and status == 200 and not byte_range and data:
-            self.segment_cache[url] = (self.clock() + 120, data)
-            while len(self.segment_cache) > 12:
-                self.segment_cache.popitem(last=False)
+            self._cache_segment(url, data)
         headers = HEADERS.copy()
         if status == 206:
             value = upstream.get("content-range", "")

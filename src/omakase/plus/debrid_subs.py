@@ -120,6 +120,10 @@ class SubtitleJob:
     done: asyncio.Event = field(default_factory=asyncio.Event)
     error: str | None = None
     task: asyncio.Task | None = None
+    # Sources whose WebVTT output is already on disk finish in seconds, so the
+    # first index request can wait for the tracks instead of opening without
+    # a SUBTITLES group.
+    warm: bool = False
 
 
 class SubtitleCache:
@@ -147,13 +151,36 @@ class SubtitleCache:
         while self.playing:
             await asyncio.sleep(0.5)
 
+    @staticmethod
+    def _cached_outputs(workdir):
+        """Count usable WebVTT files already on disk for this source version."""
+        try:
+            return sum(
+                1 for path in workdir.glob("*.vtt") if 0 < path.stat().st_size <= 8 * 1024 * 1024
+            )
+        except OSError:
+            return 0
+
+    async def wait_tracks(self, job, timeout):
+        """Wait until every discovered subtitle track carries WebVTT data."""
+        if job is None or timeout <= 0:
+            return
+        deadline = asyncio.get_running_loop().time() + timeout
+        while not (job.tracks and all(track.data for track in job.tracks)):
+            if job.done.is_set():
+                return
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(0.05, remaining))
+
     def start(self, key, direct, duration):
         if not self.root or not direct or not key or duration > 14400:
             return None
         job = self.jobs.get(key)
         if job is not None and not job.done.is_set():
             return job
-        job = SubtitleJob(key)
+        job = SubtitleJob(key, warm=self._cached_outputs(self.root / key) > 0)
         self.jobs[key] = job
         job.task = asyncio.create_task(self._run(job, direct))
         while len(self.jobs) > 24:
@@ -463,12 +490,26 @@ class SubtitleCache:
         return streams if isinstance(streams, list) else []
 
     async def _convert(self, job, direct, workdir):
-        args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", direct]
+        pending = []
         for number, track in enumerate(job.tracks):
+            path = workdir / f"{number}.vtt"
+            try:
+                if 0 < path.stat().st_size <= 8 * 1024 * 1024:
+                    track.data = path.read_bytes()
+                    continue
+            except OSError:
+                pass
+            pending.append(number)
+        if not pending:
+            # Every track was already converted for this source version.
+            job.ready.set()
+            return
+        args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", direct]
+        for number in pending:
             args.extend(
                 [
                     "-map",
-                    f"0:{track.index}",
+                    f"0:{job.tracks[number].index}",
                     "-f",
                     "webvtt",
                     str(workdir / f"{number}.vtt"),
