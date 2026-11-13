@@ -249,6 +249,16 @@ class SubtitleCache:
             )
             job.tracks = tracks[:_MAX_TRACKS]
             if job.tracks:
+                # A source whose WebVTT files are already on disk needs no work
+                # at all: reading them costs no CPU, so it is safe while a pass is
+                # open. Waiting for the playback pause first made a warm job stay
+                # empty for the whole session, the index then carried no SUBTITLES
+                # group, and the player was offered nothing to select. Embedded
+                # text tracks hit that path, while PGS sources skipped it because
+                # their OCR output is checked before the wait.
+                if self._load_cached(job, workdir):
+                    job.ready.set()
+                    return
                 await self._wait_for_idle()
                 async with self.gate:
                     job.ready.set()
@@ -513,6 +523,26 @@ class SubtitleCache:
             return []
         streams = value.get("streams") if isinstance(value, dict) else None
         return streams if isinstance(streams, list) else []
+
+    @staticmethod
+    def _load_cached(job, workdir):
+        """Fill tracks from cached WebVTT files. True when every track is ready.
+
+        Uses the same size guards as the conversion loop so a partial or corrupt
+        file cannot be offered to the player as a real track.
+        """
+        if not job.tracks:
+            return False
+        for number, track in enumerate(job.tracks):
+            path = workdir / f"{number}.vtt"
+            try:
+                if 0 < path.stat().st_size <= 8 * 1024 * 1024:
+                    track.data = path.read_bytes()
+                    continue
+            except OSError:
+                pass
+            return False
+        return True
 
     async def _convert(self, job, direct, workdir):
         pending = []

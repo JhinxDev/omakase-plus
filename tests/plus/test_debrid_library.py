@@ -532,3 +532,38 @@ def test_asr_uses_a_local_snapshot_when_one_is_cached(tmp_path):
     assert subs._local_model_path(root, "tiny") == str(snapshot)
     assert subs._local_model_path(None, "tiny") == "tiny"
     assert subs._local_model_path(root, "small") == "small"
+
+
+def test_warm_text_subtitles_load_without_waiting_for_the_playback_pause(tmp_path):
+    """A cached text track must not wait for playback to stop.
+
+    Anime episodes carry embedded ASS text tracks. Their WebVTT files were cached
+    but the job still waited for the playback pause, so the index carried no
+    SUBTITLES group and the player was offered nothing. Reading cached files costs
+    no CPU, so it happens immediately; PGS sources already behaved this way.
+    """
+    import omakase.plus.debrid_subs as subs
+
+    workdir = tmp_path / "subs"
+    workdir.mkdir()
+    (workdir / "0.vtt").write_text(
+        "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhi\n", encoding="utf-8"
+    )
+    (workdir / "1.vtt").write_text(
+        "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nsalut\n", encoding="utf-8"
+    )
+    job = subs.SubtitleJob(key="warm")
+    job.tracks = [
+        subs.SubtitleTrack(3, "en", "English"),
+        subs.SubtitleTrack(4, "fr", "French"),
+    ]
+    assert subs.SubtitleCache._load_cached(job, workdir) is True
+    assert [track.data[:6] for track in job.tracks] == [b"WEBVTT", b"WEBVTT"]
+
+    (workdir / "1.vtt").write_bytes(b"")
+    empty = subs.SubtitleJob(key="partial")
+    empty.tracks = [
+        subs.SubtitleTrack(3, "en", "English"),
+        subs.SubtitleTrack(4, "fr", "French"),
+    ]
+    assert subs.SubtitleCache._load_cached(empty, workdir) is False
