@@ -9,6 +9,23 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+_PGS_CODEC = "hdmv_pgs_subtitle"
+_OCR_TIMEOUT = 1800
+_OCR_LANGUAGES = {
+    "eng": "en",
+    "en": "en",
+    "fre": "fr",
+    "fra": "fr",
+    "ger": "de",
+    "deu": "de",
+    "spa": "es",
+    "es": "es",
+    "ita": "it",
+    "por": "pt",
+    "rus": "ru",
+    "ara": "ar",
+}
+
 _TEXT_CODECS = {
     "ass",
     "ssa",
@@ -119,7 +136,10 @@ class SubtitleCache:
             workdir.mkdir(parents=True, exist_ok=True)
             streams = await self._streams(direct)
             tracks = []
+            pgs = []
             for stream in streams:
+                if stream.get("codec_name") == _PGS_CODEC:
+                    pgs.append(stream)
                 if stream.get("codec_name") not in _TEXT_CODECS:
                     continue
                 tags = stream.get("tags") or {}
@@ -142,10 +162,16 @@ class SubtitleCache:
                 )
             )
             job.tracks = tracks[:_MAX_TRACKS]
-            job.ready.set()
-            if not job.tracks:
+            if job.tracks:
+                job.ready.set()
+                await self._convert(job, direct, workdir)
                 return
-            await self._convert(job, direct, workdir)
+            if pgs:
+                await self._ocr(job, direct, workdir, pgs)
+                if not job.ready.is_set():
+                    job.ready.set()
+                return
+            job.ready.set()
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001 - a source simply has no usable subtitles
@@ -153,6 +179,99 @@ class SubtitleCache:
             job.ready.set()
         finally:
             job.done.set()
+
+    @staticmethod
+    def _srt_vtt(data: bytes) -> bytes:
+        text = data.decode("utf-8", "replace").replace("\r\n", "\n")
+        blocks = []
+        for block in text.split("\n\n"):
+            lines = [line.strip("\ufeff") for line in block.splitlines()]
+            if len(lines) < 3 or not lines[1].startswith("00:"):
+                continue
+            timing = lines[1].replace(",", ".")
+            blocks.append(timing + "\n" + "\n".join(lines[2:]))
+        if not blocks:
+            return b""
+        return ("WEBVTT\n\n" + "\n\n".join(blocks) + "\n").encode("utf-8")
+
+    async def _run_ocr(self, command, timeout):
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                await asyncio.wait_for(process.communicate(), timeout)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
+                return False
+        except OSError:
+            return False
+        return process.returncode == 0
+
+    async def _ocr(self, job, direct, workdir, streams):
+        candidates = [
+            stream
+            for stream in streams
+            if stream.get("codec_name") == _PGS_CODEC and stream.get("index") is not None
+        ]
+        if not candidates:
+            return
+        ok = 0
+        for number, stream in enumerate(candidates[:2]):
+            tags = stream.get("tags") or {}
+            raw = str(tags.get("language") or "").strip().lower()
+            language = _OCR_LANGUAGES.get(raw, "en")
+            name = str(tags.get("title") or "").strip()[:40] or (
+                _LANGUAGE_NAMES.get(language, language.upper()) + " (OCR)"
+            )
+            track = job.tracks[number] if number < len(job.tracks) else None
+            if track is None:
+                track = SubtitleTrack(int(stream["index"]), language, name)
+                job.tracks.append(track)
+            sup = workdir / f"ocr-{number}.sup"
+            mkv = workdir / f"ocr-{number}.mkv"
+            srt = workdir / f"ocr-{number}.srt"
+            extract = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                direct,
+                "-map",
+                f"0:{stream['index']}",
+                "-c:s",
+                "copy",
+                "-f",
+                "sup",
+                str(sup),
+            ]
+            if not await self._run_ocr(extract, _EXTRACT_TIMEOUT):
+                continue
+            if not await self._run_ocr(
+                ["mkvmerge", "--language", f"0:{language}", "-o", str(mkv), str(sup)],
+                _EXTRACT_TIMEOUT,
+            ):
+                continue
+            if not await self._run_ocr(["pgsrip", "rip", "-l", language, str(mkv)], _OCR_TIMEOUT):
+                continue
+            produced = sorted(workdir.glob("ocr-*.srt"))
+            if not produced:
+                continue
+            data = self._srt_vtt(produced[0].read_bytes())
+            if not data or len(data) > 8 * 1024 * 1024:
+                continue
+            track.language = language
+            track.name = name
+            track.data = data
+            ok += 1
+        if ok:
+            job.ready.set()
+            self._prune(workdir)
 
     async def _streams(self, direct):
         try:
