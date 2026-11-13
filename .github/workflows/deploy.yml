@@ -1,0 +1,64 @@
+name: Deploy tooling
+
+# Checks the versioned release path only. CI never uses ssh, never talks to the
+# live host and never needs a Docker daemon: the manifest proof reads the
+# checked out commit tree directly.
+
+on:
+  push:
+    branches: [main, 'codex/**']
+    paths:
+      - 'ops/release/**'
+      - 'tests/infra/**'
+      - '.github/workflows/deploy.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ops/release/**'
+      - 'tests/infra/**'
+      - '.github/workflows/deploy.yml'
+
+jobs:
+  release-tooling:
+    name: Release tooling (ruff, unit, manifest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dev dependencies
+        run: |
+          pip install --require-hashes -r requirements-dev.txt -r requirements-build.txt
+          pip install --no-build-isolation --no-deps -e .
+      - name: Lint release tooling
+        run: |
+          ruff check ops tests/infra
+          ruff format --check ops tests/infra
+      - name: Test release tooling
+        run: pytest -q tests/infra
+      - name: Prove a deterministic manifest from the checked out commit
+        # No Docker and no SSH. This reads the commit tree object by object.
+        run: |
+          python ops/release/build_image.py --dry-run --manifest "$RUNNER_TEMP/manifest.json"
+          python - "$RUNNER_TEMP/manifest.json" <<'PY'
+          import json
+          import sys
+
+          manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+          expected_prefix = "debrid-reliability-"
+          assert manifest["schema"] == "omakase.release.manifest/1"
+          assert manifest["revision"].startswith(expected_prefix)
+          assert len(manifest["revision"]) == len(expected_prefix) + 12
+          assert manifest["git_commit"]
+          assert manifest["package_tree"] == "src/omakase/plus"
+          assert manifest["file_count"] == len(manifest["files"]) > 300
+          assert all(len(digest) == 64 for digest in manifest["files"].values())
+          print("manifest", manifest["revision"], manifest["file_count"], "files")
+          PY
+      - name: Import check for each command
+        run: |
+          python ops/release/build_image.py --help > /dev/null
+          python ops/release/check_drift.py --help > /dev/null
+          python ops/release/promote.py --help > /dev/null
