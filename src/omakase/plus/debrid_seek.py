@@ -599,8 +599,13 @@ async def _range(client, url, start, end):
 
 
 def _audio_args(audio):
-    if audio in {"aac", "ac3", "eac3"}:
+    if audio == "aac":
         return ["-c:a", "copy"]
+    if audio in {"ac3", "eac3"}:
+        # Dolby audio inside MPEG-TS is accepted inconsistently by AVPlayer: the
+        # item starts, shows a frame and then fails with CoreMedia -12971. An
+        # audio-only transcode costs almost nothing and keeps it playable.
+        return ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
     if audio in {"dts", "truehd", "flac", "opus", "vorbis"} or not audio:
         return ["-c:a", "eac3", "-b:a", "640k", "-ac", "6"]
     return ["-c:a", "aac", "-b:a", "384k"]

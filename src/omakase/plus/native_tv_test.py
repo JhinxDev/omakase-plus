@@ -1561,6 +1561,14 @@ def create_native_tv_test_router(
         if not isinstance(message, str):
             message = ""
         _LOG.warning("Apple TV playback diagnostic actor=%s: %s", scope.viewer_id, message[:1000])
+        # The app cannot read AVPlayer's internal error log, so pair its report
+        # with what the server actually served for that pass.
+        for media_id in set(re.findall(r"[a-f0-9]{32}", message)) & set(media_trace):
+            _LOG.warning(
+                "Apple TV media trace %s: %s",
+                media_id,
+                " | ".join(media_trace[media_id][-24:]),
+            )
         return JSONResponse({"ok": True}, headers=NO_STORE)
 
     @router.get(LIBRARY_API + "/details")
@@ -1940,11 +1948,39 @@ def create_native_tv_test_router(
     async def media(request: Request, media_id: str, db=Depends(get_db)):
         return await deliver_media(request, media_id, None, db)
 
+    media_trace = {}
+    _MEDIA_TRACE_LIMIT = 40
+
+    def _record_trace(media_id, entry):
+        """Keep the last few requests of a media pass for failure diagnosis."""
+        items = media_trace.setdefault(media_id, [])
+        items.append(entry)
+        del items[:-_MEDIA_TRACE_LIMIT]
+
     @router.api_route(API + "/media/{media_id}/{asset}", methods=["GET", "HEAD"])
     async def media_asset(request: Request, media_id: str, asset: str, db=Depends(get_db)):
         return await deliver_media(request, media_id, asset, db)
 
     async def deliver_media(request, media_id, asset, db):
+        started = time.monotonic()
+        try:
+            response = await _deliver_media(request, media_id, asset, db)
+        except HTTPException as error:
+            _record_trace(
+                media_id,
+                f"{request.method} {asset} -> {error.status_code} in "
+                f"{round((time.monotonic() - started) * 1000)}ms",
+            )
+            raise
+        _record_trace(
+            media_id,
+            f"{request.method} {asset} -> {getattr(response, 'status_code', 200)} "
+            f"{len(getattr(response, 'body', b'') or b'')}B in "
+            f"{round((time.monotonic() - started) * 1000)}ms",
+        )
+        return response
+
+    async def _deliver_media(request, media_id, asset, db):
         _https(request)
         prune()
         grant = passes.get(media_id)
