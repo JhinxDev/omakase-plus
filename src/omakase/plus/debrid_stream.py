@@ -733,8 +733,16 @@ class DebridStreams:
                     # next two immediately. Each cold segment costs about 5.5 s,
                     # so build that small window before answering instead of
                     # letting the player wait and fail the item with -12971.
-                    for offset in range(3):
-                        await self.seek.ensure(plan, opening + offset, _SEEK_WARM_WAIT)
+                    # Three segments are independent downloads, so start them
+                    # together: sequentially they cost about 33 s of waiting
+                    # before the playlist is handed over.
+                    await asyncio.gather(
+                        *[
+                            self.seek.ensure(plan, opening + offset, _SEEK_WARM_WAIT)
+                            for offset in range(3)
+                        ],
+                        return_exceptions=True,
+                    )
                     # Record what is actually being served so a failed play can
                     # be read back from the log without another guess.
                     _LOG.info(
@@ -746,9 +754,16 @@ class DebridStreams:
                         len(plan.index.segments),
                         opening,
                     )
-                    # The Apple TV rejects the master wrapper with CoreMedia
-                    # -12971. A seek timeline is a single VOD playlist already;
-                    # expose it directly so AVPlayer never takes the master hop.
+                    # A master is required for a subtitle group, and the player
+                    # only offers subtitles that the master declares. Serve one
+                    # only when the tracks are already readable, so a sub-less
+                    # source still opens without the master hop.
+                    if (
+                        job is not None
+                        and job.tracks
+                        and all(track.data for track in job.tracks)
+                    ):
+                        return _playlist_reply(_master_playlist(entry, job), request)
                     return _playlist_reply(plan.index.playlist, request)
             if job is not None and job.tracks and all(track.data for track in job.tracks):
                 return _playlist_reply(_master_playlist(entry, job), request)

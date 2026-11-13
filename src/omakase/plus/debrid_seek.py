@@ -60,6 +60,7 @@ _AUDIO_CODECS = {
 # ffmpeg seeking the remote Matroska file, so a 6 s segment gains about
 # 0.8 s per segment against playback while a 3 s segment would starve.
 _SEGMENT_SECONDS = 6.0
+_MAX_PLANS = 64
 _MAX_SEGMENTS = 4000
 _MAX_INDEX_BYTES = 12 * 1024 * 1024
 _MAX_PREFETCH = 6
@@ -166,17 +167,24 @@ class SeekStreams:
         plan = SeekPlan(key, url, float(duration), directory)
         self.plans[key] = plan
         plan.task = asyncio.create_task(self._build(plan))
-        while len(self.plans) > 16:
-            oldest = next(iter(self.plans))
-            if oldest == key:
+        # A viewing session seeks several times and each position can open its
+        # own plan, so a small first-in-first-out window evicted the plan the
+        # player was still reading and every later segment answered 404.
+        while len(self.plans) > _MAX_PLANS:
+            candidates = [item for item in self.plans if item != key]
+            if not candidates:
                 break
+            oldest = min(candidates, key=lambda item: self.plans[item].touched)
             dropped = self.plans.pop(oldest, None)
             if dropped is not None and dropped.task is not None:
                 dropped.task.cancel()
         return plan
 
     def get(self, key):
-        return self.plans.get(key) if key else None
+        plan = self.plans.get(key) if key else None
+        if plan is not None:
+            plan.touched = time.monotonic()
+        return plan
 
     async def _build(self, plan):
         try:
@@ -617,9 +625,21 @@ def _copyable_audio(url):
     """
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "a",
-             "-show_entries", "stream=index,codec_name", "-of", "json", url],
-            capture_output=True, text=True, timeout=90,
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a",
+                "-show_entries",
+                "stream=index,codec_name",
+                "-of",
+                "json",
+                url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
         )
         streams = json.loads(result.stdout or "{}").get("streams") or []
     except (OSError, ValueError, subprocess.SubprocessError):
