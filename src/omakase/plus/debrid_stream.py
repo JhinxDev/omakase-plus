@@ -489,12 +489,12 @@ class DebridStreams:
                 self.passes.pop(key, None)
 
     def _start_seek(self, source):
-        # The provider transcode only produces a short window ahead, so the
-        # player still uses it for now. The direct-file seek engine is the fix
-        # for provider outages and its stream-copy recipe is proven
-        # (see evidence 2026-11-12-tv-subtitles-hardening), but switching
-        # playback onto it needs a verified pass first.
-        return None
+        # Prefer the direct file. Real-Debrid's own transcode stalls for tens of
+        # seconds on arbitrary segments, while its direct link serves byte ranges
+        # at full speed and a stream copy needs no re-encode. HEVC still falls
+        # back to the provider transcode inside deliver() because copy fragments
+        # duplicate the leading GOP there.
+        return self._start_seek_disabled(source)
 
     def _start_seek_disabled(self, source):
         direct = getattr(source, "direct", "")

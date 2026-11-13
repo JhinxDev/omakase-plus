@@ -56,7 +56,10 @@ _SEGMENT_SECONDS = 6.0
 _MAX_SEGMENTS = 4000
 _MAX_INDEX_BYTES = 12 * 1024 * 1024
 _MAX_PREFETCH = 6
-_PLAN_DISK_LIMIT = 1536 * 1024 * 1024
+# This host runs at about 96 percent disk usage, so a single plan may not claim
+# 1.5 GB. Six prefetched six-second segments are roughly 150 MB; the rest is
+# headroom for the segment in flight and the next two.
+_PLAN_DISK_LIMIT = 512 * 1024 * 1024
 
 
 @dataclass
