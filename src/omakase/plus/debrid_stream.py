@@ -371,7 +371,8 @@ class DebridStreams:
         if cached is not None and cached[0] > self.clock():
             self.media_cache.move_to_end(cache_key)
             media = cached[1]
-            self._start_subtitles(source, media)
+            job = self._start_subtitles(source, media)
+            await self._subtitle_ready(job)
             self._start_seek(source)
             if wait_first and not media.first_segment:
                 winner = await self._race_first_segment([media])
@@ -395,6 +396,7 @@ class DebridStreams:
             raise _unavailable()
         job = self._start_subtitles(source, medias[0])
         subtitle_key = source.media_version if job is not None else ""
+        await self._subtitle_ready(job)
         seek_plan = self._start_seek(source)
         seek_key = source.media_version if seek_plan is not None else ""
         medias = [replace(media, subtitle_key=subtitle_key, seek_key=seek_key) for media in medias]
@@ -412,6 +414,15 @@ class DebridStreams:
         # across variants so playback starts from whichever is ready.
         winner = await self._race_first_segment(medias)
         return winner or medias[0]
+
+    async def _subtitle_ready(self, job):
+        if job is None:
+            return
+        try:
+            async with asyncio.timeout(3):
+                await job.ready.wait()
+        except TimeoutError:
+            return
 
     def _start_warm(self, media):
         if not media.segments:
