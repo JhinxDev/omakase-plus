@@ -376,12 +376,13 @@ class SeekStreams:
         else:
             args.extend(
                 [
-                    # Preserve each segment's real timeline position. Shifting
-                    # every segment by a negative start offset left the TS
-                    # presentation time about 1.5 s away from the playlist
-                    # position, which is what broke the earlier copy attempt.
+                    # The player derives its clock from the playlist's EXTINF
+                    # accumulation, so each segment must carry exactly that
+                    # position. The source time left every segment offset by the
+                    # first keyframe, and AVPlayer failed the item with CoreMedia
+                    # -12971 immediately after playback started.
                     "-output_ts_offset",
-                    f"{start:.3f}",
+                    f"{start - plan.index.segments[0][0]:.3f}",
                     "-muxdelay",
                     "0",
                     "-muxpreload",
