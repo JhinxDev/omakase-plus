@@ -22,8 +22,8 @@ below runs on every push to `main` and `codex/**` and on every pull request to
 | `test` | Full suite on Python 3.11, 3.12 and 3.13 with at least 80 percent coverage | `pytest -ra --cov=omakase --cov-fail-under=80` |
 | `agent-protocol` | Real MCP subprocess and local boundaries | `pytest -q tests/plus/test_agent_tools.py` |
 | `quality-gates` | Offline budgets, genericity rules and infrastructure contracts | `pytest -q tests/infra tests/plus/test_performance_budgets.py tests/plus/test_genericity.py` |
-| `node-unit` | Web player and ASS reader unit tests, no browser | `node --test tests/browser/web_ass_reader.test.cjs tests/browser/web_player_client.test.cjs tests/browser/web_player_menus.test.cjs` |
-| `browser-qa` | Seven headless Edge interface checks | `node scripts/check_*.cjs`, see the inventory below |
+| `node-unit` | Web player, ASS reader and QA helper unit tests, no browser | `node --test scripts/qa-environment.test.cjs tests/browser/web_ass_reader.test.cjs tests/browser/web_player_client.test.cjs tests/browser/web_player_menus.test.cjs` |
+| `browser-qa` | Eight headless Edge interface checks | `node scripts/check_*.cjs`, see the inventory below |
 
 The `quality-gates` files also run inside `test`. The separate job exists for a
 fast, isolated failure: a broken budget or a hardcoded title fails in about a
@@ -115,11 +115,20 @@ Microsoft Edge at this revision:
 | --- | --- |
 | `check_collection_layout.cjs` | Collection layout and template composition, 21 checks |
 | `check_home_progress_layout.cjs` | Home progress semantics, aligned card footers and remote safe actions, 7 checks |
+| `check_hero_quality.cjs` | Home hero composition at seven scenarios: cover for landscape, contained portrait art that never draws above source pixels, transparent placeholder and no JavaScript |
 | `check_library_context.cjs` | Shared shell, synthetic scope data and native controls, 12 checks |
 | `check_search_result_edges.cjs` | Result edge scrolling at both ends with mixed lengths, 6 cases |
 | `check_title_details.cjs` | Title detail layout, playable states, keyboard and touch targets |
 | `check_web_consistency.cjs` | Shared style and spacing consistency, 4 checks |
 | `check_interface_scrollbars.cjs` | Native Windows scrollbars and footer at three viewports |
+
+`check_hero_quality.cjs` asserts the shipped contract rather than a guess: non cover
+hero art uses `object-fit: contain` (see the `.page-home .cinema-hero-art` rules in
+`hero-quality.css`), and the check additionally asserts the drawn scale and the
+element box so a later switch to a stretching fit still fails even though `contain`
+itself is intentional. Its mobile scenario uses portrait artwork, because a
+landscape source stays on the cover path at every width by design
+(`check_hero_layout.cjs` asserts the same rule).
 
 Excluded from CI, with the reason:
 
@@ -130,7 +139,6 @@ Excluded from CI, with the reason:
 | `check_google_redirect.cjs` | Needs `@axe-core/playwright`; spawns the Python route fixture over stdin |
 | `check_hero_edge_palette.cjs` | Needs the read only loopback preview server (default 4419, `OMAKASE_REVIEW_URL`) |
 | `check_hero_layout.cjs` | Needs the read only loopback preview server (default 4418, `OMAKASE_REVIEW_URL`) |
-| `check_hero_quality.cjs` | Fails at this revision: it expects `object-fit: scale-down` while `hero-quality.css` ships `contain`. Reconcile the script with the shipped CSS, do not weaken the assertion |
 | `check_movie_feedback.cjs` | Needs the movie feedback fixture app on loopback port 4423 (`OMAKASE_MOVIE_QA_BASE`) |
 | `check_recommendation_feedback.cjs` | Needs the read only loopback preview server (default 4418, `OMAKASE_REVIEW_URL`) |
 | `check_settings_navigation.cjs` | Needs the read only loopback showcase (default 4419, `OMAKASE_QA_ORIGIN`) |
@@ -141,13 +149,23 @@ Also excluded, outside `scripts/check_*.cjs`:
 
 | Check | Why it is not in CI |
 | --- | --- |
-| `scripts/qa-environment.test.cjs` | Fails at this revision: it asserts every check script uses `qaBrowser()`, and `check_interface_scrollbars.cjs` launches an explicit Edge channel instead. Fix the helper use or the assertion first |
 | `tests/browser/web_ass_client.test.cjs` | Needs a private qualification MP4 and a browser |
 | `tests/browser/web_player_startup_browser.test.cjs` | Needs Playwright and a synthetic loopback clip |
 | `tests/js/language_settings_qa.cjs` | Needs Python, Playwright and the template renderer |
 | `tests/browser/*_browser.cjs` | Interactive/browser QA driven per feature, see `docs/web-player-controls-qa.md` |
 
-The seven wired scripts were run headless at this revision before being wired. Run
+`scripts/qa-environment.test.cjs` runs in `node-unit`. It is the meta gate over the
+scripts above: every `check_*.cjs` must resolve its modules through `qaRuntime()`
+and its browser through `qaBrowser()`. Three checks are allowed to pin the Edge
+channel directly because they measure native scrollbar rendering and need the
+default `--hide-scrollbars` argument removed: `check_interface_scrollbars.cjs`,
+`check_search_result_edges.cjs` and `check_movie_feedback.cjs`. Each entry is
+enumerated with its reason in `PINNED_BROWSER_CHECKS`, and the meta test fails if
+an entry is unjustified, if a listed script no longer pins the channel, or if a
+listed script migrates to `qaBrowser()` without deleting its exception. A new
+check cannot join the list by default.
+
+The eight wired scripts were run headless at this revision before being wired. Run
 the excluded ones the same way when you touch the code they cover. Start the read
 only preview from `docs/showcase.md` with a manifest and art directory, then point
 the check at that port:
@@ -156,9 +174,6 @@ the check at that port:
 uv run --frozen python scripts/showcase_preview.py --manifest CATALOG.json --art-dir ART_DIR --port 4418
 OMAKASE_REVIEW_URL=http://127.0.0.1:4418 node scripts/check_settings_surfaces.cjs
 ```
-
-`check_hero_quality.cjs` is a known red check. It is listed rather than silently
-skipped so that the next person to touch the hero has a concrete starting point.
 
 ## Gates that need a live server, a provider or the physical TV
 

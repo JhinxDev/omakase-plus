@@ -1,17 +1,21 @@
-/* Optional contributor QA: read-only local showcase, Playwright in OMAKASE_QA_RUNTIME. */
+/* Optional contributor QA: read-only local showcase. Modules and browser resolve
+   through scripts/qa-environment.cjs (OMAKASE_QA_NODE_MODULES, OMAKASE_QA_PYTHON,
+   OMAKASE_QA_BROWSER_CHANNEL or OMAKASE_QA_BROWSER_EXECUTABLE). Run it against a
+   local showcase with an msedge or chrome channel for receipt parity. */
 'use strict';
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
-const {chromium} = require(require.resolve('playwright', {paths: [process.env.OMAKASE_QA_RUNTIME || process.cwd()]}));
+const {qaRuntime, qaBrowser} = require('./qa-environment.cjs');
+const {chromium} = require(require.resolve('playwright', {paths: [qaRuntime()]}));
 const origin = new URL(process.env.OMAKASE_QA_ORIGIN || 'http://127.0.0.1:4419');
 assert(['127.0.0.1', 'localhost', '[::1]'].includes(origin.hostname), 'Use a local read-only showcase');
 const out = process.env.OMAKASE_QA_OUT || fs.mkdtempSync(path.join(os.tmpdir(), 'omakase-settings-nav-'));
 if (process.env.OMAKASE_QA_OUT) fs.mkdirSync(out);
 const root = path.resolve(__dirname, '..');
-const receipt = {status: 'RUNNING', origin: origin.origin, cases: [], source: {}, blocked: [], pageErrors: [], httpErrors: [], limits: ['Synthetic read-only local showcase in headless Edge; no physical-device or playback acceptance.']};
+const receipt = {status: 'RUNNING', origin: origin.origin, cases: [], source: {}, blocked: [], pageErrors: [], httpErrors: [], limits: ['Synthetic read-only local showcase in a headless Chromium channel; no physical-device or playback acceptance.']};
 for (const name of ['src/omakase/plus/templates/_settings_nav.html', 'src/omakase/plus/static/refinement.css', 'src/omakase/plus/static/shelves.js']) receipt.source[name] = crypto.createHash('sha256').update(fs.readFileSync(path.join(root, name))).digest('hex');
 function allowed(raw, method) {
   const u = new URL(raw);
@@ -30,7 +34,7 @@ async function focusedGeometry(page, link, nav, constrained) {
 (async () => {
   let browser;
   try {
-    browser = await chromium.launch({channel: 'msedge', headless: true});
+    browser = await chromium.launch(qaBrowser());
     for (const viewportWidth of [1440, 390, 320]) {
       const context = await browser.newContext({viewport: {width: viewportWidth, height: 844}, hasTouch: viewportWidth < 600, reducedMotion: 'reduce', serviceWorkers: 'block'});
       await context.route('**/*', route => {

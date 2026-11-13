@@ -136,11 +136,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Web player and ASS reader unit tests
+      - name: Web player, ASS reader and QA helper unit tests
         # These use the built in node:test runner and read real source from src/,
-        # with no Playwright, no server and no media fixture.
+        # with no Playwright, no server and no media fixture. The QA helper test is
+        # the meta gate over scripts/check_*.cjs: it fails when a check stops
+        # resolving its browser or modules through the portable helpers, or when a
+        # pinned browser exception is stale or unjustified.
         run: |
           node --test \
+            scripts/qa-environment.test.cjs \
             tests/browser/web_ass_reader.test.cjs \
             tests/browser/web_player_client.test.cjs \
             tests/browser/web_player_menus.test.cjs
@@ -177,6 +181,8 @@ jobs:
         run: node scripts/check_collection_layout.cjs
       - name: Home progress layout
         run: node scripts/check_home_progress_layout.cjs
+      - name: Hero quality
+        run: node scripts/check_hero_quality.cjs
       - name: Library context
         run: node scripts/check_library_context.cjs
       - name: Search result edges
