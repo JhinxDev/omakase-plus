@@ -536,8 +536,10 @@ class DebridStreams:
                 # instead of generating a slow local seek stream.
                 if plan.index is not None and plan.index.video_codec != "hevc":
                     plan.mode = "seek"
-                    subtitles = job if job is not None and job.tracks else None
-                    return _playlist_reply(_master_playlist(entry, subtitles), request)
+                    # The Apple TV rejects the master wrapper with CoreMedia
+                    # -12971. A seek timeline is a single VOD playlist already;
+                    # expose it directly so AVPlayer never takes the master hop.
+                    return _playlist_reply(plan.index.playlist, request)
             # AVPlayer rejects the provider's master wrapper with CoreMedia
             # -12971. Serve the single provider media playlist directly; the
             # provider already chose one quality. Text subtitles are requested
