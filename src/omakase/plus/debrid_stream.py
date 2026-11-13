@@ -535,8 +535,10 @@ class DebridStreams:
                     plan.mode = "seek"
                     subtitles = job if job is not None and job.tracks else None
                     return _playlist_reply(_master_playlist(entry, subtitles), request)
-            if job is not None and job.tracks:
-                return _playlist_reply(_master_playlist(entry, job), request)
+            # AVPlayer rejects the provider's master wrapper with CoreMedia
+            # -12971. Serve the single provider media playlist directly; the
+            # provider already chose one quality. Text subtitles are requested
+            # separately and do not require a master for this path.
             return _playlist_reply(entry.playlist, request)
         if asset == "stream.m3u8":
             if (
