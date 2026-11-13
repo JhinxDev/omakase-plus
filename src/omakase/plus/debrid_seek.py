@@ -313,7 +313,18 @@ class SeekStreams:
                 ]
             )
         else:
-            args.extend(["-output_ts_offset", f"{-(plan.index.start_offset):.3f}", "-c:v", "copy"])
+            args.extend(
+                [
+                    "-output_ts_offset",
+                    f"{-(plan.index.start_offset):.3f}",
+                    "-muxdelay",
+                    "0",
+                    "-muxpreload",
+                    "0",
+                    "-c:v",
+                    "copy",
+                ]
+            )
             args.extend(_audio_args(plan.index.audio_codec))
         if plan.index.container == "fmp4":
             args.extend(
