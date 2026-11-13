@@ -255,6 +255,12 @@ def _repair_h264_level(data):
     return data
 
 
+def subtitle_cache_key(source):
+    direct = getattr(source, "direct", "")
+    path = urlsplit(direct).path if direct else getattr(source, "media_version", "")
+    return hashlib.sha256(path.encode("utf-8")).hexdigest()
+
+
 class DebridStreams:
     def __init__(self, transport=None, clock=time.monotonic, subtitle_root=None, seek_root=None):
         self.transport = transport
@@ -363,7 +369,7 @@ class DebridStreams:
         direct = getattr(source, "direct", "")
         if not direct or not media.segments:
             return None
-        return self.subtitles.start(source.media_version, direct, source.duration)
+        return self.subtitles.start(subtitle_cache_key(source), direct, source.duration)
 
     async def prepare(self, source, *, wait_first=True):
         cache_key = source.identity + ":" + source.media_version
@@ -372,6 +378,7 @@ class DebridStreams:
             self.media_cache.move_to_end(cache_key)
             media = cached[1]
             job = self._start_subtitles(source, media)
+            media = replace(media, subtitle_key=job.key if job is not None else "")
             await self._subtitle_ready(job)
             self._start_seek(source)
             if wait_first and not media.first_segment:
@@ -395,7 +402,7 @@ class DebridStreams:
         if not medias:
             raise _unavailable()
         job = self._start_subtitles(source, medias[0])
-        subtitle_key = source.media_version if job is not None else ""
+        subtitle_key = job.key if job is not None else ""
         await self._subtitle_ready(job)
         seek_plan = self._start_seek(source)
         seek_key = source.media_version if seek_plan is not None else ""
