@@ -9,6 +9,7 @@ exact HLS timeline and generates only the requested segments with ffmpeg.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -200,11 +201,26 @@ class SeekStreams:
                 plan.error = "no_index"
                 return
             plan.index = index
+            # A cached demuxer keyframe list replaces the cue table. The scan
+            # that produces it reads the whole file, so it never runs in the
+            # request path: ops/scan_keyframes.py fills the cache between
+            # sessions and this only reads it.
+            cached = _cached_keyframes(plan)
+            if cached:
+                segments = tuple(_segments(cached, float(plan.duration)))
+                if 2 <= len(segments) <= _MAX_SEGMENTS:
+                    plan.index = replace(
+                        plan.index,
+                        keyframes=tuple(cached),
+                        segments=segments,
+                        start_offset=cached[0] if cached[0] > 0.5 else 0.0,
+                    )
+                    _LOG.warning(
+                        "seek timeline from %d cached demuxer keyframes (first %.3f s)",
+                        len(cached),
+                        cached[0],
+                    )
             plan.ready.set()
-            # Reading every keyframe means reading the whole file over the same
-            # provider link the player is using, which starves segment
-            # generation during playback. It stays off until the scan can run
-            # without competing, for example between sessions on an idle plan.
             if _REFINE_KEYFRAMES:
                 plan.task_refine = asyncio.create_task(self._refine_keyframes(plan))
             await self._warm(plan)
@@ -821,6 +837,33 @@ def _copyable_audio(url):
         if stream.get("codec_name") in _COPYABLE_AUDIO:
             return ordinal, stream["codec_name"]
     return None
+
+
+def keyframes_cache_path(root, url):
+    """Stable cache location for one media URL, shared across sessions."""
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
+    return Path(root) / f"keyframes-{digest}.json"
+
+
+def _cached_keyframes(plan):
+    """Return a pre-computed demuxer keyframe list for this media, if present."""
+    try:
+        cached = keyframes_cache_path(plan.root.parent, plan.url)
+        stored = json.loads(cached.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(stored, list) or len(stored) < 2:
+        return None
+    values = []
+    for item in stored:
+        try:
+            value = float(item)
+        except (TypeError, ValueError):
+            return None
+        if value < 0:
+            return None
+        values.append(round(value, 3))
+    return sorted(set(values))
 
 
 def _audio_args(audio):
