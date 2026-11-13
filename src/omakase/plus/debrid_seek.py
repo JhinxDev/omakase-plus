@@ -9,8 +9,10 @@ exact HLS timeline and generates only the requested segments with ffmpeg.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import shutil
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -524,6 +526,9 @@ async def build_index(url, duration):
             return None
         segment_start, tracks, info, seekhead = header
         video_number, video_codec, audio_codec, audio_index = _track_info(first, tracks)
+        probed = _copyable_audio(url)
+        if probed is not None:
+            audio_index, audio_codec = probed
         if video_number is None:
             return None
         if video_codec == "hevc":
@@ -599,6 +604,29 @@ async def _range(client, url, start, end):
     if response.status_code not in {200, 206}:
         return None
     return response.content
+
+
+def _copyable_audio(url):
+    """Ask the demuxer which audio ordinal muxes into MPEG-TS unchanged.
+
+    Matroska track order in the header does not always match the order of
+    streams the demuxer exposes, and mapping the wrong ordinal copied a TrueHD
+    track into the stream. ffprobe is authority for its own mapping, and it runs
+    once per plan.
+    """
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=index,codec_name", "-of", "json", url],
+            capture_output=True, text=True, timeout=90,
+        )
+        streams = json.loads(result.stdout or "{}").get("streams") or []
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    for ordinal, stream in enumerate(streams):
+        if stream.get("codec_name") in _COPYABLE_AUDIO:
+            return ordinal, stream["codec_name"]
+    return None
 
 
 def _audio_args(audio):
