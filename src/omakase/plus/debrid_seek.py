@@ -234,6 +234,7 @@ class SeekStreams:
                         # measured reproducible case, whether or not a separate
                         # timeline pass was recorded.
                         measured_timeline=bool(measured) or bool(keyframes),
+                        seek_targets=measured[1] if measured else (),
                     )
                     _LOG.warning(
                         "seek timeline from %d cached demuxer keyframes (first %.3f s)",
