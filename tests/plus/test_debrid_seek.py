@@ -48,8 +48,9 @@ def test_seekable_plan_serves_accurate_playlist_and_segment(tmp_path):
         streams.seek.segment = segment
         media = DebridMedia(b"", (), seek_key="version")
         request = Request({"type": "http", "method": "GET", "headers": []})
-        master = await streams.deliver(media, "index.m3u8", request, lambda: None)
-        assert b"stream.m3u8" in master.body
+        direct = await streams.deliver(media, "index.m3u8", request, lambda: None)
+        assert b"stream.m3u8" not in direct.body
+        assert direct.body == index.playlist
         stream = await streams.deliver(media, "stream.m3u8", request, lambda: None)
         body = stream.body.decode()
         assert "#EXT-X-PLAYLIST-TYPE:VOD" in body
