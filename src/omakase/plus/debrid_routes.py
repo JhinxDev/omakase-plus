@@ -21,11 +21,11 @@ from omakase.plus.debrid_library import (
     DebridLibraryError,
     account_binding,
     account_token,
-    playback_provider,
 )
 from omakase.plus.debrid_stream import HEADERS, DebridStreams
 from omakase.plus.deps import get_db
 from omakase.plus.middleware import require_user
+from omakase.plus.providers import playback as playback_providers
 from omakase.plus.request_limits import bounded_form_route
 from omakase.plus.web_playback_admission import Admission, Busy
 from omakase.plus.web_playback_catalog import personal_scope
@@ -285,8 +285,9 @@ def create_debrid_router(templates, context_factory, *, transport=None):
         token = account_token(db, user.id)
         if not token:
             return render(request, user, disconnected=True)
-        if playback_provider(db, user.id) == "plex":
-            raise HTTPException(409, "Your playback source is Plex", headers=HEADERS)
+        selection = playback_providers.select(db, user.id)
+        if not selection.cloud_route:
+            raise HTTPException(409, f"Your playback source is {selection.label}", headers=HEADERS)
         scope = personal_scope(db, user.id)
         title = exact_title(db, scope, domain, key, season, episode)
         if title is None:

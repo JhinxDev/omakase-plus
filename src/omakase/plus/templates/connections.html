@@ -19,10 +19,16 @@
     <div class="connection-field">
       <label for="playback-provider">Personal library</label>
       <select id="playback-provider" name="provider">
-        {% for key, label in [('auto','Automatic'),('realdebrid','Real-Debrid only'),('plex','Plex only')] %}
+        {% for key, label in playback_provider_options | default([]) %}
         <option value="{{ key }}" {% if playback_provider == key %}selected{% endif %}>{{ label }}</option>
         {% endfor %}
       </select>
+      {% set selection = playback_selection | default(none) %}
+      {% if selection and selection.reason %}
+      <p class="connection-note">{{ selection.reason }} Automatic selection is in use.</p>
+      {% elif selection and selection.provider %}
+      <p class="connection-note">Playing from {{ selection.label }}.</p>
+      {% endif %}
     </div>
     <button class="button button-secondary" type="submit">Save playback source</button>
   </form>
