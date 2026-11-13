@@ -123,6 +123,7 @@ class SeekPlan:
     # Segment the player will open on. Seeded from the saved resume position so
     # the prefetch starts there instead of always walking forward from zero.
     warm_index: int | None = None
+    warm_position: float | None = None
 
 
 class SeekStreams:
@@ -187,6 +188,12 @@ class SeekStreams:
         try:
             if plan.index.container == "fmp4":
                 await self.init(plan)
+            if plan.warm_position is not None:
+                # A resume only needs the segment it opens on; generating the
+                # opening of the file first would waste the player's patience.
+                plan.warm_index = self._position_index(plan, plan.warm_position)
+                self._prefetch(plan, max(0, plan.warm_index - 1))
+                return
             await self.segment(plan, 0)
         except Exception:  # noqa: BLE001
             return
@@ -257,11 +264,17 @@ class SeekStreams:
 
     def warm(self, plan, position):
         """Start prefetching at the segment the player is about to open."""
-        if plan is None or plan.index is None:
+        if plan is None:
             return
-        index = self._position_index(plan, position)
-        plan.warm_index = index
-        self._prefetch(plan, max(0, index - 1))
+        try:
+            plan.warm_position = max(0.0, float(position))
+        except (TypeError, ValueError):
+            return
+        if plan.index is None:
+            # The index is still building; _warm applies this when it lands.
+            return
+        plan.warm_index = self._position_index(plan, plan.warm_position)
+        self._prefetch(plan, max(0, plan.warm_index - 1))
 
     async def ensure(self, plan, number, timeout):
         """Make one segment available, bounded, so the player never waits on it."""
