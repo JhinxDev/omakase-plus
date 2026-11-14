@@ -87,6 +87,20 @@ for target in OmakasePlusTV OmakaseQualification; do
 done
 
 release_app="$work/DerivedData/Build/Products/Release-appletvos/OmakasePlusTV.app"
+shelf="$release_app/PlugIns/OmakaseTopShelf.appex"
+[[ -x "$shelf/OmakaseTopShelf" && $(xcrun lipo -archs "$shelf/OmakaseTopShelf") == arm64 ]] ||
+    fail "Missing arm64 Top Shelf app extension."
+python3 - "$release_app/Info.plist" "$shelf/Info.plist" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+
+app, shelf = (plistlib.loads(Path(path).read_bytes()) for path in sys.argv[1:])
+assert shelf["CFBundleIdentifier"] == app["CFBundleIdentifier"] + ".TopShelf"
+assert shelf["CFBundleVersion"] == app["CFBundleVersion"]
+assert shelf["CFBundleShortVersionString"] == app["CFBundleShortVersionString"]
+assert shelf["NSExtension"]["NSExtensionPointIdentifier"] == "com.apple.tv-services"
+PY
 # Set an optional default after the unsigned build so its value does not
 # appear in xcodebuild command output or the receipt.
 OMAKASE_SERVER_ORIGIN="$server_origin" python3 - "$release_app/Info.plist" <<'PY'

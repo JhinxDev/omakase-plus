@@ -11,6 +11,8 @@ struct LiveLibraryScreen: View {
     let openProfiles: () -> Void
     let chooseLibrary: (LiveLibraryOption?) -> Void
     @Binding var returnSeries: LiveLibraryEntry?
+    @Binding var topShelfDestination: TVTopShelfDestination?
+    @State private var recommendationsOpen = false
 
     @Binding var kind: LiveLibraryKind
     @State private var title: LiveLibraryEntry?
@@ -170,9 +172,17 @@ struct LiveLibraryScreen: View {
             focus = returnFocus
         }
         .onChange(of: isPresented) { _, visible in
-            guard visible, !expired, !busy,
-                  Date().timeIntervalSince(lastRefresh) > 45 else { return }
-            Task { await refresh() }
+            guard visible, !expired else { return }
+            Task {
+                if topShelfDestination == nil { await refresh() }
+                else { await followTopShelf() }
+            }
+        }
+        .onChange(of: topShelfDestination?.id, initial: true) { _, destination in
+            if destination != nil { Task { await followTopShelf() } }
+        }
+        .onChange(of: busy) { _, loading in
+            if !loading && topShelfDestination != nil { Task { await followTopShelf() } }
         }
         .onChange(of: returnSeries?.id) { _, _ in adoptReturnSeries() }
         .task { adoptReturnSeries() }
@@ -189,6 +199,9 @@ struct LiveLibraryScreen: View {
             confirmsDisconnect = false
             focus = "device-settings"
         }) { deviceSettings }
+        .fullScreenCover(isPresented: $recommendationsOpen, onDismiss: { focus = "for-you" }) {
+            TVForYouScreen(client: client.selecting(nil)) { recommendationsOpen = false }
+        }
         .sheet(isPresented: $libraryPickerOpen) { libraryPicker }
         .sheet(isPresented: $searchOpen, onDismiss: { focus = "search" }) { searchEditor }
         .fullScreenCover(isPresented: $synopsisOpen, onDismiss: { focus = "details-secondary" }) {
@@ -212,7 +225,11 @@ struct LiveLibraryScreen: View {
                     .accessibilityAddTraits(selected ? .isSelected : [])
                     .disabled(expired || busy)
                 }
-                Spacer()
+                control("For You", key: "for-you", icon: "sparkles", compact: true) {
+                    recommendationsOpen = true
+                }
+                .disabled(expired || busy)
+                Spacer(minLength: 12)
                 if libraryOptions.count > 1 || client.selectedLibrary != nil {
                     control("Libraries",
                             key: "libraries", icon: "rectangle.stack", compact: true) {
@@ -465,7 +482,8 @@ struct LiveLibraryScreen: View {
     private func shelves(minimumCatalogHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 36) {
             if let featured = catalog?.featured, query.isEmpty, catalogOffset == 0 {
-                TVCinemaFeature(entry: featured, client: client) {
+                TVCinemaFeature(entry: featured, client: client,
+                                label: catalog?.featuredRecent == true ? "Last played" : "") {
                     HStack(spacing: 18) {
                         if featured.featuredPath != nil || featured.watchPath != nil {
                             control(featuredAction(featured), key: "feature-play", icon: "play.fill", accent: true) {
@@ -935,6 +953,26 @@ struct LiveLibraryScreen: View {
 
     private var refreshing: Bool { spin }
 
+    private func followTopShelf() async {
+        guard isPresented, !expired, !busy, let destination = topShelfDestination else { return }
+        topShelfDestination = nil
+        recommendationsOpen = false
+        searchOpen = false
+        synopsisOpen = false
+        title = nil
+        episodes = nil
+        query = ""
+        kind = destination.kind
+        returnFocus = destination.kind.id
+        let entry = destination.entry
+        if destination.action == .resume, entry.featuredPath != nil || entry.watchPath != nil {
+            await open(entry, origin: destination.kind.id, featured: entry.featuredPath != nil,
+                       resumeImmediately: true)
+        } else {
+            openDetails(entry, key: destination.kind.id)
+        }
+    }
+
     private func adoptReturnSeries() {
         guard let entry = returnSeries else { return }
         returnSeries = nil
@@ -1035,6 +1073,7 @@ struct LiveLibraryScreen: View {
     }
 
     private func linkExpired() {
+        TVTopShelfLibrary.invalidate()
         expired = true
         catalog = nil
         episodes = nil
@@ -1374,3 +1413,263 @@ private struct DetailsArtwork: View {
     }
 }
 
+
+
+@MainActor
+private struct TVForYouScreen: View {
+    let client: LiveLibraryClient
+    let dismiss: () -> Void
+
+    @State private var category: LiveRecommendationCategory = .anime
+    @State private var page: LiveRecommendationsPage?
+    @State private var selected: LiveRecommendation?
+    @State private var selectionFocus: String?
+    @State private var resultByTitle: [String: LiveTitleRequest] = [:]
+    @State private var loading = false
+    @State private var requesting = false
+    @State private var error: String?
+    @FocusState private var focus: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            HStack(spacing: 18) {
+                Text("For You").font(.title2.bold()).accessibilityAddTraits(.isHeader)
+                Spacer()
+                ForEach(LiveRecommendationCategory.allCases) { item in
+                    action(item.label, key: item.id, selected: item == category && selected == nil) {
+                        selected = nil
+                        error = nil
+                        category = item
+                    }
+                    .accessibilityAddTraits(item == category && selected == nil ? .isSelected : [])
+                }
+                action("Close", key: "close", icon: "xmark") { dismiss() }
+            }
+            if let selected {
+                titleDetails(selected)
+            } else if loading {
+                ProgressView("Loading recommendations").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let page {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 36) {
+                        if page.rows.allSatisfy({ $0.cards.isEmpty }) {
+                            Text("No recommendations are available right now.")
+                                .foregroundStyle(Color.tvMuted).font(.body)
+                        }
+                        ForEach(page.rows.filter { !$0.cards.isEmpty }) { row in
+                            shelf(row)
+                        }
+                        if !requests.isEmpty {
+                            requestsView
+                        }
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 20)
+                }
+            } else if let error {
+                VStack(alignment: .leading, spacing: 20) {
+                    Text(error).foregroundStyle(Color.tvWarning)
+                    action("Try again", key: "retry") { Task { await load() } }
+                }
+            }
+        }
+        .padding(.horizontal, 88).padding(.vertical, 54)
+        .foregroundStyle(Color.tvText)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.tvBackground.ignoresSafeArea())
+        .defaultFocus($focus, category.id)
+        .task(id: category) { await load() }
+        .onExitCommand {
+            if selected != nil { closeDetails() }
+            else { dismiss() }
+        }
+        .accessibilityIdentifier("for-you")
+    }
+
+    private var requests: [LiveTitleRequest] {
+        let saved = page?.requests ?? []
+        let knownIDs = Set(saved.map(\.id))
+        return saved.map { resultByTitle[$0.id] ?? $0 }
+            + resultByTitle.values.filter { !knownIDs.contains($0.id) }.sorted { $0.title < $1.title }
+    }
+
+    private func action(_ label: String, key: String, icon: String? = nil, selected: Bool = false,
+                        perform: @escaping () -> Void) -> some View {
+        Button(action: perform) {
+            if let icon { Label(label, systemImage: icon) }
+            else { Text(label) }
+        }
+        .buttonStyle(TVActionStyle(focused: focus == key, compact: true, selected: selected))
+        .focusEffectDisabled()
+        .focused($focus, equals: key)
+        .accessibilityIdentifier("for-you." + key)
+    }
+
+    private func shelf(_ row: LiveRecommendationsPage.Row) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(row.title).font(.title3.bold()).accessibilityAddTraits(.isHeader)
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: 26) {
+                    ForEach(row.cards) { card in
+                        let key = row.key + ":" + card.key
+                        Button {
+                            selectionFocus = key
+                            error = nil
+                            selected = card
+                            focus = "title-back"
+                        } label: {
+                            VStack(alignment: .leading, spacing: 10) {
+                                TVRecommendationPoster(card: card, client: client)
+                                    .frame(width: 196, height: 268)
+                                Text(card.title).font(.callout.weight(.semibold))
+                                    .lineLimit(2, reservesSpace: true)
+                                if let status = resultByTitle[card.key] ?? card.request {
+                                    Text(status.label).font(.caption).foregroundStyle(Color.tvAccent)
+                                }
+                            }
+                            .frame(width: 196, alignment: .topLeading)
+                            .padding(10)
+                            .background(focus == key ? Color.tvRaised : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 12))
+                            .overlay {
+                                if focus == key {
+                                    RoundedRectangle(cornerRadius: 12).strokeBorder(Color.tvFocus, lineWidth: 3)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
+                        .focused($focus, equals: key)
+                    }
+                }
+                .padding(4)
+            }
+            .focusSection()
+        }
+    }
+
+    private var requestsView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Your requests").font(.title3.bold()).accessibilityAddTraits(.isHeader)
+            ForEach(requests) { status in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(status.title).font(.callout.bold())
+                        Spacer()
+                        Text(status.label).font(.callout).foregroundStyle(Color.tvAccent)
+                    }
+                    if !status.detail.isEmpty {
+                        Text(status.detail).font(.caption).foregroundStyle(Color.tvMuted)
+                    }
+                }
+                .padding(20)
+                .background(Color.tvSurface, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+    }
+
+    private func titleDetails(_ card: LiveRecommendation) -> some View {
+        HStack(alignment: .top, spacing: 36) {
+            TVRecommendationPoster(card: card, client: client).frame(width: 288, height: 414)
+            VStack(alignment: .leading, spacing: 20) {
+                Text(card.title).font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
+                if let summary = card.summary, !summary.isEmpty {
+                    Text(summary).font(.body).foregroundStyle(Color.tvMuted).lineLimit(6)
+                }
+                if let status = resultByTitle[card.key] ?? card.request {
+                    Text(status.label).font(.title3.bold()).foregroundStyle(Color.tvAccent)
+                    if !status.detail.isEmpty {
+                        Text(status.detail).font(.callout).foregroundStyle(Color.tvMuted)
+                    }
+                }
+                if let error { Text(error).font(.callout).foregroundStyle(Color.tvWarning) }
+                HStack(spacing: 16) {
+                    action("Back", key: "title-back", icon: "chevron.left", perform: closeDetails)
+                    if (resultByTitle[card.key] ?? card.request) != nil {
+                        action(requesting ? "Checking…" : "Check status", key: "check") {
+                            Task { await request(card, check: true) }
+                        }
+                        .disabled(requesting)
+                    } else if card.canRequest {
+                        action(requesting ? "Requesting…" : "Request", key: "request", icon: "plus") {
+                            Task { await request(card, check: false) }
+                        }
+                        .disabled(requesting)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 20)
+    }
+
+    private func closeDetails() {
+        selected = nil
+        error = nil
+        let key = selectionFocus
+        Task { @MainActor in
+            await Task.yield()
+            focus = key
+        }
+    }
+
+    private func load() async {
+        let wanted = category
+        loading = true
+        page = nil
+        error = nil
+        defer { if category == wanted { loading = false } }
+        do {
+            let fetched = try await client.recommendations(wanted)
+            guard !Task.isCancelled, category == wanted else { return }
+            page = fetched
+            resultByTitle = [:]
+        } catch {
+            guard !Task.isCancelled, category == wanted else { return }
+            self.error = "Couldn’t load For You. Try again."
+        }
+    }
+
+    private func request(_ card: LiveRecommendation, check: Bool) async {
+        guard !requesting else { return }
+        requesting = true
+        error = nil
+        defer { requesting = false }
+        do {
+            let result = try await client.requestTitle(card, check: check)
+            resultByTitle[result.id] = result
+            if selected?.key == card.key { focus = "title-back" }
+        } catch {
+            guard selected?.key == card.key else { return }
+            self.error = check ? "Couldn’t refresh this request." : "Couldn’t send this request. Try again."
+        }
+    }
+}
+
+@MainActor
+private struct TVRecommendationPoster: View {
+    let card: LiveRecommendation
+    let client: LiveLibraryClient
+    @State private var image: UIImage?
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Color.tvSurface
+                if let image {
+                    Image(uiImage: image).resizable().scaledToFill()
+                } else {
+                    Image(systemName: "film.stack").font(.largeTitle).foregroundStyle(Color.tvMuted)
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipShape(RoundedRectangle(cornerRadius: geometry.size.width / 22))
+        }
+        .accessibilityHidden(true)
+        .task(id: card.posterURL) {
+            image = nil
+            if let bytes = try? await client.recommendationArtwork(card), !Task.isCancelled {
+                image = UIImage(data: bytes)
+            }
+        }
+    }
+}

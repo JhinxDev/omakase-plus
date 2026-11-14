@@ -7,5 +7,18 @@
         <key>NSAllowsLocalNetworking</key>
         <true/>
     </dict>
+    <key>OmakaseTopShelfAppGroup</key>
+    <string>$(OMAKASE_TOP_SHELF_APP_GROUP)</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>$(PRODUCT_BUNDLE_IDENTIFIER).top-shelf</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>omakaseplus-tv</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

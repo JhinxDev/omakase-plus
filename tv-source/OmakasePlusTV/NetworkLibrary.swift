@@ -193,6 +193,9 @@ struct LiveTestScreen: View {
     @State private var passSeries: LiveLibraryEntry?
     @State private var passEpisode: LiveLibraryEntry?
     @State private var pendingReturnSeries: LiveLibraryEntry?
+    @State private var topShelfRequest: TVTopShelfLibrary.Request?
+    @State private var topShelfDestination: TVTopShelfDestination?
+    @State private var topShelfUnavailable = false
     @State private var resumeImmediately = false
     @State private var resumeWriter: LiveResumeWriter?
     @State private var reloadMediaID: String?
@@ -224,6 +227,16 @@ struct LiveTestScreen: View {
         pass == nil
     }
 
+    private var topShelfReady: Bool {
+        scenePhase == .active && !restoring && !openingProfile && !showingProfiles
+            && !enteringServer && challenge == nil && pass == nil && !closingPass
+            && library != nil && library?.selectedLibrary == nil
+    }
+
+    private var topShelfRefreshID: UUID? {
+        topShelfReady && topShelfRequest == nil && topShelfDestination == nil ? libraryVersion : nil
+    }
+
     private var activePlaybackMediaID: String? {
         guard scenePhase == .active, player.isPresenting, !closingPass,
               let pass, pass.supportsAccessCheck else { return nil }
@@ -241,9 +254,13 @@ struct LiveTestScreen: View {
                     resumeWriter = makeResumeWriter(for: selection, client: library)
                     pass = selection
                 }, disconnect: disconnect, openProfiles: openProfiles, chooseLibrary: { option in
+                    TVTopShelfLibrary.invalidate()
+                    topShelfRequest = nil
+                    topShelfDestination = nil
                     self.library = library.selecting(option)
                     libraryVersion = UUID()
-                }, returnSeries: $pendingReturnSeries, kind: $libraryKind)
+                }, returnSeries: $pendingReturnSeries, topShelfDestination: $topShelfDestination,
+                   kind: $libraryKind)
                     .id(libraryVersion)
                     .opacity(libraryVisible ? 1 : 0)
                     .disabled(!libraryVisible)
@@ -389,6 +406,22 @@ struct LiveTestScreen: View {
         }
         .foregroundStyle(Color.tvText)
         .task { if restoring { await restoreProfiles() } }
+        .onOpenURL(perform: openTopShelf)
+        .task(id: topShelfReady ? topShelfRequest?.id : nil) {
+            guard topShelfReady, let topShelfRequest, let library, let profile = roster.selected else { return }
+            await resolveTopShelf(topShelfRequest, client: library, profile: profile)
+        }
+        .task(id: topShelfRefreshID) {
+            guard let version = topShelfRefreshID, let library, let profile = roster.selected else { return }
+            await TVTopShelfLibrary.refresh(client: library, profile: profile) {
+                topShelfRefreshID == version
+            }
+        }
+        .alert("Top Shelf item unavailable", isPresented: $topShelfUnavailable) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Choose the title again from your current library.")
+        }
         .task(id: activePlaybackMediaID) {
             if let pass, let library, activePlaybackMediaID == pass.mediaID {
                 await monitorPlaybackAccess(pass, client: library)
@@ -397,6 +430,37 @@ struct LiveTestScreen: View {
         .onChange(of: scenePhase, initial: true) { _, phase in
             player.scenePhaseChanged(AppScenePhase(phase))
         }
+    }
+
+    private func openTopShelf(_ url: URL) {
+        guard let link = TVTopShelfLink(url: url) else { return }
+        guard let request = TVTopShelfLibrary.request(for: link),
+              restoring || (library != nil && library?.selectedLibrary == nil
+                            && !openingProfile && challenge == nil && !enteringServer) else {
+            topShelfUnavailable = true
+            return
+        }
+        showingProfiles = false
+        topShelfRequest = request
+        if let pass { closePass(pass) }
+    }
+
+    private func resolveTopShelf(_ request: TVTopShelfLibrary.Request, client: LiveLibraryClient,
+                                 profile: LiveSavedProfile) async {
+        let version = libraryVersion
+        var destination: TVTopShelfDestination?
+        do {
+            destination = try await TVTopShelfLibrary.resolve(request, client: client, profile: profile)
+        } catch FixtureConnectionError.unauthorized {
+            if !Task.isCancelled, libraryVersion == version { TVTopShelfLibrary.invalidate() }
+        } catch {
+            // The normal library remains available if a saved Home Screen item is gone.
+        }
+        guard !Task.isCancelled, libraryVersion == version, topShelfRequest?.id == request.id else { return }
+        pendingReturnSeries = nil
+        topShelfDestination = destination
+        topShelfRequest = nil
+        topShelfUnavailable = destination == nil
     }
 
     private var serverScreen: some View {
@@ -547,7 +611,16 @@ struct LiveTestScreen: View {
     }
 
     private func restoreProfiles() async {
-        defer { restoring = false }
+        defer {
+            restoring = false
+            if library == nil {
+                TVTopShelfLibrary.invalidate()
+                if topShelfRequest != nil {
+                    topShelfRequest = nil
+                    topShelfUnavailable = true
+                }
+            }
+        }
         restoreFailed = false
         do {
             switch try TVLibraryKeychain.read() {
@@ -573,7 +646,10 @@ struct LiveTestScreen: View {
     private func openProfiles() {
         let active = roster.selected?.id
         roster.prune()
-        if active != nil, roster.selected == nil { library = nil }
+        if active != nil, roster.selected == nil {
+            TVTopShelfLibrary.invalidate()
+            library = nil
+        }
         profileError = nil
         showingProfiles = true
     }
@@ -592,7 +668,10 @@ struct LiveTestScreen: View {
             }
             try activate(LiveSavedProfile(profile: profile, credential: client.credential), client)
         } catch FixtureConnectionError.unauthorized {
-            if roster.selected?.id == entry.id { library = nil }
+            if roster.selected?.id == entry.id {
+                TVTopShelfLibrary.invalidate()
+                library = nil
+            }
             roster.remove(entry.id)
             try? TVLibraryKeychain.save(roster)
             profileError = "This profile’s link expired. Add it again to keep watching."
@@ -615,6 +694,8 @@ struct LiveTestScreen: View {
         var updated = roster
         let replaced = try updated.select(entry)
         try TVLibraryKeychain.save(updated)
+        TVTopShelfLibrary.invalidate(unlessMatching: entry)
+        topShelfDestination = nil
         roster = updated
         libraryVersion = UUID()
         library = client
@@ -626,6 +707,9 @@ struct LiveTestScreen: View {
     }
 
     private func disconnect() {
+        TVTopShelfLibrary.invalidate()
+        topShelfRequest = nil
+        topShelfDestination = nil
         if let active = roster.selected {
             roster.remove(active.id)
             try? TVLibraryKeychain.save(roster)

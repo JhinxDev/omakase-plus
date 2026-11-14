@@ -33,6 +33,7 @@ public struct LiveLibraryEntry: Decodable, Identifiable, Sendable {
     public let episodeArtwork: String?
     public let durationSeconds: Int?
     public let isFolder: Bool?
+    public let watchlistArtwork: Bool?
 
     public var episodeDisplayTitle: String {
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -52,7 +53,7 @@ public struct LiveLibraryEntry: Decodable, Identifiable, Sendable {
         case id, title, note, watchPath = "watch_path"
         case artworkID = "artwork_id", posterURL = "poster_url", backdropURL = "backdrop_url"
         case summary, progress, featuredPath = "featured_path", featuredEpisode = "featured_episode"
-        case isFolder = "is_folder"
+        case isFolder = "is_folder", watchlistArtwork = "watchlist_artwork"
         case watched, episodeArtwork = "episode_artwork", durationSeconds = "duration_seconds"
     }
 }
@@ -75,13 +76,73 @@ public struct LiveLibraryPage: Decodable, Sendable {
     public let items: [LiveLibraryEntry]
     public let nextOffset: Int?
     public let featured: LiveLibraryEntry?
+    public let featuredRecent: Bool?
     public let continueWatching: [LiveLibraryEntry]?
     public let titleSummary: String?
 
     enum CodingKeys: String, CodingKey {
         case items, nextOffset = "next_offset", featured, continueWatching = "continue_watching"
-        case titleSummary = "title_summary"
+        case titleSummary = "title_summary", featuredRecent = "featured_recent"
     }
+}
+
+public enum LiveRecommendationCategory: String, CaseIterable, Identifiable, Sendable {
+    case anime, tv, movies
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .anime: "Anime"
+        case .tv: "TV Shows"
+        case .movies: "Movies"
+        }
+    }
+}
+
+public struct LiveTitleRequest: Decodable, Identifiable, Sendable {
+    public let kind: String
+    public let titleID: String
+    public let title: String
+    public let state: String
+    public let label: String
+    public let detail: String
+
+    public var id: String { kind + ":" + titleID }
+
+    enum CodingKeys: String, CodingKey {
+        case kind, titleID = "title_id", title, state, label, detail
+    }
+}
+
+public struct LiveRecommendation: Decodable, Identifiable, Sendable {
+    public let id: String
+    public let kind: String
+    public let title: String
+    public let posterURL: URL?
+    public let summary: String?
+    public let request: LiveTitleRequest?
+    public let canRequest: Bool
+
+    public var key: String { kind + ":" + id }
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, title, posterURL = "poster_url", summary, request, canRequest = "can_request"
+    }
+}
+
+public struct LiveRecommendationsPage: Decodable, Sendable {
+    public struct Row: Decodable, Identifiable, Sendable {
+        public let key: String
+        public let title: String
+        public let cards: [LiveRecommendation]
+
+        public var id: String { key }
+    }
+
+    public let category: String
+    public let rows: [Row]
+    public let requests: [LiveTitleRequest]
 }
 
 public enum LiveLibraryError: Error {
@@ -275,6 +336,56 @@ public struct LiveLibraryClient: Sendable {
 
     public func profileAvatar() async throws -> Data {
         try await send(Self.endpoint(origin, "profile/avatar"), maxBytes: 256 * 1024, timeout: 8)
+    }
+
+    public func recommendations(_ category: LiveRecommendationCategory) async throws -> LiveRecommendationsPage {
+        var components = URLComponents(url: Self.endpoint(origin, "for-you"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "category", value: category.rawValue)]
+        guard let url = components?.url else { throw FixtureConnectionError.invalidOrigin }
+        let data = try await send(url, maxBytes: 256_000, timeout: 35)
+        let page = try JSONDecoder().decode(LiveRecommendationsPage.self, from: data)
+        let expected = category == .movies ? "movie" : category.rawValue
+        guard page.category == category.rawValue, page.rows.count <= 12, page.requests.count <= 100,
+              Set(page.rows.map(\.id)).count == page.rows.count,
+              page.rows.allSatisfy({ row in
+                  row.cards.count <= 30 && Set(row.cards.map(\.key)).count == row.cards.count
+                      && row.cards.allSatisfy { $0.kind == expected }
+              }) else { throw FixtureConnectionError.invalidResponse }
+        return page
+    }
+
+    public func requestTitle(_ card: LiveRecommendation, check: Bool = false) async throws -> LiveTitleRequest {
+        guard check || card.canRequest else { throw FixtureConnectionError.requestRejected }
+        let body = try JSONEncoder().encode(["kind": card.kind, "title_id": card.id])
+        let path = check ? "for-you/request/check" : "for-you/request"
+        let data = try await send(Self.endpoint(origin, path), method: "POST", body: body, timeout: 45)
+        let result = try JSONDecoder().decode(LiveTitleRequest.self, from: data)
+        guard result.id == card.key else { throw FixtureConnectionError.invalidResponse }
+        return result
+    }
+
+    public func recommendationArtwork(_ card: LiveRecommendation) async throws -> Data? {
+        guard let url = card.posterURL, url.scheme == "https", url.port == nil,
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else { return nil }
+        switch url.host {
+        case "image.tmdb.org" where url.path.hasPrefix("/t/p/"): break
+        case "s4.anilist.co", "s.anilist.co":
+            guard url.path.hasPrefix("/file/anilistcdn/") else { return nil }
+        default: return nil
+        }
+        return try await Self.load(URLRequest(url: url, timeoutInterval: 12),
+                                   session: session, maxBytes: 4 * 1024 * 1024)
+    }
+
+    public func watchlist() async throws -> [LiveLibraryEntry] {
+        let data = try await send(scoped(Self.endpoint(origin, "watchlist")), maxBytes: 64 * 1024, timeout: 8)
+        let page = try JSONDecoder().decode(LiveLibraryPage.self, from: data)
+        guard page.items.count <= 8, Set(page.items.map(\.id)).count == page.items.count,
+              page.items.allSatisfy({
+                  $0.id.range(of: #"^[1-9][0-9]{0,9}$"#, options: .regularExpression) != nil
+                      && $0.watchPath == nil && $0.featuredPath == nil
+              }) else { throw FixtureConnectionError.invalidResponse }
+        return page.items
     }
 
     public func libraries() async throws -> [LiveLibraryOption] {
@@ -471,6 +582,11 @@ public struct LiveLibraryClient: Sendable {
         if let id = entry.artworkID, id.range(of: "^[1-9][0-9]{0,17}$", options: .regularExpression) != nil {
             let path = "artwork/\(id)/\(banner ? "banner" : "poster")"
             return try await send(scoped(Self.endpoint(origin, path)), maxBytes: 6 * 1024 * 1024)
+        }
+        if entry.watchlistArtwork == true,
+           entry.id.range(of: #"^[1-9][0-9]{0,9}$"#, options: .regularExpression) != nil {
+            return try await send(scoped(Self.endpoint(origin, "watchlist/\(entry.id)/poster")),
+                                  maxBytes: 4 * 1024 * 1024, timeout: 12)
         }
         let candidate = banner ? entry.backdropURL : entry.posterURL
         guard let url = candidate, url.scheme == "https", url.host == "image.tmdb.org",
