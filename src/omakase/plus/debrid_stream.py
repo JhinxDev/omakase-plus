@@ -1119,9 +1119,15 @@ class DebridStreams:
             raise DebridLibraryError("This position could not be prepared.", 503) from None
 
     async def _native_subtitles(self, plan, number, tracks, request):
+        if self.native._subtitle_ready(plan, number, tracks):
+            return
+
         async def wait_for_disconnect():
-            while (await request.receive())["type"] != "http.disconnect":
-                pass
+            try:
+                while (await request.receive())["type"] != "http.disconnect":
+                    pass
+            except (RuntimeError, OSError):
+                return
 
         generation = asyncio.create_task(self.native.ensure_subtitles(plan, number, tracks))
         disconnect = asyncio.create_task(wait_for_disconnect())
@@ -1136,9 +1142,11 @@ class DebridStreams:
             warn(_LOG, "native_delivery", error.code, "native", plan.diagnostic_id)
             raise DebridLibraryError("This subtitle is unavailable.", 503) from None
         finally:
-            generation.cancel()
             disconnect.cancel()
-            await asyncio.gather(generation, disconnect, return_exceptions=True)
+            generation.cancel()
+            # An ASGI receive can remain suspended until this response is sent.
+            # Await producer cleanup, never transport teardown.
+            await asyncio.gather(generation, return_exceptions=True)
 
     async def deliver(self, entry, asset, request, authorize: Callable[[], None]):
         authorize()

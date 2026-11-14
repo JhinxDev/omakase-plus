@@ -214,6 +214,55 @@ def test_disconnected_caption_requests_release_the_producer(tmp_path, monkeypatc
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("cached", [True, False])
+def test_subtitle_response_never_waits_for_disconnect_cleanup(tmp_path, monkeypatch, cached):
+    import asyncio
+
+    from starlette.requests import Request
+
+    async def run():
+        streams = DebridStreams(native_root=tmp_path)
+        plan = native_hls.NativePlan("fixture", "", 24, tmp_path)
+        path = plan.subtitle_segment_path(0, 0)
+        release = asyncio.Event()
+        received = 0
+
+        async def wait_for_transport():
+            nonlocal received
+            received += 1
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                # The proxy receive can stay alive until a response is sent.
+                await release.wait()
+            return {"type": "http.disconnect"}
+
+        async def ensure(*args):
+            if cached:
+                pytest.fail("Cached subtitles do not require generation")
+            await asyncio.sleep(0)
+            path.write_bytes(b"WEBVTT\n\n")
+
+        monkeypatch.setattr(streams.native, "ensure_subtitles", ensure)
+        if cached:
+            path.write_bytes(b"WEBVTT\n\n")
+        request = Request({"type": "http", "method": "GET"}, wait_for_transport)
+        ready = asyncio.create_task(streams._native_subtitles(plan, 0, 1, request))
+        try:
+            for _ in range(12):
+                await asyncio.sleep(0)
+            assert ready.done(), "caption response blocked on the receive task"
+            await ready
+            if cached:
+                assert received == 0
+        finally:
+            release.set()
+            await asyncio.gather(ready, return_exceptions=True)
+            await asyncio.sleep(0)
+
+    asyncio.run(run())
+
+
 def test_native_pass_refuses_a_copy_the_player_cannot_remux(system, monkeypatch, tmp_path):
     def unsupported(self, key, url, duration, *, subtitle_key="", warm=None):
         self.plans[key] = native_hls.NativePlan(key, url, duration, tmp_path / key, subtitle_key)
