@@ -605,10 +605,17 @@ class MovieService:
             tmdb_id = _positive(row.get("id"))
             if tmdb_id in seen:
                 continue
-            seen.add(tmdb_id)
-            if len(cards) >= 20:
+            if len(seen) >= 20:
                 break
-            metadata = await self._metadata(tmdb_id)
+            seen.add(tmdb_id)
+            try:
+                metadata = await self._metadata(tmdb_id)
+            except MovieError as error:
+                # Text search can omit unverified candidates. An exact lookup
+                # still requires the provider to confirm the requested identity.
+                if exact_imdb or error.code != "identity_mismatch":
+                    raise
+                continue
             if exact_imdb and metadata["imdb_id"] != exact_imdb:
                 raise MovieError("identity_mismatch")
             store.upsert_movie(self.db, user_id, metadata, now=_iso(self._clock()))
