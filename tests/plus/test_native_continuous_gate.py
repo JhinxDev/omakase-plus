@@ -461,6 +461,119 @@ def test_the_timestamp_contract_survives_a_seek(tmp_path, hevc_provider):
     asyncio.run(run())
 
 
+def _served_presentation(init: bytes, segment: bytes) -> float:
+    """Where the served pair really starts, in pass seconds.
+
+    Reads the segment's first fragment the way a player does: decode time plus
+    composition offset, mapped through the init's own edit list. The full
+    per-sample min(DTS + composition offset) walk is the next refinement of this
+    measurement; the composition-offset form is a lower bound that already
+    exposes a restarted session served through another session's init.
+    """
+    timescale = native_hls.media_timescale(init)
+    assert timescale
+    base = fragment_bases(segment)[0][2]
+    offset = minimum_composition_offset(segment)
+    return (base + offset) / timescale + native_hls.edit_shift(init)
+
+
+def test_initialisation_segments_are_compatible_across_sessions(tmp_path, hevc_provider):
+    """A restart must not be served through an init written for another session."""
+    timeline, plan, streams = _make(tmp_path, hevc_provider)
+
+    async def run():
+        captures = {}
+        seen = None
+        try:
+            for number in (0, 3, 1):
+                await _bounded(_open(streams, plan, number), 90)
+                session = plan.session
+                # Serving a retained window needs no session; a new one is the
+                # interesting case, because it writes its own init.
+                if session is None or session is seen:
+                    continue
+                seen = session
+                captures[number] = {track.kind: track.init for track in session.tracks}
+                await _bounded(session.close("test"), 30)
+                plan.session = None
+        finally:
+            await streams_running(streams)
+        return captures
+
+    captures = asyncio.run(run())
+    first = captures[0]
+    for number, capture in captures.items():
+        for kind in ("video", "audio"):
+            assert native_hls.media_timescale(capture[kind]) == native_hls.media_timescale(
+                first[kind]
+            ), f"session {number} {kind} timescale"
+            # Codec configuration lives in stsd; identical streams must agree.
+            assert capture[kind] == first[kind] or (
+                native_hls.edit_shift(capture[kind]) != native_hls.edit_shift(first[kind])
+            ), f"session {number} {kind} init differs beyond its edit list"
+            assert native_hls.edit_shift(capture[kind]) == native_hls.edit_shift(
+                first[kind]
+            ), (
+                f"session {number} {kind} edit list differs from the first session "
+                f"({native_hls.edit_shift(capture[kind]):.3f} vs "
+                f"{native_hls.edit_shift(first[kind]):.3f}), so the init written by "
+                "the first session cannot describe this session"
+            )
+
+
+def test_a_seek_sequence_keeps_the_timeline_and_sync(tmp_path, hevc_provider):
+    """Start, forward seek, backward seek, and a repeat must all map to the cue.
+
+    Every served pair is measured the way a player reads it: the pinned init plus
+    the segment it names, through the init's own edit list. Old and new session
+    requests overlap on purpose, because a player does that after a seek.
+    """
+    timeline, plan, streams = _make(tmp_path, hevc_provider)
+    frame = 1 / FRAME_RATE
+    audio = timeline.audios[0]
+
+    def assert_window(number, label):
+        start = timeline.origin + timeline.segments[number][0]
+        video = _served_presentation(
+            (plan.root / "init.mp4").read_bytes(), plan.video_segment_path(number).read_bytes()
+        )
+        track = _served_presentation(
+            (plan.root / audio.init).read_bytes(),
+            plan.audio_segment_path(audio, number).read_bytes(),
+        )
+        assert abs(video - start) <= frame * 3.05, (label, number, video, start)
+        assert abs(track - start) <= frame * 3.05, (label, number, track, start)
+        assert abs(track - video) <= frame * 2.05, (label, number, track, video)
+
+    async def run():
+        try:
+            # Startup, then a forward seek, then a backward seek.
+            for number in (0, 1, 2):
+                await _bounded(_open(streams, plan, number), 90)
+                assert_window(number, "startup")
+            await _bounded(_open(streams, plan, 4), 90)
+            assert_window(4, "forward seek")
+            await _bounded(_open(streams, plan, 1), 90)
+            assert_window(1, "backward seek")
+            # A request for the old position arrives after the restart.
+            try:
+                await _bounded(_open(streams, plan, 3), 90)
+                assert_window(3, "overlapping old request")
+            except native_hls.NativeError as error:
+                assert error.code in {"stale", "restarted", "incomplete"}, error.code
+            # The evicted window has to be remade by a restart.
+            plan.video_segment_path(1).unlink(missing_ok=True)
+            plan.audio_segment_path(audio, 1).unlink(missing_ok=True)
+            await _bounded(_open(streams, plan, 1), 90)
+            assert_window(1, "repeat after eviction")
+            if plan.session is not None:
+                await _bounded(plan.session.close("test"), 30)
+        finally:
+            await streams_running(streams)
+
+    asyncio.run(run())
+
+
 def test_the_pump_stays_ahead_of_the_player_but_bounded(server_run):
     records = server_run["records"]
     for record in records:
