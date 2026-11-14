@@ -660,8 +660,8 @@ def test_ffmpeg_diagnostics_are_bounded_and_redacted():
     assert len(text) <= 400
 
 
-def _build_hevc_fixture(folder: Path) -> Path:
-    """A short HEVC title with forced keyframes every six seconds."""
+def _build_hevc_fixture(folder: Path, *, keyframe_frames: int = 144) -> Path:
+    """A short open-GOP HEVC title with a repeatable keyframe interval."""
     source = folder / "hevc.mkv"
     subtitles = folder / "hevc.srt"
     subtitles.write_text(
@@ -698,9 +698,9 @@ def _build_hevc_fixture(folder: Path) -> Path:
         "-crf",
         "30",
         "-x265-params",
-        "keyint=144:min-keyint=144:scenecut=0:log-level=none",
+        f"keyint={keyframe_frames}:min-keyint={keyframe_frames}:scenecut=0:log-level=none",
         "-force_key_frames",
-        "expr:gte(t,n_forced*6)",
+        f"expr:gte(n,n_forced*{keyframe_frames})",
         "-c:a",
         "aac",
         "-b:a",

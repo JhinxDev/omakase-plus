@@ -328,6 +328,62 @@ def test_the_server_session_preserves_the_source_frame_sequence(server_run):
     assert (result.stderr or "").strip() == "", result.stderr[:400]
 
 
+def test_dense_keyframes_share_one_playlist_window(tmp_path):
+    """A playlist window contains several muxer fragments on real HEVC sources."""
+    source = _build_hevc_fixture(tmp_path, keyframe_frames=24)
+    provider = _Provider(source.read_bytes())
+    try:
+        timeline, plan, streams = _make(tmp_path, provider)
+        parts = []
+
+        async def run():
+            try:
+                for number in range(len(timeline.segments)):
+                    await _bounded(_open(streams, plan, number), 20)
+                    parts.append(plan.video_segment_path(number).read_bytes())
+                # Exercise a distant restart after deliberately evicting a window.
+                number = 2
+                previous = plan.session
+                plan.video_segment_path(number).unlink()
+                await _bounded(_open(streams, plan, number), 20)
+                assert plan.session is not previous
+                output = tmp_path / "seek.mp4"
+                output.write_bytes(
+                    (plan.root / "init.mp4").read_bytes()
+                    + plan.video_segment_path(number).read_bytes()
+                )
+                times = _frames(output)
+                assert times
+                assert abs(times[0] - timeline.segments[number][0]) < 0.25
+            finally:
+                if plan.session is not None:
+                    await plan.session.close("test")
+                if streams.client is not None:
+                    await streams.client.aclose()
+
+        asyncio.run(run())
+        output = tmp_path / "dense.mp4"
+        output.write_bytes((plan.root / "init.mp4").read_bytes() + b"".join(parts))
+        assert len(fragment_bases(parts[0])) > 1
+        assert _picture_hashes(output) == _picture_hashes(source)
+    finally:
+        provider.close()
+
+
+def _picture_hashes(path):
+    decoded = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:v:0",
+         "-fps_mode", "passthrough", "-f", "framemd5", "-"],
+        capture_output=True, text=True, timeout=25, check=True,
+    )
+    assert not decoded.stderr
+    return [
+        line.rsplit(",", 1)[-1].strip()
+        for line in decoded.stdout.splitlines()
+        if line and not line.startswith("#")
+    ]
+
+
 def test_every_window_starts_on_its_declared_cue(server_run):
     folder = server_run["folder"]
     timeline = server_run["timeline"]

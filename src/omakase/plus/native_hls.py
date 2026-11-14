@@ -1336,9 +1336,9 @@ class _ContinuousSession:
     so the first block the demuxer sees is the keyframe itself. Nothing after that
     is cut: the muxer emits every following picture in source order, which is what
     keeps the frame sequence intact where per-window cutting lost four frames at
-    every CRA. Each fragment is filed into the playlist window its own decode time
-    belongs to, and every fragment keeps an absolute clock, so a restart at another
-    cue lands on the same timeline the playlist already declares.
+    every CRA. The video keyframe's source presentation time selects its playlist
+    window. All video fragments keep the same decode-time translation within
+    a session, so the muxer's frame spacing and dependencies are preserved.
     """
 
     def __init__(self, streams, plan, start):
@@ -1381,6 +1381,7 @@ class _ContinuousSession:
         # anchored: sound and subtitles are positioned relative to it.
         self.origin: float | None = None
         self.video_base = None
+        self.first_video_keyframe = None
         self.audio_bases: dict[int, int] = {}
         self.clock_ready = asyncio.Event()
 
@@ -1794,33 +1795,29 @@ class _ContinuousSession:
         if not pairs:
             raise NativeError("fragment_clock")
         earliest = min(decode + offset for decode, offset in pairs)
-        number = self.feed_start + track.fragments
-        anchor = await self._base_for(track, earliest)
-        base = self._select_base(track, earliest, anchor, number)
+        base = await self._base_for(track, earliest)
         data = shift_decode_times(fragment, base)
         if track.kind == "video":
-            # One fragment per source keyframe and one window per cue point, in the
-            # same order. A fragment opens on the keyframe that starts its window and
-            # carries that keyframe's leading pictures, which are decoded here and
-            # presented just before the cue, so a segment begins a reorder lead before
-            # its declared start. That is the price of never cutting the source
-            # sequence, and the measured lead is bounded per boundary.
-            number = self.feed_start + track.fragments
+            # FFmpeg emits a fragment at every keyframe, while the playlist
+            # groups source cues into windows. Use the opening keyframe's PTS
+            # (the first decoded sample), since leading pictures may present
+            # earlier. Anchor it to the cue at which this input began.
+            decode, composition = pairs[0]
+            keyframe = decode + composition
+            if self.first_video_keyframe is None:
+                self.first_video_keyframe = keyframe
+            source_time = self.timeline.segments[self.feed_start][0] + (
+                keyframe - self.first_video_keyframe
+            ) / track.timescale
+            # Matroska cues are rounded to milliseconds.
+            number = self._window_at(source_time + 0.002)
+            previous = max(track.window, self.feed_start)
+            if number < previous or number > previous + 1:
+                raise NativeError("timeline_mismatch")
             shown = self._presentation(track, base, earliest)
-            if track.fragments < 3:
-                _LOG.warning(
-                    "native continuous video n=%d earliest=%.3f shown=%.3f expect=%d ts=%d",
-                    track.fragments,
-                    earliest / track.timescale,
-                    shown,
-                    number,
-                    track.timescale,
-                )
-            if number < len(self.timeline.segments):
-                window_start = self.timeline.segments[number][0]
-                if not window_start - _FRAGMENT_SLACK <= shown < window_start + _FRAGMENT_SLACK:
-                    raise NativeError("timeline_mismatch")
-            number = min(number, len(self.timeline.segments) - 1)
+            start, end = self.timeline.segments[number]
+            if not start - _FRAGMENT_SLACK <= shown < end + _FRAGMENT_SLACK:
+                raise NativeError("timeline_mismatch")
         else:
             # A priming sample can precede the cue. It belongs to the current
             # session and must never overwrite an earlier cached window.
@@ -1915,29 +1912,6 @@ class _ContinuousSession:
         self.origin = (base + earliest) / track.timescale + track.shift
         self.clock_ready.set()
         return base
-
-    def _select_base(self, track, earliest, anchor, number):
-        """Pick the constant this fragment's own clock is actually on.
-
-        A fragmented stream written to a pipe carries either the session's clock
-        (the first fragment of a session, and every audio fragment) or the source's
-        absolute decode times (later video fragments). Both are real, so the window
-        table decides which: a candidate is used only when it lands the fragment
-        inside its own window. Nothing is assumed, and if neither candidate lands
-        the caller raises instead of serving media at the wrong time.
-        """
-        if track.kind == "audio":
-            return anchor
-        window_start = self.timeline.segments[
-            min(number, len(self.timeline.segments) - 1)
-        ][0]
-        floor = window_start - _FRAGMENT_SLACK
-        top = window_start + _FRAGMENT_SLACK
-        for candidate in (anchor, -round(track.shift * track.timescale)):
-            shown = (candidate + earliest) / track.timescale + track.shift
-            if floor <= shown < top:
-                return candidate
-        return anchor
 
     @staticmethod
     def _presentation(track, base, earliest):
