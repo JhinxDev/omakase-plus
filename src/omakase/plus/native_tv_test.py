@@ -2509,7 +2509,9 @@ def create_native_tv_test_router(
                 raise HTTPException(error.status, str(error), headers=NO_STORE) from None
         if (
             grant is None
-            or bool(asset) != bool(grant.hls)
+            # A native pass has no legacy HLS object: its timeline is the asset
+            # registry keyed by native_key, so an asset request is exactly right.
+            or bool(asset) != bool(grant.hls or grant.native_key)
             or not re.fullmatch(r"[A-Za-z0-9_-]{43}", token)
             or not secrets.compare_digest(grant.token_digest, _digest(token))
         ):
@@ -2626,3 +2628,4 @@ def create_native_tv_test_router(
             raise
 
     return router
+
