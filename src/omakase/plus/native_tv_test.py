@@ -1630,21 +1630,31 @@ def create_native_tv_test_router(
 
         async def prewarm_subtitles():
             try:
-                if playback_provider(db, scope.viewer_id) == "plex":
-                    return
-                async with asyncio.timeout(60):
-                    candidate = await debrid_source(db, scope, path)
-                    if candidate:
-                        await cloud_streams.prepare(candidate[0].cloud, wait_first=False)
+                # This task outlives the request that started it, so it must not
+                # use the request's database handle: dependency teardown closes it
+                # and the warm then fails with "Cannot operate on a closed
+                # database". The established pattern is a connection of its own,
+                # as schedule_path_warm does.
+                with hls_database() as connection:
+                    if playback_provider(connection, scope.viewer_id) == "plex":
+                        return
+                    async with asyncio.timeout(60):
+                        candidate = await debrid_source(connection, scope, path)
+                        if candidate:
+                            await cloud_streams.prepare(candidate[0].cloud, wait_first=False)
             except (
                 DebridLibraryError,
                 TimeoutError,
                 households.HouseholdError,
                 PlaybackSourceError,
+                sqlite3.Error,
             ):
-                return
+                _LOG.warning("Apple TV subtitle prewarm failed for %s", path, exc_info=True)
 
         if not path.startswith(CLOUD):
+            for warm_path, existing in tuple(subtitle_prewarm_tasks.items()):
+                if existing.done():
+                    subtitle_prewarm_tasks.pop(warm_path, None)
             task = subtitle_prewarm_tasks.get(path)
             if task is None or task.done():
                 subtitle_prewarm_tasks[path] = asyncio.create_task(prewarm_subtitles())
