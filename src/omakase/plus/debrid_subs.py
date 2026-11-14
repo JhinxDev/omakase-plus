@@ -12,6 +12,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from omakase.plus.playback_diagnostics import diagnostic_id, warn
+
 _LOG = logging.getLogger(__name__)
 
 _PGS_CODEC = "hdmv_pgs_subtitle"
@@ -142,6 +144,7 @@ class SubtitleTrack:
 @dataclass
 class SubtitleJob:
     key: str
+    diagnostic_id: str = field(default_factory=diagnostic_id)
     tracks: list[SubtitleTrack] = field(default_factory=list)
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     done: asyncio.Event = field(default_factory=asyncio.Event)
@@ -311,11 +314,14 @@ class SubtitleCache:
                 job.ready.set()
         except asyncio.CancelledError:
             raise
-        except Exception as error:  # noqa: BLE001 - a source simply has no usable subtitles
+        except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
             job.error = type(error).__name__
-            # A playback path must never swallow an error silently: this is the
-            # class of bug that hid a dead timeline for hours.
-            _LOG.warning("%s subtitle job failed: %s", job.key, error)
+            code = "resource_unavailable" if isinstance(error, OSError) else "conversion_failed"
+            warn(_LOG, "subtitle_job", code, "provider", job.diagnostic_id)
+            job.ready.set()
+        except Exception:  # noqa: BLE001 - terminal background owner observes unexpected failures
+            job.error = "unexpected_error"
+            warn(_LOG, "subtitle_job", job.error, "provider", job.diagnostic_id)
             job.ready.set()
         finally:
             job.done.set()
@@ -516,6 +522,7 @@ class SubtitleCache:
             str(audio),
         ]
         if not await self._run_ocr(command, _EXTRACT_TIMEOUT):
+            warn(_LOG, "subtitle_asr", "audio_extraction_failed", "provider", job.diagnostic_id)
             return
         vtt = workdir / "asr.vtt"
         language = "en"
@@ -526,7 +533,12 @@ class SubtitleCache:
                 language, rows = await asyncio.wait_for(
                     asyncio.to_thread(self._asr_sync, str(audio)), _ASR_TIMEOUT
                 )
-            except (TimeoutError, ImportError, OSError, RuntimeError):
+            except TimeoutError:
+                warn(_LOG, "subtitle_asr", "deadline", "provider", job.diagnostic_id)
+                return
+            except (ImportError, OSError, RuntimeError) as error:
+                code = "asr_failed" if isinstance(error, RuntimeError) else "resource_unavailable"
+                warn(_LOG, "subtitle_asr", code, "provider", job.diagnostic_id)
                 return
             data = self._vtt_from_segments(rows)
             if not data:

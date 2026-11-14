@@ -1,8 +1,13 @@
-"""Acceptance smoke test for Apple TV playback, run against a live container.
+"""Apple TV playback smoke and offline acceptance receipt verifier.
 
-This is the check that replaces ad-hoc probing after a deploy. It exercises the
-same endpoints the Apple TV app calls, in the same order, and answers one
-question: would playback work right now?
+Run the legacy live smoke only in an authorized environment. Use independent
+reference and candidate receipts for the strict gate:
+
+    python ops/accept_playback.py --verify reference.json observed.json
+
+The strict gate requires measured timing, media continuity, cue mapping, seek
+landing and database completion readback for the same target and generation.
+For the live smoke, timings and calibration are informational checks.
 
 Run inside the container, which has the application and its data:
 
@@ -24,15 +29,173 @@ Design notes that matter:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
 import sys
 import time
 from pathlib import Path
+
+_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_./:-]{0,159}")
+_DIGEST = re.compile(r"[a-f0-9]{64}")
+_ASSET = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}\.m3u8")
+_DEADLINES = {"open": 5.0, "playlist": 8.0, "seek": 10.0}
+_TIMELINE_TOLERANCE = 0.15
+_MAX_RECEIPT_SIZE = 8 * 1024 * 1024
+
+
+def _number(value):
+    return type(value) in {int, float} and -math.inf < value < math.inf
+
+
+def _close(actual, expected, tolerance):
+    return _number(actual) and _number(expected) and abs(actual - expected) <= tolerance
+
+
+def _dict(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _rows(value):
+    return value if isinstance(value, list) and all(isinstance(row, dict) for row in value) else []
+
+
+def _identifier(value, pattern):
+    return isinstance(value, str) and pattern.fullmatch(value) is not None
+
+
+def _same_identity(reference, record):
+    return all(record.get(key) == reference.get(key) for key in ("target", "generation"))
+
+
+def _timeline(expected, actual):
+    expected, actual = _rows(expected), _rows(actual)
+    if not 2 <= len(expected) == len(actual) <= 10000:
+        return False
+    previous = None
+    for index, (reference, segment) in enumerate(zip(expected, actual, strict=True)):
+        start, end = segment.get("start"), segment.get("end")
+        if not (
+            type(segment.get("index")) is int
+            and segment["index"] == reference.get("index") == index
+            and _close(start, reference.get("start"), _TIMELINE_TOLERANCE)
+            and _close(end, reference.get("end"), _TIMELINE_TOLERANCE)
+            and start < end
+            and all(
+                _identifier(segment.get(key), _DIGEST) and segment[key] == reference.get(key)
+                for key in ("first_frame", "last_frame", "content")
+            )
+        ):
+            return False
+        if previous and not _close(start, previous["end"], _TIMELINE_TOLERANCE):
+            return False
+        previous = segment
+    return True
+
+
+def _cues(expected, actual):
+    expected, actual = _rows(expected), _rows(actual)
+    if not 1 <= len(expected) == len(actual) <= 10000:
+        return False
+    return all(
+        _identifier(reference.get("id"), _ID)
+        and cue.get("id") == reference["id"]
+        and _close(cue.get("start"), reference.get("start"), _TIMELINE_TOLERANCE)
+        and _close(cue.get("end"), reference.get("end"), _TIMELINE_TOLERANCE)
+        and 0 <= cue["start"] < cue["end"]
+        for reference, cue in zip(expected, actual, strict=True)
+    )
+
+
+def _seeks(expected, actual):
+    actual = _rows(actual)
+    return (
+        isinstance(expected, list)
+        and 3 <= len(expected) == len(actual) <= 1000
+        and all(
+            _number(target)
+            and target >= 0
+            and _close(seek.get("target"), target, 0.001)
+            and _close(seek.get("landed"), target, 0.5)
+            for target, seek in zip(expected, actual, strict=True)
+        )
+        and len(set(expected)) == len(expected)
+    )
+
+
+def _completion(reference, actual):
+    position = reference.get("completion_position")
+    credits = tuple(
+        actual.get(key) for key in ("credits_before", "credits_after", "credits_after_retry")
+    )
+    return (
+        _same_identity(reference, actual)
+        and _number(position)
+        and position >= 0
+        and _close(actual.get("position"), position, 0.5)
+        and actual["position"] >= 0
+        and _close(actual.get("readback_position"), position, 0.5)
+        and actual["readback_position"] >= 0
+        and all(type(count) is int for count in credits)
+        and credits[0] >= 0
+        and credits[1] == credits[0] + 1 == credits[2]
+    )
+
+
+def verify_acceptance(reference, observed):
+    """Validate independently measured evidence without contacting a provider."""
+    reference, observed = _dict(reference), _dict(observed)
+    calibration = _dict(observed.get("calibration"))
+    timings = _dict(observed.get("timings"))
+    checks = {
+        "identity": (
+            _identifier(reference.get("target"), _ID)
+            and _identifier(reference.get("generation"), _DIGEST)
+            and _same_identity(reference, observed)
+        ),
+        "master": all(
+            _identifier(reference.get(key), _ASSET) and observed.get(key) == reference[key]
+            for key in ("master_variant", "subtitle_variant")
+        ),
+        "calibration": (
+            _same_identity(reference, calibration)
+            and calibration.get("status") == "hit"
+            and _close(calibration.get("offset"), reference.get("calibration_offset"), 0.05)
+        ),
+        "deadlines": all(
+            _number(elapsed := timings.get(stage)) and 0 <= elapsed <= deadline
+            for stage, deadline in _DEADLINES.items()
+        ),
+        "timeline": _timeline(reference.get("segments"), observed.get("segments")),
+        "cues": _cues(reference.get("cues"), observed.get("cues")),
+        "seek": _seeks(reference.get("seek_targets"), observed.get("seeks")),
+        "completion": _completion(reference, _dict(observed.get("completion"))),
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    return {
+        "kind": "playback_acceptance",
+        "result": "FAIL" if failed else "PASS",
+        "failed_checks": failed,
+    }
+
+
+def _read_receipt(path):
+    def reject_duplicate_fields(pairs):
+        receipt = dict(pairs)
+        if len(receipt) != len(pairs):
+            raise ValueError("Duplicate receipt key")
+        return receipt
+
+    with path.open("rb") as source:
+        raw = source.read(_MAX_RECEIPT_SIZE + 1)
+    if len(raw) > _MAX_RECEIPT_SIZE:
+        raise ValueError("Oversized receipt")
+    return json.loads(raw, object_pairs_hook=reject_duplicate_fields)
 
 
 def _result(name, ok, detail):
@@ -157,20 +320,14 @@ async def _run(watch_path):
                 },
             )
         )
-        stored = sorted(Path(data / "seek").glob("keyframes-*.json"))
-        offset = None
-        if stored:
-            try:
-                payload = json.loads(stored[0].read_text(encoding="utf-8"))
-                if isinstance(payload, dict):
-                    offset = payload.get("offset")
-            except (OSError, ValueError):
-                offset = None
-        checks.append(_result("subtitle calibration offset", True, {"offset": offset}))
+        checks.append(_result("subtitle calibration (see strict gate)", True, {"measured": False}))
 
         hashes = []
         sizes = []
         for number in (1, 2, 20):
+            if number >= len(segments):
+                checks.append(_result(f"segment index {number}", False, {"missing": True}))
+                continue
             started = time.monotonic()
             reply = await client.get(base + "/" + segments[number])
             seconds = round(time.monotonic() - started, 2)
@@ -211,6 +368,17 @@ async def _run(watch_path):
 
 
 def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--verify", nargs=2, type=Path, metavar=("REFERENCE", "OBSERVED"))
+    args = parser.parse_args(argv)
+    if args.verify:
+        try:
+            result = verify_acceptance(*(_read_receipt(path) for path in args.verify))
+        except (OSError, ValueError, RecursionError):
+            print(json.dumps({"kind": "playback_acceptance", "error": "invalid_receipt"}))
+            return 2
+        print(json.dumps(result, indent=1))
+        return 0 if result["result"] == "PASS" else 1
     watch_path = os.environ.get("OMAKASE_ACCEPT_WATCH", "")
     if not watch_path:
         print(json.dumps({"error": "set OMAKASE_ACCEPT_WATCH to a watch path"}))
@@ -219,10 +387,11 @@ def main(argv):
     try:
         checks = asyncio.run(_run(watch_path))
     except Exception as error:  # noqa: BLE001 - the report is the output
-        print(json.dumps({"error": f"{type(error).__name__}: {error}"}))
+        print(json.dumps({"kind": "playback_smoke", "error": type(error).__name__}))
         return 2
     failed = [item for item in checks if not item["ok"]]
     report = {
+        "kind": "playback_smoke",
         "watch_path": watch_path,
         "checks": checks,
         "failed": len(failed),

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -50,6 +51,8 @@ import sys
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
+
+from omakase.plus.web_playback_codecs import HLSInitMetadata, hls_init_metadata
 
 PLAYLIST_NAME = "stream.m3u8"
 TRACKS_NAME = "tracks.json"
@@ -118,10 +121,15 @@ class PreparedTitle:
     # EXT-X-MAP tag. HEVC has to be delivered that way: Apple players do not
     # play HEVC from MPEG-TS segments, which is why the recipe follows the codec.
     init: str | None = None
+    bandwidth: int | None = None
+    average_bandwidth: int | None = None
+
+    def init_metadata(self):
+        return hls_init_metadata(self.directory, self.init) if self.init else HLSInitMetadata()
 
 
 def _parse_playlist(data):
-    """Return ``(segment names, total duration, init name)`` for a VOD playlist."""
+    """Return segment names, their durations and the init name for a VOD playlist."""
     try:
         lines = [line.strip() for line in data.decode("ascii").splitlines()]
     except UnicodeDecodeError:
@@ -129,7 +137,8 @@ def _parse_playlist(data):
     if not lines or lines[0] != "#EXTM3U":
         return None
     names = []
-    duration = 0.0
+    durations = []
+    pending = None
     ended = False
     init = None
     for line in lines[1:]:
@@ -140,20 +149,31 @@ def _parse_playlist(data):
             continue
         if line.startswith("#"):
             if match := _EXTINF.fullmatch(line):
-                duration += float(match[1])
+                if pending is not None:
+                    return None
+                pending = float(match[1])
+                if not math.isfinite(pending) or pending <= 0:
+                    return None
             elif match := _MAP.fullmatch(line):
                 if not _INIT_NAME.fullmatch(match[1]):
                     return None
                 init = match[1]
             continue
-        if ended or len(names) >= _MAX_SEGMENTS or not _SEGMENT_NAME.fullmatch(line):
+        if (
+            ended
+            or pending is None
+            or len(names) >= _MAX_SEGMENTS
+            or not _SEGMENT_NAME.fullmatch(line)
+        ):
             return None
         names.append(line)
+        durations.append(pending)
+        pending = None
     # ffmpeg appends the endlist when the run finishes, so its absence means
     # the playlist still describes a run in progress.
-    if not ended or not names or duration <= 0:
+    if not ended or not names or pending is not None:
         return None
-    return tuple(names), duration, init
+    return tuple(names), tuple(durations), init
 
 
 def _sidecars(directory):
@@ -270,7 +290,11 @@ class PreparedStore:
         parsed = _parse_playlist(data)
         if parsed is None:
             return None
-        names, duration, init = parsed
+        names, durations, init = parsed
+        duration = sum(durations)
+        if not math.isfinite(duration):
+            return None
+        sizes = []
         for name in names:
             path = directory / name
             try:
@@ -281,6 +305,7 @@ class PreparedStore:
                 return None
             if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_size <= 0:
                 return None
+            sizes.append(info.st_size)
         if init is not None:
             path = directory / init
             try:
@@ -297,6 +322,10 @@ class PreparedStore:
             tracks=_tracks(directory),
             duration=duration,
             init=init,
+            # The highest individual segment rate is a conservative ceiling
+            # for every weighted HLS segment window.
+            bandwidth=math.ceil(max(8 * size / span for size, span in zip(sizes, durations))),
+            average_bandwidth=math.ceil(8 * sum(sizes) / duration),
         )
 
 

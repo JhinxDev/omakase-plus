@@ -96,7 +96,8 @@ def test_prepared_title_serves_a_master_with_its_subtitle_renditions(tmp_path):
     assert index.headers["content-type"].startswith("application/vnd.apple.mpegurl")
     assert "#EXT-X-MEDIA:TYPE=SUBTITLES" in body
     assert 'NAME="Subtitles 1"' in body and 'NAME="Subtitles 2"' in body
-    assert 'STREAM-INF:BANDWIDTH=40000000,SUBTITLES="subs"' in body
+    assert 'SUBTITLES="subs"' in body
+    assert "AVERAGE-BANDWIDTH=" in body
     assert body.splitlines()[-1] == "stream.m3u8"
 
 

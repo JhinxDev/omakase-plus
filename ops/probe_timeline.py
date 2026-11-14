@@ -54,14 +54,14 @@ Design notes that matter:
 - A constant container start offset (the mpegts muxer preload) is normal and
   harmless; the probe reports it separately from the per-segment error that
   makes a boundary replay.
-- Exit code is zero whenever the probe produced numbers, because a timeline
-  defect is a reported fact and not a probe failure. Only an unrunnable probe,
-  or one that measured no segment at all, exits non-zero (2).
+- Set OMAKASE_PROBE_FAIL_ON_DEFECT=1 for exit 1 on timeline defects or missing
+  measurements. An unrunnable probe exits 2.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -161,6 +161,7 @@ class Config:
         self.indexes = _parse_indexes(environ.get("OMAKASE_PROBE_SEGMENTS") or _DEFAULT_INDEXES)
         self.frames = _positive_int(environ.get("OMAKASE_PROBE_FRAMES"), _DEFAULT_FRAMES)
         self.root = (environ.get("OMAKASE_PROBE_ROOT") or "").strip()
+        self.fail_on_defect = environ.get("OMAKASE_PROBE_FAIL_ON_DEFECT") == "1"
 
 
 class _Timeline:
@@ -631,7 +632,17 @@ async def _sample(source, config, run_dir):
                     "covered_span_error_s": round(covered - segment["duration"], 3),
                 }
             )
-            hashes[number] = await asyncio.to_thread(_frame_md5, path)
+            frames_decoded = await asyncio.to_thread(_frame_md5, path)
+            if frames_decoded:
+                hashes[number] = frames_decoded
+                sample["acceptance_segment"] = {
+                    "index": number,
+                    "start": first,
+                    "end": round(first + covered, 3),
+                    "first_frame": hashlib.sha256(frames_decoded[0].encode()).hexdigest(),
+                    "last_frame": hashlib.sha256(frames_decoded[-1].encode()).hexdigest(),
+                    "content": hashlib.sha256("\n".join(frames_decoded).encode()).hexdigest(),
+                }
         except (ProbeError, OSError) as error:
             sample["error"] = str(error)
         samples.append(sample)
@@ -883,8 +894,18 @@ def main(environ=None):
         return 2
     report["wall_s"] = round(time.monotonic() - began, 1)
     print(json.dumps(report, indent=1))
-    if report.get("summary", {}).get("segments_measured", 0) <= 0:
+    summary = report.get("summary", {})
+    if summary.get("segments_measured", 0) <= 0:
         return 2
+    if config.fail_on_defect and (
+        summary.get("verdict") != "CONSISTENT"
+        or summary.get("segments_failed")
+        or not summary.get("pairs_compared")
+        or report.get("skipped_indexes")
+        or report.get("result") == "FAIL"
+        or any(not sample.get("acceptance_segment") for sample in report.get("samples", ()))
+    ):
+        return 1
     return 0
 
 

@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import re
 import shutil
 import subprocess
@@ -21,6 +22,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import httpx
+
+from omakase.plus.playback_diagnostics import diagnostic_id, warn
 
 _EBML = 0x1A45DFA3
 _SEGMENT = 0x18538067
@@ -132,6 +135,27 @@ class SeekIndex:
         return "\n".join(lines).encode("ascii")
 
 
+def _observe_task(task):
+    # A timed-out waiter leaves a shared generator running for other callers.
+    # Retrieve its terminal exception even if no waiter comes back.
+    if not task.cancelled():
+        task.exception()
+
+
+def _failure_code(error):
+    if isinstance(error, (TimeoutError, httpx.TimeoutException)):
+        return "deadline"
+    if isinstance(error, httpx.HTTPError):
+        return "provider_failed"
+    if isinstance(error, OSError):
+        return "resource_unavailable"
+    if isinstance(error, LookupError):
+        return "segment_missing"
+    if isinstance(error, RuntimeError):
+        return "generation_failed"
+    return "unexpected_error"
+
+
 @dataclass
 class SeekPlan:
     key: str
@@ -149,6 +173,7 @@ class SeekPlan:
     touched: float = field(default_factory=time.monotonic)
     drift: float | None = None
     task_refine: asyncio.Task | None = None
+    diagnostic_id: str = field(default_factory=diagnostic_id)
     # Segment the player will open on. Seeded from the saved resume position so
     # the prefetch starts there instead of always walking forward from zero.
     warm_index: int | None = None
@@ -183,6 +208,7 @@ class SeekStreams:
         try:
             directory.mkdir(parents=True, exist_ok=True)
         except OSError:
+            warn(_LOG, "seek_start", "resource_unavailable", "seek", None)
             return None
         plan = SeekPlan(key, url, float(duration), directory)
         self.plans[key] = plan
@@ -211,6 +237,7 @@ class SeekStreams:
             index = await build_index(plan.url, plan.duration)
             if index is None or len(index.segments) < 2:
                 plan.error = "no_index"
+                warn(_LOG, "seek_index", "index_unavailable", "seek", plan.diagnostic_id)
                 return
             plan.index = index
             # A cached demuxer keyframe list replaces the cue table. The scan
@@ -251,12 +278,12 @@ class SeekStreams:
             await self._warm(plan)
         except asyncio.CancelledError:
             raise
-        except Exception as error:  # noqa: BLE001 - fall back to the transcode path
-            # Falling back is intended. Failing silently is not: a TypeError here
-            # once disabled the whole measured-timeline path with no trace in the
-            # logs, so every plan build failure is now reported.
+        except (OSError, ValueError, RuntimeError, httpx.HTTPError) as error:
             plan.error = type(error).__name__
-            _LOG.warning("seek plan build failed (%s): %s", type(error).__name__, error)
+            warn(_LOG, "seek_index", _failure_code(error), "seek", plan.diagnostic_id)
+        except Exception:  # noqa: BLE001 - terminal background owner observes unexpected failures
+            plan.error = "unexpected_error"
+            warn(_LOG, "seek_index", plan.error, "seek", plan.diagnostic_id)
         finally:
             plan.ready.set()
 
@@ -353,8 +380,8 @@ class SeekStreams:
                 self._prefetch(plan, max(0, plan.warm_index - 1))
                 return
             await self.segment(plan, 0)
-        except Exception:  # noqa: BLE001
-            return
+        except (LookupError, RuntimeError, OSError) as error:
+            warn(_LOG, "seek_warm", _failure_code(error), "seek", plan.diagnostic_id)
 
     async def init(self, plan):
         path = plan.root / "init.mp4"
@@ -365,6 +392,7 @@ class SeekStreams:
             pass
         if plan.init_task is None:
             plan.init_task = asyncio.create_task(self._generate_init(plan))
+            plan.init_task.add_done_callback(_observe_task)
         await asyncio.shield(plan.init_task)
         if not path.is_file():
             raise LookupError("init generation")
@@ -450,7 +478,7 @@ class SeekStreams:
             async with asyncio.timeout(timeout):
                 await self.segment(plan, number)
             return True
-        except (TimeoutError, LookupError, RuntimeError, OSError, asyncio.CancelledError):
+        except (TimeoutError, LookupError, RuntimeError, OSError):
             return False
 
     async def segment(self, plan, number):
@@ -467,13 +495,13 @@ class SeekStreams:
         task = plan.segment_tasks.get(number)
         if task is None:
             task = asyncio.create_task(self._generate(plan, number))
+            task.add_done_callback(_observe_task)
             plan.segment_tasks[number] = task
         try:
             await asyncio.shield(task)
-        except Exception:  # noqa: BLE001
-            plan.segment_tasks.pop(number, None)
-            raise
-        plan.segment_tasks.pop(number, None)
+        finally:
+            if task.done() and plan.segment_tasks.get(number) is task:
+                plan.segment_tasks.pop(number, None)
         if not path.is_file() or path.stat().st_size <= 188:
             raise LookupError("segment generation")
         self._prefetch(plan, number + 1)
@@ -684,15 +712,29 @@ class SeekStreams:
                         task = plan.segment_tasks.get(number)
                         if task is None:
                             task = asyncio.create_task(self._generate(plan, number))
+                            task.add_done_callback(_observe_task)
                             plan.segment_tasks[number] = task
                         pending.append((number, task))
-                    for number, task in pending:
-                        try:
-                            await asyncio.shield(task)
-                        finally:
+                    results = await asyncio.gather(
+                        *(asyncio.shield(task) for _, task in pending), return_exceptions=True
+                    )
+                    for (number, task), result in zip(pending, results, strict=True):
+                        if plan.segment_tasks.get(number) is task:
                             plan.segment_tasks.pop(number, None)
-            except (RuntimeError, LookupError, OSError, asyncio.CancelledError):
-                return
+                        if isinstance(result, asyncio.CancelledError):
+                            continue
+                        if isinstance(result, Exception):
+                            warn(
+                                _LOG,
+                                "seek_prefetch",
+                                _failure_code(result),
+                                "seek",
+                                plan.diagnostic_id,
+                            )
+            except asyncio.CancelledError:
+                raise
+            except (RuntimeError, LookupError, OSError) as error:
+                warn(_LOG, "seek_prefetch", _failure_code(error), "seek", plan.diagnostic_id)
 
         plan.prefetch = asyncio.create_task(run())
 
@@ -887,7 +929,10 @@ def _cached_keyframes(plan):
     try:
         cached = keyframes_cache_path(plan.root.parent, plan.url)
         stored = json.loads(cached.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
     except (OSError, ValueError):
+        warn(_LOG, "seek_calibration", "cache_unavailable", "seek", plan.diagnostic_id)
         return None
     offset = 0.0
     if isinstance(stored, dict):
@@ -897,8 +942,11 @@ def _cached_keyframes(plan):
         try:
             offset = float(stored.get("offset") or 0.0)
         except (TypeError, ValueError):
-            offset = 0.0
+            offset = math.nan
         stored = stored.get("keyframes")
+    if not math.isfinite(offset):
+        warn(_LOG, "seek_calibration", "invalid_cache", "seek", plan.diagnostic_id)
+        return None
     if not isinstance(stored, list) or len(stored) < 2:
         return None
     values = []
@@ -907,10 +955,11 @@ def _cached_keyframes(plan):
             value = float(item)
         except (TypeError, ValueError):
             return None
-        if value < 0:
+        if not math.isfinite(value) or value < 0:
             return None
         values.append(round(value, 3))
-    return sorted(set(values)), offset
+    unique = sorted(set(values))
+    return (unique, offset) if len(unique) >= 2 else None
 
 
 def _cached_timeline(plan):

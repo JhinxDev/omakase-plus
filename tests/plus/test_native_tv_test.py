@@ -6,7 +6,7 @@ import secrets
 import shutil
 import sqlite3
 import subprocess
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -53,12 +53,20 @@ LIBRARY_API = API + "/library"
 
 
 @pytest.fixture
-def system(monkeypatch):
+def system(monkeypatch, tmp_path):
     monkeypatch.setenv("OMAKASE_PLUS_PRIVATE", "true")
     monkeypatch.setenv("OMAKASE_PLUS_WEB_PLAYER_ENABLED", "true")
     monkeypatch.setenv("OMAKASE_NATIVE_TV_TEST", "1")
     monkeypatch.setenv("OMAKASE_NATIVE_TV_ORIGIN", ORIGIN)
-    db = sqlite3.connect(":memory:", check_same_thread=False)
+    database_path = tmp_path / "native-test.sqlite"
+
+    def runtime_db():
+        db = sqlite3.connect(database_path, check_same_thread=False)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
+        return closing(db)
+
+    db = sqlite3.connect(database_path, check_same_thread=False)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
     run_migrations(db)
@@ -81,6 +89,8 @@ def system(monkeypatch):
         transcode=None,
         debrid=None,
         fixture_credential=secrets.token_hex(12),
+        runtime_db=runtime_db,
+        independent_database=False,
         part_bytes=None,
         streams=(
             PlexStream("1", "video", "h264", "", False, False, False, 0),
@@ -161,7 +171,7 @@ def system(monkeypatch):
             remote_anime=remote_guard,
             transport=httpx.MockTransport(upstream),
             clock=lambda: options.now,
-            hls_database=lambda: nullcontext(db),
+            hls_database=lambda: runtime_db() if options.independent_database else nullcontext(db),
         ),
         prefix="/plus",
     )
@@ -2492,7 +2502,9 @@ def _anime_pass(system, monkeypatch):
     return native, db, options, media, f"{LIBRARY_API}/media/{media['media_id']}/resume"
 
 
-def test_failed_anime_credit_is_recorded_and_retried_on_the_exact_retry(system, monkeypatch):
+def test_failed_anime_credit_is_recorded_and_retried_on_the_exact_retry(
+    system, monkeypatch, caplog
+):
     native, db, options, media, resume_url = _anime_pass(system, monkeypatch)
     assert native.post(resume_url, json={"seq": 1, "position_seconds": 700}).status_code == 200
 
@@ -2504,13 +2516,15 @@ def test_failed_anime_credit_is_recorded_and_retried_on_the_exact_retry(system, 
     def failing_ingest(*args, **kwargs):
         if not failures:
             failures.append(True)
-            raise watch_service.WatchServiceError("tracker unavailable")
+            raise RuntimeError("synthetic-credit-credential")
         return real_ingest(*args, **kwargs)
 
     monkeypatch.setattr(watch_service, "ingest_watch_event", failing_ingest)
     options.now += 1
     first = native.post(resume_url, json={"seq": 2, "position_seconds": 1740})
     assert first.status_code == 200, first.text
+    assert "stage=ingest code=failed intent=" in caplog.text
+    assert "synthetic-credit-credential" not in caplog.text
     # The checkpoint committed and the credit did not. The intent is the proof
     # that a completion is still owed, so the 200 is not a silent loss.
     assert db.execute("SELECT count(*) FROM watch_events").fetchone()[0] == 0
@@ -2583,3 +2597,136 @@ def test_a_movie_target_never_creates_a_durable_intent(system):
         is None
     )
     assert db.execute("SELECT count(*) FROM native_watch_credits").fetchone()[0] == 0
+
+
+def test_direct_named_pass_refreshes_after_request_db_closes_and_next_stays_direct(
+    system,
+    monkeypatch,
+):
+    from omakase.plus.debrid_anime import DebridTitleSource
+    from omakase.plus.debrid_library import CloudSource, account_binding
+    from omakase.plus.debrid_stream import DebridStreams
+
+    native, db, options, _, _ = _anime_pass(system, monkeypatch)
+    app = native.app
+    options.independent_database = True
+
+    def request_db():
+        with options.runtime_db() as connection:
+            yield connection
+
+    app.dependency_overrides[get_db] = request_db
+    monkeypatch.setattr(native_tv_test, "playback_provider", lambda *_: "realdebrid")
+    monkeypatch.setattr(native_tv_test, "account_token", lambda *_: options.fixture_credential)
+    monkeypatch.setattr(native_tv_test, "revalidate_anime", lambda *_: None)
+    monkeypatch.setattr(
+        native_tv_test,
+        "next_watch_path",
+        lambda db, source, **_: "/plus/watch/1/2" if source.episode_number == 1 else None,
+    )
+
+    async def unexpected_preparation(*args, **kwargs):
+        pytest.fail("Direct playback cannot prepare HLS")
+
+    monkeypatch.setattr(DebridStreams, "prepare", unexpected_preparation)
+    resolutions = []
+    changed = False
+
+    async def resolve(connection, scope, monitor, episode, library):
+        assert monitor == 1
+        assert connection.execute("SELECT 1").fetchone()[0] == 1
+        if resolutions:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+                resolutions[-1].execute("SELECT 1")
+        resolutions.append(connection)
+        cloud = CloudSource(
+            f"Fixture {episode}.mkv",
+            str(episode) * 64,
+            ("e" if changed else "a") * 64,
+            1800,
+            account_binding(options.fixture_credential),
+            "",
+            "",
+            f"https://download.real-debrid.com/{len(resolutions)}",
+            100,
+        )
+        return DebridTitleSource(scope, "anime", "100", 1, episode, cloud, "b" * 64, ()), "Fixture"
+
+    monkeypatch.setattr(native_tv_test, "resolve_debrid_anime", resolve)
+    reads = []
+
+    def original_file(request):
+        reads.append(request.url.path)
+        if request.url.path in {"/1", "/2"} and (request.url.path == "/1" or changed):
+            return httpx.Response(403)
+        assert request.headers["range"] == "bytes=0-3"
+        return httpx.Response(
+            206, stream=httpx.ByteStream(b"test"), headers={"content-range": "bytes 0-3/100"}
+        )
+
+    options.debrid = original_file
+    play = native.post(
+        LIBRARY_API + "/play", json={"watch_path": "/plus/watch/1/1", "engine": "direct"}
+    )
+    assert play.status_code == 200, play.text
+    first = play.json()
+    assert first["media_format"] == "direct"
+    response = native.get(first["media_url"], headers={"Range": "bytes=0-3"})
+    assert (response.status_code, response.content) == (206, b"test")
+    assert reads == ["/1", "/2"]
+
+    changed = True
+    response = native.get(first["media_url"], headers={"Range": "bytes=0-3"})
+    assert response.status_code == 409
+    assert reads == ["/1", "/2", "/2"]
+    changed = False
+
+    next_item = native.post(f"{LIBRARY_API}/media/{first['media_id']}/next")
+    assert next_item.status_code == 200, next_item.text
+    assert next_item.json()["media_format"] == "direct"
+    assert next_item.json()["identity"]["episode_number"] == 2
+
+
+def test_anime_credit_recovers_after_twelve_failures_and_playing_another_episode(
+    system, monkeypatch
+):
+    native, db, options, media, resume_url = _anime_pass(system, monkeypatch)
+    from omakase.plus.watch import service as watch_service
+
+    real_ingest = watch_service.ingest_watch_event
+    failures = []
+
+    def failing_ingest(*args, **kwargs):
+        failures.append(True)
+        raise watch_service.WatchServiceError("temporarily unavailable")
+
+    monkeypatch.setattr(watch_service, "ingest_watch_event", failing_ingest)
+    checkpoint = {"seq": 1, "position_seconds": 1740}
+    assert native.post(resume_url, json=checkpoint).status_code == 200
+    for attempt in range(2, 12):
+        db.execute("UPDATE native_watch_credits SET updated_at=0")
+        db.commit()
+        assert native.post(resume_url, json=checkpoint).status_code == 200
+        assert len(failures) == attempt
+    db.execute("UPDATE native_watch_credits SET updated_at=0")
+    db.commit()
+    assert native.post(f"{LIBRARY_API}/media/{media['media_id']}/close").status_code == 200
+    assert len(failures) == 12
+
+    # While backed off, a different playback sees no ingest calls.
+    assert (
+        native.post(LIBRARY_API + "/play", json={"watch_path": "/plus/watch/1/2"}).status_code
+        == 200
+    )
+    assert len(failures) == 12
+    db.execute("UPDATE native_watch_credits SET updated_at=0")
+    db.commit()
+    monkeypatch.setattr(watch_service, "ingest_watch_event", real_ingest)
+    for _ in range(2):
+        assert (
+            native.post(LIBRARY_API + "/play", json={"watch_path": "/plus/watch/1/2"}).status_code
+            == 200
+        )
+    assert db.execute("SELECT count(*) FROM watch_events").fetchone()[0] == 1
+    intent = db.execute("SELECT status,attempts FROM native_watch_credits").fetchone()
+    assert (intent["status"], intent["attempts"]) == ("credited", 13)

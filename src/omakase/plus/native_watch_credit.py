@@ -13,7 +13,7 @@ Two properties make that impossible now:
 * **The credit is independently retryable and idempotent.** The intent carries the
   watch event key the ingest already deduplicates on, so replaying it cannot
   double-credit. A retry is attempted on the duplicate checkpoint path, on close
-  and on the next episode, not only on a fresh save.
+  and on later authenticated playback boundaries, even after the pass is gone.
 
 Only an anime completion needs this. Movie and television history is plain SQL that
 joins the resume transaction, so those were already all-or-nothing.
@@ -30,9 +30,10 @@ STATUS_CREDITED = "credited"
 # A completion is worth crediting at the same fraction the projection uses.
 _CREDIT_FRACTION = 0.85
 
-# Every replay attempt is bounded. A permanently failing tracker must not turn a
-# close or a next-episode reply into an unbounded retry loop.
-MAX_ATTEMPTS = 12
+# Allow the immediate duplicate and close paths through once. Thereafter defer
+# retries up to one hour so a long outage preserves its intents without retrying
+# on every checkpoint. There is no terminal attempt count for a pending intent.
+_RETRY_DELAY = "CASE WHEN attempts < 2 THEN 0 ELSE MIN(3600, 1 << MIN(attempts, 12)) END"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,7 @@ class Intent:
     observed_at: str
     status: str
     attempts: int
+    next_attempt_at: int
 
 
 def completion_fraction(duration_seconds, position) -> float | None:
@@ -90,16 +92,7 @@ def record(db, grant, *, fraction, observed_at: str, now: int) -> int | None:
                playback_fraction = MAX(
                    native_watch_credits.playback_fraction, excluded.playback_fraction
                ),
-               observed_at = excluded.observed_at,
-               status = CASE
-                   WHEN native_watch_credits.status = 'credited' THEN 'credited'
-                   ELSE 'pending'
-               END,
-               detail = CASE
-                   WHEN native_watch_credits.status = 'credited' THEN native_watch_credits.detail
-                   ELSE ''
-               END,
-               updated_at = excluded.updated_at""",
+               observed_at = MAX(native_watch_credits.observed_at, excluded.observed_at)""",
         (
             target.user_id,
             target.canonical_id,
@@ -141,6 +134,7 @@ def _intent(row) -> Intent:
         observed_at=str(row["observed_at"]),
         status=str(row["status"]),
         attempts=int(row["attempts"]),
+        next_attempt_at=int(row["next_attempt_at"]),
     )
 
 
@@ -148,21 +142,25 @@ def load(db, intent_id: int) -> Intent | None:
     if not isinstance(intent_id, int) or intent_id <= 0:
         return None
     try:
-        row = db.execute("SELECT * FROM native_watch_credits WHERE id=?", (intent_id,)).fetchone()
+        row = db.execute(
+            f"SELECT *, updated_at + ({_RETRY_DELAY}) AS next_attempt_at "
+            "FROM native_watch_credits WHERE id=?",
+            (intent_id,),
+        ).fetchone()
     except sqlite3.Error:
         return None
     return _intent(row) if row is not None else None
 
 
-def for_target(db, target, *, monitor_id=None) -> Intent | None:
+def for_target(db, target) -> Intent | None:
     """Find the intent for one resumed episode, if a completion was recorded."""
-    if target is None:
+    if target is None or target.domain != "anime":
         return None
-    row = None
     try:
         row = db.execute(
-            """SELECT * FROM native_watch_credits
-               WHERE user_id=? AND domain='anime' AND canonical_id=?
+            f"""SELECT *, updated_at + ({_RETRY_DELAY}) AS next_attempt_at
+                FROM native_watch_credits
+                WHERE user_id=? AND domain='anime' AND canonical_id=?
                  AND season_number=? AND episode_number=?""",
             (
                 target.user_id,
@@ -176,17 +174,19 @@ def for_target(db, target, *, monitor_id=None) -> Intent | None:
     return _intent(row) if row is not None else None
 
 
-def outstanding(db, user_id: int, *, limit: int = 4) -> tuple[Intent, ...]:
-    """Pending completions worth another attempt, oldest first."""
-    try:
-        rows = db.execute(
-            """SELECT * FROM native_watch_credits
-               WHERE user_id=? AND status='pending' AND attempts < ?
-               ORDER BY created_at, id LIMIT ?""",
-            (int(user_id), MAX_ATTEMPTS, max(1, min(int(limit), 16))),
-        ).fetchall()
-    except sqlite3.Error:
-        return ()
+def retry_due(intent: Intent, *, now: int) -> bool:
+    return intent.status == STATUS_PENDING and intent.next_attempt_at <= now
+
+
+def outstanding(db, user_id: int, *, now: int, limit: int = 4) -> tuple[Intent, ...]:
+    """Oldest due completions for one account, with bounded work per request."""
+    rows = db.execute(
+        f"""SELECT *, updated_at + ({_RETRY_DELAY}) AS next_attempt_at
+            FROM native_watch_credits
+            WHERE user_id=? AND status='pending' AND updated_at + ({_RETRY_DELAY}) <= ?
+            ORDER BY observed_at, id LIMIT ?""",
+        (int(user_id), now, max(1, min(int(limit), 16))),
+    ).fetchall()
     return tuple(_intent(row) for row in rows)
 
 
@@ -206,11 +206,12 @@ def note_failure(db, intent_id: int, *, detail: str, now: int) -> int:
     text = "".join(char for char in str(detail) if char.isprintable())[:200]
     db.execute(
         """UPDATE native_watch_credits
-           SET attempts=attempts+1, detail=?, updated_at=? WHERE id=?""",
+           SET attempts=attempts+1, detail=?, updated_at=?
+           WHERE id=? AND status='pending'""",
         (text, now, int(intent_id)),
     )
     db.commit()
     row = db.execute(
         "SELECT attempts FROM native_watch_credits WHERE id=?", (int(intent_id),)
     ).fetchone()
-    return int(row["attempts"]) if row is not None else MAX_ATTEMPTS
+    return int(row["attempts"]) if row is not None else 0

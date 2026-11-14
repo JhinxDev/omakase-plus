@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import os
 import tempfile
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -97,7 +98,24 @@ def _private_plus_mode() -> bool:
     return os.getenv("OMAKASE_PLUS_PRIVATE", "").strip().lower() in _TRUTHY
 
 
+_PLUS_MOUNTED = _private_plus_mode()
+
+
+@asynccontextmanager
+async def _lifespan(app):
+    from omakase.web.access_log import protect_access_log
+
+    protect_access_log()
+    if _PLUS_MOUNTED:
+        from omakase.plus.db import _connect
+
+        with closing(_connect()):
+            pass
+    yield
+
+
 app = FastAPI(
+    lifespan=_lifespan,
     title="Omakase",
     version=__version__,
     # Never expose an API console or route inventory on the served origin; see
@@ -201,7 +219,7 @@ async def plus_security_headers(request, call_next):
 app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
 
 # Conditionally mount Plus routes in private mode (workstation/self-hosted app).
-if _private_plus_mode():
+if _PLUS_MOUNTED:
     from omakase.plus.routes import router as plus_router  # noqa: E402
 
     app.include_router(plus_router)

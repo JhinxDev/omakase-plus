@@ -20,6 +20,7 @@ from omakase.plus.direct_stream import (
     DirectError,
     DirectSource,
     DirectStream,
+    RefreshedOrigin,
     open_direct,
     probe_origin,
     source_for,
@@ -53,6 +54,16 @@ def stream(**updates):
         "refresh": None,
     }
     return DirectStream(**(values | updates))
+
+
+def refreshed(link, *, identity=None, version=None, size=SIZE):
+    pinned = source()
+    return RefreshedOrigin(
+        f"https://files.real-debrid.test/d/{link}",
+        identity or pinned.identity,
+        version or pinned.version,
+        size,
+    )
 
 
 class Provider:
@@ -275,11 +286,11 @@ def test_a_short_body_is_an_error_not_a_shorter_segment():
 
 def test_expired_link_refreshes_once_and_serves_the_same_span():
     provider = Provider(mode="expire")
-    refreshed = []
+    attempts = []
 
     async def refresh():
-        refreshed.append(True)
-        return "https://files.real-debrid.test/d/new456"
+        attempts.append(True)
+        return refreshed("new456")
 
     async def case():
         live = stream(refresh=refresh)
@@ -294,7 +305,7 @@ def test_expired_link_refreshes_once_and_serves_the_same_span():
     response, body, live = run(case())
     assert response.status_code == 206
     assert body == BODY[:100]
-    assert refreshed == [True]
+    assert attempts == [True]
     assert live.refreshes == 1
     assert live.snapshot()["refreshes"] == 1
 
@@ -303,7 +314,7 @@ def test_refresh_that_describes_other_content_is_refused():
     provider = Provider(mode="expire")
 
     async def refresh():
-        return "https://files.real-debrid.test/d/other", SIZE + 10
+        return refreshed("other", size=SIZE + 10)
 
     async def case():
         with pytest.raises(DirectError) as caught:
@@ -321,9 +332,9 @@ def test_refresh_that_describes_other_content_is_refused():
 def test_refresh_is_never_looped_and_reports_not_found():
     attempts = []
 
-    def refresh():
+    async def refresh():
         attempts.append(True)
-        return "https://files.real-debrid.test/d/new456"
+        return refreshed("new456")
 
     async def case():
         live = stream(refresh=refresh)
@@ -515,3 +526,121 @@ def test_duration_and_size_are_bounded():
     broken = stream(source=DirectSource("a" * 64, "b" * 64, "x.mkv", 0, "mkv", 10.0))
     with pytest.raises(DirectError):
         broken.validate()
+
+
+@pytest.mark.parametrize("new_identity", [False, True])
+def test_refresh_refuses_new_version_or_identity_with_equal_size(new_identity):
+    provider = Provider(mode="expire")
+
+    async def refresh():
+        return (
+            refreshed("other", identity="c" * 64)
+            if new_identity
+            else refreshed("other", version="c" * 64)
+        )
+
+    async def case():
+        pinned = stream(refresh=refresh)
+        original = pinned.origin
+        with pytest.raises(DirectError) as error:
+            await open_direct(
+                pinned,
+                request(range="bytes=0-99"),
+                authorize=lambda: None,
+                transport=provider.transport(),
+            )
+        assert error.value.status == 409
+        assert len(provider.calls) == 1
+        assert pinned.origin == original and pinned.bytes_sent == 0
+
+    run(case())
+
+
+def test_refresh_shares_concurrent_work_and_recovers_after_later_expiry():
+    provider = Provider(mode="expire", expired=2)
+    attempts = 0
+
+    async def refresh():
+        nonlocal attempts
+        attempts += 1
+        await asyncio.sleep(0)
+        return refreshed(f"rotation-{attempts}")
+
+    async def case():
+        pinned = stream(refresh=refresh)
+
+        async def read():
+            response = await open_direct(
+                pinned,
+                request(range="bytes=0-99"),
+                authorize=lambda: None,
+                transport=provider.transport(),
+            )
+            return await collect(response)
+
+        assert await asyncio.gather(read(), read()) == [BODY[:100], BODY[:100]]
+        assert attempts == 1
+        provider.expired = 1
+        assert await read() == BODY[:100]
+        assert attempts == 2
+
+    run(case())
+
+
+def test_refresh_recovers_on_a_later_request_after_a_transient_error():
+    attempts = 0
+    provider = Provider(mode="expire", expired=2)
+
+    async def refresh():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError
+        return refreshed("recovered")
+
+    async def case():
+        pinned = stream(refresh=refresh)
+        kwargs = {"authorize": lambda: None, "transport": provider.transport()}
+        with pytest.raises(DirectError, match="no longer available"):
+            await open_direct(pinned, request(range="bytes=0-99"), **kwargs)
+        result = await open_direct(pinned, request(range="bytes=0-99"), **kwargs)
+        assert await collect(result) == BODY[:100]
+
+    run(case())
+    assert attempts == 2
+
+
+@pytest.mark.parametrize("answers", [("31.13.71.36",), ("31.13.71.36", "127.0.0.1")])
+def test_live_transport_validates_dns_before_sending_and_pins_the_address(monkeypatch, answers):
+    provider = Provider()
+
+    class NetworkTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            assert request.url.host == "31.13.71.36"
+            assert request.url.raw_path == b"/d/abc123?sig=a%2Bb"
+            assert request.headers["Host"] == "files.real-debrid.test"
+            assert request.extensions["sni_hostname"] == "files.real-debrid.test"
+            return provider(request)
+
+    async def resolve(host, port):
+        from ipaddress import ip_address
+
+        assert (host, port) == ("files.real-debrid.test", 443)
+        return tuple(ip_address(answer) for answer in answers)
+
+    async def case():
+        monkeypatch.setattr(direct, "_resolved_ips", resolve)
+        kwargs = {"authorize": lambda: None, "transport": NetworkTransport()}
+        pinned = stream(origin=stream().origin + "?sig=a%2Bb")
+        request_range = request(range="bytes=0-99")
+        if len(answers) == 1:
+            result = await open_direct(pinned, request_range, **kwargs)
+            assert await collect(result) == BODY[:100]
+            assert len(provider.calls) == 1
+        else:
+            with pytest.raises(DirectError) as error:
+                await open_direct(pinned, request_range, **kwargs)
+            assert error.value.status == 502
+            assert not provider.calls
+
+    run(case())

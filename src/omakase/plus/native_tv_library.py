@@ -440,6 +440,8 @@ def episodes(
     debrid_episodes=(),
     debrid_only=False,
     debrid_torrents=None,
+    debrid_partial_seasons=(),
+    requested_season=None,
 ):
     pattern = (
         r"[0-9a-f]{32}" if kind == "anime" and scope.kind == "household" else r"[1-9][0-9]{0,17}"
@@ -488,19 +490,7 @@ def episodes(
         if anilist := row.get("anilist_id"):
             title_summary = cached_synopsis(db, anilist)["description"]
     else:
-        owner = _tv_catalog_owner(db, scope, key)
-        if owner is None:
-            return _page([], offset)
-        rows = db.execute(
-            """SELECT e.season_number,e.episode_number,e.metadata_json,e.plex_present,v.watched,v.watch_source
-               FROM tv_episodes e JOIN tv_catalog c USING(user_id,tmdb_id)
-               LEFT JOIN tv_episodes v ON v.user_id=? AND v.tmdb_id=e.tmdb_id
-                   AND v.season_number=e.season_number AND v.episode_number=e.episode_number
-               WHERE e.user_id=? AND e.tmdb_id=?
-                   AND (? OR json_extract(c.metadata_json,'$.in_collection')=1)
-               ORDER BY e.season_number,e.episode_number""",
-            (scope.viewer_id, owner, key, scope.kind == "household"),
-        )
+        rows = _tv_episode_rows(db, scope, key, offset, requested_season)
         entries = []
         for row in rows:
             season, episode = row["season_number"], row["episode_number"]
@@ -519,15 +509,66 @@ def episodes(
                     or (row["plex_present"] and not debrid_only)
                     else None,
                     watched=bool(row["watched"] and row["watch_source"] in {"manual", "plex"}),
+                    **(
+                        {"availability": "partial"}
+                        if season in debrid_partial_seasons
+                        and (season, episode) not in debrid_episodes
+                        and (debrid_only or not row["plex_present"])
+                        else {}
+                    ),
                     summary=summary,
                     duration_seconds=episode_runtime(metadata.get("runtime_seconds")),
                     episode_artwork=f"episode-artwork/tv/{key}/{season}/{episode}",
                 )
             )
-    response = _page(entries, offset)
+    if kind == "tv":
+        response = {
+            "items": entries[:PAGE_SIZE],
+            "next_offset": offset + PAGE_SIZE if len(entries) > PAGE_SIZE else None,
+        }
+        if debrid_partial_seasons:
+            response["availability"] = {
+                "state": "partial",
+                "seasons": list(debrid_partial_seasons),
+                "retry_offset": offset,
+            }
+    else:
+        response = _page(entries, offset)
     if title_summary:
         response["title_summary"] = title_summary
     return response
+
+
+def _tv_episode_rows(db, scope, key, offset, season):
+    owner = _tv_catalog_owner(db, scope, key)
+    if owner is None:
+        return []
+    return db.execute(
+        """SELECT e.season_number,e.episode_number,e.metadata_json,e.plex_present,v.watched,v.watch_source
+           FROM tv_episodes e JOIN tv_catalog c USING(user_id,tmdb_id)
+           LEFT JOIN tv_episodes v ON v.user_id=? AND v.tmdb_id=e.tmdb_id
+               AND v.season_number=e.season_number AND v.episode_number=e.episode_number
+           WHERE e.user_id=? AND e.tmdb_id=?
+               AND (? OR json_extract(c.metadata_json,'$.in_collection')=1)
+               AND (? IS NULL OR e.season_number=?)
+           ORDER BY e.season_number,e.episode_number
+           LIMIT ? OFFSET ?""",
+        (
+            scope.viewer_id,
+            owner,
+            key,
+            scope.kind == "household",
+            season,
+            season,
+            PAGE_SIZE + 1,
+            offset,
+        ),
+    ).fetchall()
+
+
+def tv_episode_page_seasons(db, scope, key, offset, season):
+    rows = _tv_episode_rows(db, scope, key, offset, season)
+    return tuple(dict.fromkeys(row["season_number"] for row in rows[:PAGE_SIZE]))
 
 
 def _tv_catalog_owner(db, scope, key):

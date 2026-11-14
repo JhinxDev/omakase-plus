@@ -23,6 +23,7 @@ from omakase.plus.debrid_library import CloudSource, DebridLibraryError
 from omakase.plus.debrid_seek import SeekStreams
 from omakase.plus.debrid_subs import SubtitleCache
 from omakase.plus.outbound import OutboundError, _resolved_ips, blocked_address, pin_destination
+from omakase.plus.playback_diagnostics import diagnostic_id, warn
 from omakase.plus.prepared_hls import PreparedStore, prepared_key
 from omakase.plus.web_playback_delivery import DeliveryError as FileDeliveryError
 from omakase.plus.web_playback_delivery import parse_range
@@ -192,7 +193,7 @@ def _media_duration(playlist):
     return max(total, 1.0)
 
 
-def _master_playlist(entry, job=None):
+def _master_playlist(entry, job=None, *, prepared=None):
     lines = ["#EXTM3U", "#EXT-X-VERSION:6"]
     if job is not None:
         for number, track in enumerate(job.tracks):
@@ -204,10 +205,18 @@ def _master_playlist(entry, job=None):
                 f'LANGUAGE="{language}",DEFAULT={default},AUTOSELECT=YES,FORCED=NO,'
                 f'URI="subtitles{number}.m3u8"'
             )
-    # The Apple TV logs "segment exceeds specified bandwidth for variant" when
-    # a segment is far above the declared rate, so declare a ceiling above this
-    # library's remux bitrate instead of a streaming-profile guess.
-    stream = "#EXT-X-STREAM-INF:BANDWIDTH=40000000"
+    bandwidth = prepared.bandwidth if prepared is not None else 40000000
+    stream = f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth}"
+    if prepared is not None:
+        metadata = prepared.init_metadata()
+        stream += f",AVERAGE-BANDWIDTH={prepared.average_bandwidth}"
+        if metadata.codecs:
+            stream += f',CODECS="{metadata.codecs}"'
+        if metadata.resolution:
+            width, height = metadata.resolution
+            stream += f",RESOLUTION={width}x{height}"
+        if metadata.frame_rate is not None:
+            stream += f",FRAME-RATE={metadata.frame_rate:.3f}"
     if job is not None:
         stream += ',SUBTITLES="subs"'
     lines.append(stream)
@@ -668,7 +677,7 @@ class DebridStreams:
     async def _fetch_segment(self, url):
         try:
             data, status, _ = await self._read(url, limit=_SEGMENT_LIMIT, timeout=60, attempts=1)
-        except (DebridLibraryError, TimeoutError, asyncio.CancelledError):
+        except (DebridLibraryError, TimeoutError):
             return None
         if status == 200 and data:
             self._cache_segment(url, data)
@@ -693,7 +702,7 @@ class DebridStreams:
             data, _, _ = await self._read(
                 media.segments[0], limit=_SEGMENT_LIMIT, timeout=45, attempts=1
             )
-        except (DebridLibraryError, TimeoutError, asyncio.CancelledError):
+        except (DebridLibraryError, TimeoutError):
             return None
         if data:
             self.first_cache[media.segments[0]] = (self.clock() + 300, data)
@@ -912,7 +921,7 @@ class DebridStreams:
                 )
             renditions = self._prepared_renditions(entry, prepared)
             job = _PreparedSubtitles(renditions) if renditions else None
-            return _playlist_reply(_master_playlist(entry, job), request)
+            return _playlist_reply(_master_playlist(entry, job, prepared=prepared), request)
         if asset == "stream.m3u8":
             # Byte for byte: this playlist was written by the same pass that
             # wrote the segments, so its durations cannot disagree with them.
@@ -961,6 +970,7 @@ class DebridStreams:
 
     async def deliver(self, entry, asset, request, authorize: Callable[[], None]):
         authorize()
+        request_id = diagnostic_id()
         prepared = self._prepared_title(entry)
         if prepared is not None:
             pinned = getattr(entry, "prepared_generation", "")
@@ -968,17 +978,21 @@ class DebridStreams:
                 # Same key, different timeline: a re-prepare finished under this
                 # session. Serving the new segments under the old playlist would
                 # put the player's cached index and this byte stream on two clocks.
+                warn(_LOG, "prepared_delivery", "generation_changed", "prepared", request_id)
                 raise DebridLibraryError("This title was prepared again. Reopen it.", 409)
             # A prepared title is a complete timeline written by one pass, so it
             # is served ahead of the predictive on-demand seek path. Any asset
             # this store does not own falls through unchanged.
-            response = await self._prepared_response(entry, prepared, asset, request)
+            try:
+                response = await self._prepared_response(entry, prepared, asset, request)
+            except DebridLibraryError:
+                warn(_LOG, "prepared_delivery", "asset_missing", "prepared", request_id)
+                raise
             if response is not None:
-                _LOG.warning(
-                    "prepared timeline served segments=%d key=%s asset=%s",
+                _LOG.info(
+                    "prepared timeline served segments=%d key=%s",
                     len(prepared.segments),
                     prepared.key,
-                    asset,
                 )
                 return response
         elif getattr(entry, "prepared_pinned", False):
@@ -986,6 +1000,7 @@ class DebridStreams:
             # Falling through would answer the same URLs with provider-time bytes
             # from a different timeline, which is the substitution the audit
             # reproduced. Fail instead; the player may reopen the title.
+            warn(_LOG, "prepared_delivery", "asset_missing", "prepared", request_id)
             raise DebridLibraryError("This prepared title is no longer available.", 404)
         job = self.subtitles.get(getattr(entry, "subtitle_key", ""))
         plan = self.seek.get(getattr(entry, "seek_key", ""))
@@ -1014,13 +1029,23 @@ class DebridStreams:
                     # Three segments are independent downloads, so start them
                     # together: sequentially they cost about 33 s of waiting
                     # before the playlist is handed over.
-                    await asyncio.gather(
+                    results = await asyncio.gather(
                         *[
-                            self.seek.ensure(plan, opening + offset, _SEEK_WARM_WAIT)
-                            for offset in range(3)
+                            self.seek.ensure(plan, number, _SEEK_WARM_WAIT)
+                            for number in range(opening, min(opening + 3, len(plan.index.segments)))
                         ],
                         return_exceptions=True,
                     )
+                    for result in results:
+                        if isinstance(result, asyncio.CancelledError):
+                            raise result
+                        if isinstance(result, Exception):
+                            warn(_LOG, "seek_open", "unexpected_error", "seek", request_id)
+                            raise DebridLibraryError(
+                                "This position could not be prepared.", 503
+                            ) from None
+                        if result is False:
+                            warn(_LOG, "seek_open", "segment_not_ready", "seek", request_id)
                     # Record what is actually being served so a failed play can
                     # be read back from the log without another guess.
                     _LOG.info(
@@ -1045,14 +1070,7 @@ class DebridStreams:
             # -12971. Serve the single provider media playlist directly; the
             # provider already chose one quality. Text subtitles are requested
             # separately and do not require a master for this path.
-            _LOG.warning(
-                "provider index class=%s seek=%s codec=%s master=%s bytes=%d",
-                type(entry).__name__,
-                bool(plan),
-                getattr(getattr(plan, "index", None), "video_codec", None),
-                b"#EXT-X-STREAM-INF" in entry.playlist,
-                len(entry.playlist),
-            )
+            _LOG.debug("provider media playlist selected")
             return _playlist_reply(entry.playlist, request)
         if asset == "stream.m3u8":
             if (
@@ -1112,8 +1130,11 @@ class DebridStreams:
             try:
                 data = await self.seek.segment(plan, index)
             except LookupError:
+                warn(_LOG, "seek_delivery", "segment_not_ready", "seek", request_id)
                 raise DebridLibraryError("This position is still preparing.", 503) from None
-            except RuntimeError:
+            except (RuntimeError, OSError) as error:
+                code = "resource_unavailable" if isinstance(error, OSError) else "generation_failed"
+                warn(_LOG, "seek_delivery", code, "seek", request_id)
                 raise DebridLibraryError("This position could not be prepared.", 503) from None
             headers = HEADERS | {"Content-Length": str(len(data))}
             if request.method == "HEAD":
@@ -1159,7 +1180,7 @@ class DebridStreams:
             try:
                 async with asyncio.timeout(_SEGMENT_GRACE):
                     await asyncio.shield(task)
-            except (TimeoutError, asyncio.CancelledError):
+            except TimeoutError:
                 pass
             stored = self.segment_cache.get(url)
             if stored is None or stored[0] <= self.clock():
@@ -1171,10 +1192,11 @@ class DebridStreams:
                 try:
                     async with asyncio.timeout(_SEGMENT_RETRY_WAIT):
                         await asyncio.shield(task)
-                except (TimeoutError, asyncio.CancelledError):
+                except TimeoutError:
                     pass
                 stored = self.segment_cache.get(url)
                 if stored is None or stored[0] <= self.clock():
+                    warn(_LOG, "provider_delivery", "segment_not_ready", "provider", request_id)
                     raise DebridLibraryError(
                         "Real-Debrid is not delivering this part of the video right now.",
                         503,
@@ -1205,7 +1227,7 @@ class DebridStreams:
                     try:
                         async with asyncio.timeout(45):
                             await asyncio.shield(task)
-                    except (TimeoutError, asyncio.CancelledError):
+                    except TimeoutError:
                         pass
                 stored = self.first_cache.get(url)
                 if stored is not None and stored[0] > self.clock():

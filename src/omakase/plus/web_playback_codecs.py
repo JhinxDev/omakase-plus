@@ -11,6 +11,7 @@ import re
 import sqlite3
 import stat
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 
 LIMIT = 1024**2
@@ -108,7 +109,7 @@ def _render(fields):
     )
 
 
-def _hevc_sample_entry(data, *, allow_audio=False):
+def _mp4_sample_entries(data, *, allow_audio=False):
     _require(isinstance(data, bytes) and 0 < len(data) <= LIMIT)
     counter = [0]
     boxes = _boxes(data, 0, len(data), 0, counter)
@@ -116,30 +117,30 @@ def _hevc_sample_entry(data, *, allow_audio=False):
     _, start, end = _one(boxes, b"moov")
     tracks = [box for box in _boxes(data, start, end, 1, counter) if box[0] == b"trak"]
     _require(1 <= len(tracks) <= (2 if allow_audio else 1))
-    video = []
+    entries = {}
     for _, start, end in tracks:
         _, start, end = _one(_boxes(data, start, end, 2, counter), b"mdia")
         children = _boxes(data, start, end, 3, counter)
         _, left, right = _one(children, b"hdlr")
         _require(right - left >= 12)
         handler = data[left + 8 : left + 12]
-        if handler == b"vide":
-            video.append(children)
-        else:
-            _require(allow_audio and handler == b"soun")
-    _require(len(video) == 1)
-    _, start, end = _one(video[0], b"minf")
-    for depth, kind in enumerate((b"stbl", b"stsd"), 4):
-        _, start, end = _one(_boxes(data, start, end, depth, counter), kind)
-    _require(
-        end - start >= 8
-        and data[start : start + 4] == bytes(4)
-        and int.from_bytes(data[start + 4 : start + 8], "big") == 1
-    )
-    entries = _boxes(data, start + 8, end, 6, counter)
-    _require(len(entries) == 1 and entries[0][0] in {b"hev1", b"hvc1"})
-    kind, start, end = entries[0]
-    _require(end - start >= 78)
+        _require(handler == b"vide" or (allow_audio and handler == b"soun"))
+        _require(handler not in entries)
+        _, start, end = _one(children, b"minf")
+        for depth, kind in enumerate((b"stbl", b"stsd"), 4):
+            _, start, end = _one(_boxes(data, start, end, depth, counter), kind)
+        _require(end - start >= 8 and data[start : start + 8] == bytes(7) + b"\1")
+        samples = _boxes(data, start + 8, end, 6, counter)
+        _require(len(samples) == 1)
+        entries[handler] = samples[0]
+    _require(b"vide" in entries)
+    return entries, counter
+
+
+def _hevc_sample_entry(data, *, allow_audio=False):
+    entries, counter = _mp4_sample_entries(data, allow_audio=allow_audio)
+    kind, start, end = entries[b"vide"]
+    _require(kind in {b"hev1", b"hvc1"} and end - start >= 78)
     return kind, _boxes(data, start + 78, end, 7, counter)
 
 
@@ -208,6 +209,77 @@ def hevc_video_range(folder: Path, name: str) -> bytes | None:
         return {b"\x00\x10": b"PQ", b"\x00\x12": b"HLG"}.get(data[start + 6 : start + 8])
     except (OSError, CodecMetadataError):
         return None
+
+
+@dataclass(frozen=True)
+class HLSInitMetadata:
+    codecs: str | None = None
+    resolution: tuple[int, int] | None = None
+    frame_rate: float | None = None
+
+
+def _descriptor(data, cursor, end, expected):
+    _require(cursor < end and data[cursor] == expected)
+    cursor += 1
+    length = 0
+    for _ in range(4):
+        _require(cursor < end)
+        byte = data[cursor]
+        cursor += 1
+        length = (length << 7) | (byte & 127)
+        if not byte & 128:
+            _require(cursor + length <= end)
+            return cursor, cursor + length
+    raise CodecMetadataError()
+
+
+def _aac_codec(data, box):
+    kind, start, end = box
+    _require(kind == b"mp4a" and end - start >= 28 and data[start + 8 : start + 10] == b"\0\0")
+    _, start, end = _one(_boxes(data, start + 28, end, 7, [0]), b"esds")
+    _require(end - start >= 4 and data[start : start + 4] == bytes(4))
+    start, end = _descriptor(data, start + 4, end, 3)
+    _require(end - start >= 3)
+    # The preparation recipe uses a plain ES descriptor without optional URLs
+    # or dependencies. An unsupported descriptor leaves CODECS unknown.
+    _require(data[start + 2] & 0xE0 == 0)
+    start, end = _descriptor(data, start + 3, end, 4)
+    _require(end - start >= 13 and data[start] == 0x40 and data[start + 1] >> 2 == 5)
+    start, end = _descriptor(data, start + 13, end, 5)
+    _require(end - start >= 2)
+    audio_type = data[start] >> 3
+    _require(audio_type in {1, 2, 3, 4, 5, 6, 17, 23, 29})
+    return f"mp4a.40.{audio_type}"
+
+
+def hls_init_metadata(folder, name):
+    """Read exact sample entry attributes. Absent or unproved fields stay unknown."""
+    try:
+        data = _read(folder, name)
+        entries, counter = _mp4_sample_entries(data, allow_audio=True)
+        kind, start, end = entries[b"vide"]
+        _require(end - start >= 78)
+        width = int.from_bytes(data[start + 24 : start + 26], "big")
+        height = int.from_bytes(data[start + 26 : start + 28], "big")
+    except (OSError, CodecMetadataError):
+        return HLSInitMetadata()
+    resolution = (width, height) if width and height else None
+    frame_rate = None
+    try:
+        _require(kind in {b"hev1", b"hvc1"})
+        _, left, right = _one(_boxes(data, start + 78, end, 7, counter), b"hvcC")
+        config = data[left:right]
+        codec = _render(_configuration(config, kind.decode("ascii")))
+        raw_rate = int.from_bytes(config[19:21], "big")
+        # avgFrameRate is in units of frames per 256 seconds and only gives
+        # a maximum when the recorded frame rate is constant.
+        if raw_rate and config[21] >> 6 == 1:
+            frame_rate = raw_rate / 256
+        if b"soun" in entries:
+            codec += "," + _aac_codec(data, entries[b"soun"])
+    except CodecMetadataError:
+        codec = None
+    return HLSInitMetadata(codec, resolution, frame_rate)
 
 
 def normalize_partial_manifest(db, folder, source, recipe, *, job_id, owner_token):

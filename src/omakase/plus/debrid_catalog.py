@@ -8,7 +8,8 @@ import json
 import re
 import time
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from itertools import islice, zip_longest
 from pathlib import PurePosixPath
 
 from omakase.plus.debrid_anime import DebridTitleSource
@@ -23,6 +24,7 @@ _TV_CACHE_TTL = 120
 _TV_CACHE_LIMIT = 256
 _TV_FETCH_LIMIT = 4
 _TV_JOB_LIMIT = 48
+_TV_SCAN_SECONDS = 20
 
 
 def _tokens(name):
@@ -158,76 +160,128 @@ def _video_files(files, links):
 
 def _inventory_signature(inventory):
     torrents, downloads = inventory
-    parts = [f"{key}:{data.get('status')}:{data.get('hash')}" for key, data in torrents.items()]
-    parts.extend(f"{key}:{data.get('streamable')}" for key, data in downloads.items())
-    return hashlib.sha256("|".join(sorted(parts)).encode()).hexdigest()
+    parts = [
+        (key, data.get("status"), data.get("hash"), data.get("filename"))
+        for key, data in torrents.items()
+    ]
+    parts.extend((key, data.get("streamable")) for key, data in downloads.items())
+    return hashlib.sha256(json.dumps(sorted(parts, key=repr)).encode()).hexdigest()
 
 
-async def tv_episode_ids(db, scope, key, library):
+@dataclass(frozen=True)
+class EpisodeAvailability:
+    episodes: frozenset[tuple[int, int]] = frozenset()
+    partial_seasons: tuple[int, ...] = ()
+
+
+@dataclass
+class _SeasonScan:
+    expires: float
+    signature: str
+    title: CatalogTitle
+    # Insertion order rotates retryable rows to the end of the pending queue.
+    pending: dict
+    matched: dict[str, frozenset[tuple[int, int]]] = field(default_factory=dict)
+
+
+def _season_scan(cache, key, title, inventory, signature, now):
+    previous = cache.get(key)
+    if (
+        previous is not None
+        and previous.expires > now
+        and previous.signature == signature
+        and previous.title == title
+    ):
+        return previous
+    cache.pop(key, None)
+    while len(cache) >= _TV_CACHE_LIMIT:
+        cache.pop(next(iter(cache)))
+    scan = _SeasonScan(now + _TV_CACHE_TTL, signature, title, dict(_records(inventory, title)))
+    cache[key] = scan
+    return scan
+
+
+async def tv_episode_ids(db, scope, key, library, *, seasons):
+    """Advance availability for the catalog page's seasons with a shared provider budget."""
     token = account_token(db, scope.viewer_id)
-    if scope.kind != "personal" or not token:
-        return set()
+    if scope.kind != "personal" or not token or not seasons:
+        return EpisodeAvailability()
     binding = account_binding(token)
     inventory = await library.inventory(token)
     signature = _inventory_signature(inventory)
-    cache = getattr(library, "tv_episode_cache", None)
-    if cache is None:
-        cache = {}
-        library.tv_episode_cache = cache
-    cache_key = (binding, scope.viewer_id, str(key))
-    now = time.monotonic()
-    cached = cache.get(cache_key)
-    if cached is not None and cached[0] > now and cached[1] == signature:
-        return set(cached[2])
-    seasons = db.execute(
-        "SELECT DISTINCT season_number FROM tv_episodes WHERE user_id=? AND tmdb_id=? ORDER BY season_number LIMIT 30",
-        (scope.viewer_id, key),
-    ).fetchall()
-    jobs = {}
-    for (season,) in seasons:
-        title = catalog_title(db, scope, "tv", key, season)
-        if title is None:
-            continue
-        for index, (record, data) in enumerate(_records(inventory, title)):
-            if index >= 12:
-                break
-            jobs[(season, record)] = (season, title, record, data)
-            if len(jobs) >= _TV_JOB_LIMIT:
-                break
-        if len(jobs) >= _TV_JOB_LIMIT:
-            break
-    slots = asyncio.Semaphore(_TV_FETCH_LIMIT)
-
-    async def fetch(job):
-        season, title, record, data = job
-        async with slots:
-            try:
-                return job, await library._torrent(token, record)
-            except DebridLibraryError as error:
-                return job, error
-
+    if not hasattr(library, "tv_episode_cache"):
+        library.tv_episode_cache = {}
+        library.tv_episode_scan = asyncio.Lock()
+    cache = library.tv_episode_cache
     result = set()
-    for (season, title, _record, data), info in await asyncio.gather(
-        *(fetch(job) for job in jobs.values())
-    ):
-        if isinstance(info, DebridLibraryError):
-            if info.status != 404:
-                raise info
-            continue
-        files, links, content_hash = info
+    partial = set(seasons)
+    scans = {}
+
+    async def fetch(season, scan, record, data):
+        try:
+            files, links, content_hash = await library._torrent(token, record)
+        except DebridLibraryError as error:
+            if error.status == 404:
+                scan.pending.pop(record)
+            elif error.status in {401, 403, 451}:
+                return error
+            else:
+                scan.pending[record] = scan.pending.pop(record)
+            return error if error.status == 429 else None
         if content_hash.upper() != str(data.get("hash") or "").upper():
-            continue
-        for _, name in _video_files(files, links):
-            marker = _tv_marker(name, title, from_pack=True)
-            if marker and marker[0] == season and marker[1]:
-                result.add(marker)
-    if len(cache) >= _TV_CACHE_LIMIT:
-        for stale in [entry for entry, (expiry, _, _) in cache.items() if expiry <= now]:
-            cache.pop(stale, None)
-        while len(cache) >= _TV_CACHE_LIMIT:
-            cache.pop(next(iter(cache)))
-    cache[cache_key] = (now + _TV_CACHE_TTL, signature, frozenset(result))
-    return result
+            scan.pending[record] = scan.pending.pop(record)
+            return None
+        markers = frozenset(
+            marker
+            for _, name in _video_files(files, links)
+            if (marker := _tv_marker(name, scan.title, from_pack=True))
+            and marker[0] == season
+            and marker[1]
+        )
+        if markers:
+            scan.matched[record] = markers
+        scan.pending.pop(record)
+        return None
+
+    try:
+        async with asyncio.timeout(_TV_SCAN_SECONDS), library.tv_episode_scan:
+            now = time.monotonic()
+            for season in seasons:
+                title = catalog_title(db, scope, "tv", key, season)
+                if title is None:
+                    partial.discard(season)
+                    continue
+                cache_key = (binding, scope.viewer_id, str(key), season)
+                scans[season] = _season_scan(cache, cache_key, title, inventory, signature, now)
+            # Round-robin across seasons so a busy season cannot starve the other
+            # seasons on this page. Snapshot the jobs before mutating queues.
+            pending = [
+                [
+                    (season, scan, record, data)
+                    for record, data in islice(scan.pending.items(), _TV_JOB_LIMIT)
+                ]
+                for season, scan in scans.items()
+            ]
+            jobs = list(
+                islice(
+                    (job for group in zip_longest(*pending) for job in group if job is not None),
+                    _TV_JOB_LIMIT,
+                )
+            )
+            for index in range(0, len(jobs), _TV_FETCH_LIMIT):
+                batch = jobs[index : index + _TV_FETCH_LIMIT]
+                errors = await asyncio.gather(*(fetch(*job) for job in batch))
+                if error := next((error for error in errors if error is not None), None):
+                    if error.status != 429:
+                        raise error
+                    break
+    except TimeoutError:
+        pass
+    for season, scan in scans.items():
+        result.update(marker for markers in scan.matched.values() for marker in markers)
+        if not scan.pending:
+            partial.discard(season)
+    return EpisodeAvailability(frozenset(result), tuple(sorted(partial)))
 
 
 async def resolve_catalog(db, scope, domain, key, season, episode, library):
@@ -237,7 +291,25 @@ async def resolve_catalog(db, scope, domain, key, season, episode, library):
         return None
     inventory = await library.inventory(token)
     failure = None
-    for index, (record, data) in enumerate(_records(inventory, title)):
+    records = _records(inventory, title)
+    if domain == "tv":
+        cache_key = (account_binding(token), scope.viewer_id, str(key), season)
+        scan = getattr(library, "tv_episode_cache", {}).get(cache_key)
+        verified = (
+            {record for record, markers in scan.matched.items() if (season, episode) in markers}
+            if scan is not None
+            and scan.expires > time.monotonic()
+            and scan.signature == _inventory_signature(inventory)
+            else set()
+        )
+        records = sorted(
+            records,
+            key=lambda pair: (
+                pair[0] not in verified,
+                _tv_marker(pair[1].get("filename"), title) != (season, episode),
+            ),
+        )
+    for index, (record, data) in enumerate(records):
         if index >= 8:
             break
         try:

@@ -28,7 +28,7 @@ from omakase.plus import web_playback_store as store
 from omakase.plus.anime_synopsis import cached_synopsis
 from omakase.plus.auth import authenticate_session
 from omakase.plus.connections import private_connections_enabled
-from omakase.plus.db import _connect
+from omakase.plus.db import _connect_runtime
 from omakase.plus.debrid_anime import (
     DebridTitleSource,
     revalidate_anime,
@@ -57,7 +57,7 @@ from omakase.plus.debrid_library import (
 )
 from omakase.plus.debrid_stream import DebridMedia, DebridStreams
 from omakase.plus.deps import get_db
-from omakase.plus.direct_stream import DirectError, DirectStream, open_direct
+from omakase.plus.direct_stream import DirectError, DirectStream, RefreshedOrigin, open_direct
 from omakase.plus.direct_stream import source_for as direct_source_for
 from omakase.plus.history_artwork import (
     EpisodeArtworkUnavailable,
@@ -78,6 +78,7 @@ from omakase.plus.native_tv_library import (
     next_watch_path,
     personal_plex_movies,
     playback_monitor,
+    tv_episode_page_seasons,
 )
 from omakase.plus.posters import PosterUnavailable, banner_bytes, poster_bytes
 from omakase.plus.request_limits import bounded_form_route
@@ -100,6 +101,7 @@ from omakase.plus.web_playback_source import (
     revalidate_source,
 )
 from omakase.plus.web_security import require_csrf
+from omakase.web.access_log import redact_direct_path
 
 PAGE = "/native-tv-test"
 API = "/api/native-tv-test/v1"
@@ -177,7 +179,7 @@ def _digest(value):
 
 
 def _hls_database():
-    return closing(_connect())
+    return closing(_connect_runtime())
 
 
 def resume_device_pairing(request):
@@ -209,6 +211,7 @@ class TestPass:
     # Set when the client asked for the original file itself. The pass then has no
     # generated timeline at all: the client plays provider ranges directly.
     direct: DirectStream | None = None
+    engine: str = ""
 
 
 @dataclass(frozen=True)
@@ -383,14 +386,16 @@ def _credit_recorded(db, intent):
         attempts = native_watch_credit.note_failure(
             db, intent.id, detail="watch ingest rejected", now=int(time.time())
         )
-        _LOG.warning("native watch credit rejected intent=%s attempt=%s", intent.id, attempts)
+        _LOG.warning(
+            "native credit stage=ingest code=rejected intent=%s attempt=%s", intent.id, attempts
+        )
         return None
     except Exception:
         attempts = native_watch_credit.note_failure(
             db, intent.id, detail="watch ingest failed", now=int(time.time())
         )
         _LOG.warning(
-            "native watch credit failed intent=%s attempt=%s", intent.id, attempts, exc_info=True
+            "native credit stage=ingest code=failed intent=%s attempt=%s", intent.id, attempts
         )
         return None
     outbox_id = getattr(result, "outbox_id", None)
@@ -411,7 +416,9 @@ def _credit_native_anime(db, grant, *, position, observed_at):
     if intent_id is None:
         return None
     intent = native_watch_credit.load(db, intent_id)
-    return _credit_recorded(db, intent) if intent is not None else None
+    if intent is not None and native_watch_credit.retry_due(intent, now=int(time.time())):
+        return _credit_recorded(db, intent)
+    return None
 
 
 def _credit_native_watch(db, grant, *, position, observed_at):
@@ -431,18 +438,26 @@ async def _replay_credit(db, grant, *, intent=None):
     """
     if getattr(grant, "watch_credited", False):
         return None
-    recorded = intent or native_watch_credit.for_target(
-        db, grant.target, monitor_id=grant.anime_monitor_id
-    )
-    if recorded is None or recorded.status != native_watch_credit.STATUS_PENDING:
-        return None
-    if recorded.attempts >= native_watch_credit.MAX_ATTEMPTS:
-        return None
-    credited = _credit_recorded(db, recorded)
-    if credited is not None:
+    recorded = intent or native_watch_credit.for_target(db, grant.target)
+    if recorded is not None and recorded.status == native_watch_credit.STATUS_CREDITED:
         grant.watch_credited = True
-        await _deliver_tracker_outbox(db, credited)
-    return credited
+        return
+    if recorded is not None and native_watch_credit.retry_due(recorded, now=int(time.time())):
+        credited = _credit_recorded(db, recorded)
+        if credited is not None:
+            grant.watch_credited = True
+            await _deliver_tracker_outbox(db, credited)
+
+
+async def _replay_account_credits(db, actor, *, current=None):
+    """Drain a bounded batch for the authenticated account at playback boundaries."""
+    try:
+        for intent in native_watch_credit.outstanding(db, actor, now=int(time.time())):
+            if current and intent.id == current.id:
+                continue
+            await _deliver_tracker_outbox(db, _credit_recorded(db, intent))
+    except (sqlite3.Error, ValueError):
+        _LOG.warning("native credit stage=account_replay code=failed")
 
 
 async def _deliver_tracker_outbox(db, credited):
@@ -455,7 +470,7 @@ async def _deliver_tracker_outbox(db, credited):
     try:
         await asyncio.to_thread(process_tracker_outbox, db, outbox_id=credited.outbox_id)
     except Exception:
-        _LOG.warning("Apple TV tracker sync failed", exc_info=True)
+        _LOG.warning("native credit stage=tracker_sync code=failed")
 
 
 def _playback_languages(grant, streams=None):
@@ -1040,7 +1055,7 @@ def create_native_tv_test_router(
         asyncio.create_task(warm())
 
     def schedule_preload(key, grant):
-        if key in preload_tasks:
+        if grant.engine == "direct" or key in preload_tasks:
             return
         scope = grant.source._scope
         source = grant.source
@@ -1562,50 +1577,58 @@ def create_native_tv_test_router(
         kind: Literal["anime", "tv", "cloud"],
         title_id: str,
         offset: int = 0,
+        season: int | None = None,
         db=Depends(get_db),
     ):
         _, _, scope = requested_scope(request, db)
+        offset = max(0, offset)
+        if season is not None and not 0 <= season <= 999:
+            raise HTTPException(422, "Invalid season", headers=NO_STORE)
         if kind == "cloud":
             reply = await cloud_catalog(request, db, scope, max(0, offset), folder=title_id)
             return JSONResponse(reply, headers=NO_STORE)
         try:
             mode = playback_provider(db, scope.viewer_id) if scope.kind == "personal" else "plex"
             debrid_episodes = ()
+            debrid_partial_seasons = ()
             debrid_torrents = None
             if kind == "anime" and mode == "realdebrid":
                 token = account_token(db, scope.viewer_id)
                 debrid_torrents, _ = await cloud_library.inventory(token) if token else ({}, {})
                 _, _, scope = requested_scope(request, db)
             if kind == "tv" and mode != "plex" and re.fullmatch(r"[1-9][0-9]{0,9}", title_id):
+                seasons = tv_episode_page_seasons(db, scope, title_id, offset, season)
+                owner_token = account_token(db, scope.viewer_id)
                 try:
                     async with asyncio.timeout(25):
-                        debrid_episodes = await debrid_tv_episode_ids(
-                            db, scope, title_id, cloud_library
+                        availability = await debrid_tv_episode_ids(
+                            db, scope, title_id, cloud_library, seasons=seasons
                         )
-                    _, _, scope = requested_scope(request, db)
+                    _, _, current_scope = requested_scope(request, db)
+                    if current_scope == scope and owner_token == account_token(db, scope.viewer_id):
+                        debrid_episodes = availability.episodes
+                        debrid_partial_seasons = availability.partial_seasons
+                    else:
+                        debrid_partial_seasons = seasons
+                        scope = current_scope
                 except (DebridLibraryError, TimeoutError):
                     if mode == "realdebrid":
                         raise HTTPException(
                             502, "Real-Debrid episode inventory unavailable", headers=NO_STORE
                         ) from None
-            reply = episodes(
-                db,
-                scope,
-                kind,
-                title_id,
-                max(0, offset),
-                **(
-                    {
-                        "debrid_episodes": debrid_episodes,
-                        "debrid_only": True,
-                        "debrid_torrents": debrid_torrents,
-                    }
-                    if mode == "realdebrid"
-                    else {"debrid_episodes": debrid_episodes}
-                    if debrid_episodes
-                    else {}
-                ),
-            )
+                    _, _, scope = requested_scope(request, db)
+                    debrid_partial_seasons = seasons
+            episode_options = {}
+            if kind == "tv":
+                episode_options = {
+                    "debrid_episodes": debrid_episodes,
+                    "debrid_only": mode == "realdebrid",
+                    "debrid_partial_seasons": debrid_partial_seasons,
+                    "requested_season": season,
+                }
+            elif mode == "realdebrid":
+                episode_options = {"debrid_only": True, "debrid_torrents": debrid_torrents}
+            reply = episodes(db, scope, kind, title_id, offset, **episode_options)
         except DebridLibraryError as error:
             raise HTTPException(error.status, str(error), headers=NO_STORE) from None
         except (ValueError, households.HouseholdError):
@@ -1681,7 +1704,11 @@ def create_native_tv_test_router(
         message = payload.get("message") if isinstance(payload, dict) else ""
         if not isinstance(message, str):
             message = ""
-        _LOG.warning("Apple TV playback diagnostic actor=%s: %s", scope.viewer_id, message[:1000])
+        _LOG.warning(
+            "Apple TV playback diagnostic actor=%s: %s",
+            scope.viewer_id,
+            redact_direct_path(message)[:1000],
+        )
         # The app cannot read AVPlayer's internal error log, so pair its report
         # with what the server actually served for that pass.
         for media_id in set(re.findall(r"[a-f0-9]{32}", message)) & set(media_trace):
@@ -1754,6 +1781,7 @@ def create_native_tv_test_router(
         release = acquire("start", library.actor)
         cloud_streams.subtitles.set_playing(True)
         try:
+            await _replay_account_credits(db, library.actor)
             if path.startswith(CLOUD):
                 return await open_cloud_pass(
                     request, db, key, library, scope, path.removeprefix(CLOUD), engine=engine
@@ -1765,7 +1793,7 @@ def create_native_tv_test_router(
         finally:
             release()
 
-    def direct_pass(cloud, refresh, *, identity):
+    def direct_pass(cloud, refresh=None):
         """Build a direct pass for one resolved cloud file, or fail explicitly.
 
         There is deliberately no fallback to a generated timeline here. A client
@@ -1779,25 +1807,41 @@ def create_native_tv_test_router(
                 "This copy cannot be streamed as an original file yet.",
                 headers=NO_STORE,
             )
-        if source.identity != identity:
-            raise HTTPException(409, "This copy changed. Reopen the title.", headers=NO_STORE)
         return DirectStream(source, cloud.direct, refresh=refresh)
 
-    def cloud_refresh(token, file_id, identity):
+    def refreshed_origin(cloud):
+        return RefreshedOrigin(cloud.direct, cloud.identity, cloud.media_version, cloud.size)
+
+    def cloud_refresh(key, scope, file_id, account):
         async def refresh():
-            fresh = await cloud_library.source(token, file_id)
-            if fresh.identity != identity:
-                raise DirectError("This copy changed on the provider. Reopen the title.", 409)
-            return fresh.direct, fresh.size
+            with hls_database() as connection:
+
+                def current_token():
+                    library = (
+                        library_for_key(connection, key) if native_tv_library_enabled() else None
+                    )
+                    if library is None or library_scope(connection, library) != scope:
+                        raise DirectError("Apple TV pass revoked.", 404)
+                    token = cloud_token(connection, scope)
+                    if account_binding(token) != account:
+                        raise DirectError("Real-Debrid connection changed.", 403)
+                    return token
+
+                fresh = await cloud_library.source(current_token(), file_id)
+                current_token()
+                return refreshed_origin(fresh)
 
         return refresh
 
-    def path_refresh(db, scope, path, identity):
+    def path_refresh(grant, path):
         async def refresh():
-            candidate = await debrid_source(db, scope, path)
-            if candidate is None or candidate[0].cloud.identity != identity:
-                raise DirectError("This copy changed on the provider. Reopen the title.", 409)
-            return candidate[0].cloud.direct, candidate[0].cloud.size
+            with hls_database() as connection:
+                checked(connection, grant)
+                candidate = await debrid_source(connection, grant.source._scope, path)
+                checked(connection, grant)
+                if candidate is None:
+                    return None
+                return refreshed_origin(candidate[0].cloud)
 
         return refresh
 
@@ -1809,8 +1853,7 @@ def create_native_tv_test_router(
                 direct = (
                     direct_pass(
                         source,
-                        cloud_refresh(token, file_id, source.identity),
-                        identity=source.identity,
+                        cloud_refresh(key, scope, file_id, source.account),
                     )
                     if engine == "direct"
                     else None
@@ -1886,9 +1929,11 @@ def create_native_tv_test_router(
             # An episode transition is another natural retry boundary for a
             # completion whose tracker-side credit failed.
             try:
-                await _replay_credit(db, current)
+                intent = native_watch_credit.for_target(db, current.target)
+                await _replay_credit(db, current, intent=intent)
+                await _replay_account_credits(db, library.actor, current=intent)
             except Exception:
-                _LOG.warning("native credit retry before next episode failed", exc_info=True)
+                _LOG.warning("native credit stage=next_replay code=failed")
             path = next_watch_path(db, current.source, anime_monitor_id=current.anime_monitor_id)
             if path is None:
                 raise HTTPException(404, "Next episode unavailable", headers=NO_STORE)
@@ -1900,7 +1945,14 @@ def create_native_tv_test_router(
                     if cleanup is not None:
                         await asyncio.shield(cleanup)
             return await open_library_pass(
-                request, db, key, library, current.source._scope, path, previous=(media_id, current)
+                request,
+                db,
+                key,
+                library,
+                current.source._scope,
+                path,
+                previous=(media_id, current),
+                engine=current.engine,
             )
         finally:
             release()
@@ -1919,11 +1971,7 @@ def create_native_tv_test_router(
                     candidate = await debrid_source(db, scope, path)
                     if candidate:
                         if engine == "direct":
-                            direct = direct_pass(
-                                candidate[0].cloud,
-                                path_refresh(db, scope, path, candidate[0].cloud.identity),
-                                identity=candidate[0].cloud.identity,
-                            )
+                            direct = direct_pass(candidate[0].cloud)
                         else:
                             prepared = await cloud_streams.prepare(
                                 candidate[0].cloud, wait_first=False
@@ -1936,7 +1984,9 @@ def create_native_tv_test_router(
                 households.HouseholdError,
             ) as error:
                 cloud_error = error
-        if mode == "realdebrid" and resolved is None:
+        if resolved is None and (
+            mode == "realdebrid" or (previous and previous[1].direct is not None)
+        ):
             if isinstance(cloud_error, (DebridLibraryError, DirectError)):
                 raise HTTPException(
                     cloud_error.status, str(cloud_error), headers=NO_STORE
@@ -1985,6 +2035,9 @@ def create_native_tv_test_router(
             raise HTTPException(415, str(error), headers=NO_STORE) from None
         grant.hls = prepared
         grant.direct = direct
+        grant.engine = engine
+        if direct is not None:
+            direct.refresh = path_refresh(grant, path)
         _LOG.warning(
             "library play title=%s handler=%s direct=%s prepared=%s hls=%s compatible=%s source=%s/%s",
             title,
@@ -2083,7 +2136,8 @@ def create_native_tv_test_router(
 
     @router.post(LIBRARY_API + "/media/{media_id}/close")
     async def close_library_media(request: Request, media_id: str, db=Depends(get_db)):
-        key, _, _ = active_library(request, db)
+        key, library, _ = active_library(request, db)
+        intent = None
         if cloud_streams.for_client(media_id, key) is not None:
             cloud_streams.passes.pop(media_id, None)
         grant = passes.get(media_id)
@@ -2092,10 +2146,13 @@ def create_native_tv_test_router(
             # its bounded retry here, so a failed ingest at 85 percent does not
             # wait for the viewer to reopen the episode.
             try:
-                await _replay_credit(db, grant)
+                intent = native_watch_credit.for_target(db, grant.target)
+                await _replay_credit(db, grant, intent=intent)
             except Exception:
-                _LOG.warning("native final credit retry failed", exc_info=True)
-            drop_pass(media_id)
+                _LOG.warning("native credit stage=close_replay code=failed")
+            finally:
+                drop_pass(media_id)
+        await _replay_account_credits(db, library.actor, current=intent)
         cloud_streams.subtitles.set_playing(False)
         return JSONResponse({"closed": True}, headers=NO_STORE)
 
@@ -2187,7 +2244,7 @@ def create_native_tv_test_router(
         grant.resume_last_save = now
         if credited is None and not grant.watch_credited:
             recorded = native_watch_credit.load(db, intent_id) if intent_id else None
-            credited = await _replay_credit(db, grant, intent=recorded)
+            await _replay_credit(db, grant, intent=recorded)
         if credited is not None:
             grant.watch_credited = True
             await _deliver_tracker_outbox(db, credited)
@@ -2244,7 +2301,8 @@ def create_native_tv_test_router(
                 raise HTTPException(404, "Apple TV media unavailable", headers=NO_STORE)
 
             def authorize_cloud_direct():
-                check_cloud(db, cloud_streams.for_client(media_id, entry.binding))
+                with hls_database() as connection:
+                    check_cloud(connection, cloud_streams.for_client(media_id, entry.binding))
 
             try:
                 return await open_direct(
@@ -2262,14 +2320,12 @@ def create_native_tv_test_router(
         except Busy as error:
             raise admission_rejected(error) from None
 
-        async def authorize_direct():
+        def authorize_direct():
             _guard()
             if passes.get(media_id) is not grant:
                 raise DeliveryError("Apple TV pass revoked", 404)
-            checked(db, grant)
-
-        def done():
-            release()
+            with hls_database() as connection:
+                checked(connection, grant)
 
         try:
             return await open_direct(
@@ -2277,11 +2333,14 @@ def create_native_tv_test_router(
                 request,
                 authorize=authorize_direct,
                 transport=transport,
-                on_close=done,
+                on_close=release,
             )
         except DeliveryError as error:
             release()
             raise HTTPException(error.status, str(error), headers=NO_STORE) from None
+        except BaseException:
+            release()
+            raise
 
     media_trace = {}
     _MEDIA_TRACE_LIMIT = 40
@@ -2326,7 +2385,8 @@ def create_native_tv_test_router(
                     raise HTTPException(404, "Cloud stream unavailable", headers=NO_STORE)
 
                 def authorize_cloud_direct():
-                    check_cloud(db, cloud_streams.for_client(media_id, entry.binding))
+                    with hls_database() as connection:
+                        check_cloud(connection, cloud_streams.for_client(media_id, entry.binding))
 
                 try:
                     return await open_direct(
@@ -2355,6 +2415,8 @@ def create_native_tv_test_router(
         ):
             raise HTTPException(404, "Apple TV media unavailable", headers=NO_STORE)
         checked(db, grant)
+        if grant.direct is not None:
+            return await direct_delivery(request, media_id, token, db)
         # Both paths queue for a read slot. The direct-file path used to reject
         # immediately, so a seek (which asks for several segments at once)
         # answered 429 and AVPlayer failed the item with -16845.
@@ -2395,16 +2457,6 @@ def create_native_tv_test_router(
                 if grant.hls is not None
                 else "source",
             )
-            if grant.direct is not None:
-                # The player asked for the original file. Forward the exact range it
-                # requested and nothing else: no generated timeline, no local copy.
-                return await open_direct(
-                    grant.direct,
-                    request,
-                    authorize=authorize,
-                    transport=transport,
-                    on_close=release,
-                )
             if isinstance(grant.hls, DebridMedia):
 
                 def authorize_debrid():

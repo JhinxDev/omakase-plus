@@ -5,9 +5,12 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import time
+from functools import cache
 from pathlib import Path
 
-_MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+_PACKAGED_MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+_MIGRATIONS_DIR = _PACKAGED_MIGRATIONS_DIR
 
 # Per-path connection cache so the same database file reuses one connection.
 _db: dict[str, sqlite3.Connection] = {}
@@ -29,27 +32,116 @@ def _resolved_data_dir(data_dir: str | os.PathLike[str] | None = None) -> str:
     return os.getenv("OMAKASE_DATA_DIR", "data")
 
 
-def _connect(data_dir: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
-    """Create a new SQLite connection (per-request safe for FastAPI/uvicorn).
+class IncompatibleSchemaError(RuntimeError):
+    """The deployed application and SQLite schema are not compatible."""
 
-    Each call returns a fresh connection. Migrations are run on first connect;
-    subsequent connects skip already-applied migrations.
-    """
-    resolved_data_dir = _resolved_data_dir(data_dir)
-    db_path = os.path.join(resolved_data_dir, "omakase-plus.db")
-    Path(resolved_data_dir).mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA foreign_keys = ON")
-    run_migrations(conn)
+
+def _database_path(data_dir):
+    return Path(_resolved_data_dir(data_dir)).resolve() / "omakase-plus.db"
+
+
+def _applied_names(conn):
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='_migrations'"
+    ).fetchone():
+        return frozenset()
+    return frozenset(row[0] for row in conn.execute("SELECT name FROM _migrations"))
+
+
+def _migration_files(directory):
+    files = []
+    for path in directory.glob("*.sql"):
+        if match := _MIGRATION_PATTERN.fullmatch(path.name):
+            files.append((int(match[1]), path.name, path))
+    return tuple(sorted(files))
+
+
+@cache
+def _packaged_migration_files():
+    return _migration_files(_PACKAGED_MIGRATIONS_DIR)
+
+
+def _migrations():
+    if _MIGRATIONS_DIR == _PACKAGED_MIGRATIONS_DIR:
+        return _packaged_migration_files()
+    return _migration_files(_MIGRATIONS_DIR)
+
+
+@cache
+def _packaged_migration_names():
+    return frozenset(name for _, name, _ in _packaged_migration_files())
+
+
+def _expected_names():
+    if _MIGRATIONS_DIR == _PACKAGED_MIGRATIONS_DIR:
+        return _packaged_migration_names()
+    return frozenset(name for _, name, _ in _migrations())
+
+
+def _check_schema(conn):
+    expected = _expected_names()
+    if not expected or _applied_names(conn) != expected:
+        raise IncompatibleSchemaError("Omakase Plus database schema is incompatible.")
+
+
+def _connect_runtime(data_dir: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
+    """Open an existing, fully migrated database without migration writer locks."""
+    uri = _database_path(data_dir).as_uri() + "?mode=rw"
+    try:
+        conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
+    except sqlite3.OperationalError as error:
+        raise IncompatibleSchemaError("Omakase Plus database is unavailable.") from error
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        _check_schema(conn)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
+def _enable_wal(conn):
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            if conn.execute("PRAGMA journal_mode = WAL").fetchone()[0] != "wal":
+                raise IncompatibleSchemaError("Omakase Plus database could not enable WAL.")
+            return
+        except sqlite3.OperationalError as error:
+            # Concurrent startup can race the journal transition before SQLite's
+            # busy handler is active. Retry only this explicit lock failure.
+            if error.sqlite_errorcode != sqlite3.SQLITE_BUSY or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
+def _connect(data_dir: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
+    """Initialize or migrate a database at application startup or an admin entry point."""
+    path = _database_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, check_same_thread=False)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        expected = _expected_names()
+        applied = _applied_names(conn)
+        if not expected or applied - expected:
+            raise IncompatibleSchemaError("Omakase Plus database schema is incompatible.")
+        _enable_wal(conn)
+        if applied != expected:
+            run_migrations(conn)
+        _check_schema(conn)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
 def get_db(data_dir: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
     """Return a cached SQLite connection (for CLI / admin / tests use only).
 
-    Not safe for multi-threaded FastAPI workers — use ``_connect()`` +
+    Not safe for multi-threaded FastAPI workers — use ``_connect_runtime()`` +
     per-request close in ``deps.py`` for web routes.
     """
     resolved_data_dir = _resolved_data_dir(data_dir)
@@ -157,15 +249,7 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         _rollback_migration(conn)
         raise
 
-    if not _MIGRATIONS_DIR.is_dir():
-        return
-    files = []
-    for path in sorted(_MIGRATIONS_DIR.iterdir()):
-        match = _MIGRATION_PATTERN.match(path.name)
-        if match:
-            files.append((int(match[1]), path.name, path))
-    files.sort(key=lambda entry: (entry[0], entry[1]))
-    for _, name, path in files:
+    for _, name, path in _migrations():
         conn.execute("BEGIN IMMEDIATE")
         try:
             if conn.execute("SELECT 1 FROM _migrations WHERE name=?", (name,)).fetchone():
