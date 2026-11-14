@@ -151,3 +151,68 @@ def test_asr_timestamp_rounding_stays_valid():
     out = SubtitleCache._vtt_from_segments([(1.9996, 2.5, "Rounded")])
     assert b"00:00:02.000 --> 00:00:02.500" in out
     assert b".1000" not in out
+
+
+def test_a_provider_503_uses_a_usable_last_good_inventory(monkeypatch):
+    """A transient provider 5xx must not blank a section that we just read.
+
+    The judgment reproduced this residual: inventory raised straight out on a 503
+    even though a recent last-good snapshot was available, so the browse failed
+    for a few minutes over a hiccup the stale fallback already existed for.
+    """
+    library = DebridLibrary()
+    now = {"value": 100}
+    library.clock = lambda: now["value"]
+
+    async def ok(_token, kind):
+        return {("t" if kind == "torrents" else "d") + "x": {"id": "x"}}
+
+    async def failing(_token, kind):
+        raise DebridLibraryError(status=503)
+
+    async def fast_sleep(seconds):
+        return None
+
+    monkeypatch.setattr("omakase.plus.debrid_library.asyncio.sleep", fast_sleep)
+
+    async def run():
+        monkeypatch.setattr(library, "_all", ok)
+        first = await library.inventory("token")
+        # Just past the short TTL, still inside the bounded stale window.
+        now["value"] += 60
+        monkeypatch.setattr(library, "_all", failing)
+        second = await library.inventory("token")
+        return first, second
+
+    first, second = asyncio.run(run())
+    assert second == first
+    assert set(second[0]) == {"tx"}
+
+
+def test_access_denied_is_not_hidden_behind_a_stale_inventory(monkeypatch):
+    """Only transient 5xx is recoverable. A 403 must reach the caller."""
+    library = DebridLibrary()
+    now = {"value": 100}
+    library.clock = lambda: now["value"]
+
+    async def ok(_token, kind):
+        return {("t" if kind == "torrents" else "d") + "x": {"id": "x"}}
+
+    async def denied(_token, kind):
+        raise DebridLibraryError("Real-Debrid denied access to this account or file.", 403)
+
+    async def fast_sleep(seconds):
+        return None
+
+    monkeypatch.setattr("omakase.plus.debrid_library.asyncio.sleep", fast_sleep)
+
+    async def run():
+        monkeypatch.setattr(library, "_all", ok)
+        await library.inventory("token")
+        now["value"] += 60
+        monkeypatch.setattr(library, "_all", denied)
+        await library.inventory("token")
+
+    with pytest.raises(DebridLibraryError) as caught:
+        asyncio.run(run())
+    assert caught.value.status == 403

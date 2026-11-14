@@ -2464,3 +2464,122 @@ def test_movie_completion_joins_the_callers_transaction(system):
         "SELECT count(*) FROM movie_history WHERE user_id=1 AND imdb_id='tt0000003'"
     ).fetchone()[0]
     assert count == 1
+
+
+# --- anime completion credit durability -----------------------------------
+#
+# The audit reproduced a completion that was saved and then lost: the anime
+# ingest failed after the resume transaction committed, the endpoint answered
+# 200, and the client's exact retry returned early without retrying the credit.
+# These checks pin the durable intent and the retry that replaces that path.
+
+
+def _anime_pass(system, monkeypatch):
+    app, db, sessions, options = system
+    monkeypatch.setenv("OMAKASE_NATIVE_TV_LIBRARY", "1")
+    monkeypatch.setenv("OMAKASE_PLUS_REVIEW_MODE", "true")
+    owner, csrf = browser(app, sessions[1])
+    native = TestClient(app, base_url=ORIGIN)
+    pairing = native.post(LIBRARY_API + "/device").json()
+    owner.post(
+        DEVICES_PAGE,
+        data={"csrf_token": csrf, "action": "approve", "device_code": pairing["user_code"]},
+    )
+    native.headers["Authorization"] = "Bearer " + pairing["device_token"]
+    playback = native.post(LIBRARY_API + "/play", json={"watch_path": "/plus/watch/1/1"})
+    assert playback.status_code == 200, playback.text
+    media = playback.json()
+    return native, db, options, media, f"{LIBRARY_API}/media/{media['media_id']}/resume"
+
+
+def test_failed_anime_credit_is_recorded_and_retried_on_the_exact_retry(system, monkeypatch):
+    native, db, options, media, resume_url = _anime_pass(system, monkeypatch)
+    assert native.post(resume_url, json={"seq": 1, "position_seconds": 700}).status_code == 200
+
+    from omakase.plus.watch import service as watch_service
+
+    real_ingest = watch_service.ingest_watch_event
+    failures = []
+
+    def failing_ingest(*args, **kwargs):
+        if not failures:
+            failures.append(True)
+            raise watch_service.WatchServiceError("tracker unavailable")
+        return real_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(watch_service, "ingest_watch_event", failing_ingest)
+    options.now += 1
+    first = native.post(resume_url, json={"seq": 2, "position_seconds": 1740})
+    assert first.status_code == 200, first.text
+    # The checkpoint committed and the credit did not. The intent is the proof
+    # that a completion is still owed, so the 200 is not a silent loss.
+    assert db.execute("SELECT count(*) FROM watch_events").fetchone()[0] == 0
+    intent = db.execute("SELECT status,attempts FROM native_watch_credits").fetchone()
+    assert intent is not None
+    assert (intent["status"], intent["attempts"]) == ("pending", 1)
+
+    # The client sends the identical checkpoint again, which is the path that used
+    # to return early forever. It must retry the credit instead.
+    retry = native.post(resume_url, json={"seq": 2, "position_seconds": 1740})
+    assert retry.status_code == 200, retry.text
+    assert db.execute("SELECT count(*) FROM watch_events").fetchone()[0] == 1
+    settled = db.execute("SELECT status FROM native_watch_credits").fetchone()
+    assert settled["status"] == "credited"
+    assert db.execute("SELECT count(*) FROM watch_entries").fetchone()[0] == 1
+
+
+def test_anime_credit_survives_a_failed_close_and_is_not_duplicated(system, monkeypatch):
+    native, db, options, media, resume_url = _anime_pass(system, monkeypatch)
+    assert native.post(resume_url, json={"seq": 1, "position_seconds": 700}).status_code == 200
+
+    from omakase.plus.watch import service as watch_service
+
+    real_ingest = watch_service.ingest_watch_event
+
+    def failing_ingest(*args, **kwargs):
+        raise watch_service.WatchServiceError("tracker unavailable")
+
+    monkeypatch.setattr(watch_service, "ingest_watch_event", failing_ingest)
+    options.now += 1
+    assert native.post(resume_url, json={"seq": 2, "position_seconds": 1740}).status_code == 200
+    assert db.execute("SELECT count(*) FROM watch_events").fetchone()[0] == 0
+
+    # Closing the player is another natural retry boundary. Once the tracker is
+    # reachable again the credit lands exactly once.
+    monkeypatch.setattr(watch_service, "ingest_watch_event", real_ingest)
+    closed = native.post(f"{LIBRARY_API}/media/{media['media_id']}/close")
+    assert closed.status_code == 200, closed.text
+    assert db.execute("SELECT count(*) FROM watch_events").fetchone()[0] == 1
+
+    # A repeated close has no pass left and must not double-credit.
+    native.post(f"{LIBRARY_API}/media/{media['media_id']}/close")
+    assert db.execute("SELECT count(*) FROM watch_events").fetchone()[0] == 1
+    credited = db.execute(
+        "SELECT count(*) FROM native_watch_credits WHERE status='credited'"
+    ).fetchone()[0]
+    assert credited == 1
+
+
+def test_a_movie_target_never_creates_a_durable_intent(system):
+    """The anime repath must not add a second write path for movie or TV history."""
+    app, db, sessions, options = system
+    from omakase.plus import native_watch_credit
+
+    target = SimpleNamespace(
+        user_id=1,
+        domain="movie",
+        canonical_id="tt0000001",
+        season_number=0,
+        episode_number=0,
+        duration_seconds=1800,
+    )
+    grant = SimpleNamespace(target=target, anime_monitor_id=None, watch_credited=False)
+    fraction = native_watch_credit.completion_fraction(target.duration_seconds, 1700)
+    assert fraction is not None
+    assert (
+        native_watch_credit.record(
+            db, grant, fraction=fraction, observed_at="2026-01-01T00:00:00Z", now=1
+        )
+        is None
+    )
+    assert db.execute("SELECT count(*) FROM native_watch_credits").fetchone()[0] == 0

@@ -94,6 +94,10 @@ class CloudSource:
     playlist: str = field(repr=False)
     playlist_alt: str = field(default="", repr=False)
     direct: str = field(default="", repr=False)
+    # Exact byte length of the original file. Direct range delivery needs it to
+    # prove that a rotated provider link still describes the same content, so it
+    # is carried rather than re-derived from a list response.
+    size: int = 0
 
 
 class DebridLibrary:
@@ -230,7 +234,13 @@ class DebridLibrary:
                 if result is not None:
                     for entries in result:
                         if isinstance(entries, BaseException):
-                            if getattr(entries, "status", None) != 409:
+                            # A provider 5xx is exactly the transient hiccup the
+                            # stale fallback below exists for. Raising it here used
+                            # to bypass a usable last-good inventory and blank the
+                            # whole section for a few minutes. 401/403/429 still
+                            # propagate so access and rate-limit handling stay
+                            # owned by the caller.
+                            if getattr(entries, "status", None) not in {409, 502, 503, 504}:
                                 raise entries
                             failure = entries
                             break
@@ -481,7 +491,15 @@ class DebridLibrary:
         ):
             direct = ""
         return CloudSource(
-            _text(name, 120), identity, version, duration, account, playlist, playlist_alt, direct
+            _text(name, 120),
+            identity,
+            version,
+            duration,
+            account,
+            playlist,
+            playlist_alt,
+            direct,
+            size,
         )
 
     async def _api_result(self, token, path):

@@ -186,6 +186,9 @@ def test_all_tables_exist(_fresh_db):
         "household_title_requests",
         "native_tv_devices",
         "web_playback_native_resumes",
+        # Durable anime completion intent: written inside the resume transaction
+        # so a completion can never be committed without a retryable credit claim.
+        "native_watch_credits",
     }
     assert tables == expected, (
         f"Mismatch — missing: {expected - tables}, extra: {tables - expected}"
