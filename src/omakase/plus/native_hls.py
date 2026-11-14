@@ -406,6 +406,28 @@ async def _range(client, url, start, end):
     return response.content
 
 
+async def _tail_cues(client, url, total):
+    """Locate a Cues element in the last few megabytes of the file."""
+    window = min(total, 4 * 1024 * 1024)
+    tail = await _range(client, url, total - window, total - 1)
+    if not tail:
+        return None
+    marker = b"\x1c\x53\xbb\x6b"
+    position = tail.rfind(marker)
+    if position < 0:
+        return None
+    # The element header is at the marker; make sure it parses as a bounded Cues.
+    try:
+        element_id, size, _body = _element(tail, position)
+    except (IndexError, ValueError):
+        return None
+    if element_id != _CUES or not size or size > _MAX_INDEX_BYTES:
+        return None
+    if position + size > window:
+        return None
+    return total - window + position
+
+
 async def build_timeline(url, duration):
     """Read the container index and return a complete timeline, or None.
 
@@ -485,6 +507,10 @@ async def build_timeline(url, duration):
                     )
                     if seek_id == _CUES:
                         cues_position = segment_start + _uint(first, *inner[0x53AC][0])
+        if cues_position is None:
+            # Some muxers write the cue table without a seek-head entry. Look in
+            # the tail of the file instead of refusing a perfectly good source.
+            cues_position = await _tail_cues(client, url, total)
         if cues_position is None:
             return None
         cues_header = await _range(client, url, cues_position, min(cues_position + 31, total - 1))
@@ -1090,9 +1116,11 @@ class NativeStreams:
         try:
             await self._write_head(reader, plan, timeline, keyframe_ms, stdin)
             async for chunk in reader.chunks(_READ_CHUNK):
+                if stdin.is_closing():
+                    return
                 stdin.write(chunk)
                 await stdin.drain()
-        except (BrokenPipeError, ConnectionResetError, OSError):
+        except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError):
             # ffmpeg stops reading as soon as it has the window it was asked for.
             # A closed pipe is the normal end of a bounded feed, not a failure.
             return
@@ -1395,3 +1423,4 @@ def _kill(process):
         process.kill()
     except (ProcessLookupError, RuntimeError):
         pass
+
