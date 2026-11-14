@@ -1889,8 +1889,24 @@ def create_native_tv_test_router(
                         source.duration,
                         subtitle_key=subtitle_key,
                     )
+                    if native is None:
+                        # Transport capacity, not the copy: retryable, and never a
+                        # reason to hand the viewer a different player.
+                        raise HTTPException(
+                            503,
+                            "Playback is momentarily unavailable. Try again.",
+                            headers=NO_STORE,
+                        )
                     timeline = await cloud_streams.native.ready(native, 25)
                     if timeline is None:
+                        _LOG.warning(
+                            "native plan refused title=%s reason=%s container=%s codec=%s/%s",
+                            source.title,
+                            getattr(native, "error", "timeout"),
+                            getattr(source, "container", "?"),
+                            getattr(source, "video_codec", "?"),
+                            getattr(source, "audio_codec", "?"),
+                        )
                         raise HTTPException(
                             415,
                             "This copy cannot use the Apple TV player yet.",
@@ -2030,7 +2046,17 @@ def create_native_tv_test_router(
                                 cloud.duration,
                                 subtitle_key=subtitle_key,
                             )
+                            if native is None:
+                                raise DirectError(
+                                    "Playback is momentarily unavailable. Try again.", 503
+                                )
                             if await cloud_streams.native.ready(native, 25) is None:
+                                _LOG.warning(
+                                    "native plan refused title=%s reason=%s container=%s",
+                                    getattr(cloud, "title", "?"),
+                                    getattr(native, "error", "timeout"),
+                                    getattr(cloud, "container", "?"),
+                                )
                                 raise DirectError(
                                     "This copy cannot use the Apple TV player yet.", 415
                                 )

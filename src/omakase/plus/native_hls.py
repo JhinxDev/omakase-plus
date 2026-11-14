@@ -108,7 +108,7 @@ _MAX_PREFETCH = 2
 _OPEN_WAIT = 25.0
 _GENERATE_TIMEOUT = 60.0
 _RESERVE_BYTES = 8 * 1024**3
-_ADMISSION_MARGIN = 256 * 1024**2
+_ADMISSION_MARGIN = 32 * 1024**2
 _ABANDON_SECONDS = 240.0
 _READ_CHUNK = 256 * 1024
 # One window never asks the provider for more than this, whatever the bitrate.
@@ -663,11 +663,15 @@ class NativeStreams:
     # -- admission ----------------------------------------------------------
 
     def _admitted(self, reserve=0):
+        # The reserve is the hard floor; the windows this module may add on top of
+        # it are already capped by the spool limit, so demand only that plus a
+        # small slack. A larger margin refused playback on a host that had a
+        # quarter of a gibibyte above its reserve.
         try:
             free = self.free_bytes()
         except OSError:
             return False
-        return free - _RESERVE_BYTES > _ADMISSION_MARGIN + reserve
+        return free - _RESERVE_BYTES > _SPOOL_TOTAL_LIMIT + _ADMISSION_MARGIN + reserve
 
     def _usage(self, root):
         total = 0
