@@ -776,8 +776,11 @@ def create_native_tv_test_router(
 
     def drop_pass(media_id):
         grant = passes.pop(media_id, None)
-        if grant and grant.hls:
-            return asyncio.create_task(close_hls(grant.hls))
+        if grant is not None:
+            if grant.native_key:
+                cloud_streams.native.close(grant.native_key)
+            if grant.hls:
+                return asyncio.create_task(close_hls(grant.hls))
         return None
 
     def prune():
@@ -1459,7 +1462,7 @@ def create_native_tv_test_router(
         )
         grant.expires, grant.token_digest = clock() + ttl, _digest(token)
         passes[media_id] = grant
-        if grant.hls or grant.direct:
+        if grant.hls or grant.direct or grant.native_key:
             asyncio.get_running_loop().call_later(ttl, drop_pass, media_id)
         return response
 
@@ -1971,6 +1974,17 @@ def create_native_tv_test_router(
                 subtitle_prewarm_tasks[path] = asyncio.create_task(prewarm_subtitles())
         return JSONResponse(payload, headers=NO_STORE)
 
+    async def open_pass(opener, *args, engine, **kwargs):
+        # A playback pass owns its writer and spool even if another device (or
+        # the next playback on this device) reads the same provider file.
+        native_key = secrets.token_hex(16) if engine == "native" else ""
+        try:
+            return await opener(*args, engine=engine, native_key=native_key, **kwargs)
+        except BaseException:
+            if native_key:
+                cloud_streams.native.close(native_key)
+            raise
+
     @router.post(LIBRARY_API + "/play")
     async def play_library(request: Request, db=Depends(get_db)):
         key, library, scope = requested_scope(request, db)
@@ -1991,10 +2005,19 @@ def create_native_tv_test_router(
         try:
             await _replay_account_credits(db, library.actor)
             if path.startswith(CLOUD):
-                return await open_cloud_pass(
-                    request, db, key, library, scope, path.removeprefix(CLOUD), engine=engine
+                return await open_pass(
+                    open_cloud_pass,
+                    request,
+                    db,
+                    key,
+                    library,
+                    scope,
+                    path.removeprefix(CLOUD),
+                    engine=engine,
                 )
-            return await open_library_pass(request, db, key, library, scope, path, engine=engine)
+            return await open_pass(
+                open_library_pass, request, db, key, library, scope, path, engine=engine
+            )
         except Exception:
             cloud_streams.subtitles.set_playing(False)
             raise
@@ -2053,7 +2076,7 @@ def create_native_tv_test_router(
 
         return refresh
 
-    async def open_cloud_pass(request, db, key, library, scope, file_id, *, engine=""):
+    async def open_cloud_pass(request, db, key, library, scope, file_id, *, engine, native_key):
         token = cloud_token(db, scope)
         try:
             async with asyncio.timeout(60):
@@ -2077,7 +2100,7 @@ def create_native_tv_test_router(
                     )
                     subtitle_key = job.key if job is not None else ""
                     native = cloud_streams.native.start(
-                        source.media_version,
+                        native_key,
                         source.direct,
                         source.duration,
                         subtitle_key=subtitle_key,
@@ -2136,8 +2159,12 @@ def create_native_tv_test_router(
             active_library(request, db)
             check_cloud(db, cloud_streams.for_client(media_id, key))
         except HTTPException:
-            cloud_streams.passes.pop(media_id, None)
+            cloud_streams.drop_pass(media_id)
             raise
+        if native is not None:
+            for previous_id, grant in tuple(passes.items()):
+                if grant.library_key == key and grant.native_key:
+                    drop_pass(previous_id)
         return JSONResponse(
             {
                 "title": source.title,
@@ -2200,7 +2227,8 @@ def create_native_tv_test_router(
                     cleanup = drop_pass(sibling_id)
                     if cleanup is not None:
                         await asyncio.shield(cleanup)
-            return await open_library_pass(
+            return await open_pass(
+                open_library_pass,
                 request,
                 db,
                 key,
@@ -2214,7 +2242,7 @@ def create_native_tv_test_router(
             release()
 
     async def open_library_pass(
-        request, db, key, library, scope, path, *, previous=None, engine=""
+        request, db, key, library, scope, path, *, previous=None, engine, native_key
     ):
         prepared = None
         direct = None
@@ -2238,7 +2266,7 @@ def create_native_tv_test_router(
                             subtitle_key = job.key if job is not None else ""
                             native_subtitle_key = subtitle_key
                             native = cloud_streams.native.start(
-                                cloud.media_version,
+                                native_key,
                                 cloud.direct,
                                 cloud.duration,
                                 subtitle_key=subtitle_key,
@@ -2271,6 +2299,9 @@ def create_native_tv_test_router(
                 households.HouseholdError,
             ) as error:
                 cloud_error = error
+                if native is not None:
+                    cloud_streams.native.close(native.key)
+                    native = None
         if resolved is None and (
             mode == "realdebrid" or (previous and previous[1].direct is not None)
         ):
@@ -2365,7 +2396,12 @@ def create_native_tv_test_router(
                     raise HTTPException(404, "Apple TV media unavailable", headers=NO_STORE)
                 checked(db, current)
             next_path = next_watch_path(db, source, anime_monitor_id=grant.anime_monitor_id)
-            return media_reply(db, grant, ttl, next_path=next_path)
+            response = media_reply(db, grant, ttl, next_path=next_path)
+            if previous is None and grant.native_key:
+                for cloud_id, old in tuple(cloud_streams.passes.items()):
+                    if old.binding == key and old.native_key:
+                        cloud_streams.drop_pass(cloud_id)
+            return response
         except BaseException:
             if grant.hls is not None:
                 await close_hls(grant.hls)
@@ -2433,7 +2469,7 @@ def create_native_tv_test_router(
         key, library, _ = active_library(request, db)
         intent = None
         if cloud_streams.for_client(media_id, key) is not None:
-            cloud_streams.passes.pop(media_id, None)
+            cloud_streams.drop_pass(media_id)
         grant = passes.get(media_id)
         if grant is not None and grant.library_key == key:
             # The final checkpoint boundary. An outstanding anime completion gets

@@ -171,3 +171,51 @@ def test_direct_engine_still_asks_for_the_original_file(system, monkeypatch, nat
     # the native plan: the two routes stay separate.
     assert native_plan == []
     assert opened.status_code in {200, 415, 502, 504}
+
+
+@pytest.mark.parametrize("kind", ["cloud", "anime"])
+def test_replacing_and_closing_native_pass_reclaims_its_segments(
+    system, monkeypatch, native_plan, tmp_path, kind
+):
+    from omakase.plus.debrid_anime import DebridTitleSource
+
+    native, opened = _open_native(system, monkeypatch)
+    assert opened.status_code == 200, opened.text
+    path = "/plus/watch/cloud/d-fixture"
+    if kind == "anime":
+        monkeypatch.setattr(native_tv_test, "playback_provider", lambda *_: "realdebrid")
+        monkeypatch.setattr(native_tv_test, "revalidate_anime", lambda *_: None)
+
+        async def resolve(connection, scope, monitor, episode, library):
+            cloud = await library.source(native_tv_test.account_token(connection, 1), "d-fixture")
+            return DebridTitleSource(
+                scope, "anime", "100", 1, episode, cloud, "b" * 64, ()
+            ), "Fixture"
+
+        monkeypatch.setattr(native_tv_test, "resolve_debrid_anime", resolve)
+        path = "/plus/watch/1/1"
+        opened = native.post(LIBRARY_API + "/play", json={"watch_path": path, "engine": "native"})
+        assert opened.status_code == 200, opened.text
+
+    def request_master(response):
+        data = response.json()
+        media = f"{API}/media/{data['media_id']}"
+        cookie = {"omakase_tv_test_media": data["media_token"]}
+        master = native.get(media + "/index.m3u8", cookies=cookie)
+        assert master.status_code == 200, master.text
+        return f"{LIBRARY_API}/media/{data['media_id']}/close"
+
+    old_close = request_master(opened)
+    old_root = tmp_path / native_plan[-1][0]
+    assert (old_root / "init.mp4").exists()
+
+    replacement = native.post(LIBRARY_API + "/play", json={"watch_path": path, "engine": "native"})
+    assert replacement.status_code == 200, replacement.text
+    assert not old_root.exists()
+    current_close = request_master(replacement)
+    current_root = tmp_path / native_plan[-1][0]
+    assert current_root != old_root and (current_root / "init.mp4").exists()
+    assert native.post(old_close).status_code == 200
+    assert current_root.exists()
+    assert native.post(current_close).status_code == 200
+    assert not current_root.exists()

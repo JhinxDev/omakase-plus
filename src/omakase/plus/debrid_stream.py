@@ -582,11 +582,16 @@ class DebridStreams:
         except (httpx.HTTPError, OutboundError, OSError, TimeoutError):
             raise _unavailable() from None
 
+    def drop_pass(self, key):
+        grant = self.passes.pop(key, None)
+        if grant and grant.native_key:
+            self.native.close(grant.native_key)
+
     def prune(self):
         now = self.clock()
         for key, entry in tuple(self.passes.items()):
             if entry.expires <= now:
-                self.passes.pop(key, None)
+                self.drop_pass(key)
         self.native.sweep()
 
     def _start_seek(self, source):
@@ -790,7 +795,7 @@ class DebridStreams:
             media = await self.prepare(source)
         for key, existing in tuple(self.passes.items()):
             if existing.binding == binding:
-                self.passes.pop(key, None)
+                self.drop_pass(key)
         key, cookie = secrets.token_hex(16), secrets.token_urlsafe(32)
         self.passes[key] = CloudPass(
             source,
@@ -806,6 +811,8 @@ class DebridStreams:
             direct,
             native.key if native is not None else "",
         )
+        if native is not None:
+            asyncio.get_running_loop().call_later(ttl, self.drop_pass, key)
         return key, cookie
 
     def for_client(self, key, binding):
