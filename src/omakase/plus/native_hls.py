@@ -104,9 +104,9 @@ _MAX_SUBTITLE_TRACKS = 6
 _SPOOL_TOTAL_LIMIT = 96 * 1024 * 1024
 _SPOOL_PLAN_LIMIT = 48 * 1024 * 1024
 _MAX_PLANS = 3
-_MAX_PREFETCH = 2
-_OPEN_WAIT = 25.0
-_GENERATE_TIMEOUT = 60.0
+_MAX_PREFETCH = 3
+_OPEN_WAIT = 45.0
+_GENERATE_TIMEOUT = 120.0
 _RESERVE_BYTES = 8 * 1024**3
 _ADMISSION_MARGIN = 32 * 1024**2
 _ABANDON_SECONDS = 240.0
@@ -676,7 +676,8 @@ class NativeStreams:
         self.clock = clock
         self.plans: dict[str, NativePlan] = {}
         self.free_bytes = free_bytes or self._default_free
-        self.producers = asyncio.Semaphore(1)
+        # Windows are remote-read bound, not CPU bound, so two can overlap safely.
+        self.producers = asyncio.Semaphore(2)
 
     @staticmethod
     def _default_free():
@@ -764,7 +765,7 @@ class NativeStreams:
                 warn(_LOG, "native_index", "unsupported_media", "native", plan.diagnostic_id)
                 return
             plan.timeline = timeline
-            _LOG.info(
+            _LOG.warning(
                 "native timeline segments=%d origin=%.3f video=%s audio=%d bytes=%d",
                 len(timeline.segments),
                 timeline.origin,
