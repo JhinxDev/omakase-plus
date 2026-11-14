@@ -584,6 +584,13 @@ def test_tree_problems_reports_content_missing_and_unexpected():
 # Subtitle runtime parity with the production overlay
 
 
+def test_dockerfile_installs_wheel_without_copying_a_runtime_layer():
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    assert not re.search(r"^COPY\s+.*(?:/wheels|\.whl)", dockerfile, re.MULTILINE)
+    assert "RUN --mount=type=bind,from=builder,source=/wheels,target=/wheels \\" in dockerfile
+    assert "pip install --no-cache-dir --no-deps /wheels/*.whl" in dockerfile
+
+
 def test_dockerfile_declares_the_subtitle_runtime():
     dockerfile = DOCKERFILE.read_text(encoding="utf-8")
 

@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for self-hosting Omakase as a web service.
-# Build:  docker build -t omakase:latest .
+# Build:  docker build -t omakase:latest . (requires BuildKit)
 # Run:    docker run -d --name omakase -p 8765:8765 \
 #           -e OMAKASE_API_KEY=... \
 #           -e MAL_CLIENT_ID=...    # only if using MyAnimeList as a source
@@ -31,8 +31,8 @@ RUN case "$OMAKASE_AGENT_TOOLS" in true) requirements=agents ;; false) requireme
 # change silently between releases.
 RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements-subtitles.txt && \
     rm -f /tmp/requirements-subtitles.txt
-COPY --from=builder /wheels/*.whl /tmp/
-RUN pip install --no-cache-dir --no-deps /tmp/*.whl && rm -f /tmp/*.whl
+RUN --mount=type=bind,from=builder,source=/wheels,target=/wheels \
+    pip install --no-cache-dir --no-deps /wheels/*.whl
 
 ARG OMAKASE_REVISION=unknown
 LABEL org.opencontainers.image.source="https://github.com/JhinxDev/omakase-plus"
