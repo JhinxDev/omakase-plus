@@ -33,6 +33,7 @@ enum TVTopShelfLibrary {
         var path: String? { entry.featuredPath ?? entry.watchPath }
     }
 
+    private static var refreshGeneration = 0
     private static let maximumAge: TimeInterval = 6 * 60 * 60
     private static let perKindLimit = 2
 
@@ -45,6 +46,7 @@ enum TVTopShelfLibrary {
     static func invalidate(unlessMatching profile: LiveSavedProfile? = nil) {
         guard let store = TVTopShelfStore.shared() else { return }
         if let profile, let current = scope(for: profile), store.snapshot()?.scope == current { return }
+        refreshGeneration += 1
         store.clear()
         TVTopShelfContentProvider.topShelfContentDidChange()
     }
@@ -73,6 +75,8 @@ enum TVTopShelfLibrary {
                         stillSelected: () -> Bool) async {
         guard let store = TVTopShelfStore.shared(), let scope = scope(for: profile),
               client.selectedLibrary == nil, profile.expiresAt > Date() else { return }
+        refreshGeneration += 1
+        let generation = refreshGeneration
         do {
             async let anime = resumeCandidates(kind: .anime, client: client)
             async let movies = resumeCandidates(kind: .movie, client: client)
@@ -80,7 +84,7 @@ enum TVTopShelfLibrary {
             async let saved = savedCandidates(client: client)
             let (animeRows, movieRows, tvRows, savedRows) = try await (anime, movies, tv, saved)
             try Task.checkCancellation()
-            guard stillSelected() else { return }
+            guard refreshGeneration == generation, stillSelected() else { return }
             let candidates = animeRows + movieRows + tvRows + savedRows
             let previous = store.snapshot()
             var tiles: [(TVTopShelfCard, Candidate)] = []
@@ -126,11 +130,11 @@ enum TVTopShelfLibrary {
                 }
             }
             try Task.checkCancellation()
-            guard stillSelected(), !images.isEmpty else { return }
+            guard refreshGeneration == generation, stillSelected(), !images.isEmpty else { return }
             try store.publish(snapshot, artwork: images)
             TVTopShelfContentProvider.topShelfContentDidChange()
         } catch FixtureConnectionError.unauthorized {
-            if !Task.isCancelled && stillSelected() { invalidate() }
+            if !Task.isCancelled && refreshGeneration == generation && stillSelected() { invalidate() }
         } catch {
             // An unavailable cache or catalog should never block the library UI.
         }

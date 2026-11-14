@@ -99,7 +99,7 @@ app, shelf = (plistlib.loads(Path(path).read_bytes()) for path in sys.argv[1:])
 assert shelf["CFBundleIdentifier"] == app["CFBundleIdentifier"] + ".TopShelf"
 assert shelf["CFBundleVersion"] == app["CFBundleVersion"]
 assert shelf["CFBundleShortVersionString"] == app["CFBundleShortVersionString"]
-assert shelf["NSExtension"]["NSExtensionPointIdentifier"] == "com.apple.tv-services"
+assert shelf["NSExtension"]["NSExtensionPointIdentifier"] == "com.apple.tv-top-shelf"
 PY
 # Set an optional default after the unsigned build so its value does not
 # appear in xcodebuild command output or the receipt.

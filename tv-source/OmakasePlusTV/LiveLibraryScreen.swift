@@ -959,8 +959,15 @@ struct LiveLibraryScreen: View {
         recommendationsOpen = false
         searchOpen = false
         synopsisOpen = false
+        settingsOpen = false
+        libraryPickerOpen = false
         title = nil
         episodes = nil
+        let refreshCatalog = kind != destination.kind || !query.isEmpty || catalogOffset != 0
+        if refreshCatalog {
+            catalog = nil
+            catalogOffset = 0
+        }
         query = ""
         kind = destination.kind
         returnFocus = destination.kind.id
@@ -970,6 +977,7 @@ struct LiveLibraryScreen: View {
                        resumeImmediately: true)
         } else {
             openDetails(entry, key: destination.kind.id)
+            if refreshCatalog { await load(0) }
         }
     }
 
