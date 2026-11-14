@@ -103,8 +103,8 @@ _MAX_SUBTITLE_TRACKS = 6
 # Bounds. The host runs about a quarter of a gibibyte above its 8 GiB reserve, so
 # the spool is small on purpose: a few seconds of windows per session, never a
 # title.
-_SPOOL_TOTAL_LIMIT = 96 * 1024 * 1024
-_SPOOL_PLAN_LIMIT = 48 * 1024 * 1024
+_SPOOL_TOTAL_LIMIT = 256 * 1024 * 1024
+_SPOOL_PLAN_LIMIT = 128 * 1024 * 1024
 _MAX_PLANS = 3
 _MAX_PREFETCH = 4
 # Windows generated before the playlist is answered, so the player starts with
@@ -214,6 +214,7 @@ class NativePlan:
     task: asyncio.Task | None = None
     windows: dict[int, asyncio.Task] = field(default_factory=dict)
     prefetch: asyncio.Task | None = None
+    prefetch_start: int | None = None
     touched: float = field(default_factory=time.monotonic)
     diagnostic_id: str = field(default_factory=diagnostic_id)
     warm: float | None = None
@@ -1075,8 +1076,11 @@ class NativeStreams:
             plan.touched = self.clock()
             return
         estimate = self._reserve_estimate(timeline, number)
-        # A window that would not fit the session budget is refused outright.
-        # Trimming files afterwards would let peak usage cross the budget first.
+        # Sustained playback must not be refused for space that older, already
+        # consumed windows are holding: evict those first, then refuse only if
+        # the budget still cannot hold the window.
+        if self.plan_usage(plan) + estimate > _SPOOL_PLAN_LIMIT:
+            self._evict_before(plan, number)
         if self.plan_usage(plan) + estimate > _SPOOL_PLAN_LIMIT:
             warn(_LOG, "native_window", "window_budget", "native", plan.diagnostic_id)
             raise NativeError("window_budget")
@@ -1120,6 +1124,12 @@ class NativeStreams:
         return True
 
     def _prefetch(self, plan, start, subtitles=0):
+        if plan.prefetch is not None and not plan.prefetch.done():
+            current = plan.prefetch_start
+            if current is not None and current <= start <= current + _MAX_PREFETCH:
+                return
+            plan.prefetch.cancel()
+        plan.prefetch_start = start
         if plan.prefetch is not None and not plan.prefetch.done():
             return
 
@@ -1234,6 +1244,8 @@ class NativeStreams:
             async with asyncio.timeout(_GENERATE_TIMEOUT):
                 async with self.producers:
                     async with self.admission_lock:
+                        if self.plan_usage(plan) + estimate > _SPOOL_PLAN_LIMIT:
+                            self._evict_before(plan, number)
                         if self.plan_usage(plan) + estimate > _SPOOL_PLAN_LIMIT:
                             warn(
                                 _LOG, "native_window", "window_budget", "native", plan.diagnostic_id
@@ -1604,6 +1616,43 @@ class NativeStreams:
 
     # -- bounds -------------------------------------------------------------
 
+    def _evict_before(self, plan, number):
+        """Delete windows the player has already passed, keeping recent ones."""
+        keep_from = max(1, number - 1)
+        for path in plan.root.glob("v*.m4s"):
+            try:
+                index = int(path.stem[1:])
+            except ValueError:
+                continue
+            if index >= keep_from:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                continue
+        for path in plan.root.glob("a*-*.m4s"):
+            try:
+                index = int(path.stem.split("-")[1])
+            except (IndexError, ValueError):
+                continue
+            if index >= keep_from:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                continue
+        for path in plan.root.glob("s*-*.vtt"):
+            try:
+                index = int(path.stem.split("-")[1])
+            except (IndexError, ValueError):
+                continue
+            if index >= keep_from:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                continue
+
     def _trim(self, plan):
         try:
             files = sorted(
@@ -1731,7 +1780,7 @@ class _RangeReader:
         """One validated range response; may be shorter than asked, never longer."""
         client = await self._client()
         stop = start + want - 1
-        started = time.monotonic()
+        time.monotonic()
         try:
             async with client.stream(
                 "GET", self.url, headers={"Range": f"bytes={start}-{stop}"}
@@ -1763,7 +1812,6 @@ class _RangeReader:
                     raise NativeError("provider_failed") from error
                 return bytes(body)
         finally:
-            self.read_seconds += time.monotonic() - started
             self.read_calls += 1
 
     async def _read_exact(self, start, want):
@@ -1793,7 +1841,11 @@ class _RangeReader:
         want = min(self.end - self.position, max(wanted, _READ_CHUNK))
         if self.read_bytes + want > self.limit:
             raise NativeError("window_too_large")
-        data = await self._read_parallel(want)
+        read_started = time.monotonic()
+        try:
+            data = await self._read_parallel(want)
+        finally:
+            self.read_seconds += time.monotonic() - read_started
         if not data:
             return False
         self.buffer.extend(data)

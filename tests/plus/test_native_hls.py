@@ -866,6 +866,18 @@ def test_a_body_that_claims_more_than_it_sends_is_refused(provider):
     assert calls == native_hls._READ_ATTEMPTS
 
 
+def test_already_consumed_windows_are_evicted_instead_of_refusing(tmp_path, provider, monkeypatch):
+    monkeypatch.setattr(native_hls, "_SPOOL_PLAN_LIMIT", 1024 * 1024)
+    timeline = _timeline(provider)
+    plan = _plan(tmp_path, timeline)
+    streams = NativeStreams(tmp_path / "spool")
+    streams.root.mkdir(parents=True, exist_ok=True)
+    streams.plans["plan"] = plan
+    (plan.root / "v00000.m4s").write_bytes(b"x" * (900 * 1024))
+    streams._evict_before(plan, 1)
+    assert not (plan.root / "v00000.m4s").exists()
+
+
 # --- metrics are per window --------------------------------------------------
 
 
@@ -942,7 +954,7 @@ def test_a_window_that_cannot_fit_the_plan_budget_is_refused(tmp_path, provider,
     streams = NativeStreams(tmp_path / "spool")
     streams.root.mkdir(parents=True, exist_ok=True)
     streams.plans["plan"] = plan
-    (plan.root / "v00000.m4s").write_bytes(b"x" * (900 * 1024))
+    (plan.root / "v00005.m4s").write_bytes(b"x" * (900 * 1024))
     started = []
 
     async def forbidden(*args, **kwargs):
@@ -1315,4 +1327,3 @@ def test_audio_track_descriptor_names_stay_inside_the_playlist():
     assert audio.playlist == "audio2.m3u8"
     assert audio.segment(3) == "a2-00003.m4s"
     assert audio.copyable is False
-
