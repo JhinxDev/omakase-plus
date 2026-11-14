@@ -44,6 +44,20 @@ public enum PlayerState: Equatable, Sendable {
     case paused
     case ended
     case failed
+
+    /// Allowlisted label for a diagnostic. Carries no URL, token or error text.
+    public var diagnosticLabel: String {
+        switch self {
+        case .idle: return "idle"
+        case .opening: return "opening"
+        case .ready: return "ready"
+        case .buffering: return "buffering"
+        case .playing: return "playing"
+        case .paused: return "paused"
+        case .ended: return "ended"
+        case .failed: return "failed"
+        }
+    }
 }
 
 /// A sanitized playback failure.

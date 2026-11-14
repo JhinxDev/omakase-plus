@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import secrets
 import shutil
@@ -2730,3 +2731,137 @@ def test_anime_credit_recovers_after_twelve_failures_and_playing_another_episode
     assert db.execute("SELECT count(*) FROM watch_events").fetchone()[0] == 1
     intent = db.execute("SELECT status,attempts FROM native_watch_credits").fetchone()
     assert (intent["status"], intent["attempts"]) == ("credited", 13)
+
+
+PROVIDER_SHAPED_URL = (
+    "https://media.example.test/live/SYNTHETIC_TOKEN_1/master.m3u8"
+    "?token=SYNTHETIC_TOKEN_2&expires=1700000000"
+)
+
+
+def test_playback_diagnostic_validation_keeps_only_allowlisted_fields(caplog):
+    payload = {
+        "schema": "playback_diagnostic_v1",
+        "engine": "avplayer",
+        "trigger": "error",
+        "media_id": "a" * 32,
+        "item_status": "failed",
+        "item_error": {"domain": "AVFoundationErrorDomain", "code": -11800},
+        "time_control": "waiting",
+        "waiting_reason": "AVPlayerWaitingToMinimizeStallsReason",
+        "current_time": 42.5,
+        "rate": 1.0,
+        "loaded_ranges": [{"start": 40, "duration": 5}],
+        "seekable_ranges": [{"start": 0, "duration": 100}],
+        "events": [{"status_code": -1009}, {"bytes_transferred": 12345, "media_requests": 7}],
+        # Neither may survive: the old free-form message and a provider URI.
+        "message": PROVIDER_SHAPED_URL,
+        "request_uri": PROVIDER_SHAPED_URL,
+    }
+    fields = native_tv_test.playback_diagnostic_fields(payload)
+    assert fields == {
+        "schema": "playback_diagnostic_v1",
+        "engine": "avplayer",
+        "trigger": "error",
+        "media_id": "a" * 32,
+        "item_status": "failed",
+        "item_error": {"domain": "AVFoundationErrorDomain", "code": -11800},
+        "time_control": "waiting",
+        "waiting_reason": "AVPlayerWaitingToMinimizeStallsReason",
+        "current_time": 42.5,
+        "rate": 1.0,
+        "loaded_ranges": [{"start": 40.0, "duration": 5.0}],
+        "seekable_ranges": [{"start": 0.0, "duration": 100.0}],
+        "events": [{"status_code": -1009}, {"bytes_transferred": 12345, "media_requests": 7}],
+    }
+    formatted = native_tv_test._format_playback_diagnostic(fields)
+    assert "media.example.test" not in formatted
+    assert "SYNTHETIC_TOKEN" not in formatted
+    assert "item_error=AVFoundationErrorDomain/-11800" in formatted
+    assert "current_time=42.500" in formatted
+
+
+def test_playback_diagnostic_validation_rejects_free_text_and_urls():
+    base = {"schema": "playback_diagnostic_v1", "engine": "avplayer", "trigger": "state"}
+    # The old free-form body is refused outright, not redacted and logged.
+    assert native_tv_test.playback_diagnostic_fields({"message": PROVIDER_SHAPED_URL}) is None
+    assert native_tv_test.playback_diagnostic_fields({**base, "engine": "http://x.test"}) is None
+    assert native_tv_test.playback_diagnostic_fields({**base, "trigger": "message"}) is None
+    # Unhashable or non-string enum values must be refused, not raise. A bad
+    # optional field is dropped while the rest of the shape is still accepted.
+    for key in ("engine", "trigger"):
+        assert native_tv_test.playback_diagnostic_fields({**base, key: ["x"]}) is None
+        assert native_tv_test.playback_diagnostic_fields({**base, key: {"x": 1}}) is None
+    for key in ("item_status", "time_control"):
+        assert native_tv_test.playback_diagnostic_fields({**base, key: ["x"]}) == base
+        assert native_tv_test.playback_diagnostic_fields({**base, key: {"x": 1}}) == base
+    fields = native_tv_test.playback_diagnostic_fields(
+        {
+            **base,
+            "waiting_reason": f"waiting for {PROVIDER_SHAPED_URL}",
+            "item_error": {"domain": f"{PROVIDER_SHAPED_URL}", "code": 1},
+            "current_time": "NaN",
+            "rate": True,
+            "loaded_ranges": [{"start": 0, "duration": 0}, {"start": "x", "duration": 1}],
+            "events": [{"status_code": "1/2"}, {"bytes_transferred": 1.5}],
+        }
+    )
+    assert fields == base
+    # Numbers and ranges are bounded rather than trusted.
+    fields = native_tv_test.playback_diagnostic_fields(
+        {
+            **base,
+            "current_time": -1,
+            "rate": 1e9,
+            "seekable_ranges": [{"start": 0, "duration": 10**12}],
+        }
+    )
+    assert fields == base
+
+
+def test_playback_diagnostic_route_logs_only_the_validated_shape(system, monkeypatch, caplog):
+    app, _, sessions, _ = system
+    monkeypatch.setenv("OMAKASE_NATIVE_TV_LIBRARY", "1")
+    owner, csrf = browser(app, sessions[1])
+    device = TestClient(app, base_url=ORIGIN)
+    issued = owner.post(LIBRARY_PAGE, data={"csrf_token": csrf, "action": "issue"})
+    link = re.search(r"https://testserver#library-([A-F0-9]{20})", issued.text)[1]
+    paired = device.post(LIBRARY_API + "/redeem", json={"code": link})
+    device.headers["Authorization"] = "Bearer " + paired.json()["token"]
+
+    caplog.set_level(logging.WARNING)
+    accepted = device.post(
+        LIBRARY_API + "/diagnostic",
+        json={
+            "schema": "playback_diagnostic_v1",
+            "engine": "avplayer",
+            "trigger": "error",
+            "item_status": "failed",
+            "item_error": {"domain": "AVFoundationErrorDomain", "code": -11800},
+            "time_control": "waiting",
+            "waiting_reason": "AVPlayerWaitingToMinimizeStallsReason",
+            "current_time": 42.5,
+            "rate": 0.0,
+            "loaded_ranges": [{"start": 40, "duration": 5}],
+            "seekable_ranges": [{"start": 0, "duration": 100}],
+            "events": [{"status_code": -1009}, {"bytes_transferred": 12345, "media_requests": 7}],
+            "message": PROVIDER_SHAPED_URL,
+            "request_uri": PROVIDER_SHAPED_URL,
+        },
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json() == {"ok": True}
+
+    rejected = device.post(
+        LIBRARY_API + "/diagnostic",
+        json={"message": f"playback failed for {PROVIDER_SHAPED_URL}"},
+    )
+    assert rejected.status_code == 400
+    assert rejected.json() == {"ok": False}
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "media.example.test" not in logged
+    assert "SYNTHETIC_TOKEN" not in logged
+    assert "rejected payload shape" in logged
+    assert "engine=avplayer trigger=error" in logged
+    assert "item_error=AVFoundationErrorDomain/-11800" in logged

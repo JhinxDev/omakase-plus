@@ -107,21 +107,34 @@ final class PlaybackSession: ObservableObject {
         errorMessage = nil
     }
 
-    private(set) var lastDiagnostic = ""
+    private(set) var lastDiagnostic: PlaybackDiagnostic?
 
-    var diagnostic: String {
+    /// One structured snapshot for the server, built through the portable
+    /// mapping. The AVPlayer branch carries allowlisted AVFoundation facts; the
+    /// VLC branch carries numbers and an allowlisted transport label only, never
+    /// a URL, header or cookie.
+    func diagnostic(trigger: PlaybackDiagnostic.Trigger = .state) -> PlaybackDiagnostic {
         if let av = engine as? AVPlayerEngine {
-            // One snapshot with every field the server needs, redacted at source.
-            return av.diagnosticSnapshot
+            return av.diagnosticSnapshot(trigger: trigger)
         }
-        guard let engine else { return "engine=none" }
-        // Deliberately no URL and no header: a direct item's URL can be a signed
-        // provider link, and diagnostics are sent to the server.
-        return "engine=vlc state=\(engine.state) time=\(engine.currentTime) duration=\(engine.duration) \(engine.ranges.summary) tracks=\(engine.tracks.count)"
+        guard let engine else { return PlaybackDiagnostic(engine: .none, trigger: trigger) }
+        let ranges = engine.ranges
+        return PlaybackDiagnostic(
+            engine: .vlc,
+            trigger: trigger,
+            timeControlStatus: engine.state.diagnosticLabel,
+            currentTime: engine.currentTime.isFinite ? engine.currentTime : nil,
+            loadedRanges: ranges.buffered.map {
+                PlaybackDiagnostic.TimeRange(start: $0.start, duration: $0.end - $0.start)
+            },
+            seekableRanges: ranges.seekable.map {
+                PlaybackDiagnostic.TimeRange(start: $0.start, duration: $0.end - $0.start)
+            }
+        )
     }
 
     private func fail(_ message: String, requiresFreshMediaPass: Bool = false) {
-        lastDiagnostic = diagnostic
+        lastDiagnostic = diagnostic(trigger: .error)
         self.requiresFreshMediaPass = requiresFreshMediaPass
         errorMessage = message
         status = message
@@ -421,7 +434,6 @@ final class PlaybackSession: ObservableObject {
                 startReadyItem(token: token)
             }
         case .failed(let failure):
-            lastDiagnostic = diagnostic
             fail("Playback failed (\(failure.kind.rawValue):\(failure.code))", requiresFreshMediaPass: true)
         case .ended:
             updateProgress()
@@ -585,7 +597,6 @@ final class PlaybackSession: ObservableObject {
             case let .retry(_, nextAttempt, _):
                 self.issueSeek(engine, target: target, attempt: nextAttempt, token: token, duration: duration)
             case let .failed(failure):
-                self.lastDiagnostic = self.diagnostic
                 self.fail(SeekValidator.recoveryMessage(for: failure))
             }
         }

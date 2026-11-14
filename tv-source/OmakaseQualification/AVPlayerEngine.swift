@@ -271,36 +271,49 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
 
     // MARK: - Diagnostics
 
-    /// AVFoundation facts the server needs, with provider URLs and tokens redacted.
+    /// Structured AVFoundation facts for the server, built through the portable
+    /// mapping that is unit-tested on Windows.
     ///
-    /// Item status and error, the error log, the access log, the playback control
-    /// state, why the player is waiting, the loaded ranges and the current time.
-    /// Everything that could carry a per-pass token or a provider URL is passed
-    /// through `redact` first, because this string is posted to the server.
-    var diagnosticSnapshot: String {
-        let loaded = item.loadedTimeRanges
-            .map(\.timeRangeValue)
-            .compactMap(Self.rangeText)
-            .joined(separator: " ")
-        let access = (item.accessLog()?.events ?? []).suffix(2).map { event in
-            "uri=\(Self.redact(event.uri ?? "")) segs=\(event.numberOfSegmentsDownloaded)"
-                + " bytes=\(event.numberOfBytesTransferred) br=\(event.observedBitrate)"
-                + " stalls=\(event.numberOfStalls) dur=\(String(format: "%.2f", event.transferDuration))"
-        }.joined(separator: " || ")
-        let errors = (item.errorLog()?.events ?? []).suffix(3).map { event in
-            "\(event.errorStatusCode)/\(event.errorDomain)/\(Self.redact(event.errorComment ?? ""))"
-        }.joined(separator: " || ")
-        return "engine=avplayer status=\(Self.statusText(item.status))"
-            + " error=\(Self.failure(item.error).kind.rawValue):\(Self.failure(item.error).code)"
-            + " time=\(String(format: "%.3f", CMTimeGetSeconds(item.currentTime())))"
-            + " rate=\(String(format: "%.2f", player.rate))"
-            + " control=\(Self.controlText(player.timeControlStatus))"
-            + " wait=\(Self.waitText(player.reasonForWaitingToPlay))"
-            + " likely=\(item.isPlaybackLikelyToKeepUp) empty=\(item.isPlaybackBufferEmpty)"
-            + " loaded=[\(loaded)] access=[\(access)] errors=[\(errors)]"
+    /// The access-log URI and the error-log comment are handed to the mapping,
+    /// which keeps only their numeric facts and drops the text. Item status,
+    /// error domain and code, timeControlStatus, the waiting reason rawValue,
+    /// current time, loaded and seekable ranges, the playback rate and the log
+    /// events are the whole payload. No `localizedDescription` is read: it can
+    /// embed the failing provider URL.
+    func diagnosticSnapshot(trigger: PlaybackDiagnostic.Trigger) -> PlaybackDiagnostic {
+        let error = item.error.map { $0 as NSError }
+        return PlaybackDiagnostic.avplayer(
+            AVPlayerDiagnosticInput(
+                itemStatus: Self.statusLabel(item.status),
+                errorDomain: error?.domain,
+                errorCode: error?.code,
+                timeControlStatus: Self.controlLabel(player.timeControlStatus),
+                waitingReason: player.reasonForWaitingToPlay?.rawValue,
+                currentTime: CMTimeGetSeconds(item.currentTime()),
+                rate: player.rate,
+                loadedRanges: item.loadedTimeRanges.map(\.timeRangeValue).compactMap(Self.timeRange),
+                seekableRanges: item.seekableTimeRanges.map(\.timeRangeValue).compactMap(Self.timeRange),
+                accessEvents: (item.accessLog()?.events ?? []).map {
+                    AVPlayerDiagnosticInput.AccessEvent(
+                        bytesTransferred: $0.numberOfBytesTransferred,
+                        mediaRequests: $0.numberOfMediaRequests,
+                        uri: $0.uri
+                    )
+                },
+                errorEvents: (item.errorLog()?.events ?? []).map {
+                    AVPlayerDiagnosticInput.ErrorLogEvent(
+                        statusCode: $0.errorStatusCode,
+                        domain: $0.errorDomain,
+                        comment: $0.errorComment,
+                        uri: $0.uri
+                    )
+                }
+            ),
+            trigger: trigger
+        )
     }
 
-    private static func statusText(_ status: AVPlayerItem.Status) -> String {
+    private static func statusLabel(_ status: AVPlayerItem.Status) -> String {
         switch status {
         case .unknown: return "unknown"
         case .readyToPlay: return "ready"
@@ -309,7 +322,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         }
     }
 
-    private static func controlText(_ status: AVPlayer.TimeControlStatus) -> String {
+    private static func controlLabel(_ status: AVPlayer.TimeControlStatus) -> String {
         switch status {
         case .paused: return "paused"
         case .waitingToPlayAtSpecifiedRate: return "waiting"
@@ -318,42 +331,10 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         }
     }
 
-    private static func waitText(_ reason: AVPlayer.WaitingReason?) -> String {
-        guard let reason else { return "none" }
-        switch reason {
-        case .evaluatingBufferingRate: return "buffering_rate"
-        case .toMinimizeStalls: return "minimize_stalls"
-        case .noItemToPlay: return "no_item"
-        case .waitingForCoordinatedPlayback: return "coordinated"
-        default: return "other"
-        }
-    }
-
-    private static func rangeText(_ range: CMTimeRange) -> String? {
-        let start = range.start.seconds
-        let end = CMTimeRangeGetEnd(range).seconds
-        guard start.isFinite, end.isFinite else { return nil }
-        return String(format: "%.2f-%.2f", start, end)
-    }
-
-    /// Removes query strings, per-pass tokens, media ids and provider origins.
-    static func redact(_ value: String) -> String {
-        guard !value.isEmpty else { return "" }
-        var text = value
-        if let mark = text.firstIndex(of: "?") { text = String(text[..<mark]) }
-        text = text.replacingOccurrences(
-            of: "/[A-Za-z0-9_-]{43}(?=[/\\s]|$)",
-            with: "/<token>",
-            options: .regularExpression
-        )
-        // The media id is a correlation handle the server pairs its own served-asset
-        // trace against, and it is useless without the token, so it is kept.
-        if let origin = text.range(of: "https?://[^/\\s]+", options: .regularExpression) {
-            let lower = text[origin].lowercased()
-            let ours = lower.contains("omakase") || lower.contains("127.0.0.1")
-                || lower.contains("localhost") || lower.contains("192.168.")
-            if !ours { text = text.replacingCharacters(in: origin, with: "<provider>") }
-        }
-        return String(text.prefix(600))
+    private static func timeRange(_ value: CMTimeRange) -> PlaybackDiagnostic.TimeRange? {
+        let start = value.start.seconds
+        let end = CMTimeRangeGetEnd(value).seconds
+        guard start.isFinite, end.isFinite, end > start, start >= 0 else { return nil }
+        return PlaybackDiagnostic.TimeRange(start: start, duration: end - start)
     }
 }

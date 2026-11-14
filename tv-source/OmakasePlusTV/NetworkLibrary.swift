@@ -248,25 +248,33 @@ struct LiveTestScreen: View {
                     .opacity(libraryVisible ? 1 : 0)
                     .disabled(!libraryVisible)
                     .accessibilityHidden(!libraryVisible)
-                    .onChange(of: player.errorMessage) { _, message in
-                        guard let message else { return }
+                    .onChange(of: player.errorMessage) { _, _ in
+                        guard player.errorMessage != nil else { return }
                         Task {
-                            await library.reportDiagnostic("\(message) | \(player.lastDiagnostic.isEmpty ? player.diagnostic : player.lastDiagnostic)")
+                            let snapshot = player.lastDiagnostic ?? player.diagnostic(trigger: .error)
+                            await library.reportDiagnostic(snapshot.attaching(mediaID: pass?.mediaID))
                         }
                     }
                     // A stall is not an error, so the state transitions and a
-                    // heartbeat are reported too: item status and error, the error
-                    // and access logs, the control state, why the player waits,
-                    // the loaded ranges and the current time, all redacted.
-                    .onChange(of: player.status) { _, status in
+                    // heartbeat are reported too. Both carry the same structured,
+                    // allowlisted snapshot: item status, error domain and code,
+                    // the control state, why the player waits, the loaded and
+                    // seekable ranges, the time, the rate and the numeric log
+                    // facts. No URL, request URI, header, token or error
+                    // description is in the payload.
+                    .onChange(of: player.status) { _, _ in
                         guard player.isPresenting else { return }
-                        Task { await library.reportDiagnostic("state=\(status) | \(player.diagnostic)") }
+                        Task {
+                            await library.reportDiagnostic(
+                                player.diagnostic(trigger: .state).attaching(mediaID: pass?.mediaID))
+                        }
                     }
                     .task(id: pass?.mediaID) {
                         while !Task.isCancelled {
                             try? await Task.sleep(for: .seconds(15))
                             guard player.isPresenting else { continue }
-                            await library.reportDiagnostic("heartbeat | \(player.diagnostic)")
+                            await library.reportDiagnostic(
+                                player.diagnostic(trigger: .heartbeat).attaching(mediaID: pass?.mediaID))
                         }
                     }
             }

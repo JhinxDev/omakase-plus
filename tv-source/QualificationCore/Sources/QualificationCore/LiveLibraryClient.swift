@@ -428,13 +428,19 @@ public struct LiveLibraryClient: Sendable {
         _ = try? await send(Self.endpoint(origin, "media/\(pass.mediaID)/close"), method: "POST")
     }
 
-    public func reportDiagnostic(_ message: String) async {
+    /// Posts one structured playback diagnostic.
+    ///
+    /// The payload type has no field for a URL, request URI, header, cookie,
+    /// token or localized error description, and its remaining text fields are
+    /// already redacted, so no free-form message reaches this route. A payload
+    /// over the route's bound is dropped rather than truncated into invalid JSON.
+    public func reportDiagnostic(_ diagnostic: PlaybackDiagnostic) async {
         guard var components = URLComponents(url: Self.endpoint(origin, "diagnostic"),
                                              resolvingAgainstBaseURL: false)
         else { return }
         components.queryItems = nil
         guard let url = components.url,
-              let body = try? JSONSerialization.data(withJSONObject: ["message": String(message.prefix(1000))])
+              let body = try? diagnostic.encoded(), body.count <= 4096
         else { return }
         _ = try? await send(url, method: "POST", body: body, maxBytes: 4096, timeout: 10)
     }

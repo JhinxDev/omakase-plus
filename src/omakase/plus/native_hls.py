@@ -153,11 +153,21 @@ _SEEK_COOLDOWN = 4.0
 _FRAGMENT_MAX_BYTES = 48 * 1024 * 1024
 _INIT_BOX_LIMIT = 4 * 1024 * 1024
 _INIT_BOXES = {b"ftyp", b"moov", b"styp"}
+# Fragmented output for the native player. ``negative_cts_offsets`` lets the muxer
+# write signed composition offsets, so a stream whose first pictures are reordered
+# needs no edit list and no picture has to be dropped to avoid a negative one.
+_MOVFLAGS = "+frag_keyframe+empty_moov+default_base_moof+delay_moov+negative_cts_offsets"
 # Audio is cut by the muxer before the playlist boundary can be known exactly, so
 # it is fragmented at about one AAC frame and partitioned by its own decode time.
 # Every fragment keeps an absolute clock, so the partition never moves a sample in
 # time, and the boundary error stays inside a frame and a half.
 _AUDIO_FRAGMENT_US = 25_000
+# How far a fragment's earliest presentation may sit from the start of the window
+# it is filed into. A fragment opens on a source keyframe, so the only legitimate
+# distance is the reorder lead-in of that random access point; half a second is
+# generous for that and far tighter than a window, so a cue table that disagrees
+# with the keyframes fails instead of swapping two segments.
+_FRAGMENT_SLACK = 0.5
 _VIDEO_SEGMENT = re.compile(r"v([0-9]{5})\.m4s")
 _AUDIO_SEGMENT = re.compile(r"a([0-9])-([0-9]{5})\.m4s")
 _AUDIO_PLAYLIST = re.compile(r"audio([0-9])\.m3u8")
@@ -182,6 +192,9 @@ class NativeAudio:
     codec: str
     language: str = ""
     name: str = ""
+    # The Matroska track number, kept so a session can anchor this rendition on the
+    # source block its first fragment was built from.
+    number: int = 0
 
     @property
     def copyable(self) -> bool:
@@ -390,6 +403,7 @@ def _track_table(data, track_range):
                     codec=_AUDIO_CODECS.get(codec, codec.lower()),
                     language=_text_field(data, fields, _LANGUAGE).lower(),
                     name=_text_field(data, fields, _TRACK_NAME, 40),
+                    number=_uint_field(data, fields, _TRACK_NUMBER) or 0,
                 )
             )
             ordinal += 1
@@ -850,46 +864,115 @@ def continuous_enabled():
 
 
 def stable_init_enabled():
-    """One init that describes every session, by removing the edit list.
+    """One init that describes every session, without rewriting muxer bytes.
 
-    The muxer records where a session's media time sits on the source clock in the
+    The muxer records where a session sits on the source clock in the
     initialisation segment's edit list, and HLS names one init for the whole pass.
-    A session that starts at another cue writes a different list (measured: -0.083 s
-    for a start at 0.000, 12.012 s for a restart at 12.012), so keeping it makes the
-    pinned init describe only the first session. Neutralising the list lets one init
-    fit every session, and the session's own cue becomes the single translation.
+    Patching that list after the fact changes the media-to-presentation mapping
+    the muxer chose, which is why this release stopped doing it: an edit list is
+    how the muxer compensates for reorder delay, and zeroing it makes the picture
+    present late and silently drops the pictures whose composition offsets are
+    negative.
+
+    Instead the session feeds every muxer a feed-relative clock and asks for
+    signed composition offsets, so the list the muxer writes is the identity and
+    comes out the same for every start. This flag selects that configuration.
+    ``OMAKASE_CONTINUOUS_STABLE_INIT=0`` is the rollback: the muxer keeps the
+    absolute clock, writes its own edit list, and the session applies it.
     """
     return os.environ.get(_STABLE_INIT_FLAG, "1") != "0"
 
 
-def neutralise_edits(init):
-    """Zero every edit list entry in place, so presentation equals media time."""
-    if not init:
-        return init
-    out = bytearray(init)
+def edit_entries(init):
+    """(version, movie timescale, entries) from an initialisation edit list.
+
+    An ISO-BMFF edit list entry is ``segment_duration``, ``media_time`` and a
+    16.16 fixed-point ``media_rate``, so entries advance by ``2 * width + 4``
+    bytes. Reading only the two width fields is the defect that used to corrupt
+    the list this module patched: the next entry started four bytes early, which
+    zeroed the previous entry's rate and left the following entry's media time
+    untouched.
+
+    Truncated or malformed input returns only the entries that were complete, so
+    a caller refuses instead of guessing.
+    """
     for kind, _start, body, size in _boxes(init, 0, len(init)):
         if kind != b"moov":
             continue
+        movie_ts = 1000
         for kind2, _start2, body2, size2 in _boxes(init, body, _payload_end(init, body, size)):
+            if kind2 == b"mvhd":
+                movie_ts = _mvhd_timescale(init, body2)
+                continue
             if kind2 != b"trak":
                 continue
-            for kind3, _start3, body3, size3 in _boxes(init, body2, _payload_end(init, body2, size2)):
+            for kind3, _start3, body3, size3 in _boxes(
+                init, body2, _payload_end(init, body2, size2)
+            ):
                 if kind3 != b"edts":
                     continue
-                for kind4, _start4, body4, size4 in _boxes(init, body3, _payload_end(init, body3, size3)):
+                for kind4, _start4, body4, size4 in _boxes(
+                    init, body3, _payload_end(init, body3, size3)
+                ):
                     if kind4 != b"elst":
                         continue
                     version = init[body4]
-                    count = int.from_bytes(init[body4 + 4 : body4 + 8], "big")
                     width = 8 if version == 1 else 4
+                    count = int.from_bytes(init[body4 + 4 : body4 + 8], "big")
+                    stride = width * 2 + 4
+                    end = _payload_end(init, body4, size4)
                     at = body4 + 8
-                    for _ in range(min(count, 8)):
-                        if at + width * 2 > _payload_end(init, body4, size4):
-                            break
-                        out[at : at + width] = (0).to_bytes(width, "big")
-                        out[at + width : at + width * 2] = (0).to_bytes(width, "big")
-                        at += width * 2
-    return bytes(out)
+                    entries = []
+                    for _ in range(count):
+                        if at + stride > end:
+                            return version, movie_ts, entries
+                        duration = int.from_bytes(init[at : at + width], "big")
+                        media_time = int.from_bytes(
+                            init[at + width : at + width * 2], "big", signed=True
+                        )
+                        rate = int.from_bytes(
+                            init[at + width * 2 : at + width * 2 + 2], "big", signed=True
+                        )
+                        fraction = int.from_bytes(
+                            init[at + width * 2 + 2 : at + width * 2 + 4], "big", signed=True
+                        )
+                        entries.append(
+                            {
+                                "duration": duration,
+                                "media_time": media_time,
+                                "media_rate": (rate, fraction),
+                            }
+                        )
+                        at += stride
+                    return version, movie_ts, entries
+    return 0, 1000, []
+
+
+def init_edits(init):
+    """The edit list an initialisation segment declares, as a plain report."""
+    version, movie_ts, entries = edit_entries(init)
+    return {"version": version, "movie_timescale": movie_ts, "entries": entries}
+
+
+def edits_are_identity(init):
+    """True when the init maps media time to presentation time unchanged.
+
+    No edit list, one entry with media time 0 and rate 1.0, and leading empty
+    edits of zero duration all mean the same thing. Anything else states that
+    presentation is deliberately offset from media time, which the one init a
+    playlist can name cannot express for a session that started elsewhere.
+    """
+    _version, _movie_ts, entries = edit_entries(init)
+    for entry in entries:
+        if entry["media_time"] == -1:
+            if entry["duration"]:
+                return False
+            continue
+        if entry["media_time"] != 0:
+            return False
+        if entry["media_rate"] != (1, 0):
+            return False
+    return True
 
 
 async def _read_exact_stream(stream, count):
@@ -956,52 +1039,23 @@ def _mvhd_timescale(init, body):
 def edit_shift(init):
     """Seconds between media time and presentation time, from the edit list.
 
-    The muxer answers a stream whose first packet is reordered with an edit list:
-    an empty edit hides the delay the decoder needs and the real edit names the
-    media time of the first shown picture. A fragmented segment written to a pipe
-    carries that list in its init, and it is the only reliable statement of where
-    the first picture really is, so the session reads it instead of assuming.
+    The muxer answers a stream whose first packets are reordered with an edit
+    list: an empty edit hides the delay the decoder needs and the real edit names
+    the media time of the first shown picture. This is the rollback reading, used
+    when ``OMAKASE_CONTINUOUS_STABLE_INIT=0`` asks the muxer for an absolute
+    clock and the session applies its list.
     """
     if not init:
         return 0.0
     media_ts = media_timescale(init) or 1000
-    movie_ts = 1000
-    for kind, _start, body, size in _boxes(init, 0, len(init)):
-        if kind != b"moov":
+    _version, movie_ts, entries = edit_entries(init)
+    empty = 0
+    for entry in entries:
+        if entry["media_time"] == -1:
+            empty += entry["duration"]
             continue
-        for kind2, _start2, body2, size2 in _boxes(init, body, _payload_end(init, body, size)):
-            if kind2 == b"mvhd":
-                movie_ts = _mvhd_timescale(init, body2)
-            if kind2 != b"trak":
-                continue
-            for kind3, _start3, body3, size3 in _boxes(init, body2, _payload_end(init, body2, size2)):
-                if kind3 != b"edts":
-                    continue
-                for kind4, _start4, body4, size4 in _boxes(init, body3, _payload_end(init, body3, size3)):
-                    if kind4 != b"elst":
-                        continue
-                    version = init[body4]
-                    count = int.from_bytes(init[body4 + 4 : body4 + 8], "big")
-                    empty = 0
-                    media = 0
-                    at = body4 + 8
-                    width = 8 if version == 1 else 4
-                    empty_value = (1 << (width * 8)) - 1
-                    for _ in range(min(count, 8)):
-                        if at + width * 2 > _payload_end(init, body4, size4):
-                            break
-                        duration = int.from_bytes(init[at : at + width], "big")
-                        media_time = int.from_bytes(
-                            init[at + width : at + width * 2], "big"
-                        )
-                        at += width * 2
-                        if media_time == empty_value:
-                            empty += duration
-                            continue
-                        media = media_time
-                        break
-                    return empty / movie_ts - media / media_ts
-    return 0.0
+        return empty / movie_ts - entry["media_time"] / media_ts
+    return empty / movie_ts
 
 
 def _payload_end(data, body, size):
@@ -1107,6 +1161,113 @@ def first_composition_offset(data):
     return 0
 
 
+def _trun_samples(data, body, size):
+    """Per-sample (duration or None, composition offset) for one ``trun``."""
+    version = data[body]
+    flags = int.from_bytes(data[body + 1 : body + 4], "big")
+    count = int.from_bytes(data[body + 4 : body + 8], "big")
+    at = body + 8
+    if flags & 0x000001:
+        at += 4
+    if flags & 0x000004:
+        at += 4
+    fixed = 0
+    for bit in (0x000100, 0x000200, 0x000400):
+        if flags & bit:
+            fixed += 4
+    has_offset = bool(flags & 0x000800)
+    stride = fixed + (4 if has_offset else 0)
+    end = _payload_end(data, body, size)
+    samples = []
+    for index in range(count):
+        position = at + stride * index
+        if position + stride > end:
+            return None
+        duration = None
+        if flags & 0x000100:
+            duration = int.from_bytes(data[position : position + 4], "big")
+            position += 4
+        if flags & 0x000200:
+            position += 4
+        if flags & 0x000400:
+            position += 4
+        offset = 0
+        if has_offset:
+            offset = int.from_bytes(
+                data[position : position + 4], "big", signed=version == 1
+            )
+        samples.append((duration, offset))
+    return samples
+
+
+def fragment_presentation(data):
+    """(decode time, composition offset) for every sample of a fragment.
+
+    Decode times advance by each sample's own duration, falling back to the track
+    fragment header's default duration, so a pair is the sample's real decode time
+    rather than an assumption that every sample lasts one frame. Truncated input
+    yields the samples that were complete.
+    """
+    for kind, _start, body, size in _boxes(data, 0, len(data)):
+        if kind != b"moof":
+            continue
+        samples = []
+        for kind2, _start2, body2, size2 in _boxes(data, body, _payload_end(data, body, size)):
+            if kind2 != b"traf":
+                continue
+            default = None
+            decode_time = None
+            truns = []
+            for kind3, _start3, body3, size3 in _boxes(
+                data, body2, _payload_end(data, body2, size2)
+            ):
+                if kind3 == b"tfhd":
+                    flags = int.from_bytes(data[body3 + 1 : body3 + 4], "big")
+                    position = body3 + 8
+                    if flags & 0x000001:
+                        position += 8
+                    if flags & 0x000002:
+                        position += 4
+                    if flags & 0x000008 and position + 4 <= _payload_end(data, body3, size3):
+                        default = int.from_bytes(data[position : position + 4], "big")
+                elif kind3 == b"tfdt":
+                    width = 8 if data[body3] == 1 else 4
+                    decode_time = int.from_bytes(
+                        data[body3 + 4 : body3 + 4 + width], "big"
+                    )
+                elif kind3 == b"trun":
+                    truns.append(_trun_samples(data, body3, size3))
+            if decode_time is None:
+                continue
+            dts = decode_time
+            for trun in truns:
+                if trun is None:
+                    return samples
+                for duration, offset in trun:
+                    step = duration if duration is not None else default
+                    if step is None:
+                        return samples
+                    samples.append((dts, offset))
+                    dts += step
+        return samples
+    return []
+
+
+def earliest_presentation(data):
+    """min(DTS_i + CTS_i) over a fragment, in its timescale units.
+
+    This is the definition of earliest presentation. The smallest composition
+    offset added to the fragment's base is a different number: with reordered
+    pictures the earliest presented sample is often not the first sample, and on
+    this material it is two frames later than the base, so the old approximation
+    put every window 0.084 s off its own clock.
+    """
+    pairs = fragment_presentation(data)
+    if not pairs:
+        return 0
+    return min(decode + offset for decode, offset in pairs)
+
+
 def shift_decode_times(data, extra):
     """Add ``extra`` to every ``tfdt`` of a fragment, keeping its own spacing.
 
@@ -1201,8 +1362,20 @@ class _ContinuousSession:
         self.pump: asyncio.Task | None = None
         self.tasks: list[asyncio.Task] = []
         self.metrics = {"bytes": 0, "read_ms": 0, "write_ms": 0, "windows": 0}
-        # Presentation anchoring: set by the first video fragment, then used by
-        # every track so picture and sound share one clock across a restart.
+        # Presentation anchoring: where each track's first forwarded block sits on
+        # the source timeline, reported by the head writer, then the one constant
+        # that puts the muxer's own clock back on that timeline. Shared by every
+        # track so a restart lands on the same source time and A/V stays put.
+        self.feed_first: dict[int, int] = {}
+        # Seconds of common delay the whole session needs, because a decode time
+        # cannot be written below zero. Held in seconds, not in any one track's
+        # timescale: the video and audio muxers use different timescales, and
+        # adding a number of video ticks to audio moved the sound against the
+        # picture by 113 ms on the measured pass.
+        self.clock_delay = 0.0
+        # The pass origin the picture lands on, in seconds, before any track is
+        # anchored: sound and subtitles are positioned relative to it.
+        self.origin: float | None = None
         self.video_base = None
         self.audio_base = None
         self.clock_ready = asyncio.Event()
@@ -1274,8 +1447,14 @@ class _ContinuousSession:
             "matroska",
             "-i",
             "pipe:0",
+            # Every session's media clock starts at zero. A session that opens at
+            # a cue otherwise starts at that cue's absolute time, and the muxer
+            # records the difference in a leading empty edit, so the one init a
+            # playlist names would describe only the session that wrote it. With
+            # the clock normalised every start writes the same init, and the
+            # session anchors that zero on the source time of its first block.
             "-avoid_negative_ts",
-            "disabled",
+            "make_zero",
         ]
         if track.kind == "audio":
             audio = track.audio
@@ -1292,7 +1471,7 @@ class _ContinuousSession:
                 "-frag_duration",
                 str(_AUDIO_FRAGMENT_US),
                 "-movflags",
-                "+frag_keyframe+empty_moov+default_base_moof+delay_moov",
+                _MOVFLAGS,
                 "pipe:1",
             ]
         tag = ["-tag:v", "hvc1"] if self.timeline.video_codec == "hevc" else []
@@ -1306,7 +1485,7 @@ class _ContinuousSession:
             "-f",
             "mp4",
             "-movflags",
-            "+frag_keyframe+empty_moov+default_base_moof+delay_moov",
+            _MOVFLAGS,
             "pipe:1",
         ]
 
@@ -1416,7 +1595,7 @@ class _ContinuousSession:
         )
         try:
             collector = _Collector()
-            await self.streams._write_head(
+            self.feed_first = await self.streams._write_head(
                 reader, timeline, keyframe_ms, timeline.video_number, collector
             )
             head = bytes(collector.data)
@@ -1505,8 +1684,6 @@ class _ContinuousSession:
                     if len(track.init) + len(data) > _INIT_BOX_LIMIT:
                         raise NativeError("init_too_large")
                     track.init += data
-                    if kind == b"moov" and stable_init_enabled():
-                        track.init = neutralise_edits(track.init)
                     if kind == b"moov":
                         # The initialisation segment is the track description, not
                         # a window: it is written once, atomically, and never
@@ -1529,12 +1706,16 @@ class _ContinuousSession:
                                 pinned = track.init
                         if track.timescale is None:
                             track.timescale = media_timescale(track.init)
-                        if stable_init_enabled():
-                            track.shift = 0.0
-                            track.pinned_shift = 0.0
-                        else:
-                            track.shift = edit_shift(track.init)
-                            track.pinned_shift = edit_shift(pinned)
+                        # One init for the whole pass: the playlist names this exact
+                        # byte string, and with every session's clock normalised the
+                        # muxer writes the same one for each start. Anything else
+                        # means the init the player holds does not describe this
+                        # session's media, so it is refused rather than served on a
+                        # guessed timeline.
+                        if stable_init_enabled() and pinned != track.init:
+                            raise NativeError("init_mismatch")
+                        track.shift = edit_shift(pinned)
+                        track.pinned_shift = edit_shift(track.init)
                     continue
                 if kind != b"moof":
                     continue
@@ -1588,49 +1769,54 @@ class _ContinuousSession:
     async def _place(self, track, fragment):
         if not track.timescale:
             raise NativeError("init_timescale")
-        bases = fragment_bases(fragment)
-        if not bases:
+        pairs = fragment_presentation(fragment)
+        if not pairs:
             raise NativeError("fragment_clock")
-        value = min(item[2] for item in bases)
-        base = await self._base_for(track, fragment)
+        earliest = min(decode + offset for decode, offset in pairs)
+        number = self.feed_start + track.fragments
+        anchor = await self._base_for(track, earliest)
+        base = self._select_base(track, earliest, anchor, number)
         data = shift_decode_times(fragment, base)
         if track.kind == "video":
-            # One fragment per source keyframe and one window per cue point, in
-            # the same order, so order is the reliable mapping. The timestamps are
-            # only a check: a fragment whose own clock disagrees with the window it
-            # belongs to by a whole window means the cue table and the keyframes
-            # have drifted apart, and serving that would be a wrong timeline.
+            # One fragment per source keyframe and one window per cue point, in the
+            # same order. A fragment opens on the keyframe that starts its window and
+            # carries that keyframe's leading pictures, which are decoded here and
+            # presented just before the cue, so a segment begins a reorder lead before
+            # its declared start. That is the price of never cutting the source
+            # sequence, and the measured lead is bounded per boundary.
             number = self.feed_start + track.fragments
-            shown = self._presentation(track, base, fragment, value)
+            shown = self._presentation(track, base, earliest)
             if track.fragments < 3:
                 _LOG.warning(
-                    "native continuous video n=%d tfdt=%.3f shown=%.3f expect=%d ts=%d",
+                    "native continuous video n=%d earliest=%.3f shown=%.3f expect=%d ts=%d",
                     track.fragments,
-                    value / track.timescale,
+                    earliest / track.timescale,
                     shown,
                     number,
                     track.timescale,
                 )
-            estimate = self._window_at(shown)
-            if abs(estimate - number) >= 2:
-                raise NativeError("timeline_mismatch")
+            if number < len(self.timeline.segments):
+                window_start = self.timeline.segments[number][0]
+                if not window_start - _FRAGMENT_SLACK <= shown < window_start + _FRAGMENT_SLACK:
+                    raise NativeError("timeline_mismatch")
             number = min(number, len(self.timeline.segments) - 1)
         else:
-            number = self._window_at(self._presentation(track, base, fragment, value))
+            number = self._window_at(self._presentation(track, base, earliest))
         if track.fragments < 3:
             _LOG.warning(
-                "native continuous place kind=%s n=%d tfdt=%d cts=%d shift=%.3f "
-                "base=%d shown=%.3f window=%d ts=%d",
+                "native continuous place kind=%s n=%d earliest=%d first_cts=%d "
+                "shift=%.3f base=%d shown=%.3f window=%d ts=%d",
                 track.kind,
                 track.fragments,
-                value,
+                earliest,
                 first_composition_offset(fragment) if track.kind == "video" else 0,
                 track.shift,
                 base,
-                self._presentation(track, base, fragment, value),
+                self._presentation(track, base, earliest),
                 number,
                 track.timescale,
             )
+        number = min(number, len(self.timeline.segments) - 1)
         if number != track.window:
             self._publish_open(track)
             path = self._segment_path(track, number)
@@ -1645,37 +1831,82 @@ class _ContinuousSession:
         await asyncio.to_thread(self._append, track.part, data)
         track.fragments += 1
 
-    async def _base_for(self, track, fragment):
-        """The constant that puts this track's decode times on the pass timeline.
+    async def _base_for(self, track, earliest):
+        """The constant that puts this track's first fragment on the pass timeline.
 
-        Measured contract: a fragmented segment written to a pipe keeps media
-        times near zero and records where it really belongs in the track's edit
-        list, so presentation = decode + composition offset + edit shift. The
-        base lines the first shown picture of the session up with the cue the
-        session opened on, and every later fragment keeps that same constant.
+        The head writer reports where each track's first forwarded block really
+        sits on the source timeline, and the earliest *presented* sample of the
+        first fragment is what gets anchored there. Each track is anchored on its
+        own source time, so picture, sound and subtitles keep the relationship the
+        source gave them instead of each being forced onto a cue.
+
+        A decode time cannot be written below zero. Whatever cannot be expressed
+        is pushed later for every track by the same amount, so A/V sync is kept and
+        the pass simply starts a fraction of a frame late rather than with the
+        picture sliding against the sound.
         """
-        if track.kind == "video":
-            if self.video_base is None:
-                # Presentation = base + decode + composition offset + this
-                # session's edit shift. One constant lines the first shown picture
-                # up with the cue the session opened on; later fragments keep it.
-                base = round(self.timeline.segments[self.feed_start][0] * track.timescale)
-                base -= minimum_composition_offset(fragment)
-                base -= round(track.shift * track.timescale)
-                self.video_base = max(0, base)
-                self.clock_ready.set()
+        number = self.timeline.video_number if track.kind == "video" else track.audio.number
+        if track.kind == "audio":
+            if self.audio_base is not None:
+                return self.audio_base
+        elif self.video_base is not None:
             return self.video_base
-        if self.audio_base is None:
+        source_ms = self.feed_first.get(number)
+        if source_ms is None:
+            # No head report: fall back to the cue, which is the old contract and
+            # still correct for a session that opens exactly on a cue.
             base = round(self.timeline.segments[self.feed_start][0] * track.timescale)
-            base -= round(track.shift * track.timescale)
-            self.audio_base = max(0, base)
-        return self.audio_base
+            base -= earliest
+        else:
+            base = round(source_ms * track.timescale / 1000) - earliest
+        # The pinned init's edit list is the mapping this media is presented
+        # through, so it belongs in the anchor rather than being assumed away.
+        base -= round(track.shift * track.timescale)
+        if track.kind == "audio":
+            if not self.clock_ready.is_set():
+                # The video anchor decides the session-wide delay. Audio fragments
+                # are small and can arrive first, so wait for it rather than
+                # anchoring against a delay that does not exist yet.
+                try:
+                    async with asyncio.timeout(5):
+                        await self.clock_ready.wait()
+                except TimeoutError:
+                    pass
+            base += round(self.clock_delay * track.timescale)
+            self.audio_base = base
+            return base
+        self.clock_delay = max(self.clock_delay, -base / track.timescale)
+        base += round(self.clock_delay * track.timescale)
+        self.video_base = base
+        self.origin = (base + earliest) / track.timescale + track.shift
+        self.clock_ready.set()
+        return base
+
+    def _select_base(self, track, earliest, anchor, number):
+        """Pick the constant this fragment's own clock is actually on.
+
+        A fragmented stream written to a pipe carries either the session's clock
+        (the first fragment of a session, and every audio fragment) or the source's
+        absolute decode times (later video fragments). Both are real, so the window
+        table decides which: a candidate is used only when it lands the fragment
+        inside its own window. Nothing is assumed, and if neither candidate lands
+        the caller raises instead of serving media at the wrong time.
+        """
+        window_start = self.timeline.segments[
+            min(number, len(self.timeline.segments) - 1)
+        ][0]
+        floor = window_start - _FRAGMENT_SLACK
+        top = window_start + _FRAGMENT_SLACK
+        for candidate in (anchor, -round(track.shift * track.timescale)):
+            shown = (candidate + earliest) / track.timescale + track.shift
+            if floor <= shown < top:
+                return candidate
+        return anchor
 
     @staticmethod
-    def _presentation(track, base, fragment, value):
-        """Where the fragment's first picture is shown, in pass seconds."""
-        offset = minimum_composition_offset(fragment) if track.kind == "video" else 0
-        return (base + value + offset + round(track.shift * track.timescale)) / track.timescale
+    def _presentation(track, base, earliest):
+        """Where the fragment's earliest presented sample is shown, in pass seconds."""
+        return (base + earliest) / track.timescale + track.shift
 
     @staticmethod
     def _append(path, data):
@@ -2629,13 +2860,24 @@ class NativeStreams:
         return min(_SPOOL_PLAN_LIMIT // 2, picture + 6 * 1024 * 1024)
 
     async def _write_head(self, reader, timeline, keyframe_ms, video_number, stdin):
-        first = await reader.peek(64)
-        if len(first) < 12:
+        """Write the synthetic Matroska head and report each track's first time.
+
+        The whole feed keeps the source's absolute clock: only the first cluster's
+        header is rebuilt, so rebasing that one header alone would make the muxer
+        see the clock jump back to the source clock on the next cluster. One clock
+        for the whole session is the contract the anchor relies on.
+
+        Returns ``{Matroska track number: absolute presentation ms}`` for the
+        earliest block of each track that was forwarded, which is what the session
+        anchors the muxer's own presentation clock against.
+        """
+        head = await reader.peek(64)
+        if len(head) < 12:
             raise NativeError("short_window")
-        cluster_id, cluster_after = vint(first, 0, True)
+        cluster_id, cluster_after = vint(head, 0, True)
         if cluster_id != _CLUSTER:
             raise NativeError("no_cluster")
-        _size, payload = vint(first, cluster_after, False)
+        _size, payload = vint(head, cluster_after, False)
         stdin.write(timeline.header + _encode_id(_SEGMENT) + _UNKNOWN_SIZE)
         stdin.write(timeline.info + timeline.tracks)
         await stdin.drain()
@@ -2646,6 +2888,7 @@ class NativeStreams:
         timestamp = None
         shift = 0
         started = video_number == 0
+        sources = {}
         while True:
             header = await reader.peek(16)
             if len(header) < 2:
@@ -2657,7 +2900,7 @@ class NativeStreams:
                 raise NativeError("bad_cluster") from None
             if element_id == _CLUSTER:
                 # The next cluster begins; stop owning this one.
-                return
+                return sources
             total = body + size
             if total + 16 > _WINDOW_MAX_BYTES:
                 raise NativeError("oversized_cluster")
@@ -2709,6 +2952,9 @@ class NativeStreams:
                 # here, is what makes the muxer's decode zero the cue itself; no
                 # later picture is ever cut, so the continuous sequence is intact.
                 continue
+            absolute = timestamp + relative
+            if track not in sources or absolute < sources[track]:
+                sources[track] = absolute
             if shift:
                 # Shift the block's relative time by the same amount the cluster
                 # time moved, so absolute timestamps stay exactly where they were.
@@ -2718,6 +2964,7 @@ class NativeStreams:
                 raw = raw[:at] + shifted + raw[at + 2 :]
             stdin.write(raw)
             await stdin.drain()
+        return sources
 
     def _commit(self, plan, number, video_part, audio_parts, subtitle_paths):
         """Split fragments into init segments and media, and place each clock.

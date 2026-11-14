@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -101,7 +102,6 @@ from omakase.plus.web_playback_source import (
     revalidate_source,
 )
 from omakase.plus.web_security import require_csrf
-from omakase.web.access_log import redact_direct_path
 
 PAGE = "/native-tv-test"
 API = "/api/native-tv-test/v1"
@@ -522,6 +522,190 @@ def _playback_languages(grant, streams=None):
         for name, tracks in (("audio_languages", audio), ("subtitle_languages", subtitles))
         if (names := labels(tracks))
     }
+
+
+# --- Apple TV playback diagnostic shape -------------------------------------
+#
+# The qualification build posts structured fields instead of a free-form
+# message. The route used to log a 1000-character message string, and its
+# redaction only recognized the direct-stream request path, so a provider URL
+# with a credential in its path could survive. Validate the shape here and log
+# only values rebuilt from the allowlist, never the submitted dictionary.
+
+_PLAYBACK_DIAGNOSTIC_SCHEMA = "playback_diagnostic_v1"
+_PLAYBACK_DIAGNOSTIC_MAX_TEXT = 64
+_PLAYBACK_DIAGNOSTIC_MAX_RANGES = 8
+_PLAYBACK_DIAGNOSTIC_MAX_EVENTS = 4
+_PLAYBACK_DIAGNOSTIC_MAX_SECONDS = 360_000.0
+_PLAYBACK_DIAGNOSTIC_MAX_RATE = 512.0
+_PLAYBACK_DIAGNOSTIC_ENGINES = frozenset({"avplayer", "vlc", "none"})
+_PLAYBACK_DIAGNOSTIC_TRIGGERS = frozenset({"error", "state", "heartbeat"})
+_PLAYBACK_DIAGNOSTIC_ITEM_STATUSES = frozenset({"unknown", "ready", "failed", "other"})
+_PLAYBACK_DIAGNOSTIC_TRANSPORTS = frozenset(
+    {
+        "idle",
+        "opening",
+        "ready",
+        "buffering",
+        "waiting",
+        "playing",
+        "paused",
+        "ended",
+        "failed",
+        "other",
+    }
+)
+_PLAYBACK_DIAGNOSTIC_MEDIA_ID = re.compile(r"[0-9a-f]{32}")
+# Any URL-ish run in a text field: a scheme, user-info, or a dotted host with a
+# two-letter-plus TLD. The text fields are only short symbolic values.
+_PLAYBACK_DIAGNOSTIC_URL = re.compile(
+    r"(?i)(?:[a-z][a-z0-9+.-]*://)|(?:@)|(?:(?:[a-z0-9-]+\.)+[a-z]{2,})"
+)
+
+
+def _diagnostic_text(value):
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > _PLAYBACK_DIAGNOSTIC_MAX_TEXT:
+        return None
+    if _PLAYBACK_DIAGNOSTIC_URL.search(text):
+        return None
+    if any(ord(character) < 32 for character in text):
+        return None
+    return text
+
+
+def _diagnostic_number(value, *, low, high):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or not low <= number <= high:
+        return None
+    return number
+
+
+def _diagnostic_range(value):
+    if not isinstance(value, dict):
+        return None
+    start = _diagnostic_number(value.get("start"), low=0, high=_PLAYBACK_DIAGNOSTIC_MAX_SECONDS)
+    duration = _diagnostic_number(
+        value.get("duration"), low=0, high=_PLAYBACK_DIAGNOSTIC_MAX_SECONDS
+    )
+    if start is None or duration is None or duration <= 0:
+        return None
+    return {"start": start, "duration": duration}
+
+
+def _diagnostic_event(value):
+    if not isinstance(value, dict):
+        return None
+    event = {}
+    for key, low, high in (
+        ("status_code", -100_000, 100_000),
+        ("bytes_transferred", 0, 10**15),
+        ("media_requests", 0, 10_000),
+    ):
+        raw = value.get(key)
+        if raw is None:
+            continue
+        number = _diagnostic_number(raw, low=low, high=high)
+        if number is None or not number.is_integer():
+            continue
+        event[key] = int(number)
+    return event or None
+
+
+def playback_diagnostic_fields(payload):
+    """Return the allowlisted diagnostic fields, or None when the shape is wrong.
+
+    Unknown keys, malformed values and any text carrying a URL are dropped, so a
+    client cannot smuggle a provider path or token into the log line.
+    """
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema") != _PLAYBACK_DIAGNOSTIC_SCHEMA:
+        return None
+    engine = payload.get("engine")
+    trigger = payload.get("trigger")
+    if not isinstance(engine, str) or engine not in _PLAYBACK_DIAGNOSTIC_ENGINES:
+        return None
+    if not isinstance(trigger, str) or trigger not in _PLAYBACK_DIAGNOSTIC_TRIGGERS:
+        return None
+    fields = {"schema": _PLAYBACK_DIAGNOSTIC_SCHEMA, "engine": engine, "trigger": trigger}
+    media_id = payload.get("media_id")
+    if isinstance(media_id, str) and _PLAYBACK_DIAGNOSTIC_MEDIA_ID.fullmatch(media_id):
+        fields["media_id"] = media_id
+    item_status = payload.get("item_status")
+    if isinstance(item_status, str) and item_status in _PLAYBACK_DIAGNOSTIC_ITEM_STATUSES:
+        fields["item_status"] = item_status
+    item_error = payload.get("item_error")
+    if isinstance(item_error, dict):
+        domain = _diagnostic_text(item_error.get("domain"))
+        code = _diagnostic_number(item_error.get("code"), low=-100_000, high=100_000)
+        if domain is not None and code is not None and code.is_integer():
+            fields["item_error"] = {"domain": domain, "code": int(code)}
+    transport = payload.get("time_control")
+    if isinstance(transport, str) and transport in _PLAYBACK_DIAGNOSTIC_TRANSPORTS:
+        fields["time_control"] = transport
+    waiting_reason = _diagnostic_text(payload.get("waiting_reason"))
+    if waiting_reason is not None:
+        fields["waiting_reason"] = waiting_reason
+    current_time = _diagnostic_number(
+        payload.get("current_time"), low=0, high=_PLAYBACK_DIAGNOSTIC_MAX_SECONDS
+    )
+    if current_time is not None:
+        fields["current_time"] = current_time
+    rate = _diagnostic_number(
+        payload.get("rate"), low=-_PLAYBACK_DIAGNOSTIC_MAX_RATE, high=_PLAYBACK_DIAGNOSTIC_MAX_RATE
+    )
+    if rate is not None:
+        fields["rate"] = rate
+    for key in ("loaded_ranges", "seekable_ranges"):
+        values = payload.get(key)
+        if not isinstance(values, list):
+            continue
+        ranges = [item for value in values if (item := _diagnostic_range(value)) is not None]
+        if ranges:
+            fields[key] = ranges[:_PLAYBACK_DIAGNOSTIC_MAX_RANGES]
+    values = payload.get("events")
+    if isinstance(values, list):
+        events = [item for value in values if (item := _diagnostic_event(value)) is not None]
+        if events:
+            fields["events"] = events[:_PLAYBACK_DIAGNOSTIC_MAX_EVENTS]
+    return fields
+
+
+def _format_playback_diagnostic(fields):
+    parts = [
+        f"schema={fields['schema']}",
+        f"engine={fields['engine']}",
+        f"trigger={fields['trigger']}",
+    ]
+    for key in ("media_id", "item_status", "time_control", "waiting_reason"):
+        if key in fields:
+            parts.append(f"{key}={fields[key]}")
+    error = fields.get("item_error")
+    if error is not None:
+        parts.append(f"item_error={error['domain']}/{error['code']}")
+    for key in ("current_time", "rate"):
+        if key in fields:
+            parts.append(f"{key}={fields[key]:.3f}")
+    for key in ("loaded_ranges", "seekable_ranges"):
+        if key in fields:
+            spans = ",".join(f"{item['start']:.2f}+{item['duration']:.2f}" for item in fields[key])
+            parts.append(f"{key}={spans}")
+    if "events" in fields:
+        facts = ",".join(
+            "/".join(
+                str(event[event_key])
+                for event_key in ("status_code", "bytes_transferred", "media_requests")
+                if event_key in event
+            )
+            for event in fields["events"]
+        )
+        parts.append(f"events={facts}")
+    return " ".join(parts)
 
 
 class ResumeCheckpoint(BaseModel):
@@ -1716,17 +1900,26 @@ def create_native_tv_test_router(
             payload = await request.json()
         except ValueError:
             payload = {}
-        message = payload.get("message") if isinstance(payload, dict) else ""
-        if not isinstance(message, str):
-            message = ""
+        # Older builds posted a free-form message. It is not logged at all now:
+        # its redaction could keep a provider path, which may itself be a
+        # credential. Only the allowlisted structured shape reaches the log.
+        diagnostic = playback_diagnostic_fields(payload)
+        if diagnostic is None:
+            _LOG.warning(
+                "Apple TV playback diagnostic actor=%s: rejected payload shape",
+                scope.viewer_id,
+            )
+            return JSONResponse({"ok": False}, status_code=400, headers=NO_STORE)
         _LOG.warning(
             "Apple TV playback diagnostic actor=%s: %s",
             scope.viewer_id,
-            redact_direct_path(message)[:1000],
+            _format_playback_diagnostic(diagnostic),
         )
         # The app cannot read AVPlayer's internal error log, so pair its report
-        # with what the server actually served for that pass.
-        for media_id in set(re.findall(r"[a-f0-9]{32}", message)) & set(media_trace):
+        # with what the server actually served for that pass. The id is the
+        # server's own handle and is validated as 32 lowercase hex characters.
+        media_id = diagnostic.get("media_id")
+        if media_id is not None and media_id in media_trace:
             _LOG.warning(
                 "Apple TV media trace %s: %s",
                 media_id,
