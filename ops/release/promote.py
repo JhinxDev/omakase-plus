@@ -35,6 +35,7 @@ import hashlib
 import json
 import lzma
 import os
+import re
 import shlex
 import shutil
 import sqlite3
@@ -280,14 +281,42 @@ def capture(*command: str, timeout: int = 60) -> str:
     return subprocess.check_output(command, text=True, timeout=timeout).strip()
 
 
-def run(*command: str, cwd: Path | None = None) -> None:
-    """Run a command whose output should be visible to the operator."""
-    subprocess.run(
-        command,
-        cwd=None if cwd is None else str(cwd),
-        check=True,
-        timeout=COMPOSE_COMMAND_TIMEOUT,
-    )
+def run(
+    *command: str,
+    cwd: Path | None = None,
+    compose_bindings: Mapping[str, str],
+) -> str:
+    """Run Compose with pinned inputs and report only the operation and its status."""
+    operation = next((word for word in command if word in {"config", "stop", "up"}), "command")
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env={**os.environ, **compose_bindings},
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=COMPOSE_COMMAND_TIMEOUT,
+        )
+    except subprocess.CalledProcessError as error:
+        raise ReleaseError(f"compose {operation} failed (exit {error.returncode})") from None
+    except subprocess.TimeoutExpired:
+        raise ReleaseError(f"compose {operation} exceeded its time limit") from None
+    except OSError:
+        raise ReleaseError(f"could not start compose {operation}") from None
+    return result.stdout
+
+
+def _live_compose_bindings(current: Mapping[str, object]) -> dict[str, str]:
+    image, revision = current.get("image"), current.get("revision")
+    if not isinstance(image, str) or re.fullmatch(r"sha256:[a-f0-9]{64}", image) is None:
+        raise ReleaseError("live Compose binding lacks an exact image ID")
+    if (
+        not isinstance(revision, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", revision) is None
+    ):
+        raise ReleaseError("live Compose binding lacks a valid revision")
+    return {"PLUS_UI_REVISION": revision, "PLUS_UI_IMAGE_ID": image}
 
 
 def compose_command(settings: Settings, files: Sequence[str]) -> list[str]:
@@ -309,18 +338,21 @@ def compose_command(settings: Settings, files: Sequence[str]) -> list[str]:
     return command
 
 
-def compose_config(settings: Settings, files: Sequence[str]) -> dict[str, object]:
-    """Resolve a compose chain to JSON without printing secrets."""
+def compose_config(
+    settings: Settings, files: Sequence[str], bindings: Mapping[str, str]
+) -> dict[str, object]:
+    """Validate interpolation and compare Compose structure without reading resolved secrets."""
     command = compose_command(settings, files)
-    run(*command, "config", "--quiet", cwd=settings.stack_dir)
-    output = capture(
+    run(*command, "config", "--quiet", cwd=settings.stack_dir, compose_bindings=bindings)
+    output = run(
         *command,
         "config",
         "--no-interpolate",
         "--no-env-resolution",
         "--format",
         "json",
-        timeout=120,
+        cwd=settings.stack_dir,
+        compose_bindings=bindings,
     )
     try:
         return json.loads(output)
@@ -393,6 +425,8 @@ def _verify_before_cutover(settings: Settings, plan: Mapping[str, object]) -> No
     ):
         raise ReleaseError("the running release identity changed since preflight")
     _verify_database_binding(settings, current)
+    if _live_compose_bindings(current) != plan["compose_bindings"]:
+        raise ReleaseError("historical Compose bindings changed since preflight")
 
 
 def health_payload(settings: Settings) -> dict[str, object]:
@@ -817,12 +851,9 @@ def preflight(
         raise ReleaseError("manifest has no file hashes")
     current = service_state(settings)
     _verify_database_binding(settings, current)
-    previous_image = current["image"]
-    previous_revision = current["revision"]
-    if not isinstance(previous_image, str) or not previous_image:
-        raise ReleaseError("cannot read the live image id")
-    if not isinstance(previous_revision, str) or not previous_revision:
-        raise ReleaseError("cannot read the live revision label")
+    bindings = _live_compose_bindings(current)
+    previous_image = bindings["PLUS_UI_IMAGE_ID"]
+    previous_revision = bindings["PLUS_UI_REVISION"]
     wait_healthy(settings, previous_image, previous_revision)
     candidate_ref = args.image or f"{IMAGE_REPOSITORY}:{revision}"
     candidate = image_details(candidate_ref)
@@ -836,7 +867,7 @@ def preflight(
     compose_files = current["config_files"]
     if not compose_files:
         raise ReleaseError("the live compose chain label is empty")
-    before = compose_config(settings, compose_files)
+    before = compose_config(settings, compose_files, bindings)
     available = disk_gate(settings, settings.backup_bytes)
     schema = idle_and_schema(settings)
     if args.expect_last_migration is not None:
@@ -848,7 +879,7 @@ def preflight(
     with tempfile.TemporaryDirectory(prefix="omakase-release-", dir="/dev/shm") as scratch:
         preview = Path(scratch) / "candidate.json"
         preview.write_text(json.dumps(override), encoding="utf-8")
-        after = compose_config(settings, (*compose_files, str(preview)))
+        after = compose_config(settings, (*compose_files, str(preview)), bindings)
     error = compose_scope_error(
         before,
         after,
@@ -868,6 +899,7 @@ def preflight(
         "previous_image": previous_image,
         "previous_revision": previous_revision,
         "compose_files": list(compose_files),
+        "compose_bindings": bindings,
         "schema": schema,
         "devices": devices,
         "available_bytes": available,
@@ -891,6 +923,7 @@ def print_plan(settings: Settings, plan: Mapping[str, object], *, execute: bool)
         "previous_image": plan["previous_image"],
         "previous_revision": plan["previous_revision"],
         "compose_files": plan["compose_files"],
+        "compose_bindings": plan["compose_bindings"],
         "database": str(settings.db_path),
         "backup_dir": str(settings.state_dir(str(plan["revision"]))),
         "schema": schema,
@@ -913,6 +946,11 @@ def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str
     if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), dict):
         raise ReleaseError("manifest has no file hashes")
     files = list(plan["compose_files"])
+    bindings = _live_compose_bindings(
+        {"image": plan["previous_image"], "revision": plan["previous_revision"]}
+    )
+    if bindings != plan["compose_bindings"]:
+        raise ReleaseError("historical Compose bindings differ from preflight")
     state = settings.state_dir(revision)
     try:
         state.mkdir(mode=0o700, exist_ok=False)
@@ -936,7 +974,15 @@ def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str
     _verify_before_cutover(settings, plan)
     phase = "prior_stop_attempted"
     try:
-        run(*before_command, "stop", "-t", "20", settings.service)
+        run(
+            *before_command,
+            "stop",
+            "-t",
+            "20",
+            settings.service,
+            cwd=settings.stack_dir,
+            compose_bindings=bindings,
+        )
         phase = "backup_preparation"
         backup = durable_sqlite_backup(settings, schema, state)
         if backup["restore"]["linked_native_devices"] != plan["devices"]:
@@ -954,6 +1000,7 @@ def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str
             "database": str(settings.db_path),
             "compose_files": files,
             "compose_sha256": compose_hashes,
+            "compose_bindings": bindings,
             "backup": backup,
         }
         _durable_json(state / "prepared.json", prepared)
@@ -966,6 +1013,8 @@ def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str
             "--force-recreate",
             "--no-build",
             settings.service,
+            cwd=settings.stack_dir,
+            compose_bindings=bindings,
         )
         wait_healthy(settings, str(plan["image"]), revision)
         _verify_database_binding(settings, service_state(settings))
@@ -983,6 +1032,7 @@ def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str
             "previous_image": plan["previous_image"],
             "previous_revision": plan["previous_revision"],
             "compose_files": files,
+            "compose_bindings": bindings,
             "backup": backup,
             "verified_files": len(
                 [name for name in manifest["files"] if not is_runtime_artifact(name)]
@@ -999,9 +1049,17 @@ def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str
         stop_status = "candidate_not_started"
         if phase == "candidate_start_attempted":
             try:
-                run(*candidate_command, "stop", "-t", "20", settings.service)
+                run(
+                    *candidate_command,
+                    "stop",
+                    "-t",
+                    "20",
+                    settings.service,
+                    cwd=settings.stack_dir,
+                    compose_bindings=bindings,
+                )
                 stop_status = "candidate_stop_command_succeeded"
-            except (OSError, subprocess.SubprocessError):
+            except (ReleaseError, OSError, subprocess.SubprocessError):
                 stop_status = "candidate_stop_failed"
                 print(
                     "candidate stop failed; verify container state immediately",

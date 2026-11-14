@@ -193,6 +193,11 @@ before using `--execute`. Keep the fence in place through verification.
 
 A failed cutover requires the [current-data recovery procedure](../../docs/current-data-recovery.md).
 
+The historical Compose chain receives only two explicit interpolation bindings,
+`PLUS_UI_IMAGE_ID` and `PLUS_UI_REVISION`, from the verified live container.
+The same values are used for the prior and candidate chains and recorded in
+`prepared.json` for recovery.
+
 The workstation entry sends this script and the manifest to the Docker host over
 ssh and runs it there. Nothing is copied to the host and no file is written to
 it except by the cutover itself. A dry run writes one scratch compose override

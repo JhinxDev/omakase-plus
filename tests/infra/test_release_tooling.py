@@ -350,12 +350,49 @@ def test_durable_sqlite_backup_reopens_verified_archive(tmp_path, monkeypatch):
 
 
 def test_compose_command_has_a_timeout(monkeypatch):
-    def call(command, *, cwd, check, timeout):
+    monkeypatch.setenv("PLUS_UI_REVISION", "stale")
+    monkeypatch.setenv("UNRELATED_INHERITED_INPUT", "preserved")
+    bindings = {"PLUS_UI_REVISION": OLD_REVISION, "PLUS_UI_IMAGE_ID": IMAGE_A}
+
+    def call(command, *, cwd, check, timeout, env, capture_output, text):
         assert command == ("docker", "compose", "up")
-        assert cwd is None and check is True and timeout == 90
+        assert cwd is None and check is True and timeout == 90 and capture_output and text
+        assert env["PLUS_UI_REVISION"] == OLD_REVISION and env["PLUS_UI_IMAGE_ID"] == IMAGE_A
+        assert env["UNRELATED_INHERITED_INPUT"] == "preserved"
+        return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(promote.subprocess, "run", call)
-    promote.run("docker", "compose", "up")
+    promote.run("docker", "compose", "up", compose_bindings=bindings)
+    assert os.environ["PLUS_UI_REVISION"] == "stale"
+
+
+def test_compose_config_receives_bindings_without_resolving_secrets(monkeypatch, tmp_path):
+    compose = tmp_path / "compose.yaml"
+    compose.touch()
+    settings = promote.settings_from_args(promote.parse_args(["--stack-dir", str(tmp_path)]))
+    bindings = {"PLUS_UI_REVISION": OLD_REVISION, "PLUS_UI_IMAGE_ID": IMAGE_A}
+    calls = []
+
+    def run(*command, **kwargs):
+        assert kwargs == {"cwd": tmp_path, "compose_bindings": bindings}
+        calls.append(command[command.index("config") :])
+        return "{}"
+
+    monkeypatch.setattr(promote, "run", run)
+    assert promote.compose_config(settings, [str(compose)], bindings) == {}
+    assert calls == [
+        ("config", "--quiet"),
+        ("config", "--no-interpolate", "--no-env-resolution", "--format", "json"),
+    ]
+
+
+def test_compose_failure_does_not_echo_diagnostics(monkeypatch):
+    def fail(command, **kwargs):
+        raise subprocess.CalledProcessError(1, command, stderr="private sentinel")
+
+    monkeypatch.setattr(promote.subprocess, "run", fail)
+    with pytest.raises(promote.ReleaseError, match=r"^compose config failed \(exit 1\)$"):
+        promote.run("docker", "compose", "-f", "private-argv.yaml", "config", compose_bindings={})
 
 
 @pytest.mark.parametrize("fail_at", ["backup", "candidate_start", "candidate_stop"])
@@ -380,18 +417,21 @@ def test_failed_cutover_preserves_fence_without_starting_previous_image(
         "image": IMAGE_B,
         "previous_image": IMAGE_A,
         "previous_revision": OLD_REVISION,
+        "compose_bindings": {"PLUS_UI_REVISION": OLD_REVISION, "PLUS_UI_IMAGE_ID": IMAGE_A},
         "git_commit": "a" * 40,
         "devices": 1,
     }
     actions = []
 
-    def run(identity, action, *flags):
+    def run(identity, action, *flags, cwd, compose_bindings):
+        assert cwd == tmp_path
+        assert compose_bindings == plan["compose_bindings"]
         actions.append((identity, action))
         if action == "up":
             assert (state / "original-compose-files.txt").read_text().splitlines() == [str(compose)]
-            assert json.loads((state / "prepared.json").read_text())["backup"]["restore"] == {
-                "linked_native_devices": 1
-            }
+            prepared = json.loads((state / "prepared.json").read_text())
+            assert prepared["backup"]["restore"] == {"linked_native_devices": 1}
+            assert prepared["compose_bindings"] == plan["compose_bindings"]
             raise promote.ReleaseError("startup test failure")
         if (identity, action, fail_at) == (2, "stop", "candidate_stop"):
             raise subprocess.TimeoutExpired("synthetic compose stop", 90)
@@ -440,6 +480,30 @@ def test_database_backup_must_use_the_reviewed_live_bind(tmp_path):
     promote._verify_database_binding(settings, {"database_mounts": [str(tmp_path)]})
     with pytest.raises(promote.ReleaseError, match="data bind"):
         promote._verify_database_binding(settings, {"database_mounts": [str(tmp_path / "other")]})
+
+
+def test_cutover_rechecks_bound_values_against_live_identity(tmp_path, monkeypatch):
+    path = tmp_path / "omakase-plus.db"
+    path.touch()
+    settings = promote.settings_from_args(promote.parse_args(["--db-path", str(path)]))
+    current = {
+        "image": IMAGE_A,
+        "revision": OLD_REVISION,
+        "config_files": ("compose.yaml",),
+        "health": "healthy",
+        "database_mounts": [str(tmp_path)],
+    }
+    monkeypatch.setattr(promote, "service_state", lambda _settings: current)
+    plan = {
+        "previous_image": IMAGE_A,
+        "previous_revision": OLD_REVISION,
+        "compose_files": ["compose.yaml"],
+        "compose_bindings": promote._live_compose_bindings(current),
+    }
+    promote._verify_before_cutover(settings, plan)
+    plan["compose_bindings"]["PLUS_UI_IMAGE_ID"] = IMAGE_B
+    with pytest.raises(promote.ReleaseError, match="bindings changed"):
+        promote._verify_before_cutover(settings, plan)
 
 
 def test_automatic_rollback_refused_before_any_docker_action(monkeypatch):
