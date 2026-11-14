@@ -277,7 +277,7 @@ def _release_db(path):
         db.executescript("""
             CREATE TABLE _migrations (id INTEGER PRIMARY KEY, name TEXT);
             INSERT INTO _migrations VALUES (1, '001-plus.sql');
-            CREATE TABLE native_tv_devices (id INTEGER PRIMARY KEY);
+            CREATE TABLE native_tv_devices (id INTEGER PRIMARY KEY, user_id INTEGER, expires_at INTEGER);
             CREATE TABLE web_playback_sessions (closed INTEGER, expires_at INTEGER, last_seen INTEGER);
             CREATE TABLE movie_cleanup_jobs (id INTEGER);
             CREATE TABLE movie_cleanup_preferences (enabled INTEGER);
@@ -316,14 +316,17 @@ def test_restore_rejects_a_snapshot_with_a_different_migration_name(tmp_path):
     _release_db(db)
     schema = {"schema": [1, 1], "migrations": ["001-other.sql"]}
     with pytest.raises(promote.ReleaseError, match="migration ledger"):
-        promote._snapshot_facts(db, schema)
+        promote._snapshot_facts(db, schema, observed_at=100)
 
 
 def test_durable_sqlite_backup_reopens_verified_archive(tmp_path, monkeypatch):
     db = tmp_path / "source.db"
     _release_db(db)
     with sqlite3.connect(db) as connection:
-        connection.execute("INSERT INTO native_tv_devices VALUES (1)")
+        connection.executemany(
+            "INSERT INTO native_tv_devices VALUES (?, ?, ?)",
+            [(1, 1, 101), (2, 1, 99), (3, None, 110)],
+        )
     settings = promote.settings_from_args(promote.parse_args(["--db-path", str(db)]))
     original_temp = promote.tempfile.TemporaryDirectory
     monkeypatch.setattr(
@@ -334,11 +337,15 @@ def test_durable_sqlite_backup_reopens_verified_archive(tmp_path, monkeypatch):
     stage = tmp_path / "staged"
     stage.mkdir()
     expected = {"schema": [1, 1], "migrations": ["001-plus.sql"]}
-    receipt = promote.durable_sqlite_backup(settings, expected, stage)
+    assert promote.native_device_count(settings, observed_at=100) == 1
+    assert promote.native_device_count(settings, observed_at=101) == 0
+    receipt = promote.durable_sqlite_backup(settings, expected, stage, observed_at=100)
     assert receipt["restore"] == expected | {
         "quick_check": "ok",
         "foreign_keys": "ok",
         "linked_native_devices": 1,
+        "native_device_rows": 3,
+        "device_observed_at": 100,
     }
     assert (
         receipt["archive_sha256"] == hashlib.sha256(Path(receipt["path"]).read_bytes()).hexdigest()
@@ -416,10 +423,12 @@ def test_failed_cutover_preserves_fence_without_starting_previous_image(
         "override": {},
         "image": IMAGE_B,
         "previous_image": IMAGE_A,
+        "previous_image_ref": f"omakase-plus:{OLD_REVISION}",
         "previous_revision": OLD_REVISION,
         "compose_bindings": {"PLUS_UI_REVISION": OLD_REVISION, "PLUS_UI_IMAGE_ID": IMAGE_A},
         "git_commit": "a" * 40,
         "devices": 1,
+        "devices_observed_at": 100,
     }
     actions = []
 
@@ -436,7 +445,8 @@ def test_failed_cutover_preserves_fence_without_starting_previous_image(
         if (identity, action, fail_at) == (2, "stop", "candidate_stop"):
             raise subprocess.TimeoutExpired("synthetic compose stop", 90)
 
-    def backup(*args):
+    def backup(_settings, _schema, _state, observed_at):
+        assert observed_at == 100
         if fail_at == "backup":
             raise promote.ReleaseError("restore failure")
         return {"restore": {"linked_native_devices": 1}}
@@ -496,14 +506,44 @@ def test_cutover_rechecks_bound_values_against_live_identity(tmp_path, monkeypat
     monkeypatch.setattr(promote, "service_state", lambda _settings: current)
     plan = {
         "previous_image": IMAGE_A,
+        "previous_image_ref": f"omakase-plus:{OLD_REVISION}",
         "previous_revision": OLD_REVISION,
         "compose_files": ["compose.yaml"],
         "compose_bindings": promote._live_compose_bindings(current),
     }
+    monkeypatch.setattr(
+        promote,
+        "image_details",
+        lambda ref: {"Id": IMAGE_A, "Config": {"Labels": {promote.REVISION_LABEL: OLD_REVISION}}},
+    )
     promote._verify_before_cutover(settings, plan)
     plan["compose_bindings"]["PLUS_UI_IMAGE_ID"] = IMAGE_B
     with pytest.raises(promote.ReleaseError, match="bindings changed"):
         promote._verify_before_cutover(settings, plan)
+
+
+@pytest.mark.parametrize(
+    ("reported_id", "reported_revision", "accepted"),
+    [(IMAGE_A, OLD_REVISION, True), (IMAGE_B, OLD_REVISION, False), (IMAGE_A, NEW_REVISION, False)],
+)
+def test_prior_compose_tag_requires_exact_running_image_and_revision(
+    monkeypatch, reported_id, reported_revision, accepted
+):
+    compose_tag = f"omakase-plus:{OLD_REVISION}"
+
+    def inspect(reference):
+        assert reference == compose_tag
+        return {
+            "Id": reported_id,
+            "Config": {"Labels": {promote.REVISION_LABEL: reported_revision}},
+        }
+
+    monkeypatch.setattr(promote, "image_details", inspect)
+    if not accepted:
+        with pytest.raises(promote.ReleaseError, match="does not match the running release"):
+            promote._verify_prior_image(compose_tag, IMAGE_A, OLD_REVISION)
+    else:
+        assert promote._verify_prior_image(compose_tag, IMAGE_A, OLD_REVISION) == compose_tag
 
 
 def test_automatic_rollback_refused_before_any_docker_action(monkeypatch):

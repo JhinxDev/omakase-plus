@@ -379,6 +379,24 @@ def image_label(details: Mapping[str, object]) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _verify_prior_image(reference: object, image: str, revision: str) -> str:
+    """Prove the declared Compose tag resolves to the exact running image."""
+    if (
+        not isinstance(reference, str)
+        or not reference
+        or "$" in reference
+        or reference.startswith("-")
+    ):
+        raise ReleaseError("live Compose image reference is missing or unresolved")
+    try:
+        details = image_details(reference)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        raise ReleaseError("could not resolve the declared prior Compose image locally") from None
+    if details.get("Id") != image or image_label(details) != revision:
+        raise ReleaseError("declared prior Compose image does not match the running release")
+    return reference
+
+
 def service_state(settings: Settings) -> dict[str, object]:
     """Read the live container image, health, revision and compose chain."""
     output = capture("docker", "inspect", settings.service, timeout=60)
@@ -425,8 +443,12 @@ def _verify_before_cutover(settings: Settings, plan: Mapping[str, object]) -> No
     ):
         raise ReleaseError("the running release identity changed since preflight")
     _verify_database_binding(settings, current)
-    if _live_compose_bindings(current) != plan["compose_bindings"]:
+    bindings = _live_compose_bindings(current)
+    if bindings != plan["compose_bindings"]:
         raise ReleaseError("historical Compose bindings changed since preflight")
+    _verify_prior_image(
+        plan["previous_image_ref"], bindings["PLUS_UI_IMAGE_ID"], bindings["PLUS_UI_REVISION"]
+    )
 
 
 def health_payload(settings: Settings) -> dict[str, object]:
@@ -467,14 +489,21 @@ def disk_gate(settings: Settings, backup_bytes: int = 0) -> int:
     return available
 
 
-def native_device_count(settings: Settings) -> int:
-    """Count unexpired linked native devices without writing."""
-    with sqlite3.connect(settings.db_path.as_uri() + "?mode=ro", uri=True) as conn:
-        row = conn.execute(
-            "SELECT count(*) FROM native_tv_devices "
-            "WHERE user_id IS NOT NULL AND expires_at>unixepoch()"
-        ).fetchone()
-    return int(row[0])
+def _linked_native_devices(conn: sqlite3.Connection, observed_at: int) -> int:
+    return int(
+        conn.execute(
+            "SELECT count(*) FROM native_tv_devices WHERE user_id IS NOT NULL AND expires_at>?",
+            (observed_at,),
+        ).fetchone()[0]
+    )
+
+
+def native_device_count(settings: Settings, observed_at: int) -> int:
+    """Count linked devices as of the release's single observation time."""
+    with contextlib.closing(
+        sqlite3.connect(settings.db_path.as_uri() + "?mode=ro", uri=True)
+    ) as conn:
+        return _linked_native_devices(conn, observed_at)
 
 
 def idle_and_schema(settings: Settings) -> dict[str, object]:
@@ -512,7 +541,9 @@ def idle_and_schema(settings: Settings) -> dict[str, object]:
     return {"schema": [int(schema[0]), int(schema[1])], "migrations": names}
 
 
-def _snapshot_facts(path: Path, expected_schema: Mapping[str, object]) -> dict[str, object]:
+def _snapshot_facts(
+    path: Path, expected_schema: Mapping[str, object], observed_at: int
+) -> dict[str, object]:
     """Check a byte-stable snapshot opened independently from the backup connection."""
     with contextlib.closing(
         sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)
@@ -525,8 +556,15 @@ def _snapshot_facts(path: Path, expected_schema: Mapping[str, object]) -> dict[s
             raise ReleaseError("database snapshot failed integrity checking")
         if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise ReleaseError("database snapshot failed foreign-key checking")
-        devices = db.execute("SELECT count(*) FROM native_tv_devices").fetchone()[0]
-    return {"schema": schema, "migrations": names, "linked_native_devices": devices}
+        linked = _linked_native_devices(db, observed_at)
+        total = db.execute("SELECT count(*) FROM native_tv_devices").fetchone()[0]
+    return {
+        "schema": schema,
+        "migrations": names,
+        "linked_native_devices": linked,
+        "native_device_rows": total,
+        "device_observed_at": observed_at,
+    }
 
 
 def _fsync_dir(directory: Path) -> None:
@@ -554,7 +592,7 @@ def _durable_json(path: Path, record: Mapping[str, object]) -> None:
 
 
 def durable_sqlite_backup(
-    settings: Settings, expected_schema: Mapping[str, object], state: Path
+    settings: Settings, expected_schema: Mapping[str, object], state: Path, observed_at: int
 ) -> dict[str, object]:
     """Snapshot, hash and independently restore the archived bytes before a new start."""
     with tempfile.TemporaryDirectory(prefix="omakase-release-backup-", dir="/dev/shm") as scratch:
@@ -566,7 +604,7 @@ def durable_sqlite_backup(
             contextlib.closing(sqlite3.connect(snapshot)) as backup,
         ):
             source.backup(backup)
-        facts = _snapshot_facts(snapshot, expected_schema)
+        facts = _snapshot_facts(snapshot, expected_schema, observed_at)
         measured = Path(scratch) / "pre-swap.db.xz"
         compressed = state / measured.name
         with snapshot.open("rb") as saved:
@@ -588,7 +626,7 @@ def durable_sqlite_backup(
         with restored.open("rb") as target:
             if hashlib.file_digest(target, "sha256").hexdigest() != digest:
                 raise ReleaseError("compressed database backup failed its checksum")
-        if _snapshot_facts(restored, expected_schema) != facts:
+        if _snapshot_facts(restored, expected_schema, observed_at) != facts:
             raise ReleaseError("restored database differs from the verified snapshot")
         with compressed.open("rb") as archived:
             archive_digest = hashlib.file_digest(archived, "sha256").hexdigest()
@@ -858,7 +896,7 @@ def preflight(
     candidate_ref = args.image or f"{IMAGE_REPOSITORY}:{revision}"
     candidate = image_details(candidate_ref)
     candidate_image = str(candidate.get("Id", ""))
-    if not candidate_image.startswith("sha256:"):
+    if re.fullmatch(r"sha256:[a-f0-9]{64}", candidate_image) is None:
         raise ReleaseError(f"candidate image {candidate_ref} has no image id")
     if candidate_image == previous_image:
         raise ReleaseError("the candidate image is already running")
@@ -868,13 +906,19 @@ def preflight(
     if not compose_files:
         raise ReleaseError("the live compose chain label is empty")
     before = compose_config(settings, compose_files, bindings)
+    prior_services = before.get("services")
+    prior = prior_services.get(settings.service) if isinstance(prior_services, dict) else None
+    previous_image_ref = _verify_prior_image(
+        prior.get("image") if isinstance(prior, dict) else None, previous_image, previous_revision
+    )
     available = disk_gate(settings, settings.backup_bytes)
     schema = idle_and_schema(settings)
     if args.expect_last_migration is not None:
         migrations = schema["migrations"]
         if not isinstance(migrations, list) or migrations[-1:] != [args.expect_last_migration]:
             raise ReleaseError(f"the live schema does not end with {args.expect_last_migration}")
-    devices = native_device_count(settings)
+    devices_observed_at = int(time.time())
+    devices = native_device_count(settings, devices_observed_at)
     override = deploy_override(settings.service, candidate_image, revision)
     with tempfile.TemporaryDirectory(prefix="omakase-release-", dir="/dev/shm") as scratch:
         preview = Path(scratch) / "candidate.json"
@@ -884,7 +928,7 @@ def preflight(
         before,
         after,
         service=settings.service,
-        expected_before_image=previous_image,
+        expected_before_image=previous_image_ref,
         expected_after_image=candidate_image,
         expected_flags={"OMAKASE_REVISION": revision},
         expected_before_flags={"OMAKASE_REVISION": previous_revision},
@@ -897,11 +941,13 @@ def preflight(
         "image_ref": candidate_ref,
         "image": candidate_image,
         "previous_image": previous_image,
+        "previous_image_ref": previous_image_ref,
         "previous_revision": previous_revision,
         "compose_files": list(compose_files),
         "compose_bindings": bindings,
         "schema": schema,
         "devices": devices,
+        "devices_observed_at": devices_observed_at,
         "available_bytes": available,
         "manifest": manifest,
         "override": override,
@@ -921,6 +967,7 @@ def print_plan(settings: Settings, plan: Mapping[str, object], *, execute: bool)
         "candidate_image": plan["image"],
         "candidate_image_ref": plan["image_ref"],
         "previous_image": plan["previous_image"],
+        "previous_image_ref": plan["previous_image_ref"],
         "previous_revision": plan["previous_revision"],
         "compose_files": plan["compose_files"],
         "compose_bindings": plan["compose_bindings"],
@@ -928,6 +975,7 @@ def print_plan(settings: Settings, plan: Mapping[str, object], *, execute: bool)
         "backup_dir": str(settings.state_dir(str(plan["revision"]))),
         "schema": schema,
         "linked_native_devices": plan["devices"],
+        "devices_observed_at": plan["devices_observed_at"],
         "available_bytes": plan["available_bytes"],
     }
     print(json.dumps(summary, indent=2), flush=True)
@@ -984,7 +1032,8 @@ def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str
             compose_bindings=bindings,
         )
         phase = "backup_preparation"
-        backup = durable_sqlite_backup(settings, schema, state)
+        devices_observed_at = int(plan["devices_observed_at"])
+        backup = durable_sqlite_backup(settings, schema, state, devices_observed_at)
         if backup["restore"]["linked_native_devices"] != plan["devices"]:
             raise ReleaseError("linked native device count changed before the swap")
         if any(_hash_path(Path(name)) != digest for name, digest in compose_hashes.items()):
@@ -996,6 +1045,7 @@ def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str
             "revision": revision,
             "image": plan["image"],
             "previous_image": plan["previous_image"],
+            "previous_image_ref": plan["previous_image_ref"],
             "previous_revision": plan["previous_revision"],
             "database": str(settings.db_path),
             "compose_files": files,
@@ -1021,7 +1071,7 @@ def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str
         verify_https_authorization(settings, revision)
         after_schema = verify_database(settings, schema, settings.allow_migrations)
         verify_deployed_files(settings, manifest["files"])
-        if native_device_count(settings) != plan["devices"]:
+        if native_device_count(settings, devices_observed_at) != plan["devices"]:
             raise ReleaseError("linked native device count changed during the cutover")
         receipt = {
             "schema": RECEIPT_SCHEMA,
@@ -1030,6 +1080,7 @@ def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str
             "image_ref": plan["image_ref"],
             "git_commit": plan["git_commit"],
             "previous_image": plan["previous_image"],
+            "previous_image_ref": plan["previous_image_ref"],
             "previous_revision": plan["previous_revision"],
             "compose_files": files,
             "compose_bindings": bindings,

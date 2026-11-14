@@ -196,7 +196,8 @@ A failed cutover requires the [current-data recovery procedure](../../docs/curre
 The historical Compose chain receives only two explicit interpolation bindings,
 `PLUS_UI_IMAGE_ID` and `PLUS_UI_REVISION`, from the verified live container.
 The same values are used for the prior and candidate chains and recorded in
-`prepared.json` for recovery.
+`prepared.json` for recovery. A prior Compose image tag must resolve locally to
+the exact running image ID and revision, including at the final pre-stop check.
 
 The workstation entry sends this script and the manifest to the Docker host over
 ssh and runs it there. Nothing is copied to the host and no file is written to
