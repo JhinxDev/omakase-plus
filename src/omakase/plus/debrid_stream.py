@@ -84,6 +84,7 @@ _PREPARED_SEGMENT_LIMIT = 256 * 1024 * 1024
 # instead of letting AVPlayer abandon its five-second segment budget.
 _NATIVE_OPEN_WAIT = 30
 _NATIVE_WARM_WAIT = 30
+_NATIVE_OPEN_WINDOWS = 2
 _NATIVE_SUBTITLE_LIMIT = 6
 _SEEK_WARM_WAIT = 14.0
 _MEDIA_ID = re.compile(r"[a-f0-9]{32}")
@@ -1029,7 +1030,13 @@ class DebridStreams:
             if plan.warm is not None:
                 opening = self.native._position_index(timeline, plan.warm)
             try:
-                await self.native.ensure(plan, opening, _NATIVE_WARM_WAIT, len(tracks))
+                # Build a small buffer before answering, so the first segment the
+                # player asks for is already on disk and the next one is close.
+                for offset in range(_NATIVE_OPEN_WINDOWS):
+                    number = opening + offset
+                    if number >= len(timeline.segments):
+                        break
+                    await self.native.ensure(plan, number, _NATIVE_WARM_WAIT, len(tracks))
             except NativeError as error:
                 warn(_LOG, "native_open", error.code, "native", plan.diagnostic_id)
                 raise DebridLibraryError("This position could not be prepared.", 503) from None

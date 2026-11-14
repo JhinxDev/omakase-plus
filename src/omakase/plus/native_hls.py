@@ -59,6 +59,7 @@ _CUE_TIME = 0xB3
 _CUE_TRACK_POSITIONS = 0xB7
 _CUE_TRACK = 0xF7
 _CUE_CLUSTER_POSITION = 0xF1
+_CUE_RELATIVE_ID = 0xF0
 _TRACK_ENTRY = 0xAE
 _TRACK_NUMBER = 0xD7
 _TRACK_TYPE = 0x83
@@ -105,7 +106,10 @@ _MAX_SUBTITLE_TRACKS = 6
 _SPOOL_TOTAL_LIMIT = 96 * 1024 * 1024
 _SPOOL_PLAN_LIMIT = 48 * 1024 * 1024
 _MAX_PLANS = 3
-_MAX_PREFETCH = 3
+_MAX_PREFETCH = 4
+# Windows generated before the playlist is answered, so the player starts with
+# a buffer instead of asking for a window that does not exist yet.
+_OPEN_WINDOWS = 2
 _OPEN_WAIT = 45.0
 _GENERATE_TIMEOUT = 120.0
 _RESERVE_BYTES = 8 * 1024**3
@@ -115,11 +119,19 @@ _READ_CHUNK = 1024 * 1024
 # Measured on the live link: one connection delivers about 0.9 MB/s whatever the
 # request size, so a window is pulled over a few connections at once.
 _READ_PARALLEL = 3
+# A provider that keeps returning nothing is retried this many times, then fails.
+_READ_ATTEMPTS = 4
+# CueRelativePosition window starts are implemented and unit tested but off by
+# default: they are not qualified until a live measurement shows saved bytes.
+_CUE_RELATIVE_ENABLED = False
+_CUE_RELATIVE_TOLERANCE_MS = 120
+_CUE_HEAD_BYTES = 64 * 1024
+_CUE_PROBE_BYTES = 4096
 # One window never asks the provider for more than this, whatever the bitrate.
 _WINDOW_MAX_BYTES = 128 * 1024 * 1024
 # Bytes past the next segment's first cluster, enough for ffmpeg to finish the
 # window it was asked for.
-_WINDOW_TAIL_BYTES = 1 * 1024 * 1024
+_WINDOW_TAIL_BYTES = 64 * 1024
 _VIDEO_SEGMENT = re.compile(r"v([0-9]{5})\.m4s")
 _AUDIO_SEGMENT = re.compile(r"a([0-9])-([0-9]{5})\.m4s")
 _AUDIO_PLAYLIST = re.compile(r"audio([0-9])\.m3u8")
@@ -181,6 +193,8 @@ class NativeTimeline:
     audios: tuple[NativeAudio, ...] = ()
     bandwidth: int = 0
     video_number: int = 0
+    # CueRelativePosition per window, when the cue table publishes one.
+    relatives: tuple[int | None, ...] = ()
 
     @property
     def target_duration(self) -> int:
@@ -203,8 +217,9 @@ class NativePlan:
     touched: float = field(default_factory=time.monotonic)
     diagnostic_id: str = field(default_factory=diagnostic_id)
     warm: float | None = None
-    bytes_read: int = 0
-    read_ms: int = 0
+    # Bytes reserved for windows that are queued or running, so concurrent
+    # producers cannot both pass admission against the same free space.
+    reserved_bytes: int = 0
 
     def video_segment_path(self, number: int) -> Path:
         return self.root / f"v{number:05d}.m4s"
@@ -350,7 +365,7 @@ def _track_table(data, track_range):
 
 
 def _cue_points(data, start, end, video_number, scale):
-    """Every video cue as (seconds, absolute cluster offset from the segment)."""
+    """Every video cue as (seconds, cluster offset, relative offset or None)."""
     points = []
     for point_start, point_end in _children(data, start, end, {_CUE_POINT}).get(_CUE_POINT, []):
         fields = _children(data, point_start, point_end, {_CUE_TIME, _CUE_TRACK_POSITIONS})
@@ -358,12 +373,17 @@ def _cue_points(data, start, end, video_number, scale):
             continue
         tracks = []
         cluster = None
+        relative = None
         for track_start, track_end in fields.get(_CUE_TRACK_POSITIONS, []):
-            inner = _children(data, track_start, track_end, {_CUE_TRACK, _CUE_CLUSTER_POSITION})
+            inner = _children(
+                data, track_start, track_end, {_CUE_TRACK, _CUE_CLUSTER_POSITION, _CUE_RELATIVE_ID}
+            )
             if _CUE_TRACK in inner:
                 tracks.append(_uint(data, *inner[_CUE_TRACK][0]))
             if _CUE_CLUSTER_POSITION in inner:
                 cluster = _uint(data, *inner[_CUE_CLUSTER_POSITION][0])
+            if _CUE_RELATIVE_ID in inner:
+                relative = _uint(data, *inner[_CUE_RELATIVE_ID][0])
         if video_number is not None and tracks and video_number not in tracks:
             continue
         if cluster is None:
@@ -373,31 +393,38 @@ def _cue_points(data, start, end, video_number, scale):
         except (IndexError, ValueError):
             continue
         if value >= 0:
-            points.append((value, cluster))
+            points.append((value, cluster, relative))
     points.sort()
     return points
 
 
 def _window_index(points, duration, origin, segment_base):
     """Group cue points into windows: each returned boundary is a real keyframe."""
-    usable = [(value, cluster) for value, cluster in points if 0 <= value < duration - 0.2]
+    usable = [
+        (value, cluster, relative)
+        for value, cluster, relative in points
+        if 0 <= value < duration - 0.2
+    ]
     if len(usable) < 2:
-        return (), ()
+        return (), (), ()
     segments = []
     clusters = []
-    start, cluster = usable[0]
-    for value, next_cluster in usable[1:]:
+    relatives = []
+    start, cluster, relative = usable[0]
+    for value, next_cluster, next_relative in usable[1:]:
         if value - start >= _SEGMENT_SECONDS:
             segments.append((start, value))
             clusters.append(segment_base + cluster)
-            start, cluster = value, next_cluster
+            relatives.append(relative)
+            start, cluster, relative = value, next_cluster, next_relative
     if duration - start > 0.2:
         segments.append((start, duration))
         clusters.append(segment_base + cluster)
+        relatives.append(relative)
     if not 2 <= len(segments) <= _MAX_SEGMENTS:
-        return (), ()
-    relative = tuple((round(a - origin, 3), round(b - origin, 3)) for a, b in segments)
-    return relative, tuple(clusters)
+        return (), (), ()
+    relative_times = tuple((round(a - origin, 3), round(b - origin, 3)) for a, b in segments)
+    return relative_times, tuple(clusters), tuple(relatives)
 
 
 _CONTENT_RANGE = re.compile(r"\s*bytes\s+(\d+)-(\d+)/(\d+|\*)\s*")
@@ -574,7 +601,9 @@ async def build_timeline(url, duration):
         if len(points) < 2:
             return None
         origin = points[0][0]
-        segments, clusters = _window_index(points, float(duration), origin, segment_start)
+        segments, clusters, relatives = _window_index(
+            points, float(duration), origin, segment_start
+        )
         if not segments:
             return None
         return NativeTimeline(
@@ -593,8 +622,67 @@ async def build_timeline(url, duration):
             frame_rate=video["frame_rate"],
             audios=tuple(audios[:_MAX_AUDIO_TRACKS]),
             video_number=int(video_number),
+            relatives=relatives,
             bandwidth=max(1, int(total * 8 / float(duration))),
         )
+
+
+def _cluster_header(data):
+    """(cluster timestamp ms, payload start) for the Cluster at the front of data."""
+    try:
+        element_id, size, body = _element(data, 0)
+    except (IndexError, ValueError):
+        return None, None
+    if element_id != _CLUSTER:
+        return None, None
+    stop = len(data) if size is None else min(len(data), body + size)
+    timestamp = None
+    try:
+        children = _children(data, body, stop, {_TIMESTAMP})
+    except (IndexError, ValueError):
+        return None, body
+    if _TIMESTAMP in children:
+        begin, finish = children[_TIMESTAMP][0]
+        timestamp = int.from_bytes(data[begin:finish], "big")
+    return timestamp, body
+
+
+def _candidate_offsets(cluster_start, payload_start, relative):
+    """Two readings of CueRelativePosition, payload-relative (spec) first."""
+    return (payload_start + relative, cluster_start + relative)
+
+
+def _first_block_timing(data, video_number):
+    """(track, relative ms, is_key) for the block at the front of data, or None."""
+    try:
+        element_id, after = vint(data, 0, True)
+        size, body = vint(data, after, False)
+    except (IndexError, ValueError):
+        return None
+    if element_id not in {_SIMPLE_BLOCK, _BLOCK_GROUP} or not size:
+        return None
+    # A keyframe block is far larger than any probe; only its header is needed,
+    # so the declared size is checked for presence, not for being buffered.
+    payload = data[body:]
+    is_key = True
+    if element_id == _BLOCK_GROUP:
+        inner = _children(data, body, min(len(data), body + size), {_BLOCK, _REFERENCE})
+        if _BLOCK not in inner:
+            return None
+        begin, finish = inner[_BLOCK][0]
+        payload = data[begin:finish]
+        is_key = _REFERENCE not in inner
+    try:
+        track, after_track = vint(payload, 0, False)
+        relative = int.from_bytes(payload[after_track : after_track + 2], "big", signed=True)
+        flags = payload[after_track + 2] if len(payload) > after_track + 2 else 0
+    except (IndexError, ValueError):
+        return None
+    if element_id == _SIMPLE_BLOCK:
+        is_key = bool(flags & 0x80)
+    if video_number and track != video_number:
+        return None
+    return track, relative, is_key
 
 
 # --- ISO-BMFF helpers -------------------------------------------------------
@@ -726,6 +814,7 @@ class NativeStreams:
         self.running: set = set()
         self.client = None
         self.client_loop = None
+        self.admission_lock = asyncio.Lock()
 
     async def shared_client(self):
         """One pooled provider client: a TLS handshake per window is pure cost.
@@ -760,16 +849,23 @@ class NativeStreams:
     # -- admission ----------------------------------------------------------
 
     def _admitted(self, reserve=0):
-        # The reserve is the hard floor. Bytes already spooled count as headroom
-        # this module may use again, so a session that has filled its share is
-        # still admitted while a session that would cross the floor is not.
+        """Free space must survive this window and everything already reserved.
+
+        Reserved bytes are not on disk yet, so they are subtracted from free
+        space rather than added to usage; that is what stops two concurrent
+        producers from each passing admission and then together crossing the
+        reserve floor.
+        """
         try:
             free = self.free_bytes()
         except OSError:
             return False
-        return (
-            free + self.usage() - _RESERVE_BYTES > _SPOOL_TOTAL_LIMIT + _ADMISSION_MARGIN + reserve
-        )
+        return free - self.reserved() - reserve >= _RESERVE_BYTES + _ADMISSION_MARGIN
+
+    def reserved(self):
+        if not self.plans:
+            return 0
+        return sum(plan.reserved_bytes for plan in self.plans.values())
 
     def _usage(self, root):
         total = 0
@@ -978,7 +1074,13 @@ class NativeStreams:
         if self._window_ready(plan, number, subtitles):
             plan.touched = self.clock()
             return
-        if not self._admitted(reserve=self._reserve_estimate(timeline, number)):
+        estimate = self._reserve_estimate(timeline, number)
+        # A window that would not fit the session budget is refused outright.
+        # Trimming files afterwards would let peak usage cross the budget first.
+        if self.plan_usage(plan) + estimate > _SPOOL_PLAN_LIMIT:
+            warn(_LOG, "native_window", "window_budget", "native", plan.diagnostic_id)
+            raise NativeError("window_budget")
+        if not self._admitted(reserve=estimate):
             warn(_LOG, "native_window", "free_space_reserve", "native", plan.diagnostic_id)
             raise NativeError("reserve")
         task = plan.windows.get(number)
@@ -1127,10 +1229,39 @@ class NativeStreams:
         # The producer slot is taken before any process exists: a window that is
         # merely queued must not hold a child process, a pipe and file handles.
         # The whole operation, queueing included, runs inside one deadline.
+        estimate = self._reserve_estimate(plan.timeline, number)
         try:
             async with asyncio.timeout(_GENERATE_TIMEOUT):
                 async with self.producers:
-                    await self._produce(plan, number, args, video_part, audio_parts, subtitle_paths)
+                    async with self.admission_lock:
+                        if self.plan_usage(plan) + estimate > _SPOOL_PLAN_LIMIT:
+                            warn(
+                                _LOG, "native_window", "window_budget", "native", plan.diagnostic_id
+                            )
+                            raise NativeError("window_budget")
+                        if self.usage() + self.reserved() + estimate > _SPOOL_TOTAL_LIMIT:
+                            warn(
+                                _LOG, "native_window", "global_budget", "native", plan.diagnostic_id
+                            )
+                            raise NativeError("global_budget")
+                        if not self._admitted(reserve=estimate):
+                            warn(
+                                _LOG,
+                                "native_window",
+                                "free_space_reserve",
+                                "native",
+                                plan.diagnostic_id,
+                            )
+                            raise NativeError("reserve")
+                        plan.reserved_bytes += estimate
+                    try:
+                        await self._produce(
+                            plan, number, args, video_part, audio_parts, subtitle_paths
+                        )
+                    except (OSError, RuntimeError) as error:
+                        raise NativeError("process_failed") from error
+                    finally:
+                        plan.reserved_bytes = max(0, plan.reserved_bytes - estimate)
         except (TimeoutError, asyncio.TimeoutError):
             self._discard(video_part, audio_parts)
             warn(_LOG, "native_window", "deadline", "native", plan.diagnostic_id)
@@ -1141,9 +1272,11 @@ class NativeStreams:
 
     async def _produce(self, plan, number, args, video_part, audio_parts, subtitle_paths):
         started = time.monotonic()
+        metrics = {}
         tail = _Tail()
         process = None
         stderr_task = None
+        commit_started = None
         try:
             process = await asyncio.create_subprocess_exec(
                 *args,
@@ -1154,7 +1287,7 @@ class NativeStreams:
             self.running.add(process)
             stderr_task = asyncio.create_task(_drain(process.stderr, tail))
             try:
-                await self._feed(plan, number, process.stdin)
+                metrics = await self._feed(plan, number, process.stdin)
             finally:
                 try:
                     process.stdin.close()
@@ -1162,7 +1295,8 @@ class NativeStreams:
                     pass
             await process.wait()
         finally:
-            _kill(process)
+            if process is not None and process.returncode is None:
+                _kill(process)
             if process is not None:
                 try:
                     await process.wait()
@@ -1178,14 +1312,19 @@ class NativeStreams:
         if process is None or process.returncode != 0:
             warn(_LOG, "native_window", "ffmpeg_failed", "native", plan.diagnostic_id)
             _LOG.warning(
-                "native window=%d rc=%s ms=%d read=%d ffmpeg=%s",
+                "native window=%d rc=%s ms=%d read_ms=%s read_bytes=%s read_calls=%s "
+                "write_ms=%s ffmpeg=%s",
                 number,
                 None if process is None else process.returncode,
                 elapsed,
-                plan.bytes_read,
+                metrics.get("read_ms"),
+                metrics.get("read_bytes"),
+                metrics.get("read_calls"),
+                metrics.get("write_ms"),
                 tail.text(),
             )
             raise NativeError("ffmpeg_failed")
+        commit_started = time.monotonic()
         try:
             size = await asyncio.to_thread(
                 self._commit, plan, number, video_part, audio_parts, subtitle_paths
@@ -1194,20 +1333,81 @@ class NativeStreams:
             self._discard(video_part, audio_parts)
             warn(_LOG, "native_window", "invalid_output", "native", plan.diagnostic_id)
             raise NativeError("invalid_output") from error
+        commit_ms = round((time.monotonic() - commit_started) * 1000)
         start, end = plan.timeline.segments[number]
         _LOG.warning(
-            "native window=%d span=%.3f ms=%d read_ms=%d read=%d out=%d spool=%d",
+            "native window=%d span=%.3f ms=%d read_ms=%s read_bytes=%s read_calls=%s "
+            "write_ms=%s commit_ms=%d out=%d spool=%d reserved=%d",
             number,
             end - start,
             elapsed,
-            plan.read_ms,
-            plan.bytes_read,
+            metrics.get("read_ms"),
+            metrics.get("read_bytes"),
+            metrics.get("read_calls"),
+            metrics.get("write_ms"),
+            commit_ms,
             size,
             self.plan_usage(plan),
+            plan.reserved_bytes,
         )
 
+    async def _relative_start(self, timeline, number, keyframe_ms):
+        """(absolute block offset, cluster timestamp) or None when unqualified.
+
+        Two readings of CueRelativePosition exist in the wild, so both are tried
+        and the candidate is accepted only when the bytes there really begin with
+        this video track's keyframe at the expected time. Anything else falls back
+        to the cluster-start trim.
+        """
+        relatives = getattr(timeline, "relatives", ())
+        if not relatives or number >= len(relatives):
+            return None
+        relative = relatives[number]
+        if relative is None:
+            return None
+        cluster_start = timeline.clusters[number]
+        client = await self.shared_client()
+        head = await _range(
+            client,
+            timeline.url,
+            cluster_start,
+            min(timeline.total - 1, cluster_start + _CUE_HEAD_BYTES - 1),
+        )
+        if not head:
+            return None
+        timestamp, payload_start = _cluster_header(head)
+        if payload_start is None:
+            return None
+        for candidate in _candidate_offsets(cluster_start, cluster_start + payload_start, relative):
+            probe = await _range(
+                client,
+                timeline.url,
+                candidate,
+                min(timeline.total - 1, candidate + _CUE_PROBE_BYTES - 1),
+            )
+            if not probe:
+                continue
+            timing = _first_block_timing(probe, timeline.video_number)
+            if timing is None:
+                continue
+            _track, block_ms, is_key = timing
+            if not is_key:
+                continue
+            if (
+                timestamp is not None
+                and abs(timestamp + block_ms - keyframe_ms) > _CUE_RELATIVE_TOLERANCE_MS
+            ):
+                continue
+            return candidate, timestamp
+        return None
+
     async def _feed(self, plan, number, stdin):
-        """Write the synthetic Matroska window into ffmpeg's standard input."""
+        """Write the synthetic Matroska window into ffmpeg's standard input.
+
+        Returns window-local metrics. ``read_ms`` is only the time spent inside
+        HTTP range reads; ``write_ms`` is only the time blocked on ffmpeg's pipe,
+        so provider cost and consumer backpressure stay separable.
+        """
         timeline = plan.timeline
         start = timeline.segments[number][0]
         keyframe_ms = int(round((timeline.origin + start) * 1000))
@@ -1216,29 +1416,51 @@ class NativeStreams:
         if number + 1 < len(timeline.clusters):
             end = min(end, timeline.clusters[number + 1] + _WINDOW_TAIL_BYTES)
         budget = min(_WINDOW_MAX_BYTES, max(end - offset, self._reserve_estimate(timeline, number)))
+        resolved = None
+        if _CUE_RELATIVE_ENABLED:
+            resolved = await self._relative_start(timeline, number, keyframe_ms)
+        start_offset = offset if resolved is None else resolved[0]
         reader = _RangeReader(
             timeline.url,
-            offset,
-            min(timeline.total, offset + budget),
+            start_offset,
+            min(timeline.total, start_offset + budget),
             client=await self.shared_client(),
+            limit=min(_WINDOW_MAX_BYTES, self._reserve_estimate(timeline, number) * 2),
         )
-        read_started = time.monotonic()
+        write_seconds = 0.0
         try:
-            await self._write_head(reader, timeline, keyframe_ms, timeline.video_number, stdin)
+            if resolved is None:
+                await self._write_head(reader, timeline, keyframe_ms, timeline.video_number, stdin)
+            else:
+                # The cluster header and its Timestamp are written here because
+                # the original ones are before the first byte we read; blocks stay
+                # verbatim so their relative timestamps keep their meaning.
+                cluster_ms = resolved[1] if resolved[1] is not None else keyframe_ms
+                stdin.write(timeline.header + _encode_id(_SEGMENT) + _UNKNOWN_SIZE)
+                stdin.write(timeline.info + timeline.tracks)
+                stdin.write(_encode_id(_CLUSTER) + _UNKNOWN_SIZE)
+                stdin.write(_encode_element(_TIMESTAMP, int(cluster_ms).to_bytes(8, "big")))
+                await stdin.drain()
             async for chunk in reader.chunks(_READ_CHUNK):
                 if stdin.is_closing():
-                    return
+                    break
                 stdin.write(chunk)
+                write_started = time.monotonic()
                 await stdin.drain()
+                write_seconds += time.monotonic() - write_started
         except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError):
             # ffmpeg stops reading as soon as it has the window it was asked for.
             # A closed pipe is the normal end of a bounded feed, not a failure.
             # uvloop reports a closed transport as RuntimeError, not BrokenPipe.
-            return
+            pass
         finally:
-            plan.bytes_read += reader.read_bytes
-            plan.read_ms = round((time.monotonic() - read_started) * 1000)
             await reader.close()
+        return {
+            "read_ms": round(reader.read_seconds * 1000),
+            "read_bytes": reader.read_bytes,
+            "read_calls": reader.read_calls,
+            "write_ms": round(write_seconds * 1000),
+        }
 
     @staticmethod
     def _reserve_estimate(timeline, number):
@@ -1477,9 +1699,12 @@ class _RangeReader:
     Every request is validated before its bytes are kept: a 206 whose
     ``Content-Range`` starts at the requested offset, a body no longer than the
     bytes still wanted, and a hard ceiling on the total bytes one window may pull
-    from the provider. A short body is retried from where it stopped; a provider
-    that answers with the whole file, the wrong offset or an oversized body fails
-    the window instead of being buffered.
+    from the provider. A short body is never concatenated into the stream: the
+    missing remainder is re-requested at its own offset, and if the provider stops
+    making progress the window fails.
+
+    Time spent inside HTTP reads is accumulated separately from the caller's work,
+    so a window's provider cost can be told apart from ffmpeg backpressure.
     """
 
     def __init__(self, url, start, end, transport=None, limit=_WINDOW_MAX_BYTES, client=None):
@@ -1492,6 +1717,8 @@ class _RangeReader:
         self.client = client
         self.owns_client = client is None
         self.read_bytes = 0
+        self.read_calls = 0
+        self.read_seconds = 0.0
 
     async def _client(self):
         if self.client is None:
@@ -1501,28 +1728,64 @@ class _RangeReader:
         return self.client
 
     async def _read_once(self, start, want):
+        """One validated range response; may be shorter than asked, never longer."""
         client = await self._client()
         stop = start + want - 1
-        async with client.stream(
-            "GET", self.url, headers={"Range": f"bytes={start}-{stop}"}
-        ) as response:
-            if response.status_code != 206:
-                raise NativeError("provider_range")
-            if _content_range_start(response.headers.get("content-range")) != start:
-                raise NativeError("provider_range")
-            declared = response.headers.get("content-length")
-            if declared is not None:
-                try:
-                    if int(declared) > want:
-                        raise NativeError("provider_oversized")
-                except ValueError:
-                    raise NativeError("provider_range") from None
-            body = bytearray()
-            async for chunk in response.aiter_bytes():
-                body.extend(chunk)
-                if len(body) > want:
+        started = time.monotonic()
+        try:
+            async with client.stream(
+                "GET", self.url, headers={"Range": f"bytes={start}-{stop}"}
+            ) as response:
+                if response.status_code != 206:
+                    raise NativeError("provider_range")
+                content_range = response.headers.get("content-range")
+                if _content_range_start(content_range) != start:
+                    raise NativeError("provider_range")
+                match = _CONTENT_RANGE.fullmatch(content_range or "")
+                if match is not None and int(match[2]) > stop:
                     raise NativeError("provider_oversized")
-            return bytes(body)
+                declared = response.headers.get("content-length")
+                if declared is not None:
+                    try:
+                        if int(declared) > want:
+                            raise NativeError("provider_oversized")
+                    except ValueError:
+                        raise NativeError("provider_range") from None
+                body = bytearray()
+                try:
+                    async for chunk in response.aiter_bytes():
+                        body.extend(chunk)
+                        if len(body) > want:
+                            raise NativeError("provider_oversized")
+                except httpx.HTTPError as error:
+                    # A connection that dies mid-body is a failed read, not a
+                    # shorter one: the caller retries it at the same offset.
+                    raise NativeError("provider_failed") from error
+                return bytes(body)
+        finally:
+            self.read_seconds += time.monotonic() - started
+            self.read_calls += 1
+
+    async def _read_exact(self, start, want):
+        """Exactly ``want`` bytes from ``start``, retrying each gap at its offset."""
+        data = bytearray()
+        idle = 0
+        while len(data) < want:
+            try:
+                part = await self._read_once(start + len(data), want - len(data))
+            except NativeError as error:
+                if error.code != "provider_failed":
+                    raise
+                part = b""
+            if not part:
+                idle += 1
+                if idle >= _READ_ATTEMPTS:
+                    raise NativeError("provider_truncated")
+                await asyncio.sleep(0)
+                continue
+            idle = 0
+            data.extend(part)
+        return bytes(data)
 
     async def _fill(self, wanted):
         if self.position >= self.end:
@@ -1541,9 +1804,8 @@ class _RangeReader:
     async def _read_parallel(self, want):
         """Read ``want`` bytes over several connections, in order.
 
-        The provider delivers a flat rate per connection, so one window is split
-        across ``_READ_PARALLEL`` ranges. Each part is validated exactly like a
-        single read; a short or malformed part fails the window.
+        Each part is read exactly or not at all, so parallel reads cannot
+        interleave or shorten the stream.
         """
         parts = _READ_PARALLEL if want > 512 * 1024 else 1
         block = want // parts
@@ -1556,15 +1818,9 @@ class _RangeReader:
             ranges.append((start, length))
             start += length
         results = await asyncio.gather(
-            *(self._read_once(offset, length) for offset, length in ranges),
-            return_exceptions=True,
+            *(self._read_exact(offset, length) for offset, length in ranges)
         )
-        data = bytearray()
-        for result in results:
-            if isinstance(result, BaseException):
-                raise result
-            data.extend(result)
-        return bytes(data)
+        return b"".join(results)
 
     async def _need(self, count):
         while len(self.buffer) < count and self.position < self.end:
@@ -1670,6 +1926,8 @@ def _observe(task):
 
 
 def _kill(process):
+    if process is None:
+        return
     try:
         process.kill()
     except (ProcessLookupError, RuntimeError):

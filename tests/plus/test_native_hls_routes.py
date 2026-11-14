@@ -53,6 +53,7 @@ def native_plan(tmp_path, monkeypatch):
         return plan
 
     async def fake_ensure(self, plan, number, timeout=30.0, subtitles=0):
+        self.ensured.append(number)
         (plan.root / "init.mp4").write_bytes(b"\x00\x00\x00\x08init")
         plan.video_segment_path(number).write_bytes(b"\x00\x00\x00\x08v" + bytes([number]))
         for audio in plan.timeline.audios:
@@ -67,6 +68,7 @@ def native_plan(tmp_path, monkeypatch):
 
     monkeypatch.setattr(native_hls.NativeStreams, "start", fake_start)
     monkeypatch.setattr(native_hls.NativeStreams, "ensure", fake_ensure)
+    monkeypatch.setattr(native_hls.NativeStreams, "ensured", [], raising=False)
     return starts
 
 
@@ -120,6 +122,9 @@ def test_native_engine_returns_a_fixed_vod_pass(system, monkeypatch, native_plan
     media = f"{API}/media/{data['media_id']}"
     master = native.get(media + "/index.m3u8", cookies=cookie)
     assert master.status_code == 200, master.text
+    # The playlist is only answered after a small buffer exists, so the player's
+    # first segment request cannot race an empty spool.
+    assert len(set(native_hls.NativeStreams.ensured)) >= 2
     assert master.headers["cache-control"] == "private, no-store"
     text = master.text
     assert "#EXT-X-STREAM-INF" in text and "stream.m3u8" in text

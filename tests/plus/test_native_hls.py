@@ -52,10 +52,11 @@ class _RangeHandler(http.server.BaseHTTPRequestHandler):
         return self.server.payload
 
     def _send(self, body: bytes, status: int, headers: dict | None = None, length=None):
+        sent = dict(headers or {})
+        sent.setdefault("Content-Length", str(len(body) if length is None else length))
+        sent.setdefault("Content-Type", "application/octet-stream")
         self.send_response(status)
-        self.send_header("Content-Length", str(len(body) if length is None else length))
-        self.send_header("Content-Type", "application/octet-stream")
-        for name, value in (headers or {}).items():
+        for name, value in sent.items():
             self.send_header(name, value)
         self.end_headers()
         if self.command != "HEAD":
@@ -102,6 +103,26 @@ class _RangeHandler(http.server.BaseHTTPRequestHandler):
                 {"Content-Range": f"bytes {start}-{start + len(body) - 1}/{len(data)}"},
             )
             return
+        if self.server.claim_full:
+            self._send(
+                b"",
+                206,
+                {
+                    "Content-Range": f"bytes {start}-{end}/{len(data)}",
+                    "Content-Length": str(end - start + 1),
+                },
+            )
+            return
+        if self.server.short_at:
+            cut = self.server.short_at.pop(start, 0)
+            if cut:
+                part = data[start : max(start + 1, end + 1 - cut)]
+                self._send(
+                    part,
+                    206,
+                    {"Content-Range": f"bytes {start}-{start + len(part) - 1}/{len(data)}"},
+                )
+                return
         if mode == "truncated":
             body = data[start : start + max(1, (end - start) // 2)]
             self._send(
@@ -126,6 +147,8 @@ class _Provider:
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RangeHandler)
         self.server.payload = payload
         self.server.requests = []
+        self.server.short_at = {}
+        self.server.claim_full = False
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
@@ -383,6 +406,71 @@ def _tfdt_bases(path_or_bytes):
     return bases
 
 
+# --- CueRelativePosition qualification ---------------------------------------
+
+
+def _synthetic_cluster(blocks, timestamp_ms=6000):
+    payload = native_hls._encode_element(0xE7, timestamp_ms.to_bytes(8, "big"))
+    return native_hls._encode_element(0x1F43B675, payload + b"".join(blocks))
+
+
+def _synthetic_block(track, relative_ms, keyframe, body=b"frame"):
+    flags = 0x80 if keyframe else 0x00
+    return native_hls._encode_element(
+        0xA3,
+        bytes([0x80 | track]) + relative_ms.to_bytes(2, "big", signed=True) + bytes([flags]) + body,
+    )
+
+
+def test_cluster_header_reports_the_payload_start_and_timestamp():
+    cluster = _synthetic_cluster([_synthetic_block(1, 6, True)])
+    timestamp, payload_start = native_hls._cluster_header(cluster)
+    assert timestamp == 6000
+    # The payload start includes the Cluster id and size vints, which is exactly
+    # the header length the absolute offset has to account for.
+    assert payload_start == 5
+
+
+def test_candidate_offsets_include_the_cluster_header_length():
+    candidates = native_hls._candidate_offsets(1000, 1012, 40)
+    assert candidates == (1052, 1040)
+
+
+def test_first_block_timing_accepts_only_this_tracks_keyframe():
+    key = _synthetic_block(1, 6, True)
+    track, relative, is_key = native_hls._first_block_timing(key, 1)
+    assert (track, relative, is_key) == (1, 6, True)
+    assert native_hls._first_block_timing(_synthetic_block(1, 6, False), 1)[2] is False
+    assert native_hls._first_block_timing(_synthetic_block(2, 6, True), 1) is None
+    assert native_hls._first_block_timing(b"\x00\x01garbage", 1) is None
+
+
+def test_cue_relative_resolution_validates_or_falls_back_cleanly(provider, tmp_path):
+    timeline = _timeline(provider)
+    if not timeline.relatives:
+        pytest.skip("the fixture cue table has no relative positions")
+    streams = NativeStreams(tmp_path / "spool")
+    streams.root.mkdir(parents=True, exist_ok=True)
+
+    async def run():
+        resolved = []
+        for number in range(min(3, len(timeline.segments))):
+            start = timeline.segments[number][0]
+            keyframe_ms = int(round((timeline.origin + start) * 1000))
+            result = await streams._relative_start(timeline, number, keyframe_ms)
+            if result is not None:
+                offset, _timestamp = result
+                assert offset >= timeline.clusters[number]
+                assert offset - timeline.clusters[number] <= native_hls._CUE_HEAD_BYTES
+            resolved.append(result)
+        return resolved
+
+    results = asyncio.run(run())
+    # Every window either resolves to a validated keyframe block or falls back to
+    # the cluster-start trim; never to an arbitrary offset.
+    assert all(result is None or isinstance(result[0], int) for result in results)
+
+
 # --- hostile range responses -------------------------------------------------
 
 
@@ -632,7 +720,6 @@ def test_hevc_timeline_and_window_start_on_the_real_keyframe(tmp_path, hevc_prov
     produced = _frame_hash(joined)
     assert produced == frames[expected_index]
     assert produced != frames[expected_index - 1]
-    assert plan.bytes_read > 0, "window byte metrics are recorded"
 
 
 def test_the_first_block_kept_is_the_video_keyframe():
@@ -699,6 +786,211 @@ def test_the_first_block_kept_is_the_video_keyframe():
     assert keyframe in bytes(stdin.written)
 
 
+# --- reader correctness: exact bytes under short responses -------------------
+
+_READER_TESTS = True
+
+
+def _fresh_reader(provider, start, want, limit=None):
+    return native_hls._RangeReader(
+        provider.url,
+        start,
+        start + want,
+        limit=want * 2 if limit is None else limit,
+        client=None,
+    )
+
+
+@pytest.mark.parametrize("where", ["first", "middle", "last"])
+def test_a_short_range_is_retried_at_its_own_offset(provider, where):
+    total = len(provider.payload)
+    start = {"first": 0, "middle": total // 3, "last": total - 20000}[where]
+    want = 16384
+    provider.server.short_at = {start: 4096}
+
+    async def run():
+        reader = _fresh_reader(provider, start, want)
+        try:
+            data = await reader._read_exact(start, want)
+            return data, reader.read_calls
+        finally:
+            await reader.close()
+
+    try:
+        data, calls = asyncio.run(run())
+    finally:
+        provider.server.short_at = {}
+    assert data == provider.payload[start : start + want]
+    assert calls >= 2
+
+
+def test_parallel_parts_are_byte_exact_when_every_part_is_short_once(provider):
+    want = min(native_hls._READ_CHUNK * 2, (len(provider.payload) // 3) * 3)
+    parts = native_hls._READ_PARALLEL
+    block = want // parts
+    offsets = [index * block for index in range(parts)]
+    provider.server.short_at = {offset: 2048 for offset in offsets}
+
+    async def run():
+        reader = _fresh_reader(provider, 0, want)
+        try:
+            assert await reader._fill(want) is True
+            return bytes(reader.buffer)
+        finally:
+            await reader.close()
+
+    try:
+        data = asyncio.run(run())
+    finally:
+        provider.server.short_at = {}
+    assert len(data) == want
+    assert data == provider.payload[:want]
+
+
+def test_a_body_that_claims_more_than_it_sends_is_refused(provider):
+    provider.server.claim_full = True
+
+    async def run():
+        reader = _fresh_reader(provider, 0, 4096)
+        try:
+            with pytest.raises(native_hls.NativeError):
+                await reader._read_exact(0, 4096)
+            return reader.read_calls
+        finally:
+            await reader.close()
+
+    try:
+        calls = asyncio.run(run())
+    finally:
+        provider.server.claim_full = False
+    assert calls == native_hls._READ_ATTEMPTS
+
+
+# --- metrics are per window --------------------------------------------------
+
+
+class _FakeStdin:
+    def close(self):
+        return None
+
+
+class _FakeProcess:
+    def __init__(self):
+        self.stdin = _FakeStdin()
+        self.stderr = None
+        self.returncode = 0
+
+    async def wait(self):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+
+
+def test_window_metrics_are_local_to_each_window(tmp_path, provider, monkeypatch, caplog):
+    timeline = _timeline(provider)
+    plan = _plan(tmp_path, timeline)
+    streams = NativeStreams(tmp_path / "spool")
+    streams.root.mkdir(parents=True, exist_ok=True)
+    streams.plans["plan"] = plan
+
+    async def fake_exec(*args, **kwargs):
+        return _FakeProcess()
+
+    async def fake_feed(self, plan_obj, number, stdin):
+        return {
+            "read_ms": 10 * (number + 1),
+            "read_bytes": 1000 * (number + 1),
+            "read_calls": number + 1,
+            "write_ms": 5,
+        }
+
+    monkeypatch.setattr(native_hls.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(native_hls.NativeStreams, "_feed", fake_feed)
+    monkeypatch.setattr(native_hls.NativeStreams, "_commit", lambda *args, **kwargs: 100)
+
+    caplog.set_level("WARNING", logger="omakase.plus.native_hls")
+    for number in (0, 1):
+        asyncio.run(
+            streams._produce(
+                plan,
+                number,
+                [],
+                plan.root / f".v{number}.part",
+                [],
+                [],
+            )
+        )
+    lines = [
+        record.getMessage() for record in caplog.records if "native window=" in record.getMessage()
+    ]
+    first = next(line for line in lines if "native window=0 " in line)
+    second = next(line for line in lines if "native window=1 " in line)
+    assert "read_bytes=1000 " in first and "read_ms=10 " in first
+    # Window 1 reports its own bytes and time, not a running total.
+    assert "read_bytes=2000 " in second and "read_ms=20 " in second
+    assert "write_ms=5 " in second
+
+
+# --- hard storage budgets ----------------------------------------------------
+
+
+def test_a_window_that_cannot_fit_the_plan_budget_is_refused(tmp_path, provider, monkeypatch):
+    monkeypatch.setattr(native_hls, "_SPOOL_PLAN_LIMIT", 1024 * 1024)
+    timeline = _timeline(provider)
+    plan = _plan(tmp_path, timeline)
+    streams = NativeStreams(tmp_path / "spool")
+    streams.root.mkdir(parents=True, exist_ok=True)
+    streams.plans["plan"] = plan
+    (plan.root / "v00000.m4s").write_bytes(b"x" * (900 * 1024))
+    started = []
+
+    async def forbidden(*args, **kwargs):
+        started.append(1)
+        raise AssertionError("ffmpeg must not start for a refused window")
+
+    monkeypatch.setattr(native_hls.asyncio, "create_subprocess_exec", forbidden)
+    with pytest.raises(native_hls.NativeError) as caught:
+        asyncio.run(streams.ensure(plan, 1))
+    assert caught.value.code == "window_budget"
+    assert started == []
+
+
+def test_two_sessions_cannot_overbook_the_global_budget(tmp_path, provider, monkeypatch):
+    monkeypatch.setattr(native_hls, "_SPOOL_TOTAL_LIMIT", 1024 * 1024)
+    monkeypatch.setattr(native_hls, "_ADMISSION_MARGIN", 0)
+    timeline = _timeline(provider)
+    first = _plan(tmp_path / "one", timeline)
+    second = _plan(tmp_path / "two", timeline)
+    first.reserved_bytes = 512 * 1024
+    streams = NativeStreams(
+        tmp_path / "spool",
+        free_bytes=lambda: native_hls._RESERVE_BYTES + 600 * 1024,
+    )
+    streams.root.mkdir(parents=True, exist_ok=True)
+    streams.plans = {"one": first, "two": second}
+    with pytest.raises(native_hls.NativeError) as caught:
+        asyncio.run(streams.ensure(second, 0))
+    assert caught.value.code in {"reserve", "global_budget"}
+
+
+def test_a_reservation_is_released_when_the_window_fails(tmp_path, provider, monkeypatch):
+    timeline = _timeline(provider)
+    plan = _plan(tmp_path, timeline)
+    streams = NativeStreams(tmp_path / "spool")
+    streams.root.mkdir(parents=True, exist_ok=True)
+    streams.plans["plan"] = plan
+
+    async def failing(*args, **kwargs):
+        raise OSError("provider process could not start")
+
+    monkeypatch.setattr(native_hls.asyncio, "create_subprocess_exec", failing)
+    with pytest.raises(native_hls.NativeError):
+        asyncio.run(streams.ensure(plan, 0))
+    assert plan.reserved_bytes == 0
+    assert streams.reserved() == 0
+
+
 # --- timeline ---------------------------------------------------------------
 
 
@@ -742,17 +1034,18 @@ def test_timeline_refuses_unsupported_media(tmp_path):
 
 
 def test_window_index_groups_keyframes():
-    points = [(0.0, 100), (6.0, 200), (12.0, 300), (18.0, 400)]
-    segments, clusters = _window_index(points, 24.0, 0.0, 1000)
+    points = [(0.0, 100, 8), (6.0, 200, 16), (12.0, 300, None), (18.0, 400, 32)]
+    segments, clusters, relatives = _window_index(points, 24.0, 0.0, 1000)
     # A boundary is crossed only when the gap reaches a full segment, so a
     # six-second keyframe interval yields one window per keyframe.
     assert segments == ((0.0, 6.0), (6.0, 12.0), (12.0, 18.0), (18.0, 24.0))
     assert clusters == (1100, 1200, 1300, 1400)
-    # Dense keyframes stay inside one window and are never used as boundaries.
-    dense = [(float(value), 100 + value) for value in range(0, 13)]
-    segments, clusters = _window_index(dense, 12.0, 0.0, 0)
+    assert relatives == (8, 16, None, 32)
+    dense = [(float(value), 100 + value, value) for value in range(0, 13)]
+    segments, clusters, relatives = _window_index(dense, 12.0, 0.0, 0)
     assert segments == ((0.0, 6.0), (6.0, 12.0))
     assert clusters == (100, 106)
+    assert relatives == (0, 6)
 
 
 # --- generation -------------------------------------------------------------
@@ -1022,3 +1315,4 @@ def test_audio_track_descriptor_names_stay_inside_the_playlist():
     assert audio.playlist == "audio2.m3u8"
     assert audio.segment(3) == "a2-00003.m4s"
     assert audio.copyable is False
+
