@@ -2420,3 +2420,47 @@ def test_movie_and_tv_completion_results_expose_outbox_id(system):
     tv_credit = _credit_tv_completion(db, tv, "2026-01-01T00:00:00Z")
     assert movie_credit is not None and movie_credit.outbox_id is None
     assert tv_credit is not None and tv_credit.outbox_id is None
+
+
+def test_movie_completion_joins_the_callers_transaction(system):
+    """The history write must live inside the resume transaction.
+
+    Before the audit repair the completion ran after the source transaction
+    closed, so a request teardown rolled the history back while the credited flag
+    stayed set. A rollback must now discard it and a commit must keep it.
+    """
+    _app, db, _sessions, _options = system
+    from omakase.plus.native_tv_test import _credit_native_projection
+
+    db.execute(
+        "INSERT INTO movie_catalog(user_id,imdb_id,tmdb_id,title,updated_at) "
+        "VALUES(1,'tt0000003',103,'Transaction fixture','2026-01-01T00:00:00Z')"
+    )
+    db.commit()
+    movie = SimpleNamespace(
+        flow_movie=True,
+        user_id=1,
+        domain="movie",
+        canonical_id="tt0000003",
+        season_number=0,
+        episode_number=0,
+        duration_seconds=1800,
+    )
+    grant = SimpleNamespace(target=movie, anime_monitor_id=None)
+
+    db.execute("BEGIN IMMEDIATE")
+    credited = _credit_native_projection(db, grant, position=1700, observed_at=1000.0)
+    assert credited is not None and credited.outbox_id is None
+    db.rollback()
+    count = db.execute(
+        "SELECT count(*) FROM movie_history WHERE user_id=1 AND imdb_id='tt0000003'"
+    ).fetchone()[0]
+    assert count == 0, "a rolled back request must not keep the completion"
+
+    db.execute("BEGIN IMMEDIATE")
+    assert _credit_native_projection(db, grant, position=1700, observed_at=1000.0) is not None
+    db.commit()
+    count = db.execute(
+        "SELECT count(*) FROM movie_history WHERE user_id=1 AND imdb_id='tt0000003'"
+    ).fetchone()[0]
+    assert count == 1
