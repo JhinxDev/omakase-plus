@@ -113,3 +113,14 @@ authorized device. Signing, installation and playback verification are
 separate steps. The source import came from the receipt-matched 0.4.25 tvOS
 archive with its direct-player patch. The production build advances the app
 to 0.5.1 build 32 for device readback.
+
+### Direct-player UI regression
+
+On the existing cloud Mac with an installed tvOS Simulator, run
+`scripts/qualify-direct-controls.sh SIMULATOR_UDID OUTPUT_DIR`. The script copies
+the project into a disposable directory, retains the exact production
+`NativePlayer.swift`, and supplies deterministic session/track models and a
+synthetic background. It checks control containment, overlap, collapsed track
+choices, scrolling, selection and Siri Remote focus. It does not decode media,
+contact a server, or prove physical playback. Review its XCTest screenshots as
+well as assertions; build the full production app separately before installation.
