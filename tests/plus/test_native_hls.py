@@ -471,6 +471,38 @@ def test_cue_relative_resolution_validates_or_falls_back_cleanly(provider, tmp_p
     assert all(result is None or isinstance(result[0], int) for result in results)
 
 
+def test_playlists_and_segments_agree(provider, tmp_path):
+    """Gate: every playlist URI exists and the declared durations match the timeline.
+
+    Standalone window decoding is not enough; the playlists, init and media
+    segments have to agree with the timeline the player is told about.
+    """
+    timeline = _timeline(provider)
+    plan = _plan(tmp_path, timeline)
+    streams = NativeStreams(tmp_path / "spool")
+    streams.root.mkdir(parents=True, exist_ok=True)
+    streams.plans["plan"] = plan
+    count = min(3, len(timeline.segments))
+    for number in range(count):
+        asyncio.run(streams.ensure(plan, number))
+
+    video = streams.video_playlist(plan).decode("utf-8").splitlines()
+    assert "#EXT-X-MAP" in "".join(video)
+    inf = [line for line in video if line.startswith("#EXTINF:")]
+    uris = [line for line in video if line.endswith(".m4s")]
+    assert len(uris) == len(timeline.segments)
+    assert len(inf) == len(timeline.segments)
+    assert abs(sum(float(line[8:-1]) for line in inf) - timeline.duration) < 1.0
+    for uri in uris[:count]:
+        assert (plan.root / uri).exists(), f"playlist names a missing segment: {uri}"
+    assert (plan.root / "init.mp4").exists()
+
+    for audio in timeline.audios:
+        body = streams.audio_playlist(plan, audio.ordinal).decode("utf-8")
+        assert audio.init in body
+        assert body.count("#EXTINF") == len(timeline.segments)
+
+
 # --- hostile range responses -------------------------------------------------
 
 
