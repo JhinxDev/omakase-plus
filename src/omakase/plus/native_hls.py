@@ -111,7 +111,7 @@ _GENERATE_TIMEOUT = 120.0
 _RESERVE_BYTES = 8 * 1024**3
 _ADMISSION_MARGIN = 32 * 1024**2
 _ABANDON_SECONDS = 240.0
-_READ_CHUNK = 256 * 1024
+_READ_CHUNK = 1024 * 1024
 # One window never asks the provider for more than this, whatever the bitrate.
 _WINDOW_MAX_BYTES = 128 * 1024 * 1024
 # Bytes past the next segment's first cluster, enough for ffmpeg to finish the
@@ -201,6 +201,7 @@ class NativePlan:
     diagnostic_id: str = field(default_factory=diagnostic_id)
     warm: float | None = None
     bytes_read: int = 0
+    read_ms: int = 0
 
     def video_segment_path(self, number: int) -> Path:
         return self.root / f"v{number:05d}.m4s"
@@ -720,6 +721,25 @@ class NativeStreams:
         # Windows are remote-read bound, not CPU bound, so two can overlap safely.
         self.producers = asyncio.Semaphore(2)
         self.running: set = set()
+        self.client = None
+        self.client_loop = None
+
+    async def shared_client(self):
+        """One pooled provider client: a TLS handshake per window is pure cost.
+
+        The pool belongs to the running event loop, so a new loop (a test, or a
+        restarted worker) gets a fresh client instead of borrowing dead sockets.
+        """
+        loop = asyncio.get_running_loop()
+        if self.client is None or self.client_loop is not loop:
+            self.client = httpx.AsyncClient(
+                timeout=httpx.Timeout(30, connect=10),
+                limits=httpx.Limits(max_connections=8, max_keepalive_connections=8),
+                follow_redirects=False,
+                trust_env=False,
+            )
+            self.client_loop = loop
+        return self.client
 
     @staticmethod
     def _default_free():
@@ -1173,10 +1193,11 @@ class NativeStreams:
             raise NativeError("invalid_output") from error
         start, end = plan.timeline.segments[number]
         _LOG.warning(
-            "native window=%d span=%.3f ms=%d read=%d out=%d spool=%d",
+            "native window=%d span=%.3f ms=%d read_ms=%d read=%d out=%d spool=%d",
             number,
             end - start,
             elapsed,
+            plan.read_ms,
             plan.bytes_read,
             size,
             self.plan_usage(plan),
@@ -1192,7 +1213,13 @@ class NativeStreams:
         if number + 1 < len(timeline.clusters):
             end = min(end, timeline.clusters[number + 1] + _WINDOW_TAIL_BYTES)
         budget = min(_WINDOW_MAX_BYTES, max(end - offset, self._reserve_estimate(timeline, number)))
-        reader = _RangeReader(timeline.url, offset, min(timeline.total, offset + budget))
+        reader = _RangeReader(
+            timeline.url,
+            offset,
+            min(timeline.total, offset + budget),
+            client=await self.shared_client(),
+        )
+        read_started = time.monotonic()
         try:
             await self._write_head(reader, timeline, keyframe_ms, timeline.video_number, stdin)
             async for chunk in reader.chunks(_READ_CHUNK):
@@ -1207,6 +1234,7 @@ class NativeStreams:
             return
         finally:
             plan.bytes_read += reader.read_bytes
+            plan.read_ms = round((time.monotonic() - read_started) * 1000)
             await reader.close()
 
     @staticmethod
@@ -1451,14 +1479,15 @@ class _RangeReader:
     the window instead of being buffered.
     """
 
-    def __init__(self, url, start, end, transport=None, limit=_WINDOW_MAX_BYTES):
+    def __init__(self, url, start, end, transport=None, limit=_WINDOW_MAX_BYTES, client=None):
         self.url = url
         self.position = start
         self.end = min(end, start + limit)
         self.limit = limit
         self.buffer = bytearray()
         self.transport = transport
-        self.client = None
+        self.client = client
+        self.owns_client = client is None
         self.read_bytes = 0
 
     async def _client(self):
@@ -1540,9 +1569,9 @@ class _RangeReader:
             yield data
 
     async def close(self):
-        if self.client is not None:
+        if self.owns_client and self.client is not None:
             await self.client.aclose()
-            self.client = None
+        self.client = None
 
 
 def _write_atomic(path, data):
@@ -1614,3 +1643,4 @@ def _kill(process):
         process.kill()
     except (ProcessLookupError, RuntimeError):
         pass
+
