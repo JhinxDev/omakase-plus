@@ -783,7 +783,21 @@ def test_the_first_block_kept_is_the_video_keyframe():
     asyncio.run(
         native_hls.NativeStreams(None)._write_head(Reader(stream), timeline, 6006, 1, stdin)
     )
-    assert keyframe in bytes(stdin.written)
+    written = bytes(stdin.written)
+    # The cluster timestamp is rebased to the keyframe and block times are shifted
+    # by the same amount, so the absolute time a sample lands on must not move.
+    cluster_at = written.index(b"\x1fC\xb6u")
+    cluster_id, cluster_after = native_hls.vint(written, cluster_at, True)
+    cluster_size, payload = native_hls.vint(written, cluster_after, False)
+    fields = native_hls._children(written, payload, len(written), {native_hls._TIMESTAMP})
+    begin, finish = fields[native_hls._TIMESTAMP][0]
+    timestamp = int.from_bytes(written[begin:finish], "big")
+    blocks = native_hls._children(
+        written, payload, len(written), {native_hls._SIMPLE_BLOCK}
+    )[native_hls._SIMPLE_BLOCK]
+    block_begin, block_end = blocks[0]
+    relative = native_hls._block_time(written[block_begin:block_end])
+    assert timestamp + relative == 6000 + block_time, "absolute sample time is preserved"
 
 
 # --- reader correctness: exact bytes under short responses -------------------

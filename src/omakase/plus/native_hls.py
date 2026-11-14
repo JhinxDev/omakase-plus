@@ -630,6 +630,38 @@ async def build_timeline(url, duration):
         )
 
 
+def _rasl_nals(block):
+    """True when a video block is a leading RASL picture (HEVC NAL types 8, 9).
+
+    Matroska stores HEVC length prefixed, so the units are walked by their four
+    byte lengths rather than by Annex-B start codes. Open-GOP HEVC marks its six
+    second boundaries with CRA pictures, and the RASL pictures that follow them
+    reference the previous GOP; a player entering at the CRA must discard them,
+    and while they are forwarded both ffmpeg and AVPlayer report missing
+    references, which is the visible video stutter.
+    """
+    index = 0
+    while index + 5 <= len(block):
+        size = int.from_bytes(block[index : index + 4], "big")
+        if size <= 0 or index + 4 + size > len(block):
+            return False
+        nal = (block[index + 4] >> 1) & 0x3F
+        if nal in (8, 9):
+            return True
+        if nal < 32:
+            return False
+        index += 4 + size
+    return False
+
+
+def _window_frames(timeline, span):
+    """Frames in a window, so video is cut by count and never overlaps a neighbour."""
+    rate = float(getattr(timeline, "frame_rate", 0) or 0)
+    if rate <= 0:
+        return max(1, int(round(span * 24)))
+    return max(1, int(round(span * rate)))
+
+
 def _cluster_header(data):
     """(cluster timestamp ms, payload start) for the Cluster at the front of data."""
     try:
@@ -1071,7 +1103,14 @@ class NativeStreams:
             raise NativeError("no_timeline")
         lines = self._segment_lines(timeline)
         lines.append('#EXT-X-MAP:URI="init.mp4"')
+        lines.append("#EXT-X-DISCONTINUITY-SEQUENCE:0")
         for number, (start, end) in enumerate(timeline.segments):
+            # Each window is an independent fragment starting at a CRA picture of
+            # an open-GOP HEVC stream, so picture order restarts per segment. The
+            # discontinuity tells the player to reset its decoder instead of
+            # treating two independent fragments as one continuous stream, which
+            # is what produced the video stutter while audio stayed clean.
+            lines.append("#EXT-X-DISCONTINUITY")
             lines.append(f"#EXTINF:{max(0.04, end - start):.3f},")
             lines.append(f"v{number:05d}.m4s")
         lines.append("#EXT-X-ENDLIST")
@@ -1206,8 +1245,8 @@ class NativeStreams:
         ]
         args.extend(
             [
-                "-t",
-                f"{span:.3f}",
+                "-frames:v",
+                str(_window_frames(timeline, span)),
                 "-map",
                 "0:v:0",
                 "-c:v",
@@ -1546,6 +1585,7 @@ class NativeStreams:
         await reader.consume(payload)
         stdin.write(_encode_id(_CLUSTER) + _UNKNOWN_SIZE)
         timestamp = None
+        shift = 0
         started = video_number == 0
         while True:
             header = await reader.peek(16)
@@ -1565,7 +1605,8 @@ class NativeStreams:
             if element_id == _TIMESTAMP:
                 raw = await reader.take(total)
                 timestamp = int.from_bytes(raw[body:], "big")
-                stdin.write(raw)
+                shift = timestamp - keyframe_ms
+                stdin.write(_encode_element(_TIMESTAMP, int(keyframe_ms).to_bytes(8, "big")))
                 await stdin.drain()
                 continue
             if element_id not in {_SIMPLE_BLOCK, _BLOCK_GROUP}:
@@ -1589,6 +1630,9 @@ class NativeStreams:
                 flags = block[after_track + 2] if len(block) > after_track + 2 else 0
             except (IndexError, ValueError):
                 continue
+            if started and track == video_number and _rasl_nals(block):
+                # Drop leading pictures that reference the previous segment.
+                continue
             if not started:
                 # Start on the video keyframe itself. A timestamp-only cut can
                 # drop the keyframe for HEVC and hand the player a fragment it
@@ -1599,6 +1643,13 @@ class NativeStreams:
                     started = True
                 else:
                     continue
+            if shift:
+                # Shift the block's relative time by the same amount the cluster
+                # time moved, so absolute timestamps stay exactly where they were.
+                position = raw.index(block)
+                at = position + after_track
+                shifted = (relative + shift).to_bytes(2, "big", signed=True)
+                raw = raw[:at] + shifted + raw[at + 2 :]
             stdin.write(raw)
             await stdin.drain()
 
