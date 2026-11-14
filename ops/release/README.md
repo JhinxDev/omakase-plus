@@ -28,8 +28,8 @@ The old scripts are untouched and still work.
 | --- | --- |
 | `build_image.py` | Build an image from an exact git commit tree and write a manifest with per file sha256 |
 | `check_drift.py` | Compare a running container against a commit, read only |
-| `promote.py` | Guarded cutover with a durable database backup and automatic rollback |
-| `../../.github/workflows/deploy.yml` | Ruff plus unit checks of manifest, drift and rollback logic |
+| `promote.py` | Guarded cutover with a restore-tested database backup and fenced failure handling |
+| `../../.github/workflows/deploy.yml` | Ruff plus unit checks of manifest, drift and recovery guards |
 
 ## build_image.py
 
@@ -184,17 +184,14 @@ first to prove the ssh path, the Docker host and the live health endpoint:
 .venv\Scripts\python.exe ops/release/promote.py --check
 ```
 
-`--execute` is required before anything changes:
+Confirm native playback has closed and fence scheduled, API and ad hoc writers
+before using `--execute`. Keep the fence in place through verification.
 
 ```powershell
-.venv\Scripts\python.exe ops/release/promote.py --manifest "$env:TEMP\manifest.json" --execute
+.venv\Scripts\python.exe ops/release/promote.py --manifest "$env:TEMP\manifest.json" --execute --native-playback-closed --writers-fenced
 ```
 
-Rollback restores the compose chain recorded for the running release:
-
-```powershell
-.venv\Scripts\python.exe ops/release/promote.py --manifest "$env:TEMP\manifest.json" --rollback --execute
-```
+A failed cutover requires the [current-data recovery procedure](../../docs/current-data-recovery.md).
 
 The workstation entry sends this script and the manifest to the Docker host over
 ssh and runs it there. Nothing is copied to the host and no file is written to
@@ -213,8 +210,9 @@ cutover would be attempted without refusing:
 4. the compose diff is the image plus `OMAKASE_REVISION` and nothing else, and
    other services and top level fields are unchanged, with key paths only in any
    refusal (never values),
-5. no native playback or browser playback is active, no movie cleanup work is
-   running, and shared memory can hold the database snapshot,
+5. the last five minutes contain no playback traffic, no active or paused web
+   lease remains, no movie cleanup work is running, and shared memory can hold
+   the database backup and isolated restore,
 6. free space covers the reserve plus the measured backup,
 7. the linked native device count is recorded for after the cutover.
 
@@ -223,13 +221,15 @@ cutover would be attempted without refusing:
 With `--execute`:
 
 1. the release lock is taken exclusively and non blocking,
-2. the reviewed compose chain is recorded under `backups/<revision>/`,
+2. the reviewed Compose chain is recorded in
+   `backups/<revision>/original-compose-files.txt` with mode 0600,
 3. the compose override that changes only the image and revision is written there,
 4. the guards are re read immediately before the swap,
 5. the service is stopped,
-6. the SQLite database is snapshotted with the sqlite backup API, checked with
-   `PRAGMA quick_check`, compressed to `backups/<revision>/pre-swap.db.xz`,
-   fsynced together with its directory and pinned by a sha256 receipt,
+6. the SQLite database is snapshotted with the SQLite backup API, compressed to
+   `backups/<revision>/pre-swap.db.xz`, independently restored and checked for
+   hash, integrity, foreign-key and migration-ledger equality. A fsynced
+   `prepared.json` binds this backup to the live and candidate releases,
 7. the candidate compose chain starts with `up -d --no-deps --force-recreate --no-build`,
 8. the new image, health status and health revision are read back,
 9. private HTTPS is verified for health, device validation and catalog, media,
@@ -239,10 +239,9 @@ With `--execute`:
     every shipped file hash are verified,
 11. a receipt is written to `backups/<revision>/receipt.json` and printed.
 
-If any step fails after the swap begins, the previous compose chain is recreated
-with the same command and the previous image and revision are read back healthy
-before the original error is re raised. The rendered override stored in the
-release directory is the exact input that was used.
+If a candidate start or verification fails, the tool attempts to stop the
+candidate and records the failure phase in `failure.json`. Preserve the
+current database and keep ingress and writers fenced during recovery.
 
 ### Options that matter
 
@@ -250,17 +249,17 @@ release directory is the exact input that was used.
 | --- | --- |
 | `--execute` | Perform the cutover. Without it the command is a dry run |
 | `--check` | Print read only host readiness facts and exit |
-| `--rollback` | Restore the recorded previous chain for the running release |
+| `--native-playback-closed` | Confirm the owner closed native playback |
+| `--writers-fenced` | Confirm relevant scheduled, API and ad hoc writes are fenced |
 | `--allow-migrations NAME` | Allow exactly this migration to appear, repeatable |
 | `--expect-last-migration NAME` | Refuse unless the live schema ends with this migration |
-| `--reserve-bytes` | Free space that must remain after the backup, default 4 GiB |
+| `--reserve-bytes` | Free space that must remain after the backup, default 8 GiB |
 | `--backup-bytes` | Conservative backup size for the pre backup gate, default 26 MiB |
 | `--origin` | Public HTTPS origin used for authorization checks |
 | `--local` | Run on this host, only when already on the Docker host |
 
-`OMAKASE_RELEASE_FORCE_IDLE=1` exists because the original script had the same
-escape hatch. It disables the playback idle check and prints a warning. Do not
-use it while a player session is in use.
+The quiet-window guard is mandatory for cutover. The current native service
+keeps paused passes in memory, so confirm playback closure with the owner.
 
 ## Safety model
 
@@ -271,7 +270,8 @@ use it while a player session is in use.
 - A cutover holds an exclusive lock, so two releases cannot interleave.
 - The durable database backup is verified, compressed, fsynced and hashed before
   the service is replaced, so a rollback never depends on a file in flight.
-- Any failure after the swap begins restores the previous chain automatically.
+- After a candidate start attempt, preserve the current migrated database and
+  keep writers fenced until recovery is qualified.
 - The compose diff is restricted to the reviewed image and revision. A changed
   port, volume, other service or unrelated environment key refuses the cutover
   and reports key paths, never values.
@@ -299,7 +299,8 @@ use it while a player session is in use.
 3. Run `check_drift.py --commit <sha>` and read the table. Drift is expected
    before a cutover; the table is the evidence of what the cutover replaces.
 4. Run `promote.py --manifest <manifest>` with no `--execute` and read the plan.
-5. Only then run the same command with `--execute`.
+5. Confirm native playback closure and fence the writers. Run the same command
+   with `--execute --native-playback-closed --writers-fenced`.
 6. Keep `backups/<revision>/receipt.json`, `pre-swap.db.xz` and
    `pre-swap.db.sha256` until the release has been accepted.
 7. Re run `check_drift.py --commit <sha>` to prove the container now matches.

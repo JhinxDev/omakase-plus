@@ -15,13 +15,13 @@ Guards, in order:
   * the database is snapshotted, verified, compressed, fsynced and hashed before any swap
   * after the swap the image, health revision, HTTPS authorization behaviour,
     schema, linked device count and every shipped file hash are read back
-  * any failure after the swap begins recreates the previous compose chain automatically
+  * any failure after a candidate start attempt stops the candidate and preserves current data
 
 Commands, from the repository root:
 
     python ops/release/promote.py --manifest release/manifest.json
-    python ops/release/promote.py --manifest release/manifest.json --execute
-    python ops/release/promote.py --manifest release/manifest.json --rollback --execute
+    python ops/release/promote.py --manifest release/manifest.json --execute \
+        --native-playback-closed --writers-fenced
 
 The default is a dry run: it performs the read only preflight and prints the
 plan. ``--execute`` is required for any container, database or file change.
@@ -42,7 +42,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError
@@ -59,10 +59,19 @@ DEFAULT_SERVICE = "omakase-plus"
 DEFAULT_HOST = "omakase-ct"
 DEFAULT_ORIGIN = "https://anime.jhinx.dev"
 DEFAULT_HEALTH_URL = "http://127.0.0.1:8766/plus/health"
-DEFAULT_RESERVE_BYTES = 4 * 1024**3
+DEFAULT_RESERVE_BYTES = 8 * 1024**3
 DEFAULT_BACKUP_BYTES = 26 * 1024**2
+COMPOSE_COMMAND_TIMEOUT = 90
 LOCK_NAME = ".omakase-release.lock"
-FORCE_IDLE_FLAG = Path("/tmp/omakase-release-force-idle")
+PLAYBACK_WINDOW = "5m"
+PLAYBACK_MARKERS = (
+    "/plus/api/native-tv-test/v1/media/",
+    "/plus/api/native-tv-test/v1/direct",
+    "/plus/api/native-tv-test/v1/library/media/",
+    "/plus/api/native-tv-test/v1/library/play",
+    "/plus/api/playback/sessions",
+    "/plus/api/playback/catalog-sessions",
+)
 RUNTIME_MARKERS = ("__pycache__",)
 RUNTIME_SUFFIXES = (".pyc", ".pyo")
 SSH_OPTIONS = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
@@ -220,21 +229,9 @@ def migration_error(
     return None
 
 
-def rollback_decision(*, cutover_started: bool, candidate_healthy: bool) -> bool:
-    """Restore the previous chain whenever a cutover started and the candidate is unproven."""
-    return bool(cutover_started) and not candidate_healthy
-
-
-def native_playback_active(lines: Sequence[str], *, force_idle: bool) -> bool:
-    """Detect recent native playback traffic in container logs."""
-    if force_idle:
-        return False
-    for line in lines:
-        if "/plus/api/native-tv-test/v1/media/" in line:
-            return True
-        if "/plus/api/native-tv-test/v1/library/media/" in line and "/resume " in line:
-            return True
-    return False
+def native_playback_active(lines: Sequence[str]) -> bool:
+    """Detect recent native playback requests, including a redacted direct path."""
+    return any(marker in line for line in lines for marker in PLAYBACK_MARKERS)
 
 
 def health_ok(payload: Mapping[str, object], revision: str) -> bool:
@@ -285,7 +282,12 @@ def capture(*command: str, timeout: int = 60) -> str:
 
 def run(*command: str, cwd: Path | None = None) -> None:
     """Run a command whose output should be visible to the operator."""
-    subprocess.run(command, cwd=None if cwd is None else str(cwd), check=True)
+    subprocess.run(
+        command,
+        cwd=None if cwd is None else str(cwd),
+        check=True,
+        timeout=COMPOSE_COMMAND_TIMEOUT,
+    )
 
 
 def compose_command(settings: Settings, files: Sequence[str]) -> list[str]:
@@ -361,7 +363,36 @@ def service_state(settings: Settings) -> dict[str, object]:
         "health": health.get("Status"),
         "revision": labels.get(REVISION_LABEL),
         "config_files": parse_compose_files(labels.get("com.docker.compose.project.config_files")),
+        "database_mounts": [
+            mount.get("Source")
+            for mount in record.get("Mounts", [])
+            if mount.get("Destination") == "/home/omakase/data"
+            and mount.get("Type") == "bind"
+            and mount.get("RW") is True
+        ],
     }
+
+
+def _verify_database_binding(settings: Settings, status: Mapping[str, object]) -> None:
+    if (
+        settings.db_path.name != "omakase-plus.db"
+        or not settings.db_path.is_file()
+        or settings.db_path.resolve(strict=True) != settings.db_path
+        or status["database_mounts"] != [str(settings.db_path.parent)]
+    ):
+        raise ReleaseError("database path differs from the private Plus data bind")
+
+
+def _verify_before_cutover(settings: Settings, plan: Mapping[str, object]) -> None:
+    current = service_state(settings)
+    if (
+        current["image"] != plan["previous_image"]
+        or current["revision"] != plan["previous_revision"]
+        or tuple(current["config_files"]) != tuple(plan["compose_files"])
+        or current["health"] != "healthy"
+    ):
+        raise ReleaseError("the running release identity changed since preflight")
+    _verify_database_binding(settings, current)
 
 
 def health_payload(settings: Settings) -> dict[str, object]:
@@ -415,21 +446,19 @@ def native_device_count(settings: Settings) -> int:
 def idle_and_schema(settings: Settings) -> dict[str, object]:
     """Refuse a cutover while playback or cleanup work is active, and read the schema."""
     logs = subprocess.run(
-        ["docker", "logs", "--since", "90s", "--tail", "2000", settings.service],
+        ["docker", "logs", "--since", PLAYBACK_WINDOW, settings.service],
         capture_output=True,
         text=True,
         timeout=30,
         check=True,
     )
-    force_idle = os.getenv("OMAKASE_RELEASE_FORCE_IDLE") == "1" or FORCE_IDLE_FLAG.exists()
-    if native_playback_active((logs.stdout + logs.stderr).splitlines(), force_idle=force_idle):
-        raise ReleaseError("recent native playback; wait for the player to be idle")
-    if force_idle:
-        print("WARNING: idle protection overridden by OMAKASE_RELEASE_FORCE_IDLE", flush=True)
-    with sqlite3.connect(settings.db_path.as_uri() + "?mode=ro", uri=True) as conn:
+    if native_playback_active((logs.stdout + logs.stderr).splitlines()):
+        raise ReleaseError("recent native playback; wait for five quiet minutes")
+    with contextlib.closing(
+        sqlite3.connect(settings.db_path.as_uri() + "?mode=ro", uri=True)
+    ) as conn:
         active = conn.execute(
-            "SELECT 1 FROM web_playback_sessions WHERE closed=0 "
-            "AND expires_at>unixepoch() AND last_seen>unixepoch()-1200 LIMIT 1"
+            "SELECT 1 FROM web_playback_sessions WHERE closed=0 AND expires_at>unixepoch() LIMIT 1"
         ).fetchone()
         if active:
             raise ReleaseError("browser playback is active")
@@ -442,31 +471,68 @@ def idle_and_schema(settings: Settings) -> dict[str, object]:
         page_count = conn.execute("PRAGMA page_count").fetchone()[0]
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
         size = page_count * page_size
-        if shutil.disk_usage("/dev/shm").free <= size + 128 * 1024**2:
+        if shutil.disk_usage("/dev/shm").free <= 3 * size + 128 * 1024**2:
             raise ReleaseError("not enough shared memory for the database snapshot")
         schema = conn.execute("SELECT max(id), count(*) FROM _migrations").fetchone()
         names = [row[0] for row in conn.execute("SELECT name FROM _migrations ORDER BY id")]
     return {"schema": [int(schema[0]), int(schema[1])], "migrations": names}
 
 
-@contextlib.contextmanager
+def _snapshot_facts(path: Path, expected_schema: Mapping[str, object]) -> dict[str, object]:
+    """Check a byte-stable snapshot opened independently from the backup connection."""
+    with contextlib.closing(
+        sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)
+    ) as db:
+        names = [row[0] for row in db.execute("SELECT name FROM _migrations ORDER BY id")]
+        schema = list(db.execute("SELECT max(id), count(*) FROM _migrations").fetchone())
+        if schema != expected_schema["schema"] or names != expected_schema["migrations"]:
+            raise ReleaseError("database snapshot migration ledger differs from preflight")
+        if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+            raise ReleaseError("database snapshot failed integrity checking")
+        if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise ReleaseError("database snapshot failed foreign-key checking")
+        devices = db.execute("SELECT count(*) FROM native_tv_devices").fetchone()[0]
+    return {"schema": schema, "migrations": names, "linked_native_devices": devices}
+
+
+def _fsync_dir(directory: Path) -> None:
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _private_file(path, flags):
+    return os.open(path, flags, 0o600)
+
+
+def _durable_text(path: Path, text: str) -> None:
+    with open(path, "x", encoding="utf-8", opener=_private_file) as target:
+        target.write(text)
+        target.flush()
+        os.fsync(target.fileno())
+    _fsync_dir(path.parent)
+
+
+def _durable_json(path: Path, record: Mapping[str, object]) -> None:
+    _durable_text(path, json.dumps(record, indent=2, sort_keys=True) + "\n")
+
+
 def durable_sqlite_backup(
-    settings: Settings, expected_schema: Sequence[int], state: Path
-) -> Iterator[str]:
-    """Snapshot, verify, compress, fsync and hash the database before any swap."""
+    settings: Settings, expected_schema: Mapping[str, object], state: Path
+) -> dict[str, object]:
+    """Snapshot, hash and independently restore the archived bytes before a new start."""
     with tempfile.TemporaryDirectory(prefix="omakase-release-backup-", dir="/dev/shm") as scratch:
         snapshot = Path(scratch) / "pre-swap.db"
         with (
-            sqlite3.connect(settings.db_path.as_uri() + "?mode=ro", uri=True) as source,
-            sqlite3.connect(snapshot) as backup,
+            contextlib.closing(
+                sqlite3.connect(settings.db_path.as_uri() + "?mode=ro", uri=True)
+            ) as source,
+            contextlib.closing(sqlite3.connect(snapshot)) as backup,
         ):
             source.backup(backup)
-            if backup.execute("PRAGMA quick_check").fetchone()[0] != "ok":
-                raise ReleaseError("database snapshot failed integrity checking")
-            if list(backup.execute("SELECT max(id), count(*) FROM _migrations").fetchone()) != list(
-                expected_schema
-            ):
-                raise ReleaseError("database snapshot schema changed during the backup")
+        facts = _snapshot_facts(snapshot, expected_schema)
         measured = Path(scratch) / "pre-swap.db.xz"
         compressed = state / measured.name
         with snapshot.open("rb") as saved:
@@ -475,29 +541,36 @@ def durable_sqlite_backup(
             with lzma.open(measured, "wb", preset=3) as archive:
                 shutil.copyfileobj(saved, archive)
         disk_gate(settings, measured.stat().st_size)
-        with measured.open("rb") as archive, compressed.open("xb") as durable:
+        with (
+            measured.open("rb") as archive,
+            open(compressed, "xb", opener=_private_file) as durable,
+        ):
             shutil.copyfileobj(archive, durable)
             durable.flush()
             os.fsync(durable.fileno())
-        with lzma.open(compressed, "rb") as archive:
-            if hashlib.file_digest(archive, "sha256").hexdigest() != digest:
+        restored = Path(scratch) / "restore.db"
+        with lzma.open(compressed, "rb") as archive, restored.open("xb") as target:
+            shutil.copyfileobj(archive, target)
+        with restored.open("rb") as target:
+            if hashlib.file_digest(target, "sha256").hexdigest() != digest:
                 raise ReleaseError("compressed database backup failed its checksum")
-        receipt = state / "pre-swap.db.sha256"
-        with receipt.open("x") as checksum:
-            checksum.write(digest + "  pre-swap.db\n")
-            checksum.flush()
-            os.fsync(checksum.fileno())
-        directory_fd = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        if _snapshot_facts(restored, expected_schema) != facts:
+            raise ReleaseError("restored database differs from the verified snapshot")
+        with compressed.open("rb") as archived:
+            archive_digest = hashlib.file_digest(archived, "sha256").hexdigest()
+        _durable_text(state / "pre-swap.db.sha256", digest + "  pre-swap.db\n")
         disk_gate(settings)
         print(
             f"verified fresh durable SQLite backup {compressed.stat().st_size} bytes",
             flush=True,
         )
-        yield digest
+        return {
+            "path": str(compressed),
+            "sha256": digest,
+            "archive_sha256": archive_digest,
+            "archive_bytes": compressed.stat().st_size,
+            "restore": facts | {"quick_check": "ok", "foreign_keys": "ok"},
+        }
 
 
 def verify_https_authorization(settings: Settings, revision: str) -> None:
@@ -743,6 +816,7 @@ def preflight(
     if not isinstance(files, dict):
         raise ReleaseError("manifest has no file hashes")
     current = service_state(settings)
+    _verify_database_binding(settings, current)
     previous_image = current["image"]
     previous_revision = current["revision"]
     if not isinstance(previous_image, str) or not previous_image:
@@ -826,8 +900,14 @@ def print_plan(settings: Settings, plan: Mapping[str, object], *, execute: bool)
     print(json.dumps(summary, indent=2), flush=True)
 
 
+def _require_execution_fence(args: argparse.Namespace) -> None:
+    if args.execute and not (args.native_playback_closed and args.writers_fenced):
+        raise ReleaseError("execute requires confirmed native playback closure and fenced writers")
+
+
 def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str, object]) -> int:
-    """Perform the guarded cutover with an automatic rollback."""
+    """Perform the guarded cutover while the operator's writer and ingress fence is held."""
+    _require_execution_fence(args)
     revision = str(plan["revision"])
     manifest = plan["manifest"]
     if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), dict):
@@ -835,42 +915,65 @@ def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str
     files = list(plan["compose_files"])
     state = settings.state_dir(revision)
     try:
-        state.mkdir(exist_ok=False)
+        state.mkdir(mode=0o700, exist_ok=False)
+        _fsync_dir(state.parent)
     except FileExistsError as error:
         raise ReleaseError(
             f"release state {state} already exists; inspect it before retrying"
         ) from error
-    (state / "original-compose-files.txt").write_text("\n".join(files) + "\n", encoding="utf-8")
+    _durable_text(state / "original-compose-files.txt", "\n".join(files) + "\n")
     candidate_path = state / "candidate.json"
-    override = plan["override"]
-    candidate_path.write_text(json.dumps(override), encoding="utf-8")
+    _durable_json(candidate_path, plan["override"])
     before_command = compose_command(settings, files)
     candidate_command = compose_command(settings, (*files, str(candidate_path)))
     schema = plan["schema"]
     if not isinstance(schema, dict) or not isinstance(schema.get("schema"), list):
         raise ReleaseError("preflight did not record the schema")
-    idle_and_schema(settings)
+    if idle_and_schema(settings) != schema:
+        raise ReleaseError("database schema changed since preflight")
     disk_gate(settings, settings.backup_bytes)
-    cutover_started = False
+    compose_hashes = {name: _hash_path(Path(name)) for name in (*files, str(candidate_path))}
+    _verify_before_cutover(settings, plan)
+    phase = "prior_stop_attempted"
     try:
-        cutover_started = True
         run(*before_command, "stop", "-t", "20", settings.service)
-        with durable_sqlite_backup(settings, schema["schema"], state) as digest:
-            run(
-                *candidate_command,
-                "up",
-                "-d",
-                "--no-deps",
-                "--force-recreate",
-                "--no-build",
-                settings.service,
-            )
-            wait_healthy(settings, str(plan["image"]), revision)
-            verify_https_authorization(settings, revision)
-            after_schema = verify_database(settings, schema, settings.allow_migrations)
-            verify_deployed_files(settings, manifest["files"])
-            if native_device_count(settings) != plan["devices"]:
-                raise ReleaseError("linked native device count changed during the cutover")
+        phase = "backup_preparation"
+        backup = durable_sqlite_backup(settings, schema, state)
+        if backup["restore"]["linked_native_devices"] != plan["devices"]:
+            raise ReleaseError("linked native device count changed before the swap")
+        if any(_hash_path(Path(name)) != digest for name, digest in compose_hashes.items()):
+            raise ReleaseError("compose inputs changed while preparing recovery")
+        prepared = {
+            "schema": RECEIPT_SCHEMA,
+            "status": "prepared",
+            "git_commit": plan["git_commit"],
+            "revision": revision,
+            "image": plan["image"],
+            "previous_image": plan["previous_image"],
+            "previous_revision": plan["previous_revision"],
+            "database": str(settings.db_path),
+            "compose_files": files,
+            "compose_sha256": compose_hashes,
+            "backup": backup,
+        }
+        _durable_json(state / "prepared.json", prepared)
+        phase = "candidate_start_attempted"
+        run(
+            *candidate_command,
+            "up",
+            "-d",
+            "--no-deps",
+            "--force-recreate",
+            "--no-build",
+            settings.service,
+        )
+        wait_healthy(settings, str(plan["image"]), revision)
+        _verify_database_binding(settings, service_state(settings))
+        verify_https_authorization(settings, revision)
+        after_schema = verify_database(settings, schema, settings.allow_migrations)
+        verify_deployed_files(settings, manifest["files"])
+        if native_device_count(settings) != plan["devices"]:
+            raise ReleaseError("linked native device count changed during the cutover")
         receipt = {
             "schema": RECEIPT_SCHEMA,
             "revision": revision,
@@ -880,10 +983,7 @@ def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str
             "previous_image": plan["previous_image"],
             "previous_revision": plan["previous_revision"],
             "compose_files": files,
-            "backup": {
-                "path": str(state / "pre-swap.db.xz"),
-                "sha256": digest,
-            },
+            "backup": backup,
             "verified_files": len(
                 [name for name in manifest["files"] if not is_runtime_artifact(name)]
             ),
@@ -891,78 +991,43 @@ def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str
             "available_bytes": disk_gate(settings),
             "health": "ok",
         }
-        (state / "receipt.json").write_text(
-            json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        _durable_json(state / "receipt.json", receipt)
         print(json.dumps(receipt, indent=2, sort_keys=True), flush=True)
         return 0
-    except BaseException:
-        if rollback_decision(cutover_started=cutover_started, candidate_healthy=False):
-            print(
-                "cutover failed; restoring the previous compose chain", file=sys.stderr, flush=True
+    except BaseException as error:
+        print("cutover failed; keep ingress and writers fenced", file=sys.stderr, flush=True)
+        stop_status = "candidate_not_started"
+        if phase == "candidate_start_attempted":
+            try:
+                run(*candidate_command, "stop", "-t", "20", settings.service)
+                stop_status = "candidate_stop_command_succeeded"
+            except (OSError, subprocess.SubprocessError):
+                stop_status = "candidate_stop_failed"
+                print(
+                    "candidate stop failed; verify container state immediately",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        try:
+            _durable_json(
+                state / "failure.json",
+                {
+                    "status": "failed_keep_fence",
+                    "phase": phase,
+                    "git_commit": plan["git_commit"],
+                    "revision": revision,
+                    "error_type": type(error).__name__,
+                    "stop_status": stop_status,
+                },
             )
-            run(
-                *before_command,
-                "up",
-                "-d",
-                "--no-deps",
-                "--force-recreate",
-                "--no-build",
-                settings.service,
-            )
-            wait_healthy(settings, str(plan["previous_image"]), str(plan["previous_revision"]))
-            print("previous release restored and healthy", file=sys.stderr, flush=True)
+        except OSError:
+            print("failure receipt could not be written", file=sys.stderr, flush=True)
         raise
 
 
-def rollback_flow(settings: Settings, args: argparse.Namespace) -> int:
-    """Restore the compose chain recorded for the currently running release."""
-    current = service_state(settings)
-    revision = current["revision"]
-    if not isinstance(revision, str) or not revision:
-        raise ReleaseError("cannot read the live revision label")
-    if args.image is not None and current["image"] != args.image:
-        raise ReleaseError("the live image is not the requested image")
-    state = settings.state_dir(revision)
-    original = state / "original-compose-files.txt"
-    receipt_path = state / "receipt.json"
-    for path in (original, receipt_path):
-        if not path.is_file():
-            raise ReleaseError(f"missing recorded release state {path}")
-    try:
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    except ValueError as error:
-        raise ReleaseError("recorded receipt is not valid JSON") from error
-    if not isinstance(receipt, dict) or receipt.get("revision") != revision:
-        raise ReleaseError("recorded receipt does not match the live revision")
-    if receipt.get("image") != current["image"]:
-        raise ReleaseError("live image is not the image recorded for this release")
-    files = tuple(line for line in original.read_text(encoding="utf-8").splitlines() if line)
-    idle_and_schema(settings)
-    print(f"restoring compose chain for {revision}", flush=True)
-    run(
-        *compose_command(settings, files),
-        "up",
-        "-d",
-        "--no-deps",
-        "--force-recreate",
-        "--no-build",
-        settings.service,
-    )
-    wait_healthy(settings, str(receipt["previous_image"]), str(receipt["previous_revision"]))
-    print(
-        json.dumps(
-            {
-                "rolled_back_from": revision,
-                "restored_image": receipt["previous_image"],
-                "restored_revision": receipt["previous_revision"],
-                "compose_files": list(files),
-            },
-            indent=2,
-        ),
-        flush=True,
-    )
-    return 0
+def _hash_path(path: Path) -> str:
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1002,8 +1067,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--execute", action="store_true", help="perform the cutover")
     parser.add_argument(
-        "--rollback", action="store_true", help="restore the recorded previous chain"
+        "--native-playback-closed", action="store_true", help="attest native playback has exited"
     )
+    parser.add_argument(
+        "--writers-fenced",
+        action="store_true",
+        help="attest scheduled, API and ad hoc writes are fenced",
+    )
+    parser.add_argument("--rollback", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--check", action="store_true", help="print read only host readiness facts and exit"
     )
@@ -1024,13 +1095,14 @@ def main(argv: list[str] | None = None, manifest: dict[str, object] | None = Non
             if args.execute:
                 raise ReleaseError("--check cannot be combined with --execute")
             return host_check(settings)
+        if args.rollback:
+            raise ReleaseError(
+                "automatic rollback is disabled; follow fenced current-data recovery"
+            )
+        _require_execution_fence(args)
         release = manifest if manifest is not None else load_manifest(args.manifest)
         validate_manifest(release, args.commit)
         with acquire_lock(settings.stack_dir / LOCK_NAME, create=args.execute):
-            if args.rollback:
-                if not args.execute:
-                    raise ReleaseError("--rollback requires --execute")
-                return rollback_flow(settings, args)
             plan = preflight(settings, args, release)
             print_plan(settings, plan, execute=args.execute)
             if not args.execute:
@@ -1051,6 +1123,12 @@ def dispatch_remote(argv: list[str]) -> int:
         return main([item for item in argv if item != "--local"])
     parsed = parse_args(argv)
     manifest: dict[str, object] | None = None
+    if parsed.rollback:
+        print(
+            "promote failed: automatic rollback is disabled; follow fenced current-data recovery",
+            file=sys.stderr,
+        )
+        return 1
     if not parsed.check:
         try:
             manifest = load_manifest(parsed.manifest)

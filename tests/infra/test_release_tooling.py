@@ -11,8 +11,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -270,22 +272,182 @@ def test_check_drift_defaults_are_read_only_and_remote():
 # Cutover guards
 
 
-@pytest.mark.parametrize(
-    ("cutover_started", "candidate_healthy", "expected"),
-    [
-        (False, False, False),
-        (False, True, False),
-        (True, False, True),
-        (True, True, False),
-    ],
-)
-def test_rollback_decision(cutover_started, candidate_healthy, expected):
-    assert (
-        promote.rollback_decision(
-            cutover_started=cutover_started, candidate_healthy=candidate_healthy
+def _release_db(path):
+    with sqlite3.connect(path) as db:
+        db.executescript("""
+            CREATE TABLE _migrations (id INTEGER PRIMARY KEY, name TEXT);
+            INSERT INTO _migrations VALUES (1, '001-plus.sql');
+            CREATE TABLE native_tv_devices (id INTEGER PRIMARY KEY);
+            CREATE TABLE web_playback_sessions (closed INTEGER, expires_at INTEGER, last_seen INTEGER);
+            CREATE TABLE movie_cleanup_jobs (id INTEGER);
+            CREATE TABLE movie_cleanup_preferences (enabled INTEGER);
+        """)
+
+
+def test_idle_gate_queries_full_five_minutes_and_checks_paused_leases(tmp_path, monkeypatch):
+    path = tmp_path / "app.db"
+    _release_db(path)
+    settings = promote.settings_from_args(promote.parse_args(["--db-path", str(path)]))
+
+    def logs(argv, **kwargs):
+        assert argv == ["docker", "logs", "--since", "5m", settings.service]
+        return subprocess.CompletedProcess(argv, 0, "GET /health", "")
+
+    monkeypatch.setattr(promote.subprocess, "run", logs)
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "INSERT INTO web_playback_sessions VALUES (0, unixepoch()+600, unixepoch()-2400)"
         )
-        is expected
+    with pytest.raises(promote.ReleaseError, match="browser playback"):
+        promote.idle_and_schema(settings)
+
+
+def test_execute_requires_native_closure_and_writer_fence():
+    for args in (["--execute"], ["--execute", "--native-playback-closed"]):
+        with pytest.raises(promote.ReleaseError, match="native.*writers"):
+            promote._require_execution_fence(promote.parse_args(args))
+    promote._require_execution_fence(
+        promote.parse_args(["--execute", "--native-playback-closed", "--writers-fenced"])
     )
+
+
+def test_restore_rejects_a_snapshot_with_a_different_migration_name(tmp_path):
+    db = tmp_path / "app.db"
+    _release_db(db)
+    schema = {"schema": [1, 1], "migrations": ["001-other.sql"]}
+    with pytest.raises(promote.ReleaseError, match="migration ledger"):
+        promote._snapshot_facts(db, schema)
+
+
+def test_durable_sqlite_backup_reopens_verified_archive(tmp_path, monkeypatch):
+    db = tmp_path / "source.db"
+    _release_db(db)
+    with sqlite3.connect(db) as connection:
+        connection.execute("INSERT INTO native_tv_devices VALUES (1)")
+    settings = promote.settings_from_args(promote.parse_args(["--db-path", str(db)]))
+    original_temp = promote.tempfile.TemporaryDirectory
+    monkeypatch.setattr(
+        promote.tempfile, "TemporaryDirectory", lambda **_: original_temp(dir=tmp_path)
+    )
+    monkeypatch.setattr(promote, "disk_gate", lambda *args: 0)
+    monkeypatch.setattr(promote, "_fsync_dir", lambda *args: None)
+    stage = tmp_path / "staged"
+    stage.mkdir()
+    expected = {"schema": [1, 1], "migrations": ["001-plus.sql"]}
+    receipt = promote.durable_sqlite_backup(settings, expected, stage)
+    assert receipt["restore"] == expected | {
+        "quick_check": "ok",
+        "foreign_keys": "ok",
+        "linked_native_devices": 1,
+    }
+    assert (
+        receipt["archive_sha256"] == hashlib.sha256(Path(receipt["path"]).read_bytes()).hexdigest()
+    )
+    assert (stage / "pre-swap.db.sha256").read_text().split()[0] == receipt["sha256"]
+    if os.name == "posix":
+        for path in stage.iterdir():
+            assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_compose_command_has_a_timeout(monkeypatch):
+    def call(command, *, cwd, check, timeout):
+        assert command == ("docker", "compose", "up")
+        assert cwd is None and check is True and timeout == 90
+
+    monkeypatch.setattr(promote.subprocess, "run", call)
+    promote.run("docker", "compose", "up")
+
+
+@pytest.mark.parametrize("fail_at", ["backup", "candidate_start", "candidate_stop"])
+def test_failed_cutover_preserves_fence_without_starting_previous_image(
+    tmp_path, monkeypatch, fail_at
+):
+    args = promote.parse_args(
+        ["--stack-dir", str(tmp_path), "--execute", "--native-playback-closed", "--writers-fenced"]
+    )
+    settings = promote.settings_from_args(args)
+    settings.backup_root.mkdir()
+    state = settings.state_dir(NEW_REVISION)
+    compose = tmp_path / "compose.yaml"
+    compose.write_text("services: {}")
+    schema = {"schema": [1, 1], "migrations": ["001-plus.sql"]}
+    plan = {
+        "revision": NEW_REVISION,
+        "manifest": {"files": {"x": "1" * 64}},
+        "compose_files": [str(compose)],
+        "schema": schema,
+        "override": {},
+        "image": IMAGE_B,
+        "previous_image": IMAGE_A,
+        "previous_revision": OLD_REVISION,
+        "git_commit": "a" * 40,
+        "devices": 1,
+    }
+    actions = []
+
+    def run(identity, action, *flags):
+        actions.append((identity, action))
+        if action == "up":
+            assert (state / "original-compose-files.txt").read_text().splitlines() == [str(compose)]
+            assert json.loads((state / "prepared.json").read_text())["backup"]["restore"] == {
+                "linked_native_devices": 1
+            }
+            raise promote.ReleaseError("startup test failure")
+        if (identity, action, fail_at) == (2, "stop", "candidate_stop"):
+            raise subprocess.TimeoutExpired("synthetic compose stop", 90)
+
+    def backup(*args):
+        if fail_at == "backup":
+            raise promote.ReleaseError("restore failure")
+        return {"restore": {"linked_native_devices": 1}}
+
+    monkeypatch.setattr(promote, "compose_command", lambda _settings, files: [len(files)])
+    monkeypatch.setattr(promote, "_fsync_dir", lambda *args: None)
+    monkeypatch.setattr(promote, "idle_and_schema", lambda *args: schema)
+    monkeypatch.setattr(promote, "disk_gate", lambda *args: 0)
+    monkeypatch.setattr(promote, "_verify_before_cutover", lambda *args: None)
+    monkeypatch.setattr(promote, "run", run)
+    monkeypatch.setattr(promote, "durable_sqlite_backup", backup)
+    with pytest.raises(promote.ReleaseError, match="restore failure|startup test failure"):
+        promote.execute_flow(settings, args, plan)
+    assert actions == (
+        [(1, "stop")] if fail_at == "backup" else [(1, "stop"), (2, "up"), (2, "stop")]
+    )
+    failure = json.loads((state / "failure.json").read_text())
+    assert failure["status"] == "failed_keep_fence"
+    assert failure["phase"] == (
+        "backup_preparation" if fail_at == "backup" else "candidate_start_attempted"
+    )
+    assert (state / "prepared.json").exists() == (fail_at != "backup")
+    assert (
+        failure["stop_status"]
+        == {
+            "backup": "candidate_not_started",
+            "candidate_start": "candidate_stop_command_succeeded",
+            "candidate_stop": "candidate_stop_failed",
+        }[fail_at]
+    )
+    if os.name == "posix":
+        assert state.stat().st_mode & 0o777 == 0o700
+        for path in state.iterdir():
+            assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_database_backup_must_use_the_reviewed_live_bind(tmp_path):
+    path = tmp_path / "omakase-plus.db"
+    path.touch()
+    settings = promote.settings_from_args(promote.parse_args(["--db-path", str(path)]))
+    promote._verify_database_binding(settings, {"database_mounts": [str(tmp_path)]})
+    with pytest.raises(promote.ReleaseError, match="data bind"):
+        promote._verify_database_binding(settings, {"database_mounts": [str(tmp_path / "other")]})
+
+
+def test_automatic_rollback_refused_before_any_docker_action(monkeypatch):
+    def unexpected(*args):
+        pytest.fail("Deployment actions must be fenced")
+
+    monkeypatch.setattr(promote, "service_state", unexpected)
+    assert promote.main(["--rollback", "--execute"]) == 1
 
 
 def _scope(before: dict[str, object], after: dict[str, object]) -> str | None:
@@ -385,16 +547,15 @@ def test_migration_gate_allows_only_reviewed_migrations():
 
 
 def test_playback_and_health_gates():
-    assert promote.native_playback_active(
-        ["GET /plus/api/native-tv-test/v1/media/abc"], force_idle=False
-    )
-    assert promote.native_playback_active(
-        ["POST /plus/api/native-tv-test/v1/library/media/abc/resume done"], force_idle=False
-    )
-    assert not promote.native_playback_active(["GET /health"], force_idle=False)
-    assert not promote.native_playback_active(
-        ["GET /plus/api/native-tv-test/v1/media/abc"], force_idle=True
-    )
+    for path in (
+        "media/abc",
+        "library/media/abc/resume",
+        "library/media/abc/next",
+        "library/play",
+        "direct/[redacted]",
+    ):
+        assert promote.native_playback_active([f"GET /plus/api/native-tv-test/v1/{path}"])
+    assert not promote.native_playback_active(["GET /health"])
     assert promote.health_ok({"status": "ok", "revision": NEW_REVISION}, NEW_REVISION)
     assert not promote.health_ok({"status": "ok", "revision": OLD_REVISION}, NEW_REVISION)
     assert not promote.health_ok({"status": "degraded", "revision": NEW_REVISION}, NEW_REVISION)
