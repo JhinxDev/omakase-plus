@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import shutil
 import struct
@@ -221,6 +222,7 @@ class NativePlan:
     # Bytes reserved for windows that are queued or running, so concurrent
     # producers cannot both pass admission against the same free space.
     reserved_bytes: int = 0
+    probed: bool = False
 
     def video_segment_path(self, number: int) -> Path:
         return self.root / f"v{number:05d}.m4s"
@@ -802,6 +804,44 @@ def _language_name(language):
     return _LANGUAGE_NAMES.get(language or "", language.upper() if language else "Audio")
 
 
+def _probe_enabled():
+    return os.environ.get("OMAKASE_NATIVE_PROBE") == "1"
+
+
+async def _probe_rates(client, url, total):
+    """Read-only throughput probe: one big read, serial ranges, parallel ranges."""
+    size = min(4 * 1024 * 1024, max(256 * 1024, total // 8))
+    quarter = max(64 * 1024, size // 4)
+
+    async def timed(start, length):
+        began = time.monotonic()
+        body = await _range(client, url, start, start + length - 1)
+        return len(body) / max(1e-6, time.monotonic() - began) / 1e6
+
+    try:
+        single = await timed(0, size)
+        began = time.monotonic()
+        for index in range(4):
+            await _range(client, url, index * quarter, index * quarter + quarter - 1)
+        serial = (4 * quarter) / max(1e-6, time.monotonic() - began) / 1e6
+        began = time.monotonic()
+        await asyncio.gather(
+            *(
+                _range(client, url, index * quarter, index * quarter + quarter - 1)
+                for index in range(4)
+            )
+        )
+        parallel = (4 * quarter) / max(1e-6, time.monotonic() - began) / 1e6
+        _LOG.warning(
+            "native probe single_mbps=%.2f serial_mbps=%.2f parallel4_mbps=%.2f",
+            single,
+            serial,
+            parallel,
+        )
+    except Exception as error:
+        _LOG.warning("native probe failed=%s", type(error).__name__)
+
+
 class NativeStreams:
     """Registry of native plans, one bounded spool directory each."""
 
@@ -1347,6 +1387,11 @@ class NativeStreams:
             raise NativeError("invalid_output") from error
         commit_ms = round((time.monotonic() - commit_started) * 1000)
         start, end = plan.timeline.segments[number]
+        if number == 0 and _probe_enabled() and not plan.probed:
+            plan.probed = True
+            asyncio.create_task(
+                _probe_rates(await self.shared_client(), plan.timeline.url, plan.timeline.total)
+            )
         _LOG.warning(
             "native window=%d span=%.3f ms=%d read_ms=%s read_bytes=%s read_calls=%s "
             "write_ms=%s commit_ms=%d out=%d spool=%d reserved=%d",
