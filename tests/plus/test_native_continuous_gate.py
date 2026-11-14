@@ -16,6 +16,8 @@ dropped the RASL pictures measured a 0.167 s hole every six seconds.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import re
 import struct
 import subprocess
@@ -233,6 +235,46 @@ def server_run(tmp_path_factory, hevc_fixture, hevc_provider):
         return metrics, peak
 
     metrics, peak = asyncio.run(run())
+
+    # Acceptance artifact: when a destination is named, write exactly what the
+    # playlist declares so the two executable gates can run against it.
+    destination = os.environ.get("OMAKASE_GATE_OUTPUT")
+    if destination:
+        target = Path(destination)
+        target.mkdir(parents=True, exist_ok=True)
+        for item in target.iterdir():
+            if item.is_file():
+                item.unlink()
+        (target / "init.mp4").write_bytes(records[0]["init"])
+        for audio in timeline.audios:
+            (target / audio.init).write_bytes(records[0]["audio_inits"][audio.ordinal])
+        for record in records:
+            (target / f"v{record['number']:05d}.m4s").write_bytes(record["video"])
+            for ordinal, data in record["audios"].items():
+                (target / f"a{ordinal}-{record['number']:05d}.m4s").write_bytes(data)
+        (target / "index.m3u8").write_bytes(streams.master_playlist(plan, ()))
+        (target / "stream.m3u8").write_bytes(streams.video_playlist(plan))
+        for audio in timeline.audios:
+            (target / audio.playlist).write_bytes(streams.audio_playlist(plan, audio.ordinal))
+        with (target / "measurements.json").open("w", encoding="utf-8") as stream:
+            stream.write(
+                json.dumps(
+                    {
+                        "source_bytes": len(hevc_provider.payload),
+                        "read_bytes": metrics["bytes"],
+                        "windows": len(records),
+                        "peak_spool_bytes": peak,
+                        "peak_spool_mib": round(peak / 1024 / 1024, 2),
+                        "lead_windows": native_hls._LEAD_WINDOWS,
+                        "keep_windows": native_hls._KEEP_WINDOWS,
+                        "spool_plan_limit_mib": native_hls._SPOOL_PLAN_LIMIT // 1024 // 1024,
+                        "spool_total_limit_mib": native_hls._SPOOL_TOTAL_LIMIT // 1024 // 1024,
+                    },
+                    indent=1,
+                )
+                + "\n"
+            )
+
     return {
         "folder": folder,
         "timeline": timeline,
