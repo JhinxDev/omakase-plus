@@ -1447,14 +1447,14 @@ class _ContinuousSession:
             "matroska",
             "-i",
             "pipe:0",
-            # Every session's media clock starts at zero. A session that opens at
-            # a cue otherwise starts at that cue's absolute time, and the muxer
-            # records the difference in a leading empty edit, so the one init a
-            # playlist names would describe only the session that wrote it. With
-            # the clock normalised every start writes the same init, and the
-            # session anchors that zero on the source time of its first block.
+            # Keep the source clock and do not renormalise it. A session that
+            # rebases its first packet to zero has to give the player an edit list
+            # to pull presentation back, and the two muxers then disagree about
+            # their head by one priming frame. With the source clock kept, a
+            # sample's media time *is* its source time, so picture, sound and
+            # subtitles cannot drift apart, and there is no edit list to explain.
             "-avoid_negative_ts",
-            "make_zero",
+            "disabled",
         ]
         if track.kind == "audio":
             audio = track.audio
@@ -1466,6 +1466,8 @@ class _ContinuousSession:
                 "-map",
                 f"0:a:{audio.ordinal}",
                 *codec,
+                "-use_editlist",
+                "0",
                 "-f",
                 "mp4",
                 "-frag_duration",
@@ -1482,6 +1484,8 @@ class _ContinuousSession:
             "-c:v",
             "copy",
             *tag,
+            "-use_editlist",
+            "0",
             "-f",
             "mp4",
             "-movflags",
@@ -1535,6 +1539,9 @@ class _ContinuousSession:
             task.cancel()
         for track in self.tracks:
             _kill(track.process)
+            _release(track.process)
+            if track.process is not None:
+                self.streams.running.discard(track.process)
         for path in list(self.plan.root.glob(".*.part")):
             try:
                 path.unlink(missing_ok=True)
@@ -1564,7 +1571,17 @@ class _ContinuousSession:
                     await process.wait()
             except (TimeoutError, asyncio.CancelledError):
                 _kill(process)
+                try:
+                    async with asyncio.timeout(2):
+                        await process.wait()
+                except (TimeoutError, asyncio.CancelledError):
+                    pass
             self.streams.running.discard(process)
+            # The child is gone, so its transport has to be closed explicitly.
+            # Leaving it to the garbage collector is what produced the
+            # "unclosed transport ... I/O operation on closed pipe" warnings at
+            # interpreter shutdown, where the pipe is already gone.
+            _release(process)
         _LOG.warning(
             "native continuous close=%s start=%d frontier=%d active=%d windows=%d "
             "read=%d read_ms=%d write_ms=%d peak_bytes=%d video_base=%s audio_base=%s",
@@ -1851,6 +1868,16 @@ class _ContinuousSession:
                 return self.audio_base
         elif self.video_base is not None:
             return self.video_base
+        if track.kind == "audio":
+            if not self.clock_ready.is_set():
+                # The picture anchor decides the session-wide delay. Audio
+                # fragments are small and can arrive first, so wait for it rather
+                # than anchoring against a delay that does not exist yet.
+                try:
+                    async with asyncio.timeout(5):
+                        await self.clock_ready.wait()
+                except TimeoutError:
+                    pass
         source_ms = self.feed_first.get(number)
         if source_ms is None:
             # No head report: fall back to the cue, which is the old contract and
@@ -1863,18 +1890,11 @@ class _ContinuousSession:
         # through, so it belongs in the anchor rather than being assumed away.
         base -= round(track.shift * track.timescale)
         if track.kind == "audio":
-            if not self.clock_ready.is_set():
-                # The video anchor decides the session-wide delay. Audio fragments
-                # are small and can arrive first, so wait for it rather than
-                # anchoring against a delay that does not exist yet.
-                try:
-                    async with asyncio.timeout(5):
-                        await self.clock_ready.wait()
-                except TimeoutError:
-                    pass
             base += round(self.clock_delay * track.timescale)
             self.audio_base = base
             return base
+        # A decode time cannot be written below zero, so whatever cannot be
+        # expressed becomes one common delay for the whole session.
         self.clock_delay = max(self.clock_delay, -base / track.timescale)
         base += round(self.clock_delay * track.timescale)
         self.video_base = base
@@ -3476,3 +3496,28 @@ def _kill(process):
         process.kill()
     except (ProcessLookupError, RuntimeError):
         pass
+
+
+def _release(process):
+    """Close a stopped child's pipes and transport.
+
+    ``asyncio.subprocess`` keeps a transport per child. When the reader tasks are
+    cancelled the transport is never closed, and closing it at interpreter
+    shutdown raises "I/O operation on closed pipe" from the transport's own
+    ``__repr__``. Closing it here, once the child is known to be gone, is what
+    makes teardown quiet instead of merely quiet-looking.
+    """
+    if process is None:
+        return
+    for stream in (getattr(process, "stdin", None),):
+        try:
+            if stream is not None and not stream.is_closing():
+                stream.close()
+        except (OSError, RuntimeError):
+            pass
+    transport = getattr(process, "_transport", None)
+    if transport is not None:
+        try:
+            transport.close()
+        except (OSError, RuntimeError):
+            pass

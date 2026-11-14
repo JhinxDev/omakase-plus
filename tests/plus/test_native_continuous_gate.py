@@ -423,8 +423,11 @@ def test_audio_and_video_share_the_window_clock(server_run):
         absent = [round(value, 3) for value in source_audio if round(value, 3) not in present]
         print(f"audio frames absent from the served pass: {absent}")
     pytest.xfail(
-        f"measured A/V error {audio_shift - video_shift:+.3f}s "
-        f"(picture {video_shift:+.3f}s, sound {audio_shift:+.3f}s) is wider than one frame"
+        "OPEN RELEASE BLOCKER: measured A/V error "
+        f"{audio_shift - video_shift:+.3f}s (picture {video_shift:+.3f}s, sound "
+        f"{audio_shift:+.3f}s). Both streams carry every source frame under one "
+        "constant translation, so this is the muxers' head offsets (picture "
+        "leading-picture depth vs AAC priming), not lost or displaced frames."
     )
 
 
@@ -889,3 +892,95 @@ def test_zero_sized_box_is_refused_without_buffering():
     reader = Stream(struct.pack(">I", 8) + b"free")
     box = asyncio.run(native_hls._read_box(reader))
     assert box == (b"free", struct.pack(">I", 8) + b"free")
+
+
+def test_subtitle_clipping_keeps_crossing_and_preceding_cues(tmp_path):
+    """A cue that crosses a window edge, and one that began before it.
+
+    Both are clipped to this window and moved onto its clock, and a window with
+    no cues at all must still be a valid (empty) WebVTT track, because the player
+    requests that URI for every segment the subtitle playlist declares.
+    """
+    cues = (
+        "WEBVTT\n\n"
+        "00:00:05.500 --> 00:00:06.200\nbefore the edge\n\n"
+        "00:00:08.000 --> 00:00:08.500\ninside the window\n\n"
+        "00:00:11.900 --> 00:00:12.400\ncrossing the far edge\n"
+    )
+    path = tmp_path / "crossing.vtt"
+    path.write_text(cues, encoding="utf-8")
+    native_hls._clip_webvtt(path, 6.006, 12.012)
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("WEBVTT")
+    # The cue that started before the window keeps only its visible part and is
+    # rebased to the window's own clock.
+    assert "00:00:00.000 --> 00:00:00.194" in text, text
+    assert "before the edge" in text
+    # The cue inside the window moves by the window start.
+    assert "00:00:01.994 --> 00:00:02.494" in text, text
+    # The cue that runs past the far edge is cut at it.
+    assert "00:00:05.894 --> 00:00:06.006" in text, text
+
+    empty = tmp_path / "empty.vtt"
+    empty.write_text(cues, encoding="utf-8")
+    native_hls._clip_webvtt(empty, 18.018, 24.024)
+    assert empty.read_text(encoding="utf-8") == "WEBVTT\n\n"
+
+
+def test_a_window_with_no_cues_still_serves_a_track(tmp_path, hevc_provider):
+    """A window with no cue in it must still answer its subtitle URI.
+
+    The fixture's cues sit at 2.0-4.0 s and 8.0-10.0 s, so the last window
+    (24.024 s onward) has none. The playlist still names that segment, so an empty
+    but valid WebVTT file is the correct answer; a missing file would break the
+    rendition at that point.
+    """
+    timeline, plan, streams = _make(tmp_path, hevc_provider)
+    last = len(timeline.segments) - 1
+
+    async def run():
+        try:
+            await _bounded(_open(streams, plan, last), 90)
+            await _bounded(streams.ensure_subtitles(plan, last, 1), 90)
+            text = plan.subtitle_segment_path(0, last).read_text(encoding="utf-8")
+            assert text.startswith("WEBVTT")
+            assert "-->" not in text, text
+        finally:
+            await streams_running(streams)
+
+    asyncio.run(run())
+
+
+def test_a_cue_is_still_served_after_a_restart(tmp_path, hevc_provider):
+    """Subtitles for an earlier window survive a session restarted elsewhere.
+
+    The subtitle path owns no media segment, so it must not evict or rewrite the
+    picture and sound of the window it is attached to.
+    """
+    timeline, plan, streams = _make(tmp_path, hevc_provider)
+    audio = timeline.audios[0]
+
+    async def run():
+        try:
+            await _bounded(_open(streams, plan, 3), 90)
+            await _bounded(streams.ensure_subtitles(plan, 3, 1), 90)
+            # A jump back to the window that has the cue restarts the media
+            # session; the subtitle must still come out on that window's clock and
+            # must not have disturbed the media already produced.
+            await _bounded(_open(streams, plan, 0), 90)
+            video_before = plan.video_segment_path(0).read_bytes()
+            audio_before = plan.audio_segment_path(audio, 0).read_bytes()
+            await _bounded(streams.ensure_subtitles(plan, 0, 1), 90)
+            assert plan.video_segment_path(0).read_bytes() == video_before
+            assert plan.audio_segment_path(audio, 0).read_bytes() == audio_before
+            local = plan.subtitle_segment_path(0, 0).read_text(encoding="utf-8")
+            assert "Hevc line" in local, local
+            start = timeline.segments[0][0]
+            stamp = next(line for line in local.splitlines() if "-->" in line).split("-->")[0].strip()
+            parts = stamp.split(":")
+            at = float(parts[2]) + int(parts[1]) * 60 + int(parts[0]) * 3600
+            assert abs((timeline.origin + start + at) - 2.0) < 0.06, (at, start)
+        finally:
+            await streams_running(streams)
+
+    asyncio.run(run())
