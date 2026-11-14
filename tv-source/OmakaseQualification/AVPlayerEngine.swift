@@ -290,7 +290,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
                 timeControlStatus: Self.controlLabel(player.timeControlStatus),
                 waitingReason: player.reasonForWaitingToPlay?.rawValue,
                 currentTime: CMTimeGetSeconds(item.currentTime()),
-                rate: player.rate,
+                rate: Double(player.rate),
                 loadedRanges: item.loadedTimeRanges.map(\.timeRangeValue).compactMap(Self.timeRange),
                 seekableRanges: item.seekableTimeRanges.map(\.timeRangeValue).compactMap(Self.timeRange),
                 accessEvents: (item.accessLog()?.events ?? []).map {
