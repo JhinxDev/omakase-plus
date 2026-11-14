@@ -955,7 +955,7 @@ def test_window_metrics_are_local_to_each_window(tmp_path, provider, monkeypatch
     async def fake_exec(*args, **kwargs):
         return _FakeProcess()
 
-    async def fake_feed(self, plan_obj, number, stdin):
+    async def fake_feed(self, plan_obj, number, stdin, from_number=None):
         return {
             "read_ms": 10 * (number + 1),
             "read_bytes": 1000 * (number + 1),

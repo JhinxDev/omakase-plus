@@ -2043,6 +2043,7 @@ def create_native_tv_test_router(
                                 subtitle_cache_key(cloud), cloud.direct, cloud.duration
                             )
                             subtitle_key = job.key if job is not None else ""
+                            native_subtitle_key = subtitle_key
                             native = cloud_streams.native.start(
                                 cloud.media_version,
                                 cloud.direct,

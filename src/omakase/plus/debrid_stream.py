@@ -1051,7 +1051,14 @@ class DebridStreams:
                 raise DebridLibraryError("This subtitle track is unavailable.", 404)
             return _playlist_reply(self.native.subtitle_playlist(plan, number), request)
         if asset == "init.mp4" or _AUDIO_INIT.fullmatch(asset):
-            await self._native_window(plan, 0, len(tracks))
+            # In continuous mode the session starts at the window this pass opens
+            # on, so an initialisation request must not pull it back to the top.
+            number = 0
+            if plan.timeline is not None and plan.continuous:
+                number = 0
+                if plan.warm is not None:
+                    number = self.native._position_index(plan.timeline, plan.warm)
+            await self._native_window(plan, number, len(tracks))
             path = plan.root / asset
             if not path.is_file():
                 raise DebridLibraryError("This stream is unavailable.", 404)
@@ -1090,7 +1097,7 @@ class DebridStreams:
             timeline = plan.timeline
             if timeline is None or not 0 <= number < len(timeline.segments):
                 raise DebridLibraryError("This subtitle is unavailable.", 404)
-            await self._native_window(plan, number, len(tracks))
+            await self._native_subtitles(plan, number, len(tracks))
             path = plan.subtitle_segment_path(track, number)
             if not path.is_file():
                 raise DebridLibraryError("This subtitle is unavailable.", 404)
@@ -1103,6 +1110,14 @@ class DebridStreams:
         except NativeError as error:
             warn(_LOG, "native_delivery", error.code, "native", plan.diagnostic_id)
             raise DebridLibraryError("This position could not be prepared.", 503) from None
+
+    async def _native_subtitles(self, plan, number, tracks):
+        """Subtitles come from the session's own cue feed when it carries them."""
+        try:
+            await self.native.ensure_subtitles(plan, number, tracks)
+        except NativeError as error:
+            warn(_LOG, "native_delivery", error.code, "native", plan.diagnostic_id)
+            raise DebridLibraryError("This subtitle is unavailable.", 503) from None
 
     async def deliver(self, entry, asset, request, authorize: Callable[[], None]):
         authorize()

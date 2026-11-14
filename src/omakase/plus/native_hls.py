@@ -133,6 +133,29 @@ _WINDOW_MAX_BYTES = 128 * 1024 * 1024
 # Bytes past the next segment's first cluster, enough for ffmpeg to finish the
 # window it was asked for.
 _WINDOW_TAIL_BYTES = 64 * 1024
+# Continuous remux (option B). One forward FFmpeg session per playback reads the
+# source from the last usable random access point and is never cut at a picture
+# boundary, so the source frame sequence is preserved. Only a bounded window of
+# fragments is retained: the pump pauses a few windows past the one the player
+# asked for and older fragments are evicted, so peak disk is the retention window
+# and never the episode.
+_CONTINUOUS_FLAG = "OMAKASE_NATIVE_CONTINUOUS"
+# Windows produced ahead of the requested one before the pump pauses on demand.
+_LEAD_WINDOWS = 4
+# Windows kept behind the requested one for a small backward seek.
+_KEEP_WINDOWS = 2
+# A straggling request for a segment from before a seek must not drag the session
+# back: a restart this soon after the last one is answered as a retry instead.
+_SEEK_COOLDOWN = 4.0
+# One fragment pair is buffered whole, so a broken size box cannot be buffered.
+_FRAGMENT_MAX_BYTES = 48 * 1024 * 1024
+_INIT_BOX_LIMIT = 4 * 1024 * 1024
+_INIT_BOXES = {b"ftyp", b"moov", b"styp"}
+# Audio is cut by the muxer before the playlist boundary can be known exactly, so
+# it is fragmented at about one AAC frame and partitioned by its own decode time.
+# Every fragment keeps an absolute clock, so the partition never moves a sample in
+# time, and the boundary error stays inside a frame and a half.
+_AUDIO_FRAGMENT_US = 25_000
 _VIDEO_SEGMENT = re.compile(r"v([0-9]{5})\.m4s")
 _AUDIO_SEGMENT = re.compile(r"a([0-9])-([0-9]{5})\.m4s")
 _AUDIO_PLAYLIST = re.compile(r"audio([0-9])\.m3u8")
@@ -223,6 +246,12 @@ class NativePlan:
     # producers cannot both pass admission against the same free space.
     reserved_bytes: int = 0
     probed: bool = False
+    # Continuous remux (option B): one forward session for this plan.
+    continuous: bool = False
+    session: object = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    seek_at: float = 0.0
+    backward_at: float = 0.0
 
     def video_segment_path(self, number: int) -> Path:
         return self.root / f"v{number:05d}.m4s"
@@ -809,6 +838,834 @@ def patch_decode_time(data, base):
     return bytes(out)
 
 
+# --- continuous remux (option B) --------------------------------------------
+
+
+def continuous_enabled():
+    return os.environ.get(_CONTINUOUS_FLAG) == "1"
+
+
+async def _read_exact_stream(stream, count):
+    data = bytearray()
+    while len(data) < count:
+        part = await stream.read(count - len(data))
+        if not part:
+            break
+        data.extend(part)
+    return bytes(data)
+
+
+async def _read_box(stream):
+    """One whole ISO-BMFF box from a child's stdout, or None at end of stream."""
+    header = await _read_exact_stream(stream, 8)
+    if len(header) < 8:
+        return None
+    size = struct.unpack(">I", header[:4])[0]
+    kind = header[4:8]
+    prefix = header
+    offset = 8
+    if size == 1:
+        large = await _read_exact_stream(stream, 8)
+        if len(large) < 8:
+            return None
+        size = struct.unpack(">Q", large)[0]
+        prefix, offset = header + large, 16
+    if size < offset or size > _FRAGMENT_MAX_BYTES:
+        # A live pipe has no end of file, so size zero is never usable here.
+        raise NativeError("box_size")
+    body = await _read_exact_stream(stream, size - offset)
+    if len(body) < size - offset:
+        return None
+    return kind, prefix + body
+
+
+def fragment_bases(data):
+    """(payload offset, byte width, decode time) for every tfdt in a fragment."""
+    found = []
+    for kind, _start, body, size in _boxes(data, 0, len(data)):
+        if kind != b"moof":
+            continue
+        for kind2, _start2, body2, size2 in _boxes(data, body, body + size):
+            if kind2 != b"traf":
+                continue
+            for kind3, _start3, body3, _size3 in _boxes(data, body2, body2 + size2):
+                if kind3 != b"tfdt":
+                    continue
+                width = 8 if data[body3] == 1 else 4
+                at = body3 + 4
+                found.append((at, width, int.from_bytes(data[at : at + width], "big")))
+    return found
+
+
+def _mvhd_timescale(init, body):
+    version = init[body]
+    at = body + 20 if version == 1 else body + 12
+    try:
+        return struct.unpack(">I", init[at : at + 4])[0] or 1000
+    except struct.error:
+        return 1000
+
+
+def edit_shift(init):
+    """Seconds between media time and presentation time, from the edit list.
+
+    The muxer answers a stream whose first packet is reordered with an edit list:
+    an empty edit hides the delay the decoder needs and the real edit names the
+    media time of the first shown picture. A fragmented segment written to a pipe
+    carries that list in its init, and it is the only reliable statement of where
+    the first picture really is, so the session reads it instead of assuming.
+    """
+    if not init:
+        return 0.0
+    media_ts = media_timescale(init) or 1000
+    movie_ts = 1000
+    for kind, _start, body, size in _boxes(init, 0, len(init)):
+        if kind != b"moov":
+            continue
+        for kind2, _start2, body2, size2 in _boxes(init, body, body + size):
+            if kind2 == b"mvhd":
+                movie_ts = _mvhd_timescale(init, body2)
+            if kind2 != b"trak":
+                continue
+            for kind3, _start3, body3, size3 in _boxes(init, body2, body2 + size2):
+                if kind3 != b"edts":
+                    continue
+                for kind4, _start4, body4, size4 in _boxes(init, body3, body3 + size3):
+                    if kind4 != b"elst":
+                        continue
+                    version = init[body4]
+                    count = int.from_bytes(init[body4 + 4 : body4 + 8], "big")
+                    empty = 0
+                    media = 0
+                    at = body4 + 8
+                    width = 8 if version == 1 else 4
+                    empty_value = (1 << (width * 8)) - 1
+                    for _ in range(min(count, 8)):
+                        if at + width * 2 > body4 + size4:
+                            break
+                        duration = int.from_bytes(init[at : at + width], "big")
+                        media_time = int.from_bytes(
+                            init[at + width : at + width * 2], "big"
+                        )
+                        at += width * 2
+                        if media_time == empty_value:
+                            empty += duration
+                            continue
+                        media = media_time
+                        break
+                    return empty / movie_ts - media / media_ts
+    return 0.0
+
+
+def _trun_lowest_offset(data, body, size):
+    version = data[body]
+    flags = int.from_bytes(data[body + 1 : body + 4], "big")
+    count = int.from_bytes(data[body + 4 : body + 8], "big")
+    at = body + 8
+    if flags & 0x000001:
+        at += 4
+    if flags & 0x000004:
+        at += 4
+    if not flags & 0x000800:
+        return 0
+    fixed = 0
+    for bit in (0x000100, 0x000200, 0x000400):
+        if flags & bit:
+            fixed += 4
+    limit = body + size
+    stride = fixed + 4
+    lowest = None
+    for index in range(count):
+        offset = at + stride * index + fixed
+        if offset + 4 > limit:
+            break
+        value = int.from_bytes(data[offset : offset + 4], "big", signed=version == 1)
+        lowest = value if lowest is None else min(lowest, value)
+    return lowest if lowest is not None else 0
+
+
+def minimum_composition_offset(data):
+    """Smallest composition offset among a fragment's samples, in its timescale.
+
+    The picture a fragment presents first is not necessarily its first sample:
+    open-GOP fragments begin with leading pictures that are shown before the
+    keyframe they follow. The smallest offset is where the fragment really
+    starts on the presentation timeline, so that is what decides its window.
+    """
+    for kind, _start, body, size in _boxes(data, 0, len(data)):
+        if kind != b"moof":
+            continue
+        for kind2, _start2, body2, size2 in _boxes(data, body, body + size):
+            if kind2 != b"traf":
+                continue
+            lowest = None
+            for kind3, _start3, body3, size3 in _boxes(data, body2, body2 + size2):
+                if kind3 != b"trun":
+                    continue
+                value = _trun_lowest_offset(data, body3, size3)
+                lowest = value if lowest is None else min(lowest, value)
+            if lowest is not None:
+                return lowest
+    return 0
+
+
+def first_composition_offset(data):
+    """Composition offset of the first sample in a fragment, in its timescale.
+
+    Kept as a measurement tool for the qualification: it says how far the first
+    decoded sample runs before the picture the player shows. The session itself
+    does not need it, because the muxer writes an edit list for the same offset
+    and the measured first presentation time is already the cue plus the source's
+    own container start delay.
+    """
+    for kind, _start, body, size in _boxes(data, 0, len(data)):
+        if kind != b"moof":
+            continue
+        for kind2, _start2, body2, size2 in _boxes(data, body, body + size):
+            if kind2 != b"traf":
+                continue
+            for kind3, _start3, body3, size3 in _boxes(data, body2, body2 + size2):
+                if kind3 != b"trun":
+                    continue
+                version = data[body3]
+                flags = int.from_bytes(data[body3 + 1 : body3 + 4], "big")
+                position = body3 + 4
+                if flags & 0x000001:
+                    position += 4
+                if flags & 0x000004:
+                    position += 4
+                if flags & 0x000100:
+                    position += 4
+                if flags & 0x000200:
+                    position += 4
+                if flags & 0x000400:
+                    position += 4
+                if not flags & 0x000800:
+                    return 0
+                if position + 4 > body3 + size3:
+                    return 0
+                return int.from_bytes(
+                    data[position : position + 4], "big", signed=version == 1
+                )
+    return 0
+
+
+def shift_decode_times(data, extra):
+    """Add ``extra`` to every ``tfdt`` of a fragment, keeping its own spacing.
+
+    One continuous session numbers its output from the cue it started on. Adding
+    the playlist time of that cue puts every fragment on the pass timeline, so a
+    restart elsewhere does not move any sample.
+    """
+    bases = fragment_bases(data)
+    if not bases:
+        raise ValueError("no_tfdt")
+    out = bytearray(data)
+    for at, width, value in bases:
+        moved = value + extra
+        if moved < 0 or moved >= 1 << (width * 8):
+            raise ValueError("decode_time")
+        out[at : at + width] = moved.to_bytes(width, "big")
+    return bytes(out)
+
+
+class _Collector:
+    """A stdin-shaped sink that keeps bytes, so one head can feed every consumer."""
+
+    def __init__(self):
+        self.data = bytearray()
+
+    def write(self, data):
+        self.data.extend(data)
+
+    async def drain(self):
+        return None
+
+    def is_closing(self):
+        return False
+
+
+class _ContinuousTrack:
+    """One FFmpeg consumer of a session's shared byte stream."""
+
+    def __init__(self, kind, ordinal=0, audio=None):
+        self.kind = kind
+        self.ordinal = ordinal
+        self.audio = audio
+        self.process = None
+        self.init = b""
+        self.timescale = None
+        self.window = -1
+        self.target = None
+        self.frontier = -1
+        self.failed = False
+        self.fragments = 0
+        self.tail = None
+        # Presentation minus media time, from this track's own edit list, and from
+        # the init the playlist actually pins (they differ for a later session).
+        self.shift = 0.0
+        self.pinned_shift = 0.0
+
+
+class _ContinuousSession:
+    """One forward remux, from the last usable random access point.
+
+    ``start`` is the playlist window whose cue keyframe the source is trimmed to,
+    so the first block the demuxer sees is the keyframe itself. Nothing after that
+    is cut: the muxer emits every following picture in source order, which is what
+    keeps the frame sequence intact where per-window cutting lost four frames at
+    every CRA. Each fragment is filed into the playlist window its own decode time
+    belongs to, and every fragment keeps an absolute clock, so a restart at another
+    cue lands on the same timeline the playlist already declares.
+    """
+
+    def __init__(self, streams, plan, start):
+        self.streams = streams
+        self.plan = plan
+        self.timeline = plan.timeline
+        count = len(self.timeline.segments)
+        self.start = max(0, min(int(start), count - 1))
+        # The feed begins one cue before the window the session opens on. An
+        # open-GOP CRA cannot be entered cold: its leading pictures reference the
+        # previous GOP, so a muxer given a stream that starts at the CRA drops
+        # them and presents the first picture five frames late. Reading from the
+        # cue before it preserves the source relationship and lands the first
+        # picture of the window where the playlist says it is.
+        self.feed_start = max(0, self.start - 1)
+        self.tracks: list[_ContinuousTrack] = []
+        # The highest window the player has asked for.
+        self.active = self.start
+        self.peak_bytes = 0
+        self.error = None
+        self.closed = False
+        self.feed_done = False
+        self.readers_done = 0
+        self.demand = asyncio.Event()
+        self.pump: asyncio.Task | None = None
+        self.tasks: list[asyncio.Task] = []
+        self.metrics = {"bytes": 0, "read_ms": 0, "write_ms": 0, "windows": 0}
+        # Presentation anchoring: set by the first video fragment, then used by
+        # every track so picture and sound share one clock across a restart.
+        self.video_base = None
+        self.audio_base = None
+        self.clock_ready = asyncio.Event()
+
+    # -- state --------------------------------------------------------------
+
+    @property
+    def frontier(self):
+        media = [track.frontier for track in self.tracks if track.kind != "subtitle"]
+        return min(media) if media else self.start - 1
+
+    def ready(self, number):
+        """Every media rendition of this window is on disk."""
+        try:
+            if self.plan.video_segment_path(number).stat().st_size <= 16:
+                return False
+            for audio in self.timeline.audios:
+                if self.plan.audio_segment_path(audio, number).stat().st_size <= 16:
+                    return False
+        except OSError:
+            return False
+        return True
+
+    def can_serve(self, number):
+        """True when continuing this session is a better answer than restarting."""
+        if self.closed or self.error is not None:
+            return False
+        if number < self.start:
+            return False
+        if number > self.active + _LEAD_WINDOWS:
+            return False
+        # A window already passed that is no longer on disk has to be remade, and
+        # the session cannot walk backwards.
+        return not (number <= self.frontier and not self.ready(number))
+
+    def fail(self, code):
+        if self.error is None:
+            self.error = code or "generation_failed"
+            warn(_LOG, "native_continuous", self.error, "native", self.plan.diagnostic_id)
+
+    def _ahead(self):
+        if any(track.failed for track in self.tracks if track.kind != "subtitle"):
+            return True
+        if self.frontier < self.start:
+            return False
+        lead = 1 if self.streams.plan_usage(self.plan) > _SPOOL_PLAN_LIMIT * 3 // 4 else _LEAD_WINDOWS
+        return self.frontier >= self.active + lead
+
+    # -- lifecycle ----------------------------------------------------------
+
+    def _command(self, track):
+        args = [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-probesize",
+            "1000000",
+            "-analyzeduration",
+            "1000000",
+            # Keep the source clock. Renormalising a stream whose first packet is
+            # reordered pushes every presentation time by a reorder delay and hides
+            # it in an edit list; with the source clock kept, decode times stay
+            # absolute and the only translation left is subtracting the origin.
+            # ``-copyts`` is an input option, so it must precede ``-i``.
+            "-copyts",
+            "-f",
+            "matroska",
+            "-i",
+            "pipe:0",
+            "-avoid_negative_ts",
+            "disabled",
+        ]
+        if track.kind == "audio":
+            audio = track.audio
+            codec = ["-c:a", "copy"] if audio.copyable else [
+                "-c:a", "aac", "-b:a", "192k", "-ac", "2"
+            ]
+            return [
+                *args,
+                "-map",
+                f"0:a:{audio.ordinal}",
+                *codec,
+                "-f",
+                "mp4",
+                "-frag_duration",
+                str(_AUDIO_FRAGMENT_US),
+                "-movflags",
+                "+frag_keyframe+empty_moov+default_base_moof+delay_moov",
+                "pipe:1",
+            ]
+        tag = ["-tag:v", "hvc1"] if self.timeline.video_codec == "hevc" else []
+        return [
+            *args,
+            "-map",
+            "0:v:0",
+            "-c:v",
+            "copy",
+            *tag,
+            "-f",
+            "mp4",
+            "-movflags",
+            "+frag_keyframe+empty_moov+default_base_moof+delay_moov",
+            "pipe:1",
+        ]
+
+    async def open(self):
+        self.tracks = [_ContinuousTrack("video")]
+        for audio in self.timeline.audios:
+            self.tracks.append(_ContinuousTrack("audio", audio.ordinal, audio))
+        if not self.streams._admitted():
+            self.error = "reserve"
+            raise NativeError("reserve")
+        for track in self.tracks:
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *self._command(track),
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            except OSError as error:
+                self.shutdown("process_failed")
+                self.fail("process_failed")
+                raise NativeError("process_failed") from error
+            track.process = process
+            track.tail = _Tail()
+            self.streams.running.add(process)
+            track.stderr_task = asyncio.create_task(_drain(process.stderr, track.tail))
+            self.tasks.append(track.stderr_task)
+            self.tasks.append(asyncio.create_task(self._read_fragments(track)))
+        self.pump = asyncio.create_task(self._pump_run())
+        _LOG.warning(
+            "native continuous start=%d window=%.3f tracks=%d origin=%.3f",
+            self.start,
+            self.timeline.segments[self.start][0],
+            len(self.tracks),
+            self.timeline.origin,
+        )
+
+    def shutdown(self, reason="closed"):
+        """Stop the session now: used by the synchronous registry close path."""
+        if self.closed:
+            return
+        self.closed = True
+        self.demand.set()
+        if self.pump is not None:
+            self.pump.cancel()
+        for task in self.tasks:
+            task.cancel()
+        for track in self.tracks:
+            _kill(track.process)
+        for path in list(self.plan.root.glob(".*.part")):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                continue
+
+    async def close(self, reason="closed"):
+        """Stop the session with every wait bounded.
+
+        A restart runs inside this call, so it must never be able to wait on a
+        producer that is itself waiting on backpressure, on a pipe, or on a lock
+        this caller holds: the children are killed first, and then their tasks and
+        processes are collected with a deadline instead of an unbounded await.
+        """
+        self.shutdown(reason)
+        pending = [task for task in [self.pump, *self.tasks] if task is not None]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.wait(pending, timeout=10)
+        for track in self.tracks:
+            process = track.process
+            if process is None:
+                continue
+            try:
+                async with asyncio.timeout(5):
+                    await process.wait()
+            except (TimeoutError, asyncio.CancelledError):
+                _kill(process)
+            self.streams.running.discard(process)
+        _LOG.warning(
+            "native continuous close=%s start=%d frontier=%d active=%d windows=%d "
+            "read=%d read_ms=%d write_ms=%d peak_bytes=%d video_base=%s audio_base=%s",
+            reason,
+            self.start,
+            self.frontier,
+            self.active,
+            self.metrics["windows"],
+            self.metrics["bytes"],
+            self.metrics["read_ms"],
+            self.metrics["write_ms"],
+            self.peak_bytes,
+            self.video_base,
+            self.audio_base,
+        )
+
+    # -- the pump -----------------------------------------------------------
+
+    async def _pump_run(self):
+        timeline = self.timeline
+        offset = timeline.clusters[self.feed_start]
+        keyframe_ms = int(
+            round((timeline.origin + timeline.segments[self.feed_start][0]) * 1000)
+        )
+        client = await self.streams.shared_client()
+        reader = _RangeReader(
+            timeline.url, offset, timeline.total, client=client, limit=timeline.total
+        )
+        try:
+            collector = _Collector()
+            await self.streams._write_head(
+                reader, timeline, keyframe_ms, timeline.video_number, collector
+            )
+            head = bytes(collector.data)
+            if len(head) < 32:
+                raise NativeError("short_window")
+            await self._broadcast(head)
+            while not self.closed:
+                if self._ahead():
+                    # Nothing is read past the retention window: the provider is
+                    # not walked ahead of the viewer, so the spool stays bounded.
+                    self.demand.clear()
+                    if self._ahead():
+                        try:
+                            async with asyncio.timeout(_ABANDON_SECONDS):
+                                await self.demand.wait()
+                        except TimeoutError:
+                            self.closed = True
+                            break
+                    continue
+                if reader.buffer:
+                    data = bytes(reader.buffer)
+                    reader.buffer.clear()
+                    await self._broadcast(data)
+                    continue
+                if reader.position >= reader.end:
+                    break
+                if not await reader._fill(_READ_CHUNK):
+                    break
+            await self._drain_tail()
+        except asyncio.CancelledError:
+            raise
+        except (NativeError, OSError, ValueError, httpx.HTTPError) as error:
+            self.fail(getattr(error, "code", "pump_failed"))
+        finally:
+            self.metrics["bytes"] = reader.read_bytes
+            self.metrics["read_ms"] = round(reader.read_seconds * 1000)
+            self.feed_done = True
+            await reader.close()
+            _LOG.warning(
+                "native continuous feed=done start=%d bytes=%d ms=%d closed=%s error=%s",
+                self.start,
+                self.metrics["bytes"],
+                self.metrics["read_ms"],
+                self.closed,
+                self.error,
+            )
+
+    async def _broadcast(self, data):
+        for track in self.tracks:
+            process = track.process
+            if process is None or track.failed:
+                continue
+            try:
+                process.stdin.write(data)
+                started = time.monotonic()
+                await process.stdin.drain()
+                self.metrics["write_ms"] += round((time.monotonic() - started) * 1000)
+            except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError):
+                # A consumer that stopped is a failed session, not a closed pipe:
+                # only the end of the feed is allowed to close one.
+                track.failed = True
+                self.fail("process_failed")
+
+    async def _drain_tail(self):
+        """Close every stdin so each muxer flushes its last fragment."""
+        for track in self.tracks:
+            process = track.process
+            if process is None:
+                continue
+            try:
+                process.stdin.close()
+            except (BrokenPipeError, OSError, RuntimeError):
+                continue
+
+    # -- fragments ----------------------------------------------------------
+
+    async def _read_fragments(self, track):
+        stream = track.process.stdout
+        try:
+            while not self.closed:
+                box = await _read_box(stream)
+                if box is None:
+                    break
+                kind, data = box
+                if kind in _INIT_BOXES:
+                    if len(track.init) + len(data) > _INIT_BOX_LIMIT:
+                        raise NativeError("init_too_large")
+                    track.init += data
+                    if kind == b"moov":
+                        # The initialisation segment is the track description, not
+                        # a window: it is written once, atomically, and never
+                        # evicted or replaced by a later session.
+                        path = (
+                            self.plan.root / "init.mp4"
+                            if track.kind == "video"
+                            else self.plan.root / track.audio.init
+                        )
+                        if not path.is_file():
+                            await asyncio.to_thread(_write_atomic, path, track.init)
+                            pinned = track.init
+                        else:
+                            # The playlist pins one init for the whole pass, so a
+                            # restarted session must present its media through that
+                            # init's clock, not the clock its own muxer chose.
+                            try:
+                                pinned = await asyncio.to_thread(path.read_bytes)
+                            except OSError:
+                                pinned = track.init
+                        if track.timescale is None:
+                            track.timescale = media_timescale(track.init)
+                        track.shift = edit_shift(track.init)
+                        track.pinned_shift = edit_shift(pinned)
+                    continue
+                if kind != b"moof":
+                    continue
+                media = await _read_box(stream)
+                if media is None:
+                    break
+                if media[0] != b"mdat":
+                    raise NativeError("fragment")
+                await self._place(track, data + media[1])
+        except asyncio.CancelledError:
+            raise
+        except (NativeError, OSError, ValueError) as error:
+            track.failed = True
+            self.fail(getattr(error, "code", "process_failed"))
+        finally:
+            self._publish_open(track)
+            if track.kind != "subtitle":
+                self.readers_done += 1
+            # Read the child's last words before reporting them: the stderr drain
+            # is a separate task and may still be behind at this point.
+            drain = getattr(track, "stderr_task", None)
+            if drain is not None:
+                try:
+                    async with asyncio.timeout(5):
+                        await drain
+                except (TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
+                    drain.cancel()
+            _LOG.warning(
+                "native continuous track=done kind=%s window=%d frontier=%d "
+                "fragments=%d rc=%s failed=%s ffmpeg=%s",
+                track.kind,
+                track.window,
+                track.frontier,
+                track.fragments,
+                None if track.process is None else track.process.returncode,
+                track.failed,
+                track.tail.text() if track.tail is not None else "",
+            )
+
+    def _window_at(self, seconds):
+        for number, (start, end) in enumerate(self.timeline.segments):
+            if start - 1e-6 <= seconds < end:
+                return number
+        return len(self.timeline.segments) - 1
+
+    def _segment_path(self, track, number):
+        if track.kind == "video":
+            return self.plan.video_segment_path(number)
+        return self.plan.audio_segment_path(track.audio, number)
+
+    async def _place(self, track, fragment):
+        if not track.timescale:
+            raise NativeError("init_timescale")
+        bases = fragment_bases(fragment)
+        if not bases:
+            raise NativeError("fragment_clock")
+        value = min(item[2] for item in bases)
+        base = await self._base_for(track, fragment)
+        data = shift_decode_times(fragment, base)
+        if track.kind == "video":
+            # One fragment per source keyframe and one window per cue point, in
+            # the same order, so order is the reliable mapping. The timestamps are
+            # only a check: a fragment whose own clock disagrees with the window it
+            # belongs to by a whole window means the cue table and the keyframes
+            # have drifted apart, and serving that would be a wrong timeline.
+            number = self.feed_start + track.fragments
+            shown = self._presentation(track, base, fragment, value)
+            if track.fragments < 3:
+                _LOG.warning(
+                    "native continuous video n=%d tfdt=%.3f shown=%.3f expect=%d ts=%d",
+                    track.fragments,
+                    value / track.timescale,
+                    shown,
+                    number,
+                    track.timescale,
+                )
+            estimate = self._window_at(shown)
+            if abs(estimate - number) >= 2:
+                raise NativeError("timeline_mismatch")
+            number = min(number, len(self.timeline.segments) - 1)
+        else:
+            number = self._window_at(self._presentation(track, base, fragment, value))
+        if track.fragments < 3:
+            _LOG.warning(
+                "native continuous place kind=%s n=%d tfdt=%d cts=%d shift=%.3f "
+                "base=%d shown=%.3f window=%d ts=%d",
+                track.kind,
+                track.fragments,
+                value,
+                first_composition_offset(fragment) if track.kind == "video" else 0,
+                track.shift,
+                base,
+                self._presentation(track, base, fragment, value),
+                number,
+                track.timescale,
+            )
+        if number != track.window:
+            self._publish_open(track)
+            path = self._segment_path(track, number)
+            track.target = path
+            track.window = number
+            part = path.parent / f".{path.name}.part"
+            try:
+                part.unlink(missing_ok=True)
+            except OSError:
+                pass
+            track.part = part
+        await asyncio.to_thread(self._append, track.part, data)
+        track.fragments += 1
+
+    async def _base_for(self, track, fragment):
+        """The constant that puts this track's decode times on the pass timeline.
+
+        Measured contract: a fragmented segment written to a pipe keeps media
+        times near zero and records where it really belongs in the track's edit
+        list, so presentation = decode + composition offset + edit shift. The
+        base lines the first shown picture of the session up with the cue the
+        session opened on, and every later fragment keeps that same constant.
+        """
+        if track.kind == "video":
+            if self.video_base is None:
+                # Presentation = base + decode + composition offset + this
+                # session's edit shift. One constant lines the first shown picture
+                # up with the cue the session opened on; later fragments keep it.
+                base = round(self.timeline.segments[self.feed_start][0] * track.timescale)
+                base -= minimum_composition_offset(fragment)
+                base -= round(track.shift * track.timescale)
+                self.video_base = max(0, base)
+                self.clock_ready.set()
+            return self.video_base
+        if self.audio_base is None:
+            base = round(self.timeline.segments[self.feed_start][0] * track.timescale)
+            base -= round(track.shift * track.timescale)
+            self.audio_base = max(0, base)
+        return self.audio_base
+
+    @staticmethod
+    def _presentation(track, base, fragment, value):
+        """Where the fragment's first picture is shown, in pass seconds."""
+        offset = minimum_composition_offset(fragment) if track.kind == "video" else 0
+        return (base + value + offset + round(track.shift * track.timescale)) / track.timescale
+
+    @staticmethod
+    def _append(path, data):
+        with path.open("ab") as stream:
+            stream.write(data)
+
+    def _publish_open(self, track):
+        path = getattr(track, "part", None)
+        if path is None or track.target is None:
+            return
+        track.part = None
+        try:
+            if path.stat().st_size > 16:
+                path.replace(track.target)
+            else:
+                path.unlink(missing_ok=True)
+        except OSError:
+            return
+        self._published(track, track.window)
+
+    def _published(self, track, number):
+        track.frontier = max(track.frontier, number)
+        self.metrics["windows"] += 1
+        usage = self.streams.plan_usage(self.plan)
+        self.peak_bytes = max(self.peak_bytes, usage)
+        _LOG.warning(
+            "native continuous kind=%s window=%d start=%d frontier=%d end=%.3f "
+            "spool=%d fragments=%d",
+            track.kind,
+            number,
+            self.start,
+            self.frontier,
+            self.timeline.segments[number][1],
+            usage,
+            track.fragments,
+        )
+        self._retain()
+
+    def _retain(self):
+        """Delete windows the player has passed, so peak disk is the retention."""
+        keep_from = self.active - _KEEP_WINDOWS
+        if keep_from <= self.start:
+            return
+        for number in range(max(self.start, keep_from - 2), keep_from):
+            for path in (
+                self.plan.video_segment_path(number),
+                *[self.plan.audio_segment_path(audio, number) for audio in self.timeline.audios],
+            ):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    continue
+
 # --- presentation helpers ---------------------------------------------------
 
 
@@ -981,6 +1838,7 @@ class NativeStreams:
             warn(_LOG, "native_start", "resource_unavailable", "native", None)
             return None
         plan = NativePlan(key, url, float(duration), root, subtitle_key, warm=warm)
+        plan.continuous = continuous_enabled()
         self.plans[key] = plan
         plan.task = asyncio.create_task(self._build(plan))
         return plan
@@ -1043,6 +1901,10 @@ class NativeStreams:
         timeline = plan.timeline
         if timeline is None:
             return
+        if plan.continuous:
+            # A continuous session starts on the first request, when the route
+            # already knows how many subtitle renditions the player will see.
+            return
         opening = 0
         if plan.warm is not None:
             opening = self._position_index(timeline, plan.warm)
@@ -1057,7 +1919,11 @@ class NativeStreams:
         timeline = plan.timeline
         if timeline is None:
             raise NativeError("no_timeline")
-        lines = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-INDEPENDENT-SEGMENTS"]
+        # No EXT-X-INDEPENDENT-SEGMENTS: a continuous session cuts at the source's
+        # own random access points, and an open-GOP CRA is not a point a decoder
+        # can enter cold. Claiming independence the media does not have is worse
+        # than leaving the tag out.
+        lines = ["#EXTM3U", "#EXT-X-VERSION:7"]
         for number, audio in enumerate(timeline.audios):
             lines.append(
                 f'#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="'
@@ -1087,13 +1953,15 @@ class NativeStreams:
         return ("\n".join(lines) + "\n").encode("utf-8")
 
     def _segment_lines(self, timeline):
+        # Every segment carries an absolute decode time on one pass timeline, in
+        # video, audio and subtitles alike, so there is no discontinuity to
+        # declare and no independent-segment guarantee to make.
         lines = [
             "#EXTM3U",
             "#EXT-X-VERSION:7",
             f"#EXT-X-TARGETDURATION:{timeline.target_duration}",
             "#EXT-X-MEDIA-SEQUENCE:0",
             "#EXT-X-PLAYLIST-TYPE:VOD",
-            "#EXT-X-INDEPENDENT-SEGMENTS",
         ]
         return lines
 
@@ -1103,14 +1971,7 @@ class NativeStreams:
             raise NativeError("no_timeline")
         lines = self._segment_lines(timeline)
         lines.append('#EXT-X-MAP:URI="init.mp4"')
-        lines.append("#EXT-X-DISCONTINUITY-SEQUENCE:0")
         for number, (start, end) in enumerate(timeline.segments):
-            # Each window is an independent fragment starting at a CRA picture of
-            # an open-GOP HEVC stream, so picture order restarts per segment. The
-            # discontinuity tells the player to reset its decoder instead of
-            # treating two independent fragments as one continuous stream, which
-            # is what produced the video stutter while audio stayed clean.
-            lines.append("#EXT-X-DISCONTINUITY")
             lines.append(f"#EXTINF:{max(0.04, end - start):.3f},")
             lines.append(f"v{number:05d}.m4s")
         lines.append("#EXT-X-ENDLIST")
@@ -1151,6 +2012,10 @@ class NativeStreams:
             raise NativeError("no_timeline")
         if not 0 <= number < len(timeline.segments):
             raise NativeError("no_segment")
+        if plan.continuous:
+            await self._ensure_continuous(plan, number, timeout, subtitles)
+            plan.touched = self.clock()
+            return
         if self._window_ready(plan, number, subtitles):
             plan.touched = self.clock()
             return
@@ -1182,6 +2047,116 @@ class NativeStreams:
             raise NativeError("generation_failed")
         plan.touched = self.clock()
         self._prefetch(plan, number + 1, subtitles)
+
+    # -- continuous mode ----------------------------------------------------
+
+    def _media_ready(self, plan, number):
+        try:
+            if (plan.root / "init.mp4").stat().st_size <= 16:
+                return False
+            for audio in plan.timeline.audios:
+                if (plan.root / audio.init).stat().st_size <= 16:
+                    return False
+            if plan.video_segment_path(number).stat().st_size <= 16:
+                return False
+            for audio in plan.timeline.audios:
+                if plan.audio_segment_path(audio, number).stat().st_size <= 16:
+                    return False
+        except OSError:
+            return False
+        return True
+
+    def _subtitle_ready(self, plan, number, tracks):
+        for track in range(min(int(tracks or 0), _MAX_SUBTITLE_TRACKS)):
+            try:
+                if plan.subtitle_segment_path(track, number).stat().st_size <= 0:
+                    return False
+            except OSError:
+                return False
+        return True
+
+    async def _wait_for(self, plan, session, number, timeout, check):
+        """Wait for one window, but never for a session that was restarted away."""
+        try:
+            async with asyncio.timeout(timeout):
+                while True:
+                    if check():
+                        return
+                    if plan.session is not session:
+                        # Another request restarted the session at another cue.
+                        # Answering this one from that timeline would be the
+                        # substitution this design removes, so it is a retry.
+                        raise NativeError("restarted")
+                    if session.error is not None:
+                        raise NativeError(session.error)
+                    if session.feed_done and session.readers_done >= len(session.tracks):
+                        # The source ended and every muxer is finished, so this
+                        # window can never be produced. Fail now instead of
+                        # waiting out the deadline for something impossible.
+                        raise NativeError("incomplete")
+                    await asyncio.sleep(0.05)
+        except TimeoutError:
+            warn(_LOG, "native_window", "deadline", "native", plan.diagnostic_id)
+            raise NativeError("deadline") from None
+
+    async def _ensure_continuous(self, plan, number, timeout, subtitles):
+        """Serve one window from a single forward session, restarting for a seek."""
+        if self._media_ready(plan, number):
+            return
+        async with plan.lock:
+            session = plan.session
+            if session is None or not session.can_serve(number):
+                backward = session is not None and number < session.start
+                # Only a backward restart can thrash: a straggling request for a
+                # segment from before a seek asks for one, and honouring a burst
+                # of them would keep tearing down the position the viewer chose.
+                # Forward requests are served by continuing the same session.
+                if backward and self.clock() - plan.backward_at < _SEEK_COOLDOWN:
+                    warn(_LOG, "native_window", "stale", "native", plan.diagnostic_id)
+                    raise NativeError("stale")
+                if session is not None:
+                    await session.close("restart")
+                session = _ContinuousSession(self, plan, number)
+                plan.session = session
+                if backward:
+                    plan.backward_at = self.clock()
+                try:
+                    await session.open()
+                except NativeError:
+                    plan.session = None
+                    raise
+                warn(_LOG, "native_continuous", "started", "native", plan.diagnostic_id)
+            session.active = max(session.active, number)
+            session.demand.set()
+        await self._wait_for(
+            plan, session, number, timeout, lambda: self._media_ready(plan, number)
+        )
+
+    async def ensure_subtitles(self, plan, number, tracks):
+        """Subtitle segments come from one bounded window read, on demand only.
+
+        Cues are not taken from the continuous feed: a text track reports nothing
+        during silence, so a shared cue stream cannot prove when a window is
+        complete and a lane that lags the feed loses cues. This path is the one
+        already qualified for windows, and it only runs when the player actually
+        asks for a subtitle segment, so a title watched without subtitles pays
+        nothing for it.
+        """
+        count = min(int(tracks or 0), _MAX_SUBTITLE_TRACKS)
+        if count <= 0:
+            raise NativeError("no_track")
+        if self._subtitle_ready(plan, number, count):
+            plan.touched = self.clock()
+            return
+        timeline = plan.timeline
+        if timeline is None:
+            raise NativeError("no_timeline")
+        if not 0 <= number < len(timeline.segments):
+            raise NativeError("no_segment")
+        await self._generate(plan, number, count, subtitles_only=True)
+        if not self._subtitle_ready(plan, number, count):
+            raise NativeError("generation_failed")
+        plan.touched = self.clock()
 
     def _window_ready(self, plan, number, subtitles=0):
         timeline = plan.timeline
@@ -1228,7 +2203,10 @@ class NativeStreams:
 
         plan.prefetch = asyncio.create_task(run())
 
-    def _window_commands(self, plan, number, subtitles, video_part, audio_parts, subtitle_paths):
+    def _window_commands(
+        self, plan, number, subtitles, video_part, audio_parts, subtitle_paths,
+        subtitles_only=False,
+    ):
         timeline = plan.timeline
         start, end = timeline.segments[number]
         span = max(0.2, end - start)
@@ -1243,63 +2221,58 @@ class NativeStreams:
             "-i",
             "pipe:0",
         ]
-        args.extend(
-            [
-                "-frames:v",
-                str(_window_frames(timeline, span)),
-                "-map",
-                "0:v:0",
-                "-c:v",
-                "copy",
-            ]
-        )
-        if timeline.video_codec == "hevc":
-            args.extend(["-tag:v", "hvc1"])
-        args.extend(
-            [
-                "-f",
-                "mp4",
-                "-movflags",
-                "+frag_keyframe+empty_moov+default_base_moof+delay_moov",
-                str(video_part),
-            ]
-        )
-        for audio, path in audio_parts:
-            args.extend(["-t", f"{span:.3f}", "-map", f"0:a:{audio.ordinal}", "-vn"])
-            if audio.copyable:
-                args.extend(["-c:a", "copy"])
-            else:
-                # Selective audio-only conversion: AVPlayer cannot decode this
-                # codec, so only this rendition is re-encoded. Video is untouched.
-                args.extend(["-c:a", "aac", "-b:a", "192k", "-ac", "2"])
+        if subtitles_only:
+            # Keep the source clock: a cue that began before this window has to
+            # arrive with its real time so it can be clipped into the window
+            # instead of being lost at the boundary or after a seek.
+            args.extend(["-copyts", "-avoid_negative_ts", "disabled"])
+        if not subtitles_only:
+            args.extend(
+                [
+                    "-frames:v",
+                    str(_window_frames(timeline, span)),
+                    "-map",
+                    "0:v:0",
+                    "-c:v",
+                    "copy",
+                ]
+            )
+            if timeline.video_codec == "hevc":
+                args.extend(["-tag:v", "hvc1"])
             args.extend(
                 [
                     "-f",
                     "mp4",
                     "-movflags",
                     "+frag_keyframe+empty_moov+default_base_moof+delay_moov",
-                    str(path),
+                    str(video_part),
                 ]
             )
+            for audio, path in audio_parts:
+                args.extend(["-t", f"{span:.3f}", "-map", f"0:a:{audio.ordinal}", "-vn"])
+                if audio.copyable:
+                    args.extend(["-c:a", "copy"])
+                else:
+                    # Selective audio-only conversion: AVPlayer cannot decode this
+                    # codec, so only this rendition is re-encoded. Video is untouched.
+                    args.extend(["-c:a", "aac", "-b:a", "192k", "-ac", "2"])
+                args.extend(
+                    [
+                        "-f",
+                        "mp4",
+                        "-movflags",
+                        "+frag_keyframe+empty_moov+default_base_moof+delay_moov",
+                        str(path),
+                    ]
+                )
         for track, path in subtitle_paths:
-            args.extend(
-                [
-                    "-t",
-                    f"{span:.3f}",
-                    "-map",
-                    f"0:s:{track}",
-                    "-c:s",
-                    "webvtt",
-                    "-vn",
-                    "-an",
-                    "-f",
-                    "webvtt",
-                    str(path),
-                ]
-            )
+            args.extend(["-map", f"0:s:{track}", "-c:s", "webvtt", "-vn", "-an"])
+            if not subtitles_only:
+                args.extend(["-t", f"{span:.3f}"])
+            args.extend(["-f", "webvtt", str(path)])
         return args
 
-    async def _generate(self, plan, number, subtitles=0):
+    async def _generate(self, plan, number, subtitles=0, subtitles_only=False):
         timeline = plan.timeline
         if timeline is None:
             raise NativeError("no_timeline")
@@ -1313,19 +2286,24 @@ class NativeStreams:
             for track in range(min(subtitles, _MAX_SUBTITLE_TRACKS))
         ]
         args = self._window_commands(
-            plan, number, subtitles, video_part, audio_parts, subtitle_paths
+            plan, number, subtitles, video_part, audio_parts, subtitle_paths,
+            subtitles_only=subtitles_only,
         )
         # The producer slot is taken before any process exists: a window that is
         # merely queued must not hold a child process, a pipe and file handles.
         # The whole operation, queueing included, runs inside one deadline.
-        estimate = self._reserve_estimate(plan.timeline, number)
+        estimate = (
+            2 * 1024 * 1024
+            if subtitles_only
+            else self._reserve_estimate(plan.timeline, number)
+        )
         try:
             async with asyncio.timeout(_GENERATE_TIMEOUT):
                 async with self.producers:
                     async with self.admission_lock:
-                        if self.plan_usage(plan) + estimate > _SPOOL_PLAN_LIMIT:
+                        if not subtitles_only and self.plan_usage(plan) + estimate > _SPOOL_PLAN_LIMIT:
                             self._evict_before(plan, number)
-                        if self.plan_usage(plan) + estimate > _SPOOL_PLAN_LIMIT:
+                        if not subtitles_only and self.plan_usage(plan) + estimate > _SPOOL_PLAN_LIMIT:
                             warn(
                                 _LOG, "native_window", "window_budget", "native", plan.diagnostic_id
                             )
@@ -1347,7 +2325,8 @@ class NativeStreams:
                         plan.reserved_bytes += estimate
                     try:
                         await self._produce(
-                            plan, number, args, video_part, audio_parts, subtitle_paths
+                            plan, number, args, video_part, audio_parts, subtitle_paths,
+                            subtitles_only=subtitles_only,
                         )
                     except (OSError, RuntimeError) as error:
                         raise NativeError("process_failed") from error
@@ -1361,7 +2340,10 @@ class NativeStreams:
             self._discard(video_part, audio_parts)
             raise
 
-    async def _produce(self, plan, number, args, video_part, audio_parts, subtitle_paths):
+    async def _produce(
+        self, plan, number, args, video_part, audio_parts, subtitle_paths,
+        subtitles_only=False,
+    ):
         started = time.monotonic()
         metrics = {}
         tail = _Tail()
@@ -1378,7 +2360,12 @@ class NativeStreams:
             self.running.add(process)
             stderr_task = asyncio.create_task(_drain(process.stderr, tail))
             try:
-                metrics = await self._feed(plan, number, process.stdin)
+                metrics = await self._feed(
+                    plan,
+                    number,
+                    process.stdin,
+                    max(0, number - 1) if subtitles_only else None,
+                )
             finally:
                 try:
                     process.stdin.close()
@@ -1417,9 +2404,14 @@ class NativeStreams:
             raise NativeError("ffmpeg_failed")
         commit_started = time.monotonic()
         try:
-            size = await asyncio.to_thread(
-                self._commit, plan, number, video_part, audio_parts, subtitle_paths
-            )
+            if subtitles_only:
+                size = await asyncio.to_thread(
+                    self._commit_subtitles, plan, number, subtitle_paths
+                )
+            else:
+                size = await asyncio.to_thread(
+                    self._commit, plan, number, video_part, audio_parts, subtitle_paths
+                )
         except (OSError, ValueError) as error:
             self._discard(video_part, audio_parts)
             warn(_LOG, "native_window", "invalid_output", "native", plan.diagnostic_id)
@@ -1497,17 +2489,21 @@ class NativeStreams:
             return candidate, timestamp
         return None
 
-    async def _feed(self, plan, number, stdin):
+    async def _feed(self, plan, number, stdin, from_number=None):
         """Write the synthetic Matroska window into ffmpeg's standard input.
 
         Returns window-local metrics. ``read_ms`` is only the time spent inside
         HTTP range reads; ``write_ms`` is only the time blocked on ffmpeg's pipe,
         so provider cost and consumer backpressure stay separable.
+
+        ``from_number`` starts the feed one window earlier, which subtitle work
+        uses so a cue that began before the window can be clipped into it.
         """
         timeline = plan.timeline
-        start = timeline.segments[number][0]
+        first = number if from_number is None else max(0, min(from_number, number))
+        start = timeline.segments[first][0]
         keyframe_ms = int(round((timeline.origin + start) * 1000))
-        offset = timeline.clusters[number]
+        offset = timeline.clusters[first]
         end = timeline.total
         if number + 1 < len(timeline.clusters):
             end = min(end, timeline.clusters[number + 1] + _WINDOW_TAIL_BYTES)
@@ -1643,6 +2639,13 @@ class NativeStreams:
                     started = True
                 else:
                     continue
+            if timestamp + relative < keyframe_ms:
+                # Anything shown before the cue belongs to the window this session
+                # did not open on, and an open-GOP CRA's leading pictures cannot be
+                # decoded without the previous group anyway. Dropping them once,
+                # here, is what makes the muxer's decode zero the cue itself; no
+                # later picture is ever cut, so the continuous sequence is intact.
+                continue
             if shift:
                 # Shift the block's relative time by the same amount the cluster
                 # time moved, so absolute timestamps stay exactly where they were.
@@ -1701,6 +2704,26 @@ class NativeStreams:
             except OSError:
                 continue
         self._trim(plan)
+        return written
+
+    def _commit_subtitles(self, plan, number, subtitle_paths):
+        """Clip each cue into this window and put it on the window's clock.
+
+        The window read starts a window early and keeps the source clock, so a
+        cue that began before this window (or before a seek landed on it) is
+        still part of it. Nothing here can touch a media segment: this pass owns
+        no audio or video file and evicts nothing.
+        """
+        timeline = plan.timeline
+        start = timeline.origin + timeline.segments[number][0]
+        end = timeline.origin + timeline.segments[number][1]
+        written = 0
+        for _track, subtitle in subtitle_paths:
+            _clip_webvtt(subtitle, start, end)
+            try:
+                written += subtitle.stat().st_size
+            except OSError:
+                continue
         return written
 
     def _discard(self, video_part, audio_parts):
@@ -1804,6 +2827,12 @@ class NativeStreams:
         plan = self.plans.pop(key, None)
         if plan is None:
             return
+        session = plan.session
+        plan.session = None
+        if session is not None:
+            # Kill the forward session before its spool disappears, so no child
+            # process can keep writing into a directory that is being removed.
+            session.shutdown(reason)
         for task in (plan.task, plan.prefetch, *plan.windows.values()):
             if task is not None:
                 task.cancel()
@@ -2007,6 +3036,63 @@ class _RangeReader:
         if self.owns_client and self.client is not None:
             await self.client.aclose()
         self.client = None
+
+
+_VTT_TIME = re.compile(r"(\d+(?::\d+)?:\d{2}\.\d{3})\s*-->\s*(\d+(?::\d+)?:\d{2}\.\d{3})")
+
+
+def _vtt_seconds(text):
+    parts = text.strip().split(":")
+    try:
+        seconds = float(parts[-1])
+        minutes = int(parts[-2]) if len(parts) > 1 else 0
+        hours = int(parts[-3]) if len(parts) > 2 else 0
+    except (ValueError, IndexError):
+        return None
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _vtt_stamp(seconds):
+    millis = int(round(max(0.0, seconds) * 1000))
+    return (
+        f"{millis // 3_600_000:02d}:{millis // 60_000 % 60:02d}:"
+        f"{millis // 1000 % 60:02d}.{millis % 1000:03d}"
+    )
+
+
+def _clip_webvtt(path, start, end):
+    """Keep only this window's part of every cue, on the window's own clock."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
+    except OSError:
+        return
+    cues = ["WEBVTT", ""]
+    for block in text.split("\n\n"):
+        lines = [line for line in block.split("\n") if line.strip()]
+        if not lines or lines[0].startswith(("WEBVTT", "NOTE", "STYLE", "REGION")):
+            continue
+        for index, line in enumerate(lines):
+            match = _VTT_TIME.search(line)
+            if match is None:
+                continue
+            low = _vtt_seconds(match[1])
+            high = _vtt_seconds(match[2])
+            if low is None or high is None or high <= low:
+                break
+            low, high = max(low, start), min(high, end)
+            if high - low <= 0.001:
+                break
+            cues.append(f"{_vtt_stamp(low - start)} --> {_vtt_stamp(high - start)}")
+            payload = "\n".join(lines[index + 1 :])
+            if payload:
+                cues.append(payload)
+            cues.append("")
+            break
+    text = "\n".join(cues).rstrip() + "\n" if len(cues) > 2 else "WEBVTT\n\n"
+    try:
+        path.write_text(text, encoding="utf-8")
+    except OSError:
+        return
 
 
 def _write_atomic(path, data):
