@@ -1,0 +1,8 @@
+Vendor/
+.build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.ipa
+*.xcarchive
+*.mobileprovision
