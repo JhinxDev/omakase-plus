@@ -467,6 +467,11 @@ async def build_timeline(url, duration):
         video, audios, video_number = _track_table(first, tracks_range)
         if video is None or video["codec"] not in _PLAYABLE_VIDEO or video_number is None:
             return None
+        if not audios:
+            # A silent episode is not a success: without a readable audio track the
+            # system player would show picture and no sound, which is exactly the
+            # failure this route must never present as working playback.
+            return None
         scale = _timecode_scale(first, info_range) or 1_000_000
         cues_position = None
         if seekhead_range is not None:

@@ -1907,9 +1907,12 @@ def create_native_tv_test_router(
                             getattr(source, "video_codec", "?"),
                             getattr(source, "audio_codec", "?"),
                         )
+                        # Until the app build drops its automatic fallback, a
+                        # refusal must not hand the viewer the direct VLC player:
+                        # answer a retryable error with an honest message.
                         raise HTTPException(
-                            415,
-                            "This copy cannot use the Apple TV player yet.",
+                            503,
+                            "This copy cannot use the Apple TV player yet. Choose another title.",
                             headers=NO_STORE,
                         )
                 ttl = min(
@@ -2058,7 +2061,9 @@ def create_native_tv_test_router(
                                     getattr(cloud, "container", "?"),
                                 )
                                 raise DirectError(
-                                    "This copy cannot use the Apple TV player yet.", 415
+                                    "This copy cannot use the Apple TV player yet. "
+                                    "Choose another title.",
+                                    503,
                                 )
                         else:
                             prepared = await cloud_streams.prepare(

@@ -156,7 +156,7 @@ def test_native_pass_refuses_a_copy_the_player_cannot_remux(system, monkeypatch,
 
     monkeypatch.setattr(native_hls.NativeStreams, "start", unsupported)
     _native, opened = _open_native(system, monkeypatch)
-    assert opened.status_code == 415
+    # A refusal is retryable, so the app never falls back to the direct player.\n    assert opened.status_code == 503
     assert "Apple TV player" in opened.json()["detail"]
 
 
