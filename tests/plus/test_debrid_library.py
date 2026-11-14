@@ -291,16 +291,22 @@ def test_first_segment_gets_a_cold_start_deadline():
     asyncio.run(run())
 
 
-def test_first_segment_falls_back_to_the_next_segment_when_it_is_empty():
-    calls = {"segment": 0}
+def test_first_segment_never_falls_back_to_the_next_segment():
+    """An empty first segment must fail, not answer with the second one.
+
+    The player caches whatever arrives under the requested URL, so a substituted
+    first segment shows a moment from later in the film for the rest of the
+    session. The audit proved this path answered segment one with segment two.
+    """
+    calls = {"first": 0, "second": 0}
 
     def handler(request):
         path = request.url.path
         if path.endswith("00000.ts"):
-            calls["segment"] += 1
+            calls["first"] += 1
             return httpx.Response(200, stream=Stream(b""))
         if path.endswith("00001.ts"):
-            calls["segment"] += 1
+            calls["second"] += 1
             return httpx.Response(200, stream=Stream(b"\x47next"))
         raise AssertionError(path)
 
@@ -311,11 +317,14 @@ def test_first_segment_falls_back_to_the_next_segment_when_it_is_empty():
             (ORIGIN + "/00000.ts", ORIGIN + "/00001.ts"),
         )
         request = Request({"type": "http", "method": "GET", "headers": []})
-        response = await streams.deliver(media, "00000.ts", request, lambda: None)
-        assert response.body == b"\x47next"
-        assert calls["segment"] == 2
+        with pytest.raises(DebridLibraryError) as caught:
+            await streams.deliver(media, "00000.ts", request, lambda: None)
+        return caught.value.status
 
-    asyncio.run(run())
+    status = asyncio.run(run())
+    assert status == 503
+    assert calls["second"] == 0, "the second segment must never be read for this request"
+    assert calls["first"] >= 1
 
 
 def test_first_segment_retries_once_after_a_cold_provider_timeout():
