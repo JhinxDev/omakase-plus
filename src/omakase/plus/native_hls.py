@@ -70,6 +70,7 @@ _TRACK_NAME = 0x536E
 _PIXEL_WIDTH = 0xB0
 _PIXEL_HEIGHT = 0xBA
 _DEFAULT_DURATION = 0x23E383
+_CODEC_DELAY = 0x56AA
 _UNKNOWN_SIZE = b"\x01\xff\xff\xff\xff\xff\xff\xff"
 
 _VIDEO_CODECS = {
@@ -153,10 +154,10 @@ _SEEK_COOLDOWN = 4.0
 _FRAGMENT_MAX_BYTES = 48 * 1024 * 1024
 _INIT_BOX_LIMIT = 4 * 1024 * 1024
 _INIT_BOXES = {b"ftyp", b"moov", b"styp"}
-# Fragmented output for the native player. ``negative_cts_offsets`` lets the muxer
-# write signed composition offsets, so a stream whose first pictures are reordered
-# needs no edit list and no picture has to be dropped to avoid a negative one.
-_MOVFLAGS = "+frag_keyframe+empty_moov+default_base_moof+delay_moov+negative_cts_offsets"
+# Keep video reorder lead in the composition offsets. Signed CTS can make
+# MOV readers infer a separate decode shift outside the shared clock.
+_MOVFLAGS = "+frag_keyframe+empty_moov+default_base_moof+delay_moov"
+_AUDIO_MOVFLAGS = _MOVFLAGS + "+negative_cts_offsets"
 # Audio is cut by the muxer before the playlist boundary can be known exactly, so
 # it is fragmented at about one AAC frame and partitioned by its own decode time.
 # Every fragment keeps an absolute clock, so the partition never moves a sample in
@@ -195,6 +196,7 @@ class NativeAudio:
     # The Matroska track number, kept so a session can anchor this rendition on the
     # source block its first fragment was built from.
     number: int = 0
+    codec_delay_ns: int = 0
 
     @property
     def copyable(self) -> bool:
@@ -381,6 +383,7 @@ def _track_table(data, track_range):
                 _PIXEL_WIDTH,
                 _PIXEL_HEIGHT,
                 _DEFAULT_DURATION,
+                _CODEC_DELAY,
             },
         )
         track_type = _uint_field(data, fields, _TRACK_TYPE)
@@ -404,6 +407,7 @@ def _track_table(data, track_range):
                     language=_text_field(data, fields, _LANGUAGE).lower(),
                     name=_text_field(data, fields, _TRACK_NAME, 40),
                     number=_uint_field(data, fields, _TRACK_NUMBER) or 0,
+                    codec_delay_ns=_uint_field(data, fields, _CODEC_DELAY) or 0,
                 )
             )
             ordinal += 1
@@ -1377,7 +1381,7 @@ class _ContinuousSession:
         # anchored: sound and subtitles are positioned relative to it.
         self.origin: float | None = None
         self.video_base = None
-        self.audio_base = None
+        self.audio_bases: dict[int, int] = {}
         self.clock_ready = asyncio.Event()
 
     # -- state --------------------------------------------------------------
@@ -1473,7 +1477,7 @@ class _ContinuousSession:
                 "-frag_duration",
                 str(_AUDIO_FRAGMENT_US),
                 "-movflags",
-                _MOVFLAGS,
+                _AUDIO_MOVFLAGS,
                 "pipe:1",
             ]
         tag = ["-tag:v", "hvc1"] if self.timeline.video_codec == "hevc" else []
@@ -1595,7 +1599,7 @@ class _ContinuousSession:
             self.metrics["write_ms"],
             self.peak_bytes,
             self.video_base,
-            self.audio_base,
+            self.audio_bases,
         )
 
     # -- the pump -----------------------------------------------------------
@@ -1818,7 +1822,10 @@ class _ContinuousSession:
                     raise NativeError("timeline_mismatch")
             number = min(number, len(self.timeline.segments) - 1)
         else:
-            number = self._window_at(self._presentation(track, base, earliest))
+            # A priming sample can precede the cue. It belongs to the current
+            # session and must never overwrite an earlier cached window.
+            floor = self.timeline.segments[self.feed_start][0]
+            number = self._window_at(max(floor, self._presentation(track, base, earliest)))
         if track.fragments < 3:
             _LOG.warning(
                 "native continuous place kind=%s n=%d earliest=%d first_cts=%d "
@@ -1864,8 +1871,8 @@ class _ContinuousSession:
         """
         number = self.timeline.video_number if track.kind == "video" else track.audio.number
         if track.kind == "audio":
-            if self.audio_base is not None:
-                return self.audio_base
+            if track.ordinal in self.audio_bases:
+                return self.audio_bases[track.ordinal]
         elif self.video_base is not None:
             return self.video_base
         if track.kind == "audio":
@@ -1877,7 +1884,7 @@ class _ContinuousSession:
                     async with asyncio.timeout(5):
                         await self.clock_ready.wait()
                 except TimeoutError:
-                    pass
+                    raise NativeError("video_clock_unavailable") from None
         source_ms = self.feed_first.get(number)
         if source_ms is None:
             # No head report: fall back to the cue, which is the old contract and
@@ -1890,12 +1897,19 @@ class _ContinuousSession:
         # through, so it belongs in the anchor rather than being assumed away.
         base -= round(track.shift * track.timescale)
         if track.kind == "audio":
-            base += round(self.clock_delay * track.timescale)
-            self.audio_base = base
+            # Matroska block times precede the demuxer's CodecDelay subtraction.
+            # Stream copy preserves those packets, so use their source PTS.
+            delay = track.audio.codec_delay_ns / 1_000_000_000 if track.audio.copyable else 0
+            base += round((self.clock_delay - delay) * track.timescale)
+            self.audio_bases[track.ordinal] = base
             return base
         # A decode time cannot be written below zero, so whatever cannot be
         # expressed becomes one common delay for the whole session.
-        self.clock_delay = max(self.clock_delay, -base / track.timescale)
+        audio_delay = max(
+            (audio.codec_delay_ns for audio in self.timeline.audios if audio.copyable),
+            default=0,
+        ) / 1_000_000_000
+        self.clock_delay = max(self.clock_delay, -base / track.timescale, audio_delay)
         base += round(self.clock_delay * track.timescale)
         self.video_base = base
         self.origin = (base + earliest) / track.timescale + track.shift
@@ -1912,6 +1926,8 @@ class _ContinuousSession:
         inside its own window. Nothing is assumed, and if neither candidate lands
         the caller raises instead of serving media at the wrong time.
         """
+        if track.kind == "audio":
+            return anchor
         window_start = self.timeline.segments[
             min(number, len(self.timeline.segments) - 1)
         ][0]

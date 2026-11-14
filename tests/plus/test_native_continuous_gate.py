@@ -25,6 +25,15 @@ from pathlib import Path
 
 import pytest
 
+from omakase.plus import native_hls
+from omakase.plus.native_hls import (
+    NativePlan,
+    NativeStreams,
+    build_timeline,
+    continuous_enabled,
+    fragment_bases,
+    shift_decode_times,
+)
 from tests.plus.test_native_hls import (
     DURATION,
     FRAME_RATE,
@@ -33,17 +42,6 @@ from tests.plus.test_native_hls import (
     _Provider,
     _synthetic_fragment,
     _synthetic_init,
-)
-
-from omakase.plus import native_hls
-from omakase.plus.native_hls import (
-    minimum_composition_offset,
-    NativePlan,
-    NativeStreams,
-    build_timeline,
-    continuous_enabled,
-    fragment_bases,
-    shift_decode_times,
 )
 
 FFMPEG = native_hls  # the module is exercised through its own ffmpeg calls
@@ -393,42 +391,17 @@ def test_the_opening_window_presents_every_source_frame(server_run):
 
 
 def test_audio_and_video_share_the_window_clock(server_run):
-    """Sound keeps the source's relationship to picture, measured not assumed.
-
-    Both passes are built from their playlists and matched frame by frame to the
-    source. Measured now: picture translates by +0.166 s and sound by +0.106 s,
-    so sound sits 0.060 s ahead of picture where the source has it level; one
-    audio frame per ten seconds of programming is lost at a fragment boundary.
-    The A/V assertion below is therefore an expected failure kept visible: it is
-    the remaining timestamp gate, and it closes by itself when the two muxers'
-    head bookkeeping is reconciled.
-    """
-    frame = 1 / FRAME_RATE
-    source_video = _frames(server_run["source"], "v:0")
-    source_audio = _frames(server_run["source"], "a:0")
-    served_video = _pass_times(server_run, "video")
-    served_audio = _pass_times(server_run, "audio")
-    video_shift = sorted(
-        got - want for want, got in zip(source_video, served_video, strict=False)
-    )[len(served_video) // 2]
-    audio_shift = sorted(
-        got - want for want, got in zip(source_audio, served_audio, strict=False)
-    )[len(served_audio) // 2]
-    assert abs(served_video[0] - source_video[0] - video_shift) < frame
-    assert abs(served_audio[0] - source_audio[0] - audio_shift) < frame
-    missing = len(source_audio) - len(served_audio)
-    assert 0 <= missing <= 2, f"{missing} audio frames lost"
-    if missing:
-        present = {round(value - audio_shift, 3) for value in served_audio}
-        absent = [round(value, 3) for value in source_audio if round(value, 3) not in present]
-        print(f"audio frames absent from the served pass: {absent}")
-    pytest.xfail(
-        "OPEN RELEASE BLOCKER: measured A/V error "
-        f"{audio_shift - video_shift:+.3f}s (picture {video_shift:+.3f}s, sound "
-        f"{audio_shift:+.3f}s). Both streams carry every source frame under one "
-        "constant translation, so this is the muxers' head offsets (picture "
-        "leading-picture depth vs AAC priming), not lost or displaced frames."
-    )
+    """Both renditions retain every frame and preserve relative source timing."""
+    offsets = {}
+    for kind, stream in (("video", "v:0"), ("audio", "a:0")):
+        source = _frames(server_run["source"], stream)
+        served = _pass_times(server_run, kind)
+        assert len(served) == len(source), (kind, len(served), len(source))
+        deltas = [got - want for want, got in zip(source, served, strict=True)]
+        shift = sorted(deltas)[len(deltas) // 2]
+        assert max(abs(delta - shift) for delta in deltas) <= 0.003, kind
+        offsets[kind] = shift
+    assert abs(offsets["audio"] - offsets["video"]) <= 0.003, offsets
 
 
 def test_subtitles_come_from_one_bounded_window_read(tmp_path, hevc_provider):
@@ -526,7 +499,6 @@ def test_the_timestamp_contract_matches_the_source(server_run):
     must agree to within one frame.
     """
     folder = server_run["folder"]
-    timeline = server_run["timeline"]
     source_video = _source_packet_times(server_run["source"], "v:0")
     frame = 1 / FRAME_RATE
     offsets = []

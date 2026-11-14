@@ -16,7 +16,6 @@ into the test app, which it is not today; that gap is recorded rather than hidde
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import re
 import subprocess
 from pathlib import Path
@@ -28,11 +27,9 @@ from omakase.plus.native_hls import NativePlan, NativeStreams, build_timeline
 from tests.plus.test_native_hls import (
     DURATION,
     FRAME_RATE,
-    _Provider,
     _build_hevc_fixture,
+    _Provider,
 )
-
-FOLDER = Path(__file__).resolve().parents[2] / "build" / "served-presentation"
 
 
 def _ffprobe_times(path: Path, stream: str = "v:0") -> list[float]:
@@ -68,14 +65,12 @@ def _lines(text: str) -> list[str]:
 
 
 @pytest.fixture
-def produced_pass(tmp_path):
+def produced_pass(tmp_path, monkeypatch):
     """One real continuous pass, driven the way the player drives it."""
     folder = tmp_path
-    FOLDER.mkdir(parents=True, exist_ok=True)
-    fixture = _build_hevc_fixture(FOLDER)
+    fixture = _build_hevc_fixture(folder)
     provider = _Provider(fixture.read_bytes())
-    original_direct = native_hls._DIRECT
-    native_hls._DIRECT = re.compile(r"https?://[^\s]{1,3000}")
+    monkeypatch.setattr(native_hls, "_DIRECT", re.compile(r"https?://[^\s]{1,3000}"))
     timeline = asyncio.run(build_timeline(provider.url, DURATION))
     assert timeline is not None and len(timeline.segments) >= 4
     plan = NativePlan(key="served", url=timeline.url, duration=timeline.duration, root=folder / "plan")
@@ -88,14 +83,15 @@ def produced_pass(tmp_path):
     restarts: list[int] = []
     served: dict[str, bytes] = {}
 
+    original_open = native_hls._ContinuousSession.open
+
+    async def counting_open(self):
+        restarts.append(self.start)
+        return await original_open(self)
+
+    monkeypatch.setattr(native_hls._ContinuousSession, "open", counting_open)
+
     async def run():
-        original_open = native_hls._ContinuousSession.open
-
-        async def counting_open(self):
-            restarts.append(self.start)
-            return await original_open(self)
-
-        native_hls._ContinuousSession.open = counting_open
         try:
             for number in range(len(timeline.segments)):
                 await asyncio.wait_for(streams.ensure(plan, number, 90), 240)
@@ -111,22 +107,24 @@ def produced_pass(tmp_path):
                 "audio_playlist": streams.audio_playlist(plan, timeline.audios[0].ordinal),
             }
         finally:
-            native_hls._ContinuousSession.open = original_open
+            if plan.session is not None:
+                await plan.session.close("fixture")
+                plan.session = None
         return yield_state
 
-    playlists = asyncio.run(run())
-    return {
-        "folder": folder,
-        "timeline": timeline,
-        "plan": plan,
-        "streams": streams,
-        "served": served,
-        "playlists": playlists,
-        "restarts": restarts,
-        "provider": provider,
-        "fixture": fixture,
-        "direct": original_direct,
-    }
+    try:
+        playlists = asyncio.run(run())
+        yield {
+            "folder": folder,
+            "timeline": timeline,
+            "plan": plan,
+            "streams": streams,
+            "served": served,
+            "playlists": playlists,
+            "restarts": restarts,
+        }
+    finally:
+        provider.close()
 
 
 def test_the_served_playlist_is_the_media_it_names(produced_pass):
@@ -217,22 +215,27 @@ def test_a_stale_request_cannot_restart_the_chosen_position(produced_pass):
                 plan.audio_segment_path(audio, number).read_bytes(),
             )
 
-        forward = await request(last)
-        backward = await request(1)
-        before = len(restarts)
-        stale = await asyncio.gather(
-            *[request(last) for _ in range(5)], return_exceptions=True
-        )
-        restarted = len(restarts) - before
-        current = await request(1)
-        return forward, backward, stale, restarted, current
+        try:
+            forward = await request(last)
+            backward = await request(1)
+            before = len(restarts)
+            stale = await asyncio.gather(
+                *[request(last) for _ in range(5)], return_exceptions=True
+            )
+            restarted = len(restarts) - before
+            current = await request(1)
+            return forward, backward, stale, restarted, current
+        finally:
+            if plan.session is not None:
+                await plan.session.close("test")
 
     forward, backward, stale, restarted, current = asyncio.run(drive())
     assert forward and backward and current, "a window was not served"
     assert restarted <= 1, f"{restarted} restarts from a burst of stale requests"
     for outcome in stale:
         assert not isinstance(outcome, AssertionError)
-        if isinstance(outcome, native_hls.NativeError):
+        if isinstance(outcome, BaseException):
+            assert isinstance(outcome, native_hls.NativeError), repr(outcome)
             assert outcome.code in {
                 "stale",
                 "restarted",
@@ -244,12 +247,8 @@ def test_a_stale_request_cannot_restart_the_chosen_position(produced_pass):
     )
     # The chosen window is still the same media after the burst, not a mix of two
     # generations: its first presented sample must stay inside its own window.
-    times = _ffprobe_times_bytes(pinned + current[0])
+    path = produced_pass["folder"] / "stale-check.mp4"
+    path.write_bytes(pinned + current[0])
+    times = _ffprobe_times(path)
     start = timeline.segments[1][0]
     assert times and abs(times[0] - start) <= 1 / FRAME_RATE * 6, (times[:3], start)
-
-
-def _ffprobe_times_bytes(payload: bytes) -> list[float]:
-    path = FOLDER / "stale-check.mp4"
-    path.write_bytes(payload)
-    return _ffprobe_times(path)
