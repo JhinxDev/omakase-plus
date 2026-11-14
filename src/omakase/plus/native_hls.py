@@ -116,10 +116,10 @@ _GENERATE_TIMEOUT = 120.0
 _RESERVE_BYTES = 8 * 1024**3
 _ADMISSION_MARGIN = 32 * 1024**2
 _ABANDON_SECONDS = 240.0
-_READ_CHUNK = 1024 * 1024
+_READ_CHUNK = 8 * 1024 * 1024
 # Measured on the live link: one connection delivers about 0.9 MB/s whatever the
 # request size, so a window is pulled over a few connections at once.
-_READ_PARALLEL = 3
+_READ_PARALLEL = 4
 # A provider that keeps returning nothing is retried this many times, then fails.
 _READ_ATTEMPTS = 4
 # CueRelativePosition window starts are implemented and unit tested but off by
