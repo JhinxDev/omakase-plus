@@ -999,15 +999,10 @@ struct LiveLibraryScreen: View {
             openingVideo = false
         }
         do {
-            let pass: LiveTestPass
-            do {
-                pass = try await client.play(entry, featured: featured, engine: .native)
-            } catch LiveLibraryError.unsupportedCopy {
-                // The system player cannot remux this copy. Name the fallback
-                // instead of refusing the title: the direct engine plays the
-                // provider original with its own controls.
-                pass = try await client.play(entry, featured: featured, engine: .direct)
-            }
+            // One player. A copy the Apple TV system player cannot open is
+            // reported, never secretly handed to a second player with its own
+            // controls: the owner rejected that interface explicitly.
+            let pass = try await client.play(entry, featured: featured, engine: .native)
             returnFocus = origin
             let episode = featured ? episodes?.items.first(where: { $0.watchPath == entry.featuredPath }) : entry
             select(pass, title ?? entry, pass.card.episodeTitle == nil ? nil : episode, playsDirectly)

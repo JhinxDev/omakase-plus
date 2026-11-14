@@ -15,8 +15,10 @@ import shutil
 import struct
 import subprocess
 import threading
+import time
 from pathlib import Path
 
+import httpx
 import pytest
 
 from omakase.plus import native_hls
@@ -66,8 +68,10 @@ class _RangeHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 - http.server API
         data = self._target()
         header = self.headers.get("Range")
+        mode = getattr(self.server, "mode", "ok")
         self.server.requests.append(("GET", header))
-        if not header:
+        if not header or mode == "ignore-range":
+            # A provider that ignores Range answers with the whole file.
             self._send(data, 200)
             return
         unit, _, span = header.partition("=")
@@ -81,6 +85,34 @@ class _RangeHandler(http.server.BaseHTTPRequestHandler):
             self._send(b"", 416)
             return
         end = min(end, len(data) - 1)
+        if mode == "wrong-range":
+            # A 206 that claims to start at zero for every request.
+            body = data[0 : end - start + 1]
+            self._send(
+                body,
+                206,
+                {"Content-Range": f"bytes 0-{len(body) - 1}/{len(data)}"},
+            )
+            return
+        if mode == "oversized":
+            body = data[start : min(len(data), end + 4096)]
+            self._send(
+                body,
+                206,
+                {"Content-Range": f"bytes {start}-{start + len(body) - 1}/{len(data)}"},
+            )
+            return
+        if mode == "truncated":
+            body = data[start : start + max(1, (end - start) // 2)]
+            self._send(
+                b"",
+                206,
+                {
+                    "Content-Range": f"bytes {start}-{end}/{len(data)}",
+                    "Content-Length": str(end - start + 1),
+                },
+            )
+            return
         body = data[start : end + 1]
         self._send(
             body,
@@ -349,6 +381,322 @@ def _tfdt_bases(path_or_bytes):
                 else:
                     bases.append(struct.unpack(">I", data[body3 + 4 : body3 + 8])[0])
     return bases
+
+
+# --- hostile range responses -------------------------------------------------
+
+
+def _client():
+    return httpx.AsyncClient(timeout=30, follow_redirects=False, trust_env=False)
+
+
+def test_index_reader_refuses_an_ignored_range(provider):
+    provider.server.mode = "ignore-range"
+    try:
+        assert asyncio.run(native_hls._range(_client(), provider.url, 0, 1023)) is None
+    finally:
+        provider.server.mode = "ok"
+
+
+def test_index_reader_refuses_a_wrong_content_range(provider):
+    provider.server.mode = "wrong-range"
+    try:
+        assert asyncio.run(native_hls._range(_client(), provider.url, 4096, 8191)) is None
+    finally:
+        provider.server.mode = "ok"
+
+
+def test_index_reader_refuses_an_oversized_body(provider):
+    provider.server.mode = "oversized"
+    try:
+        assert asyncio.run(native_hls._range(_client(), provider.url, 0, 1023)) is None
+    finally:
+        provider.server.mode = "ok"
+
+
+def test_window_reader_enforces_its_byte_ceiling(provider):
+    """The ceiling is enforced while streaming, before a body is kept."""
+    reader = native_hls._RangeReader(provider.url, 0, len(provider.payload), limit=4096)
+    data = asyncio.run(_take_all(reader))
+    assert 0 < len(data) <= 4096
+    assert reader.read_bytes <= 4096
+
+    widened = native_hls._RangeReader(provider.url, 0, 4096, limit=4096)
+    widened.end = len(provider.payload)
+
+    async def attempt():
+        with pytest.raises(native_hls.NativeError):
+            await widened._fill(8192)
+        await widened.close()
+
+    asyncio.run(attempt())
+
+
+def test_window_reader_retries_a_short_body(provider):
+    provider.server.mode = "ok"
+    reader = native_hls._RangeReader(provider.url, 0, 4096, limit=8192)
+    data = asyncio.run(_take_all(reader))
+    assert len(data) == 4096
+    assert reader.read_bytes == 4096
+
+
+async def _take_all(reader):
+    chunks = []
+    async for chunk in reader.chunks(1024):
+        chunks.append(chunk)
+    await reader.close()
+    return b"".join(chunks)
+
+
+# --- peak storage, producers, diagnostics ------------------------------------
+
+
+def test_peak_spool_stays_inside_the_plan_budget(tmp_path, provider):
+    timeline = _timeline(provider)
+    plan = _plan(tmp_path, timeline)
+    streams = NativeStreams(tmp_path / "spool")
+    streams.root.mkdir(parents=True, exist_ok=True)
+    peak = [0]
+    stop = threading.Event()
+
+    def watch():
+        while not stop.is_set():
+            peak[0] = max(peak[0], streams.plan_usage(plan))
+            time.sleep(0.005)
+
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    try:
+        asyncio.run(streams.ensure(plan, 1))
+    finally:
+        stop.set()
+        watcher.join(timeout=2)
+    assert peak[0] <= native_hls._SPOOL_PLAN_LIMIT
+    assert not list(plan.root.glob("*.tmp"))
+
+
+def test_the_producer_slot_is_held_before_the_process_starts(tmp_path, provider, monkeypatch):
+    timeline = _timeline(provider)
+    plan = _plan(tmp_path, timeline)
+    streams = NativeStreams(tmp_path / "spool")
+    streams.root.mkdir(parents=True, exist_ok=True)
+    calls = []
+
+    async def no_process(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("ffmpeg must not start while queued")
+
+    monkeypatch.setattr(native_hls.asyncio, "create_subprocess_exec", no_process)
+    streams.producers = asyncio.Semaphore(0)
+    with pytest.raises(native_hls.NativeError):
+        asyncio.run(streams.ensure(plan, 0, timeout=0.3))
+    assert calls == []
+
+
+def test_a_timed_out_generation_leaves_no_child_behind(tmp_path, provider, monkeypatch):
+    timeline = _timeline(provider)
+    plan = _plan(tmp_path, timeline)
+    streams = NativeStreams(tmp_path / "spool")
+    streams.root.mkdir(parents=True, exist_ok=True)
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+            self.killed = False
+            self.stdin = type("Pipe", (), {"close": lambda self: None})()
+            self.stderr = None
+
+        async def wait(self):
+            return self.returncode
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+    process = FakeProcess()
+
+    async def fake_exec(*args, **kwargs):
+        return process
+
+    async def never_feed(self, plan_number, stdin, *args):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(native_hls.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(native_hls.NativeStreams, "_feed", never_feed)
+    monkeypatch.setattr(native_hls, "_GENERATE_TIMEOUT", 0.4)
+    with pytest.raises(native_hls.NativeError):
+        asyncio.run(streams.ensure(plan, 0, timeout=1.5))
+    assert process.killed is True
+    assert streams.running == set()
+
+
+def test_ffmpeg_diagnostics_are_bounded_and_redacted():
+    tail = native_hls._Tail(limit=64)
+    tail.add(b"error at https://chi8-4.download.real-debrid.com/x/y.mkv?token=secret")
+    tail.add(b" more text that overflows the tail")
+    text = tail.text()
+    assert "real-debrid" not in text and "token" not in text
+    assert "<provider>" in text
+    assert len(text) <= 400
+
+
+def _build_hevc_fixture(folder: Path) -> Path:
+    """A short HEVC title with forced keyframes every six seconds."""
+    source = folder / "hevc.mkv"
+    subtitles = folder / "hevc.srt"
+    subtitles.write_text(
+        "1\n00:00:02,000 --> 00:00:04,000\nHevc line\n\n"
+        "2\n00:00:08,000 --> 00:00:10,000\nSecond hevc line\n",
+        encoding="utf-8",
+    )
+    _run(
+        FFMPEG,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"testsrc2=size=320x180:rate=24000/1001:duration={DURATION}",
+        "-f",
+        "lavfi",
+        "-i",
+        f"sine=frequency=440:duration={DURATION}",
+        "-i",
+        str(subtitles),
+        "-map",
+        "0:v",
+        "-map",
+        "1:a",
+        "-map",
+        "2:s",
+        "-c:v",
+        "libx265",
+        "-preset",
+        "ultrafast",
+        "-crf",
+        "30",
+        "-x265-params",
+        "keyint=144:min-keyint=144:scenecut=0:log-level=none",
+        "-force_key_frames",
+        "expr:gte(t,n_forced*6)",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "64k",
+        "-c:s",
+        "srt",
+        "-metadata:s:a:0",
+        "language=eng",
+        "-metadata:s:s:0",
+        "language=eng",
+        str(source),
+    )
+    return source
+
+
+@pytest.fixture(scope="module")
+def hevc_fixture(tmp_path_factory):
+    folder = tmp_path_factory.mktemp("native-hevc")
+    return _build_hevc_fixture(folder)
+
+
+@pytest.fixture(scope="module")
+def hevc_provider(hevc_fixture):
+    server = _Provider(hevc_fixture.read_bytes())
+    yield server
+    server.close()
+
+
+def test_hevc_timeline_and_window_start_on_the_real_keyframe(tmp_path, hevc_provider, hevc_fixture):
+    """HEVC reproduction: the window must begin on the cue keyframe itself."""
+    timeline = asyncio.run(build_timeline(hevc_provider.url, DURATION))
+    assert timeline is not None
+    assert timeline.video_codec == "hevc"
+    assert timeline.video_number > 0, "the video track number is needed to trim"
+    assert timeline.audios and timeline.audios[0].copyable is not None
+    plan = _plan(tmp_path, timeline)
+    streams = NativeStreams(tmp_path / "spool")
+    streams.root.mkdir(parents=True, exist_ok=True)
+    asyncio.run(streams.ensure(plan, 1))
+    frames = _source_frame_hashes(hevc_fixture)
+    boundary = timeline.segments[1][0] + timeline.origin
+    expected_index = round(boundary * FRAME_RATE)
+    joined = _with_init(
+        tmp_path,
+        "hevc-window.mp4",
+        (plan.root / "init.mp4").read_bytes(),
+        plan.video_segment_path(1).read_bytes(),
+    )
+    produced = _frame_hash(joined)
+    assert produced == frames[expected_index]
+    assert produced != frames[expected_index - 1]
+    assert plan.bytes_read > 0, "window byte metrics are recorded"
+
+
+def test_the_first_block_kept_is_the_video_keyframe():
+    """Isolate the trim rule: a block later than the cue time is still the start.
+
+    The timestamp-only rule drops a keyframe whose block time is a few
+    milliseconds after the cue time, which is what can starve HEVC fragments.
+    """
+    timeline = native_hls.NativeTimeline(
+        url="https://download.real-debrid.com/x.mkv",
+        duration=12.0,
+        origin=0.0,
+        segments=((0.0, 6.0), (6.0, 12.0)),
+        clusters=(0, 1000),
+        total=2000,
+        header=b"",
+        info=b"",
+        tracks=b"",
+        video_codec="hevc",
+        video_number=1,
+    )
+    block_time = 6006 + 8  # eight milliseconds after the cue time
+    keyframe = native_hls._encode_element(
+        0xA3,
+        b"\x81" + block_time.to_bytes(2, "big", signed=True) + b"\x80" + b"frame",
+    )
+    audio = native_hls._encode_element(
+        0xA3,
+        b"\x82" + block_time.to_bytes(2, "big", signed=True) + b"\x00" + b"audio",
+    )
+    cluster = native_hls._encode_element(0xE7, (6000).to_bytes(8, "big")) + keyframe + audio
+    stream = native_hls._encode_id(0x1F43B675) + native_hls._UNKNOWN_SIZE + cluster
+
+    class Reader:
+        def __init__(self, data):
+            self.buffer = bytearray(data)
+            self.read_bytes = 0
+
+        async def peek(self, count):
+            return bytes(self.buffer[:count])
+
+        async def consume(self, count):
+            del self.buffer[:count]
+
+        async def take(self, count):
+            data = bytes(self.buffer[:count])
+            del self.buffer[:count]
+            return data
+
+    class Stdin:
+        def __init__(self):
+            self.written = bytearray()
+
+        def write(self, data):
+            self.written.extend(data)
+
+        async def drain(self):
+            return None
+
+    stdin = Stdin()
+    asyncio.run(
+        native_hls.NativeStreams(None)._write_head(Reader(stream), timeline, 6006, 1, stdin)
+    )
+    assert keyframe in bytes(stdin.written)
 
 
 # --- timeline ---------------------------------------------------------------
