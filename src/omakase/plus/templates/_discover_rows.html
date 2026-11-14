@@ -17,10 +17,14 @@
           <h3>{{ card.title }}</h3>
         </a>
         <p class="hub-meta">{{ card.format }}{% if card.episodes and card.episodes > 1 %} · {{ card.episodes }} eps{% endif %}{% if card.airing %} · Airing{% endif %}{% if card.score %} · {{ card.score }}% AniList{% endif %}</p>
+        {% if personal_requests and card.request %}
+        <p class="hub-request-label">{{ card.request.label }}</p>
+        {% endif %}
         {% if card.kind == "anime" and row.key != "continue" %}
         <details class="hub-options">
           <summary aria-label="Options for {{ card.title }}">Options <span aria-hidden="true">+</span></summary>
           <div class="feedback-actions" data-title="{{ card.title }}" data-source="anilist" data-media-id="{{ card.id }}">
+            {% if personal_requests and card.can_request %}{{ request_form(card, "text-action") }}{% endif %}
             {% if not card.owned %}
             <form method="post" action="/plus/add/preview" data-busy-form>
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -33,6 +37,8 @@
             <button type="button" class="text-action btn-feedback" data-feedback="not_for_me">Not for me</button>
           </div>
         </details>
+        {% elif personal_requests and card.can_request %}
+        {{ request_form(card, "text-action") }}
         {% endif %}
       </article>
     </div>
@@ -40,6 +46,38 @@
   </div>
 </section>
 {%- endmacro %}
+{% macro request_form(card, button_class) -%}
+<form method="post" action="/plus/discover/requests/submit" data-busy-form data-single-flight>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="kind" value="{{ card.kind }}">
+  <input type="hidden" name="title_id" value="{{ card.id }}">
+  <button class="{{ button_class }}" type="submit" aria-label="Request {{ card.title }}" data-busy-label="Requesting…">Request title</button>
+</form>
+{%- endmacro %}
+{% if personal_requests and requests %}
+<section class="hub-shelf hub-requests" aria-labelledby="hub-requests">
+  <h2 id="hub-requests">Your requests</h2>
+  <ul>
+    {% for item in requests %}
+    <li>
+      <div>
+        <a href="{{ item.href }}">{{ item.title }}</a>
+        <p class="hub-request-label">{{ item.label }}</p>
+        <p class="hub-meta">{{ item.detail }}</p>
+      </div>
+      {% if item.can_check %}
+      <form method="post" action="/plus/discover/requests/check" data-busy-form data-single-flight>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="kind" value="{{ item.kind }}">
+        <input type="hidden" name="title_id" value="{{ item.title_id }}">
+        <button class="text-action" type="submit" aria-label="Check request for {{ item.title }}" data-busy-label="Checking…">Check request</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
 {% for row in rows %}{{ shelf(row) }}{% else %}
 <section class="hub-shelf hub-unavailable">
   {% if history_unavailable %}

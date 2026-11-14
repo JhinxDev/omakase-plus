@@ -1104,7 +1104,7 @@ class DebridStreams:
             timeline = plan.timeline
             if timeline is None or not 0 <= number < len(timeline.segments):
                 raise DebridLibraryError("This subtitle is unavailable.", 404)
-            await self._native_subtitles(plan, number, len(tracks))
+            await self._native_subtitles(plan, number, len(tracks), request)
             path = plan.subtitle_segment_path(track, number)
             if not path.is_file():
                 raise DebridLibraryError("This subtitle is unavailable.", 404)
@@ -1118,13 +1118,27 @@ class DebridStreams:
             warn(_LOG, "native_delivery", error.code, "native", plan.diagnostic_id)
             raise DebridLibraryError("This position could not be prepared.", 503) from None
 
-    async def _native_subtitles(self, plan, number, tracks):
-        """Subtitles come from the session's own cue feed when it carries them."""
+    async def _native_subtitles(self, plan, number, tracks, request):
+        async def wait_for_disconnect():
+            while (await request.receive())["type"] != "http.disconnect":
+                pass
+
+        generation = asyncio.create_task(self.native.ensure_subtitles(plan, number, tracks))
+        disconnect = asyncio.create_task(wait_for_disconnect())
         try:
-            await self.native.ensure_subtitles(plan, number, tracks)
+            done, _ = await asyncio.wait(
+                (generation, disconnect), return_when=asyncio.FIRST_COMPLETED
+            )
+            if generation not in done:
+                raise DebridLibraryError("This subtitle request was closed.", 499)
+            generation.result()
         except NativeError as error:
             warn(_LOG, "native_delivery", error.code, "native", plan.diagnostic_id)
             raise DebridLibraryError("This subtitle is unavailable.", 503) from None
+        finally:
+            generation.cancel()
+            disconnect.cancel()
+            await asyncio.gather(generation, disconnect, return_exceptions=True)
 
     async def deliver(self, entry, asset, request, authorize: Callable[[], None]):
         authorize()

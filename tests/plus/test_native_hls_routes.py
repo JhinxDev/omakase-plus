@@ -6,13 +6,20 @@ back as a fixed VOD playlist, and every asset the player can request is answered
 from that one pass with its own authorization.
 """
 
+import asyncio
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from starlette.requests import Request
 
 from omakase.plus import native_hls, native_tv_test
-from omakase.plus.debrid_library import CloudSource, DebridLibrary, account_binding
+from omakase.plus.debrid_library import (
+    CloudSource,
+    DebridLibrary,
+    DebridLibraryError,
+    account_binding,
+)
 from omakase.plus.debrid_stream import DebridStreams
 from omakase.plus.native_hls import NativeAudio, NativeTimeline
 from tests.plus.test_native_tv_test import API, LIBRARY_API, _anime_pass
@@ -150,6 +157,61 @@ def test_native_engine_returns_a_fixed_vod_pass(system, monkeypatch, native_plan
 
     unauthorized = native.get(media + "/v00000.m4s")
     assert unauthorized.status_code == 404
+
+
+def test_disconnected_caption_requests_release_the_producer(tmp_path, monkeypatch):
+    streams = object.__new__(DebridStreams)
+    streams.native = native_hls.NativeStreams(tmp_path, free_bytes=lambda: 16 * 1024**3)
+    streams.subtitles = SimpleNamespace(get=lambda _: SimpleNamespace(tracks=(object(),)))
+    plan = native_hls.NativePlan("caption", TIMELINE_ARGS["url"], 24.0, tmp_path)
+    plan.timeline = NativeTimeline(**TIMELINE_ARGS)
+    plan.continuous = True
+    entry = SimpleNamespace(subtitle_key="caption")
+
+    async def run():
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def produce(*_args, **_kwargs):
+            started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+
+        monkeypatch.setattr(streams.native, "_produce", produce)
+
+        def open_request(disconnect):
+            async def receive():
+                await disconnect.wait()
+                return {"type": "http.disconnect"}
+
+            request = Request({"type": "http", "method": "GET"}, receive)
+            return asyncio.create_task(
+                streams._native_response(entry, plan, "s0-00000.vtt", request)
+            )
+
+        first_disconnect, second_disconnect = asyncio.Event(), asyncio.Event()
+        first = open_request(first_disconnect)
+        await asyncio.wait_for(started.wait(), 2)
+        second = open_request(second_disconnect)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        first_disconnect.set()
+        with pytest.raises(DebridLibraryError) as first_error:
+            await asyncio.wait_for(first, 2)
+        assert first_error.value.status == 499
+        assert not cancelled.is_set()
+
+        second_disconnect.set()
+        with pytest.raises(DebridLibraryError) as second_error:
+            await asyncio.wait_for(second, 2)
+        assert second_error.value.status == 499
+        assert cancelled.is_set()
+        assert plan.reserved_bytes == 0
+        assert list(tmp_path.iterdir()) == []
+
+    asyncio.run(run())
 
 
 def test_native_pass_refuses_a_copy_the_player_cannot_remux(system, monkeypatch, tmp_path):

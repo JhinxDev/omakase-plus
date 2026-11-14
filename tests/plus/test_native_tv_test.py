@@ -764,6 +764,125 @@ def test_library_link_scopes_catalog_and_media_to_the_browser_owner(system, monk
     assert db.execute("SELECT count(*) FROM web_playback_resumes").fetchone()[0] == 0
 
 
+def test_native_feature_uses_the_latest_played_title_for_the_active_profile(system):
+    _, db, _, _ = system
+    scope = personal_scope(db, 1)
+    for imdb_id, tmdb, title in (
+        ("tt0000001", 1, "A library pick"),
+        ("tt0000002", 2, "B recently started"),
+    ):
+        db.execute(
+            """INSERT INTO movie_catalog(user_id,imdb_id,tmdb_id,title,backdrop_url,updated_at)
+               VALUES(1,?,?,?,'https://image.tmdb.org/t/p/w780/test.jpg','fixture')""",
+            (imdb_id, tmdb, title),
+        )
+        db.execute(
+            """INSERT INTO movie_requests(user_id,imdb_id,code,detail,created_at,updated_at)
+               VALUES(1,?,'requested','fixture','fixture','fixture')""",
+            (imdb_id,),
+        )
+    for actor, library, imdb_id, position, stamp in (
+        (1, scope.library_id, "tt0000002", 30.0, 20.0),
+        (1, scope.library_id, "tt0000001", 0.0, 30.0),
+        (2, personal_scope(db, 2).library_id, "tt0000001", 90.0, 40.0),
+    ):
+        db.execute(
+            """INSERT INTO web_playback_resumes(
+                   target_key,user_id,library_id,domain,canonical_id,season_number,
+                   episode_number,media_version,duration_seconds,position_seconds,updated_at
+               ) VALUES (?,?,?,'movie',?,0,0,?,1200,?,?)""",
+            (str(stamp), actor, library, imdb_id, "f" * 64, position, stamp),
+        )
+    db.commit()
+    catalog = native_tv_library.collection(db, scope, "movie", 0)
+    assert catalog["featured"]["id"] == "tt0000002"
+    assert catalog["featured_recent"] is True
+
+
+def test_native_watchlist_is_scoped_to_the_paired_viewer(system, monkeypatch):
+    native, db, _, _, _ = _anime_pass(system, monkeypatch)
+    db.executemany(
+        """INSERT INTO anilist_plannings(user_id, anilist_id, title, status)
+           VALUES(?,?,?,'PLANNING')""",
+        [(1, 456, "Personal saved pick"), (2, 789, "Private peer pick")],
+    )
+    db.commit()
+    response = native.get(LIBRARY_API + "/watchlist")
+    assert response.status_code == 200
+    assert "no-store" in response.headers["cache-control"]
+    assert response.json()["items"] == [
+        {
+            "id": "456",
+            "title": "Personal saved pick",
+            "note": "Saved to Watchlist",
+            "summary": "",
+            "watchlist_artwork": True,
+        }
+    ]
+    assert native.get(LIBRARY_API + "/watchlist/789/poster").status_code == 404
+
+
+def test_native_for_you_and_request_share_the_paired_viewer(system, monkeypatch):
+    from omakase.plus import for_you
+
+    native, _, _, _, _ = _anime_pass(system, monkeypatch)
+    calls = []
+    saved = {
+        "kind": "tv",
+        "title_id": "42",
+        "title": "Recommended series",
+        "state": "requested",
+        "label": "Requested",
+        "detail": "Awaiting review.",
+    }
+
+    async def recommendations(db, viewer_id, category):
+        calls.append((viewer_id, category))
+        return {
+            "rows": [
+                {
+                    "key": "series",
+                    "title": "Recommended",
+                    "cards": [
+                        {
+                            "kind": "tv",
+                            "id": "42",
+                            "title": "Recommended series",
+                            "can_request": True,
+                            "internal_url": "https://private.invalid",
+                        }
+                    ],
+                }
+            ],
+            "requests": [saved] if len(calls) > 1 else [],
+        }
+
+    async def submit_request(db, viewer_id, kind, item):
+        calls.append((viewer_id, kind, item))
+        return saved
+
+    monkeypatch.setattr(for_you, "recommendations", recommendations)
+    monkeypatch.setattr(for_you, "submit_request", submit_request)
+    response = native.get(LIBRARY_API + "/for-you", params={"category": "tv"})
+    assert response.status_code == 200
+    assert response.json()["rows"][0]["cards"][0]["id"] == "42"
+    assert "private.invalid" not in response.text
+    assert (
+        native.post(LIBRARY_API + "/for-you/request", json={"kind": "tv", "title_id": "42"}).json()
+        == saved
+    )
+    assert native.get(LIBRARY_API + "/for-you", params={"category": "tv"}).json()["requests"] == [
+        saved
+    ]
+    assert (
+        native.post(
+            LIBRARY_API + "/for-you/request", json={"kind": "tv", "title_id": "42", "user_id": 2}
+        ).status_code
+        == 422
+    )
+    assert calls == [(1, "tv"), (1, "tv", "42"), (1, "tv")]
+
+
 def test_personal_movie_catalog_keeps_removed_history_without_offering_play(system):
     _, db, _, _ = system
     for imdb_id, tmdb_id, title, request_code, status in (

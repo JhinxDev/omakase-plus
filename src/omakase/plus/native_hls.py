@@ -118,6 +118,10 @@ _RESERVE_BYTES = 8 * 1024**3
 _ADMISSION_MARGIN = 32 * 1024**2
 _ABANDON_SECONDS = 240.0
 _READ_CHUNK = 8 * 1024 * 1024
+# Keep at most two already-read source chunks from the opening of a session
+# with captions. Caption windows can reuse those bytes without hitting the CDN
+# again and without adding files to the spool.
+_CAPTION_SOURCE_BYTES = 2 * _READ_CHUNK
 # Measured on the live link: one connection delivers about 0.9 MB/s whatever the
 # request size, so a window is pulled over a few connections at once.
 _READ_PARALLEL = 4
@@ -243,6 +247,12 @@ class NativeTimeline:
 
 
 @dataclass
+class _SubtitleWindow:
+    task: asyncio.Task
+    waiters: int = 0
+
+
+@dataclass
 class NativePlan:
     key: str
     url: str
@@ -254,6 +264,7 @@ class NativePlan:
     error: str | None = None
     task: asyncio.Task | None = None
     windows: dict[int, asyncio.Task] = field(default_factory=dict)
+    subtitle_windows: dict[int, _SubtitleWindow] = field(default_factory=dict)
     prefetch: asyncio.Task | None = None
     prefetch_start: int | None = None
     touched: float = field(default_factory=time.monotonic)
@@ -1307,6 +1318,23 @@ class _Collector:
         return False
 
 
+@dataclass
+class _SourcePrefix:
+    start: int
+    data: bytearray = field(default_factory=bytearray)
+
+    def read(self, start, limit):
+        offset = start - self.start
+        if 0 <= offset < len(self.data):
+            return self.data[offset : offset + limit]
+        return b""
+
+    def keep(self, data):
+        remaining = _CAPTION_SOURCE_BYTES - len(self.data)
+        if remaining > 0:
+            self.data.extend(memoryview(data)[:remaining])
+
+
 class _ContinuousTrack:
     """One FFmpeg consumer of a session's shared byte stream."""
 
@@ -1341,7 +1369,7 @@ class _ContinuousSession:
     a session, so the muxer's frame spacing and dependencies are preserved.
     """
 
-    def __init__(self, streams, plan, start):
+    def __init__(self, streams, plan, start, *, subtitles=0):
         self.streams = streams
         self.plan = plan
         self.timeline = plan.timeline
@@ -1354,6 +1382,9 @@ class _ContinuousSession:
         # cue before it preserves the source relationship and lands the first
         # picture of the window where the playlist says it is.
         self.feed_start = max(0, self.start - 1)
+        self.caption_source = (
+            _SourcePrefix(self.timeline.clusters[self.feed_start]) if subtitles else None
+        )
         self.tracks: list[_ContinuousTrack] = []
         # The highest window the player has asked for.
         self.active = self.start
@@ -1538,6 +1569,8 @@ class _ContinuousSession:
             return
         self.closed = True
         self.demand.set()
+        if self.caption_source is not None:
+            self.caption_source.data.clear()
         if self.pump is not None:
             self.pump.cancel()
         for task in self.tasks:
@@ -1613,7 +1646,12 @@ class _ContinuousSession:
         )
         client = await self.streams.shared_client()
         reader = _RangeReader(
-            timeline.url, offset, timeline.total, client=client, limit=timeline.total
+            timeline.url,
+            offset,
+            timeline.total,
+            client=client,
+            limit=timeline.total,
+            retain=self.caption_source,
         )
         try:
             collector = _Collector()
@@ -2420,7 +2458,7 @@ class NativeStreams:
                     raise NativeError("stale")
                 if session is not None:
                     await session.close("restart")
-                session = _ContinuousSession(self, plan, number)
+                session = _ContinuousSession(self, plan, number, subtitles=subtitles)
                 plan.session = session
                 if backward:
                     plan.backward_at = self.clock()
@@ -2457,7 +2495,37 @@ class NativeStreams:
             raise NativeError("no_timeline")
         if not 0 <= number < len(timeline.segments):
             raise NativeError("no_segment")
-        await self._generate(plan, number, count, subtitles_only=True)
+        window = plan.subtitle_windows.get(number)
+        while window is not None and window.task.cancelling():
+            # Its producer is cleaning up after the last reader disconnected.
+            # Let that finish before writing to the same staging files.
+            await asyncio.wait((window.task,))
+            if plan.subtitle_windows.get(number) is window:
+                plan.subtitle_windows.pop(number)
+            window = plan.subtitle_windows.get(number)
+        if not plan.root.is_dir():
+            raise NativeError("closed")
+        if window is None:
+            task = asyncio.create_task(self._generate(plan, number, count, subtitles_only=True))
+            task.add_done_callback(_observe)
+            window = plan.subtitle_windows[number] = _SubtitleWindow(task)
+        window.waiters += 1
+        try:
+            await asyncio.shield(window.task)
+        except asyncio.CancelledError:
+            if window.task.cancelled() and not asyncio.current_task().cancelling():
+                raise NativeError("closed") from None
+            raise
+        finally:
+            window.waiters -= 1
+            if window.waiters == 0:
+                # A scrub can abandon many caption requests in rapid succession.
+                # A window with no readers should give its producer slot back.
+                if not window.task.done():
+                    window.task.cancel()
+                    await asyncio.wait((window.task,))
+                if plan.subtitle_windows.get(number) is window:
+                    plan.subtitle_windows.pop(number)
         if not self._subtitle_ready(plan, number, count):
             raise NativeError("generation_failed")
         plan.touched = self.clock()
@@ -2586,7 +2654,12 @@ class NativeStreams:
             (audio, root / f".a{audio.ordinal}-{number:05d}.part") for audio in timeline.audios
         ]
         subtitle_paths = [
-            (track, plan.subtitle_segment_path(track, number))
+            (
+                track,
+                root / f".s{track}-{number:05d}.vtt.tmp"
+                if subtitles_only
+                else plan.subtitle_segment_path(track, number),
+            )
             for track in range(min(subtitles, _MAX_SUBTITLE_TRACKS))
         ]
         args = self._window_commands(
@@ -2637,12 +2710,21 @@ class NativeStreams:
                     finally:
                         plan.reserved_bytes = max(0, plan.reserved_bytes - estimate)
         except (TimeoutError, asyncio.TimeoutError):
-            self._discard(video_part, audio_parts)
+            if not subtitles_only:
+                self._discard(video_part, audio_parts)
             warn(_LOG, "native_window", "deadline", "native", plan.diagnostic_id)
             raise NativeError("deadline") from None
         except NativeError:
-            self._discard(video_part, audio_parts)
+            if not subtitles_only:
+                self._discard(video_part, audio_parts)
             raise
+        finally:
+            if subtitles_only:
+                for _, path in subtitle_paths:
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        continue
 
     async def _produce(
         self, plan, number, args, video_part, audio_parts, subtitle_paths,
@@ -2709,9 +2791,9 @@ class NativeStreams:
         commit_started = time.monotonic()
         try:
             if subtitles_only:
-                size = await asyncio.to_thread(
-                    self._commit_subtitles, plan, number, subtitle_paths
-                )
+                # These small text files must finish publishing within the
+                # producer task so disconnect cleanup cannot race a writer.
+                size = self._commit_subtitles(plan, number, subtitle_paths)
             else:
                 size = await asyncio.to_thread(
                     self._commit, plan, number, video_part, audio_parts, subtitle_paths
@@ -2816,12 +2898,14 @@ class NativeStreams:
         if _CUE_RELATIVE_ENABLED:
             resolved = await self._relative_start(timeline, number, keyframe_ms)
         start_offset = offset if resolved is None else resolved[0]
+        reusable = plan.session.caption_source if from_number is not None and plan.session else None
         reader = _RangeReader(
             timeline.url,
             start_offset,
             min(timeline.total, start_offset + budget),
             client=await self.shared_client(),
             limit=min(_WINDOW_MAX_BYTES, self._reserve_estimate(timeline, number) * 2),
+            reuse=reusable,
         )
         write_seconds = 0.0
         try:
@@ -3038,12 +3122,10 @@ class NativeStreams:
         start = timeline.origin + timeline.segments[number][0]
         end = timeline.origin + timeline.segments[number][1]
         written = 0
-        for _track, subtitle in subtitle_paths:
+        for track, subtitle in subtitle_paths:
             _clip_webvtt(subtitle, start, end)
-            try:
-                written += subtitle.stat().st_size
-            except OSError:
-                continue
+            written += subtitle.stat().st_size
+            subtitle.replace(plan.subtitle_segment_path(track, number))
         return written
 
     def _discard(self, video_part, audio_parts):
@@ -3153,10 +3235,16 @@ class NativeStreams:
             # Kill the forward session before its spool disappears, so no child
             # process can keep writing into a directory that is being removed.
             session.shutdown(reason)
-        for task in (plan.task, plan.prefetch, *plan.windows.values()):
+        for task in (
+            plan.task,
+            plan.prefetch,
+            *plan.windows.values(),
+            *(window.task for window in plan.subtitle_windows.values()),
+        ):
             if task is not None:
                 task.cancel()
         plan.windows.clear()
+        plan.subtitle_windows.clear()
         shutil.rmtree(plan.root, ignore_errors=True)
 
     def sweep(self):
@@ -3201,7 +3289,10 @@ class _RangeReader:
     so a window's provider cost can be told apart from ffmpeg backpressure.
     """
 
-    def __init__(self, url, start, end, transport=None, limit=_WINDOW_MAX_BYTES, client=None):
+    def __init__(
+        self, url, start, end, transport=None, limit=_WINDOW_MAX_BYTES, client=None,
+        *, retain=None, reuse=None,
+    ):
         self.url = url
         self.position = start
         self.end = min(end, start + limit)
@@ -3213,6 +3304,8 @@ class _RangeReader:
         self.read_bytes = 0
         self.read_calls = 0
         self.read_seconds = 0.0
+        self.retain = retain
+        self.reuse = reuse
 
     async def _client(self):
         if self.client is None:
@@ -3286,16 +3379,20 @@ class _RangeReader:
         want = min(self.end - self.position, max(wanted, _READ_CHUNK))
         if self.read_bytes + want > self.limit:
             raise NativeError("window_too_large")
-        read_started = time.monotonic()
-        try:
-            data = await self._read_parallel(want)
-        finally:
-            self.read_seconds += time.monotonic() - read_started
+        data = self.reuse.read(self.position, want) if self.reuse is not None else b""
+        if not data:
+            read_started = time.monotonic()
+            try:
+                data = await self._read_parallel(want)
+            finally:
+                self.read_seconds += time.monotonic() - read_started
+            self.read_bytes += len(data)
         if not data:
             return False
+        if self.retain is not None:
+            self.retain.keep(data)
         self.buffer.extend(data)
         self.position += len(data)
-        self.read_bytes += len(data)
         return True
 
     async def _read_parallel(self, want):
@@ -3382,10 +3479,7 @@ def _vtt_stamp(seconds):
 
 def _clip_webvtt(path, start, end):
     """Keep only this window's part of every cue, on the window's own clock."""
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
-    except OSError:
-        return
+    text = path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
     cues = ["WEBVTT", ""]
     for block in text.split("\n\n"):
         lines = [line for line in block.split("\n") if line.strip()]
@@ -3409,10 +3503,7 @@ def _clip_webvtt(path, start, end):
             cues.append("")
             break
     text = "\n".join(cues).rstrip() + "\n" if len(cues) > 2 else "WEBVTT\n\n"
-    try:
-        path.write_text(text, encoding="utf-8")
-    except OSError:
-        return
+    path.write_text(text, encoding="utf-8")
 
 
 def _write_atomic(path, data):

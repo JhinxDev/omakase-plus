@@ -365,6 +365,18 @@ def collection(
 
 def _feature(db, scope, response, entries, kind, offset, query):
     if not query and offset == 0:
+        by_id = {
+            row["id"]: row for row in entries if row.get("watch_path") or row.get("featured_path")
+        }
+        activity = db.execute(
+            """SELECT canonical_id, MAX(updated_at) AS played_at FROM web_playback_resumes
+               WHERE user_id=? AND library_id=? AND domain=? AND position_seconds>0
+               GROUP BY canonical_id ORDER BY played_at DESC,canonical_id""",
+            (scope.viewer_id, scope.library_id, kind),
+        )
+        latest = next(
+            (by_id[row["canonical_id"]] for row in activity if row["canonical_id"] in by_id), None
+        )
         continue_watching = [row for row in entries if row.get("watching")]
         continue_watching.sort(key=lambda row: row.get("_activity") or "", reverse=True)
         continue_watching = continue_watching[:8]
@@ -372,7 +384,8 @@ def _feature(db, scope, response, entries, kind, offset, query):
             row.pop("_activity", None)
         response["continue_watching"] = continue_watching
         featured = (
-            next(
+            latest
+            or next(
                 (
                     row
                     for row in continue_watching
@@ -401,6 +414,7 @@ def _feature(db, scope, response, entries, kind, offset, query):
                     "summary": cached_synopsis(db, anilist)["description_preview"],
                 }
         response["featured"] = featured
+        response["featured_recent"] = latest is not None
     else:
         for row in entries:
             row.pop("_activity", None)

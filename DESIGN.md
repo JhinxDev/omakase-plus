@@ -418,7 +418,11 @@ larger portrait rail. Continue Watching uses local viewing evidence. Genres,
 liked-title matches, airing anime and films use bounded AniList candidates
 ranked with local history. Movies and TV use the optional Seerr connection.
 Source scores, library availability and personal viewing state use distinct
-labels. One disclosure holds anime watchlist, library and feedback actions.
+labels. One disclosure holds anime requests, watchlist, library and feedback
+actions. The active category shows the personal library's recent requests, with
+the same saved status as the paired app. Movies can run an explicit provider
+status check. TV requests wait for manual owner review. Request controls use
+44px touch targets and include the title in their accessible name.
 
 Render the page shell immediately. Standard shelves load independently of the
 AI menu, use static skeletons during loading, and show a separate unavailable

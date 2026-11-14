@@ -469,10 +469,12 @@ def test_subtitles_come_from_one_bounded_window_read(tmp_path, hevc_provider):
 
     async def run():
         try:
-            await step("open", _open(streams, plan, 1))
+            await step("open", _open(streams, plan, 1, subtitles=1))
             assert not plan.subtitle_segment_path(0, 1).exists()
             assert plan.session is not None
+            provider_requests = len(hevc_provider.requests)
             await step("subtitles", streams.ensure_subtitles(plan, 1, 1))
+            assert len(hevc_provider.requests) == provider_requests
             text = plan.subtitle_segment_path(0, 1).read_text("utf-8")
             assert text.startswith("WEBVTT")
             assert "Second hevc line" in text
@@ -920,6 +922,47 @@ def test_zero_sized_box_is_refused_without_buffering():
     reader = Stream(struct.pack(">I", 8) + b"free")
     box = asyncio.run(native_hls._read_box(reader))
     assert box == (b"free", struct.pack(">I", 8) + b"free")
+
+
+def test_overlapping_subtitle_requests_share_only_the_finished_window(tmp_path, monkeypatch):
+    streams = NativeStreams(tmp_path, free_bytes=lambda: 16 * 1024**3)
+    plan = NativePlan("caption", "https://mock.invalid/episode", 12, tmp_path)
+    plan.timeline = native_hls.NativeTimeline(
+        plan.url, 12, 0, ((0, 6), (6, 12)), (100, 200), 300, b"", b"", b"", "hevc"
+    )
+    plan.continuous = True
+    requests = 0
+    raw = "WEBVTT\n\n00:00:05.500 --> 00:00:06.200\nCrossing cue\n"
+
+    async def run():
+        producing = asyncio.Event()
+        release = asyncio.Event()
+
+        async def produce(plan, number, _args, _video_part, _audio_parts, subtitles,
+                          *, subtitles_only=False):
+            nonlocal requests
+            assert subtitles_only
+            requests += 1
+            for _, path in subtitles:
+                path.write_text(raw, encoding="utf-8")
+            producing.set()
+            await release.wait()
+            streams._commit_subtitles(plan, number, subtitles)
+
+        monkeypatch.setattr(streams, "_produce", produce)
+        first = asyncio.create_task(streams.ensure_subtitles(plan, 1, 1))
+        await producing.wait()
+        second = asyncio.create_task(streams.ensure_subtitles(plan, 1, 1))
+        await asyncio.sleep(0)
+        published_too_early = plan.subtitle_segment_path(0, 1).exists() or second.done()
+        release.set()
+        await asyncio.gather(first, second)
+
+        assert not published_too_early
+        assert requests == 1
+        assert "00:00:00.000 --> 00:00:00.200" in plan.subtitle_segment_path(0, 1).read_text()
+
+    asyncio.run(run())
 
 
 def test_subtitle_clipping_keeps_crossing_and_preceding_cues(tmp_path):

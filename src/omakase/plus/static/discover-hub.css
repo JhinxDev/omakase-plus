@@ -28,3 +28,11 @@
 .hub-divisions a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 .3rem; border-bottom: 3px solid transparent; color: #b5bfd0; text-decoration: none; }
 .hub-divisions a:is(:hover, :focus-visible) { color: #f0edf8; }
 .hub-divisions a[aria-current="page"] { border-color: var(--stream-accent, #c3b1ff); color: #f0edf8; }
+
+.hub-request-label { margin: .4rem 0 .2rem; color: var(--stream-accent, #d8cfff); font-size: .875rem; font-weight: 650; }
+.hub-requests { margin-bottom: 1.5rem; }
+.hub-requests ul { list-style: none; margin: .65rem 0 0; padding: 0; }
+.hub-requests li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .4rem 1rem; padding: .65rem 0; border-bottom: 1px solid #303547; }
+.hub-requests li > div { min-width: 0; overflow-wrap: anywhere; }
+.hub-requests li a { color: inherit; font-weight: 650; text-underline-offset: .2em; }
+.hub-card form .text-action, .hub-requests .text-action { min-height: 44px; }

@@ -40,6 +40,7 @@ query {
 }
 fragment card on Media {
   id title { english romaji } format episodes status genres averageScore
+  coverImage { large }
 }
 """
 _CARD_LIMIT = 12
@@ -389,6 +390,7 @@ async def _refresh_catalog():
                     status=item.get("status"),
                     score=item.get("averageScore"),
                 )
+                card["poster_url"] = (item.get("coverImage") or {}).get("large")
                 card["genres"] = tuple(g for g in item.get("genres", []) if isinstance(g, str))[:12]
                 cards[media_id] = card
         if cards:
@@ -428,13 +430,18 @@ async def _screen_shelves(db, user_id, signature):
             return []
         return [
             {
+                "id": card["imdb_id"],
+                "kind": "movie",
                 "title": card["title"],
                 "href": f"/plus/movies/{card['imdb_id']}",
                 "poster": f"/plus/movies/{card['imdb_id']}/artwork"
                 if card.get("poster_url")
                 else None,
+                "poster_url": card.get("poster_url"),
+                "summary": card.get("overview"),
                 "format": "Movie",
                 "badge": "In your library" if card.get("state") == "ready" else "",
+                "available": card.get("state") == "ready",
             }
             for card in cards
             if card.get("imdb_id")
@@ -500,6 +507,12 @@ async def _screen_shelves(db, user_id, signature):
                     "href": f"/plus/tv/{media_id}",
                     "poster": f"/plus/discover/tv-art/{media_id}" if artwork else None,
                     "artwork": artwork,
+                    "poster_url": artwork,
+                    "kind": "tv",
+                    "summary": item.get("overview")
+                    if isinstance(item.get("overview"), str)
+                    else "",
+                    "available": media_id in present,
                     "format": "TV show",
                     "badge": "On Plex"
                     if media_id in present

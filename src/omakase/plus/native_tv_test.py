@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -82,6 +82,7 @@ from omakase.plus.native_tv_library import (
     tv_episode_page_seasons,
 )
 from omakase.plus.posters import PosterUnavailable, banner_bytes, poster_bytes
+from omakase.plus.product_views import saved_watchlist
 from omakase.plus.request_limits import bounded_form_route
 from omakase.plus.tv_service import plain
 from omakase.plus.web_playback_admission import Admission, Busy
@@ -117,6 +118,14 @@ PASS_TTL = 1200
 LIBRARY_TTL = 3600
 LIBRARY_MEDIA_TTL = 43200
 NO_STORE = {"Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer"}
+
+
+class NativeTitleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["anime", "movie", "tv"]
+    title_id: str = Field(pattern=r"^(?:tt[0-9]{7,10}|[1-9][0-9]{0,9})$")
+
+
 ANIME = re.compile(r"/plus/watch/([1-9][0-9]{0,17})/([0-9]{1,4})")
 _LOG = logging.getLogger(__name__)
 MOVIE = re.compile(r"/plus/watch/title/movie/(tt[0-9]{7,10})")
@@ -1745,6 +1754,125 @@ def create_native_tv_test_router(
         except households.HouseholdError:
             raise HTTPException(404, "Apple TV library unavailable", headers=NO_STORE) from None
         return JSONResponse(reply, headers=NO_STORE)
+
+    def native_request_status(status):
+        if status is None:
+            return None
+        return {
+            key: status[key] for key in ("kind", "title_id", "title", "state", "label", "detail")
+        }
+
+    @router.get(LIBRARY_API + "/for-you")
+    async def native_for_you(
+        request: Request, category: Literal["anime", "tv", "movies"], db=Depends(get_db)
+    ):
+        from omakase.plus.for_you import ForYouError, recommendations
+
+        _, _, scope = requested_scope(request, db)
+        if scope.kind != "personal":
+            raise HTTPException(404, "Personal recommendations unavailable", headers=NO_STORE)
+        try:
+            page = await recommendations(db, scope.viewer_id, category)
+        except ForYouError as error:
+            raise HTTPException(error.status, error.detail, headers=NO_STORE) from None
+        # Return only the fields the paired client needs. Browser links and
+        # provider-side request metadata are not part of the native contract.
+        return JSONResponse(
+            {
+                "category": category,
+                "rows": [
+                    {
+                        "key": row["key"],
+                        "title": row["title"],
+                        "cards": [
+                            {
+                                "id": str(card["id"]),
+                                "kind": card["kind"],
+                                "title": card["title"],
+                                "poster_url": card.get("poster_url"),
+                                "summary": card.get("summary"),
+                                "request": native_request_status(card.get("request")),
+                                "can_request": card["can_request"],
+                            }
+                            for card in row["cards"]
+                            if "id" in card and "kind" in card
+                        ],
+                    }
+                    for row in page["rows"]
+                ],
+                "requests": [native_request_status(status) for status in page["requests"]],
+            },
+            headers=NO_STORE,
+        )
+
+    @router.post(LIBRARY_API + "/for-you/request")
+    async def native_for_you_request(
+        request: Request, body: NativeTitleRequest, db=Depends(get_db)
+    ):
+        from omakase.plus.for_you import ForYouError, submit_request
+
+        _, _, scope = requested_scope(request, db)
+        if scope.kind != "personal":
+            raise HTTPException(404, "Personal requests unavailable", headers=NO_STORE)
+        try:
+            result = await submit_request(db, scope.viewer_id, body.kind, body.title_id)
+        except ForYouError as error:
+            raise HTTPException(error.status, error.detail, headers=NO_STORE) from None
+        return JSONResponse(native_request_status(result), headers=NO_STORE)
+
+    @router.post(LIBRARY_API + "/for-you/request/check")
+    async def native_for_you_check(request: Request, body: NativeTitleRequest, db=Depends(get_db)):
+        from omakase.plus.for_you import ForYouError, refresh_request
+
+        _, _, scope = requested_scope(request, db)
+        if scope.kind != "personal":
+            raise HTTPException(404, "Personal requests unavailable", headers=NO_STORE)
+        try:
+            result = await refresh_request(db, scope.viewer_id, body.kind, body.title_id)
+        except ForYouError as error:
+            raise HTTPException(error.status, error.detail, headers=NO_STORE) from None
+        return JSONResponse(native_request_status(result), headers=NO_STORE)
+
+    @router.get(LIBRARY_API + "/watchlist")
+    async def library_watchlist(request: Request, db=Depends(get_db)):
+        _, _, scope = requested_scope(request, db)
+        items = []
+        if scope.kind == "personal":
+            for row in saved_watchlist(db, user_id=scope.viewer_id)[:8]:
+                title_id = row["anilist_id"]
+                items.append(
+                    {
+                        "id": str(title_id),
+                        "title": row["title"],
+                        "note": "Saved to Watchlist",
+                        "summary": cached_synopsis(db, title_id)["description_preview"],
+                        "watchlist_artwork": True,
+                    }
+                )
+        return JSONResponse({"items": items, "next_offset": None}, headers=NO_STORE)
+
+    @router.get(LIBRARY_API + "/watchlist/{title_id}/poster")
+    async def library_watchlist_artwork(
+        request: Request,
+        title_id: int = Path(ge=1, le=2_147_483_647),
+        db=Depends(get_db),
+    ):
+        def authorize():
+            _, _, scope = requested_scope(request, db)
+            if scope.kind != "personal" or not any(
+                row["anilist_id"] == title_id
+                for row in saved_watchlist(db, user_id=scope.viewer_id)[:8]
+            ):
+                raise HTTPException(404, "Artwork unavailable", headers=NO_STORE)
+
+        authorize()
+        try:
+            async with asyncio.timeout(10), artwork_slots:
+                data, media_type = await poster_bytes(title_id)
+        except (PosterUnavailable, TimeoutError):
+            raise HTTPException(404, "Artwork unavailable", headers=NO_STORE) from None
+        authorize()
+        return Response(data, media_type=media_type, headers=NO_STORE)
 
     @router.get(LIBRARY_API + "/libraries")
     async def library_choices(request: Request, db=Depends(get_db)):

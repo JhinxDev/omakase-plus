@@ -5,7 +5,6 @@ Mounted at ``/plus`` via an ``APIRouter``.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import math
@@ -22,7 +21,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
@@ -143,6 +142,7 @@ from omakase.plus.repairs import (
     reprobe_asset,
     rescan_title,
 )
+from omakase.plus.request_limits import bounded_form_route
 from omakase.plus.search_routes import create_search_router
 from omakase.plus.secrets import delete_secret, read_secret, store_secret
 from omakase.plus.title_removal import (
@@ -2055,34 +2055,64 @@ async def discover_rows(
     user=Depends(require_user),
     db=Depends(get_db),
 ):
-    from omakase.plus import discover_hub as hub
+    from omakase.plus import for_you
 
-    history_unavailable = False
-    if kind == "anime":
-        catalog, watched = await asyncio.gather(
-            hub.anime_catalog(), hub.tracker_watched_ids(db, user.id)
-        )
-        history_unavailable = watched is None
-        rows = (
-            []
-            if history_unavailable
-            else hub.anime_shelves(db, user.id, catalog, hub.viewer_monitors(db, user.id), watched)
-        )
-    else:
-        rows = await hub.screen_shelves(db, user.id)
-        if kind != "screen":
-            rows = [row for row in rows if row["key"] == kind]
+    payload = await for_you.recommendations(db, user.id, kind)
+    personal = _personal_for_you(db, user.id)
     return templates.TemplateResponse(
         request,
         "_discover_rows.html",
         {
-            "rows": rows,
+            **payload,
             "kind": kind,
-            "history_unavailable": history_unavailable,
             "csrf_token": _csrf_token(request),
+            "personal_requests": personal,
         },
         headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
     )
+
+
+def _personal_for_you(db, user_id):
+    return not households.feature_enabled() or (
+        households.selected_scope(db, viewer_id=user_id).kind == "personal"
+    )
+
+
+_for_you_form_router = APIRouter(
+    route_class=bounded_form_route(4096, "Title request form is too large.")
+)
+
+
+@_for_you_form_router.post("/discover/requests/{operation}")
+async def discover_title_request(
+    request: Request,
+    operation: Literal["submit", "check"],
+    kind: Literal["anime", "movie", "tv"] = Form(...),
+    title_id: str = Form(..., max_length=12),
+    csrf_token: str = Form(""),
+    user=Depends(require_user),
+    db=Depends(get_db),
+):
+    from omakase.plus import for_you
+
+    _require_csrf(request, csrf_token)
+    if not _personal_for_you(db, user.id):
+        raise HTTPException(409, "Switch to your personal library to request a For You title.")
+    action = for_you.submit_request if operation == "submit" else for_you.refresh_request
+    try:
+        result = await action(db, user.id, kind, title_id)
+        message = f"{result['label']} · {result['title']}"
+    except for_you.ForYouError as error:
+        message = error.detail
+    category = "movies" if kind == "movie" else kind
+    return RedirectResponse(
+        "/plus/discover?" + urlencode({"kind": category, "message": message}),
+        status_code=303,
+        headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+    )
+
+
+router.include_router(_for_you_form_router)
 
 
 @router.get("/discover/tv-art/{tmdb_id}")
