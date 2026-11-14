@@ -268,4 +268,92 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         default: return "other"
         }
     }
+
+    // MARK: - Diagnostics
+
+    /// AVFoundation facts the server needs, with provider URLs and tokens redacted.
+    ///
+    /// Item status and error, the error log, the access log, the playback control
+    /// state, why the player is waiting, the loaded ranges and the current time.
+    /// Everything that could carry a per-pass token or a provider URL is passed
+    /// through `redact` first, because this string is posted to the server.
+    var diagnosticSnapshot: String {
+        let loaded = item.loadedTimeRanges
+            .map(\.timeRangeValue)
+            .compactMap(Self.rangeText)
+            .joined(separator: " ")
+        let access = (item.accessLog()?.events ?? []).suffix(2).map { event in
+            "uri=\(Self.redact(event.uri ?? "")) segs=\(event.numberOfSegmentsDownloaded)"
+                + " bytes=\(event.numberOfBytesTransferred) br=\(event.observedBitrate)"
+                + " stalls=\(event.numberOfStalls) dur=\(String(format: "%.2f", event.transferDuration))"
+        }.joined(separator: " || ")
+        let errors = (item.errorLog()?.events ?? []).suffix(3).map { event in
+            "\(event.errorStatusCode)/\(event.errorDomain)/\(Self.redact(event.errorComment ?? ""))"
+        }.joined(separator: " || ")
+        return "engine=avplayer status=\(Self.statusText(item.status))"
+            + " error=\(Self.failure(item.error).kind.rawValue):\(Self.failure(item.error).code)"
+            + " time=\(String(format: "%.3f", CMTimeGetSeconds(item.currentTime())))"
+            + " rate=\(String(format: "%.2f", player.rate))"
+            + " control=\(Self.controlText(player.timeControlStatus))"
+            + " wait=\(Self.waitText(player.reasonForWaitingToPlay))"
+            + " likely=\(item.isPlaybackLikelyToKeepUp) empty=\(item.isPlaybackBufferEmpty)"
+            + " loaded=[\(loaded)] access=[\(access)] errors=[\(errors)]"
+    }
+
+    private static func statusText(_ status: AVPlayerItem.Status) -> String {
+        switch status {
+        case .unknown: return "unknown"
+        case .readyToPlay: return "ready"
+        case .failed: return "failed"
+        @unknown default: return "other"
+        }
+    }
+
+    private static func controlText(_ status: AVPlayer.TimeControlStatus) -> String {
+        switch status {
+        case .paused: return "paused"
+        case .waitingToPlayAtSpecifiedRate: return "waiting"
+        case .playing: return "playing"
+        @unknown default: return "other"
+        }
+    }
+
+    private static func waitText(_ reason: AVPlayer.WaitingReason?) -> String {
+        guard let reason else { return "none" }
+        switch reason {
+        case .evaluatingBufferingRate: return "buffering_rate"
+        case .toMinimizeStalls: return "minimize_stalls"
+        case .noItemToPlay: return "no_item"
+        case .waitingForCoordinatedPlayback: return "coordinated"
+        default: return "other"
+        }
+    }
+
+    private static func rangeText(_ range: CMTimeRange) -> String? {
+        let start = range.start.seconds
+        let end = CMTimeRangeGetEnd(range).seconds
+        guard start.isFinite, end.isFinite else { return nil }
+        return String(format: "%.2f-%.2f", start, end)
+    }
+
+    /// Removes query strings, per-pass tokens, media ids and provider origins.
+    static func redact(_ value: String) -> String {
+        guard !value.isEmpty else { return "" }
+        var text = value
+        if let mark = text.firstIndex(of: "?") { text = String(text[..<mark]) }
+        text = text.replacingOccurrences(
+            of: "/[A-Za-z0-9_-]{43}(?=[/\\s]|$)",
+            with: "/<token>",
+            options: .regularExpression
+        )
+        // The media id is a correlation handle the server pairs its own served-asset
+        // trace against, and it is useless without the token, so it is kept.
+        if let origin = text.range(of: "https?://[^/\\s]+", options: .regularExpression) {
+            let lower = text[origin].lowercased()
+            let ours = lower.contains("omakase") || lower.contains("127.0.0.1")
+                || lower.contains("localhost") || lower.contains("192.168.")
+            if !ours { text = text.replacingCharacters(in: origin, with: "<provider>") }
+        }
+        return String(text.prefix(600))
+    }
 }

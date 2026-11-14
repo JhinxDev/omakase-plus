@@ -254,6 +254,21 @@ struct LiveTestScreen: View {
                             await library.reportDiagnostic("\(message) | \(player.lastDiagnostic.isEmpty ? player.diagnostic : player.lastDiagnostic)")
                         }
                     }
+                    // A stall is not an error, so the state transitions and a
+                    // heartbeat are reported too: item status and error, the error
+                    // and access logs, the control state, why the player waits,
+                    // the loaded ranges and the current time, all redacted.
+                    .onChange(of: player.status) { _, status in
+                        guard player.isPresenting else { return }
+                        Task { await library.reportDiagnostic("state=\(status) | \(player.diagnostic)") }
+                    }
+                    .task(id: pass?.mediaID) {
+                        while !Task.isCancelled {
+                            try? await Task.sleep(for: .seconds(15))
+                            guard player.isPresenting else { continue }
+                            await library.reportDiagnostic("heartbeat | \(player.diagnostic)")
+                        }
+                    }
             }
             if let pass {
                 TitleScreen(card: pass.card, saved: savedPosition(pass), session: player,

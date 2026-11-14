@@ -111,16 +111,8 @@ final class PlaybackSession: ObservableObject {
 
     var diagnostic: String {
         if let av = engine as? AVPlayerEngine {
-            let item = av.item
-            let url = item.asset as? AVURLAsset
-            let urlText = url.map { "\($0.url.host ?? "?")}\($0.url.path)" } ?? "none"
-            let errorText = (item.error as NSError?).map {
-                "\($0.domain)/\($0.code) \($0.localizedDescription)"
-            } ?? "nil"
-            let logs = (item.errorLog()?.events ?? []).prefix(5).map {
-                "\($0.errorStatusCode)/\($0.errorDomain)/\($0.errorComment ?? "")"
-            }.joined(separator: " || ")
-            return "engine=avplayer status=\(item.status.rawValue) error=\(errorText) time=\(CMTimeGetSeconds(item.currentTime())) rate=\(av.player.rate) likely=\(item.isPlaybackLikelyToKeepUp) bufferEmpty=\(item.isPlaybackBufferEmpty) url=\(urlText) logs=\(logs)"
+            // One snapshot with every field the server needs, redacted at source.
+            return av.diagnosticSnapshot
         }
         guard let engine else { return "engine=none" }
         // Deliberately no URL and no header: a direct item's URL can be a signed
