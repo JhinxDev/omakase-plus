@@ -112,4 +112,4 @@ Use the project's Apple TV signing flow to sign the production IPA for the
 authorized device. Signing, installation and playback verification are
 separate steps. The source import came from the receipt-matched 0.4.25 tvOS
 archive with its direct-player patch. The production build advances the app
-to 0.5.0 build 31 for device readback.
+to 0.5.1 build 32 for device readback.

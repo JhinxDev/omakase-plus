@@ -92,83 +92,245 @@ private struct DirectPlayerControls: View {
     let next: (() -> Void)?
     let openingNext: Bool
     let dismiss: () -> Void
+
     @State private var showingControls = true
-    @FocusState private var transportFocused: Bool
+    @State private var selector: TrackKind?
+    @State private var returnFocus: Control = .play
+    @FocusState private var controlFocus: Control?
+    @FocusState private var trackFocus: TrackRow?
+
+    private enum Control: String, Hashable {
+        case back, play, forward, audio, subtitles, next, hide, show
+    }
+
+    private enum TrackRow: Hashable {
+        case done, off, track(String)
+    }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
+        ZStack {
             VLCPlayerView(engine: engine)
                 .ignoresSafeArea()
                 .accessibilityHidden(true)
-            if showingControls {
-                VStack(spacing: 12) {
-                    if session.duration > 0 {
-                        ProgressView(value: min(session.position, session.duration), total: session.duration)
+
+            if let selector {
+                trackSelector(selector)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black.opacity(0.48).ignoresSafeArea())
+            } else if showingControls {
+                transport
+                    .padding(.horizontal, 48)
+                    .padding(.bottom, 44)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .defaultFocus($controlFocus, returnFocus)
+                    .task {
+                        await Task.yield()
+                        guard !Task.isCancelled else { return }
+                        controlFocus = returnFocus
                     }
-                    HStack {
-                        Button {
-                            session.skip(by: -10)
-                        } label: {
-                            Label("Back 10 seconds", systemImage: "gobackward.10")
-                        }
-                        Button(session.isDirectPlaybackRequested ? "Pause" : "Play") {
-                            session.togglePlayPause()
-                        }
-                        .focused($transportFocused)
-                        Button {
-                            session.skip(by: 10)
-                        } label: {
-                            Label("Forward 10 seconds", systemImage: "goforward.10")
-                        }
-                        trackMenu(.audio, title: "Audio")
-                        trackMenu(.subtitle, title: "Subtitles")
-                        if let next {
-                            Button("Next Episode", action: next)
-                                .disabled(openingNext)
-                        }
-                        Button("Hide Controls") { showingControls = false }
-                    }
-                }
-                .padding(24)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
-                .padding(48)
-                .onAppear { transportFocused = true }
             } else {
-                Button("Show Controls") { showingControls = true }
-                    .opacity(0.25)
-                    .focused($transportFocused)
-                    .padding(48)
-                    .onAppear { transportFocused = true }
+                control(.show, "Show Controls", icon: "chevron.up", width: 196, caption: true) {
+                    returnFocus = .play
+                    showingControls = true
+                }
+                .padding(.bottom, 44)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .defaultFocus($controlFocus, .show)
             }
         }
         .onPlayPauseCommand { session.togglePlayPause() }
-        .onExitCommand(perform: dismiss)
+        .onExitCommand(perform: goBack)
     }
 
-    private func trackMenu(_ kind: TrackKind, title: String) -> some View {
-        let tracks = session.directTracks.filter { $0.kind == kind }
-        let selected = engine.selectedTrackID(kind: kind)
-        return Menu(title) {
-            if kind == .subtitle {
-                Button {
-                    session.selectTrack(kind: kind, id: nil)
-                } label: {
-                    if selected == nil { Label("Off", systemImage: "checkmark") }
-                    else { Text("Off") }
+    private var transport: some View {
+        VStack(spacing: 16) {
+            if session.duration > 0 {
+                HStack(spacing: 16) {
+                    Text(PlaybackSession.clock(session.position))
+                    ProgressView(value: min(max(0, session.position), session.duration),
+                                 total: session.duration)
+                        .tint(.white)
+                        .accessibilityLabel("Playback progress")
+                    Text(PlaybackSession.clock(session.duration))
                 }
+                .font(.system(size: 22, weight: .medium).monospacedDigit())
+                .foregroundStyle(.white.opacity(0.86))
             }
-            ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-                let name = track.name.flatMap { $0.isEmpty ? nil : $0 }
-                let label = name ?? track.language ?? "Track \(index + 1)"
-                Button {
-                    session.selectTrack(kind: kind, id: track.id)
-                } label: {
-                    if selected == track.id { Label(label, systemImage: "checkmark") }
-                    else { Text(label) }
+
+            HStack(spacing: 14) {
+                control(.back, "Back 10 seconds", icon: "gobackward.10", width: 70) {
+                    session.skip(by: -10)
+                }
+                control(.play, session.isDirectPlaybackRequested ? "Pause" : "Play",
+                        icon: session.isDirectPlaybackRequested ? "pause.fill" : "play.fill", width: 76) {
+                    session.togglePlayPause()
+                }
+                control(.forward, "Forward 10 seconds", icon: "goforward.10", width: 70) {
+                    session.skip(by: 10)
+                }
+                Spacer().frame(width: 16)
+                control(.audio, "Audio", icon: "waveform", width: 132, caption: true) {
+                    openSelector(.audio, from: .audio)
+                }
+                .disabled(!session.directTracks.contains { $0.kind == .audio })
+                control(.subtitles, "Subtitles", icon: "captions.bubble", width: 158, caption: true) {
+                    openSelector(.subtitle, from: .subtitles)
+                }
+                if let next {
+                    control(.next, "Next Episode", icon: "forward.end.fill", width: 70, action: next)
+                        .disabled(openingNext)
+                }
+                control(.hide, "Hide Controls", icon: "chevron.down", width: 70) {
+                    showingControls = false
                 }
             }
         }
-        .disabled(tracks.isEmpty && kind == .audio)
+        .padding(22)
+        .background(Color.black.opacity(0.86), in: .rect(cornerRadius: 24))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24)
+                .strokeBorder(.white.opacity(0.18), lineWidth: 1)
+        }
+    }
+
+    private func control(
+        _ item: Control, _ label: String, icon: String, width: CGFloat,
+        caption: Bool = false, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon).font(.system(size: caption ? 24 : 30, weight: .semibold))
+                if caption {
+                    Text(label).font(.system(size: 23, weight: .semibold))
+                        .lineLimit(1)
+                }
+            }
+            .frame(width: width, height: 66)
+        }
+        .buttonStyle(PlayerControlStyle(focused: controlFocus == item))
+        .focused($controlFocus, equals: item)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("direct.control." + item.rawValue)
+    }
+
+    private func trackSelector(_ kind: TrackKind) -> some View {
+        let tracks = session.directTracks.filter { $0.kind == kind }
+        let selected = engine.selectedTrackID(kind: kind)
+        let initialFocus: TrackRow = kind == .subtitle ? .off
+            : tracks.first.map { .track($0.id) } ?? .done
+
+        return VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text(kind == .subtitle ? "Subtitles" : "Audio Tracks")
+                    .font(.system(size: 36, weight: .semibold))
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                Button("Done", action: closeSelector)
+                    .font(.system(size: 24, weight: .semibold))
+                    .frame(minWidth: 110)
+                    .buttonStyle(PlayerControlStyle(focused: trackFocus == .done))
+                    .focused($trackFocus, equals: .done)
+                    .accessibilityIdentifier("direct.track.done")
+            }
+            ScrollView {
+                VStack(spacing: 12) {
+                    if kind == .subtitle {
+                        trackRow(.off, title: "Off", active: selected == nil, kind: kind, id: nil)
+                    }
+                    ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                        let name = track.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let title = name.flatMap { $0.isEmpty ? nil : $0 }
+                            ?? track.language ?? "Track \(index + 1)"
+                        trackRow(.track(track.id), title: title, active: selected == track.id,
+                                 kind: kind, id: track.id)
+                    }
+                }
+                .padding(3)
+            }
+            .frame(height: 322)
+        }
+        .foregroundStyle(.white)
+        .padding(30)
+        .frame(width: 746)
+        .background(Color(red: 0.07, green: 0.08, blue: 0.11), in: .rect(cornerRadius: 26))
+        .overlay {
+            RoundedRectangle(cornerRadius: 26)
+                .strokeBorder(.white.opacity(0.18), lineWidth: 1)
+        }
+        .accessibilityIdentifier("direct.track.selector")
+        .defaultFocus($trackFocus, initialFocus)
+        .task(id: kind) {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            trackFocus = initialFocus
+        }
+    }
+
+    private func trackRow(
+        _ row: TrackRow, title: String, active: Bool, kind: TrackKind, id: String?
+    ) -> some View {
+        Button {
+            if session.selectTrack(kind: kind, id: id) { closeSelector() }
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 16) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 21, weight: .bold))
+                    .opacity(active ? 1 : 0)
+                    .frame(width: 28)
+                    .accessibilityHidden(true)
+                Text(title)
+                    .font(.system(size: 25, weight: .medium))
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+            .frame(minHeight: 61)
+        }
+        .buttonStyle(PlayerControlStyle(focused: trackFocus == row))
+        .focused($trackFocus, equals: row)
+        .accessibilityAddTraits(active ? .isSelected : [])
+        .accessibilityIdentifier(id.map { "direct.track.\(kind.rawValue).\($0)" } ?? "direct.track.off")
+    }
+
+    private func openSelector(_ kind: TrackKind, from button: Control) {
+        returnFocus = button
+        trackFocus = nil
+        selector = kind
+    }
+
+    private func closeSelector() {
+        trackFocus = nil
+        selector = nil
+    }
+
+    private func goBack() {
+        if selector != nil {
+            closeSelector()
+        } else if showingControls {
+            showingControls = false
+        } else {
+            dismiss()
+        }
+    }
+}
+
+private struct PlayerControlStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    let focused: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(focused ? Color.black : Color.white)
+            .padding(3)
+            .background(focused ? Color(red: 0.85, green: 0.79, blue: 1) : Color.white.opacity(0.1),
+                        in: .rect(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(.white.opacity(focused ? 0 : 0.18), lineWidth: 1)
+            }
+            .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.42)
     }
 }
 

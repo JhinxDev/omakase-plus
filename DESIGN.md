@@ -516,3 +516,21 @@ their quieter treatment. Web disclosures use a small chevron and a rounded
 visible focus ring on the summary controls. Keep
 the settings navigation independently scrollable on desktop, with enough room
 below the final link for its focus ring, and horizontally scrollable on phones.
+
+## Native Apple TV direct-player controls, November 14
+
+The direct original-file player keeps its low-storage transport and uses a
+TV-sized overlay. Its resting transport row shows compact backward, play/pause,
+forward, Audio, Subtitles and available Next controls. Track choices are absent
+until Audio or Subtitles is explicitly opened. Long track names belong in a
+bounded, scrollable selector with visible focus, readable wrapping, a selected
+checkmark and an explicit subtitle Off row. Closing or selecting returns focus
+to the originating control; background transport cannot receive focus while a
+selector is open. The remote Play/Pause command remains available.
+
+Controls must remain inside the TV safe area without overlap or compressed
+multiline transport labels. Validate actual production rendering with many audio
+and subtitle tracks, remote navigation, selection, Back and restored focus.
+Compilation and playback start do not establish visual usability. Physical
+MobLand acceptance failed on0.5.0 build31;0.5.1 build32 is the repair candidate,
+not an accepted device result until it has been installed and retested.
