@@ -140,6 +140,8 @@ _WINDOW_TAIL_BYTES = 64 * 1024
 # asked for and older fragments are evicted, so peak disk is the retention window
 # and never the episode.
 _CONTINUOUS_FLAG = "OMAKASE_NATIVE_CONTINUOUS"
+# One init that describes every session instead of only the first one.
+_STABLE_INIT_FLAG = "OMAKASE_CONTINUOUS_STABLE_INIT"
 # Windows produced ahead of the requested one before the pump pauses on demand.
 _LEAD_WINDOWS = 4
 # Windows kept behind the requested one for a small backward seek.
@@ -791,13 +793,15 @@ def media_timescale(init):
     for kind, _start, body, size in _boxes(init, 0, len(init)):
         if kind != b"moov":
             continue
-        for kind2, _start2, body2, size2 in _boxes(init, body, body + size):
+        for kind2, _start2, body2, size2 in _boxes(init, body, _payload_end(init, body, size)):
             if kind2 != b"trak":
                 continue
-            for kind3, _start3, body3, size3 in _boxes(init, body2, body2 + size2):
+            for kind3, _start3, body3, size3 in _boxes(init, body2, _payload_end(init, body2, size2)):
                 if kind3 != b"mdia":
                     continue
-                for kind4, _start4, body4, _size4 in _boxes(init, body3, body3 + size3):
+                for kind4, _start4, body4, _size4 in _boxes(
+                    init, body3, _payload_end(init, body3, size3)
+                ):
                     if kind4 != b"mdhd":
                         continue
                     version = init[body4]
@@ -822,10 +826,10 @@ def patch_decode_time(data, base):
     for kind, _start, body, size in _boxes(data, 0, len(data)):
         if kind != b"moof":
             continue
-        for kind2, _start2, body2, size2 in _boxes(data, body, body + size):
+        for kind2, _start2, body2, size2 in _boxes(data, body, _payload_end(data, body, size)):
             if kind2 != b"traf":
                 continue
-            for kind3, _start3, body3, _size3 in _boxes(data, body2, body2 + size2):
+            for kind3, _start3, body3, _size3 in _boxes(data, body2, _payload_end(data, body2, size2)):
                 if kind3 != b"tfdt":
                     continue
                 if data[body3] == 1:
@@ -843,6 +847,49 @@ def patch_decode_time(data, base):
 
 def continuous_enabled():
     return os.environ.get(_CONTINUOUS_FLAG) == "1"
+
+
+def stable_init_enabled():
+    """One init that describes every session, by removing the edit list.
+
+    The muxer records where a session's media time sits on the source clock in the
+    initialisation segment's edit list, and HLS names one init for the whole pass.
+    A session that starts at another cue writes a different list (measured: -0.083 s
+    for a start at 0.000, 12.012 s for a restart at 12.012), so keeping it makes the
+    pinned init describe only the first session. Neutralising the list lets one init
+    fit every session, and the session's own cue becomes the single translation.
+    """
+    return os.environ.get(_STABLE_INIT_FLAG, "1") != "0"
+
+
+def neutralise_edits(init):
+    """Zero every edit list entry in place, so presentation equals media time."""
+    if not init:
+        return init
+    out = bytearray(init)
+    for kind, _start, body, size in _boxes(init, 0, len(init)):
+        if kind != b"moov":
+            continue
+        for kind2, _start2, body2, size2 in _boxes(init, body, _payload_end(init, body, size)):
+            if kind2 != b"trak":
+                continue
+            for kind3, _start3, body3, size3 in _boxes(init, body2, _payload_end(init, body2, size2)):
+                if kind3 != b"edts":
+                    continue
+                for kind4, _start4, body4, size4 in _boxes(init, body3, _payload_end(init, body3, size3)):
+                    if kind4 != b"elst":
+                        continue
+                    version = init[body4]
+                    count = int.from_bytes(init[body4 + 4 : body4 + 8], "big")
+                    width = 8 if version == 1 else 4
+                    at = body4 + 8
+                    for _ in range(min(count, 8)):
+                        if at + width * 2 > _payload_end(init, body4, size4):
+                            break
+                        out[at : at + width] = (0).to_bytes(width, "big")
+                        out[at + width : at + width * 2] = (0).to_bytes(width, "big")
+                        at += width * 2
+    return bytes(out)
 
 
 async def _read_exact_stream(stream, count):
@@ -885,10 +932,10 @@ def fragment_bases(data):
     for kind, _start, body, size in _boxes(data, 0, len(data)):
         if kind != b"moof":
             continue
-        for kind2, _start2, body2, size2 in _boxes(data, body, body + size):
+        for kind2, _start2, body2, size2 in _boxes(data, body, _payload_end(data, body, size)):
             if kind2 != b"traf":
                 continue
-            for kind3, _start3, body3, _size3 in _boxes(data, body2, body2 + size2):
+            for kind3, _start3, body3, _size3 in _boxes(data, body2, _payload_end(data, body2, size2)):
                 if kind3 != b"tfdt":
                     continue
                 width = 8 if data[body3] == 1 else 4
@@ -922,15 +969,15 @@ def edit_shift(init):
     for kind, _start, body, size in _boxes(init, 0, len(init)):
         if kind != b"moov":
             continue
-        for kind2, _start2, body2, size2 in _boxes(init, body, body + size):
+        for kind2, _start2, body2, size2 in _boxes(init, body, _payload_end(init, body, size)):
             if kind2 == b"mvhd":
                 movie_ts = _mvhd_timescale(init, body2)
             if kind2 != b"trak":
                 continue
-            for kind3, _start3, body3, size3 in _boxes(init, body2, body2 + size2):
+            for kind3, _start3, body3, size3 in _boxes(init, body2, _payload_end(init, body2, size2)):
                 if kind3 != b"edts":
                     continue
-                for kind4, _start4, body4, size4 in _boxes(init, body3, body3 + size3):
+                for kind4, _start4, body4, size4 in _boxes(init, body3, _payload_end(init, body3, size3)):
                     if kind4 != b"elst":
                         continue
                     version = init[body4]
@@ -941,7 +988,7 @@ def edit_shift(init):
                     width = 8 if version == 1 else 4
                     empty_value = (1 << (width * 8)) - 1
                     for _ in range(min(count, 8)):
-                        if at + width * 2 > body4 + size4:
+                        if at + width * 2 > _payload_end(init, body4, size4):
                             break
                         duration = int.from_bytes(init[at : at + width], "big")
                         media_time = int.from_bytes(
@@ -955,6 +1002,16 @@ def edit_shift(init):
                         break
                     return empty / movie_ts - media / media_ts
     return 0.0
+
+
+def _payload_end(data, body, size):
+    """Where a box's payload really ends.
+
+    ``_boxes`` yields the box's total size, header included, so a payload spans
+    ``[body, body + size - 8)``. Using ``body + size`` reads eight bytes past the
+    box and, for the last box in a buffer, raises instead of parsing.
+    """
+    return min(len(data), body + max(0, size - 8))
 
 
 def _trun_lowest_offset(data, body, size):
@@ -972,7 +1029,7 @@ def _trun_lowest_offset(data, body, size):
     for bit in (0x000100, 0x000200, 0x000400):
         if flags & bit:
             fixed += 4
-    limit = body + size
+    limit = _payload_end(data, body, size)
     stride = fixed + 4
     lowest = None
     for index in range(count):
@@ -995,11 +1052,11 @@ def minimum_composition_offset(data):
     for kind, _start, body, size in _boxes(data, 0, len(data)):
         if kind != b"moof":
             continue
-        for kind2, _start2, body2, size2 in _boxes(data, body, body + size):
+        for kind2, _start2, body2, size2 in _boxes(data, body, _payload_end(data, body, size)):
             if kind2 != b"traf":
                 continue
             lowest = None
-            for kind3, _start3, body3, size3 in _boxes(data, body2, body2 + size2):
+            for kind3, _start3, body3, size3 in _boxes(data, body2, _payload_end(data, body2, size2)):
                 if kind3 != b"trun":
                     continue
                 value = _trun_lowest_offset(data, body3, size3)
@@ -1021,10 +1078,10 @@ def first_composition_offset(data):
     for kind, _start, body, size in _boxes(data, 0, len(data)):
         if kind != b"moof":
             continue
-        for kind2, _start2, body2, size2 in _boxes(data, body, body + size):
+        for kind2, _start2, body2, size2 in _boxes(data, body, _payload_end(data, body, size)):
             if kind2 != b"traf":
                 continue
-            for kind3, _start3, body3, size3 in _boxes(data, body2, body2 + size2):
+            for kind3, _start3, body3, size3 in _boxes(data, body2, _payload_end(data, body2, size2)):
                 if kind3 != b"trun":
                     continue
                 version = data[body3]
@@ -1042,7 +1099,7 @@ def first_composition_offset(data):
                     position += 4
                 if not flags & 0x000800:
                     return 0
-                if position + 4 > body3 + size3:
+                if position + 4 > _payload_end(data, body3, size3):
                     return 0
                 return int.from_bytes(
                     data[position : position + 4], "big", signed=version == 1
@@ -1448,6 +1505,8 @@ class _ContinuousSession:
                     if len(track.init) + len(data) > _INIT_BOX_LIMIT:
                         raise NativeError("init_too_large")
                     track.init += data
+                    if kind == b"moov" and stable_init_enabled():
+                        track.init = neutralise_edits(track.init)
                     if kind == b"moov":
                         # The initialisation segment is the track description, not
                         # a window: it is written once, atomically, and never
@@ -1470,8 +1529,12 @@ class _ContinuousSession:
                                 pinned = track.init
                         if track.timescale is None:
                             track.timescale = media_timescale(track.init)
-                        track.shift = edit_shift(track.init)
-                        track.pinned_shift = edit_shift(pinned)
+                        if stable_init_enabled():
+                            track.shift = 0.0
+                            track.pinned_shift = 0.0
+                        else:
+                            track.shift = edit_shift(track.init)
+                            track.pinned_shift = edit_shift(pinned)
                     continue
                 if kind != b"moof":
                     continue
