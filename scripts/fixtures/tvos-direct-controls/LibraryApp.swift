@@ -19,4 +19,3 @@ struct OmakasePlusTVApp: App {
         }
     }
 }
-

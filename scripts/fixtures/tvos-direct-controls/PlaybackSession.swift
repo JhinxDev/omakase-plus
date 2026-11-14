@@ -42,4 +42,3 @@ final class PlaybackSession: ObservableObject {
 
     static func shouldSuggestNext(position: Double, duration: Double) -> Bool { false }
 }
-
