@@ -999,7 +999,15 @@ struct LiveLibraryScreen: View {
             openingVideo = false
         }
         do {
-            let pass = try await client.play(entry, featured: featured, acceptsDirect: true)
+            let pass: LiveTestPass
+            do {
+                pass = try await client.play(entry, featured: featured, engine: .native)
+            } catch LiveLibraryError.unsupportedCopy {
+                // The system player cannot remux this copy. Name the fallback
+                // instead of refusing the title: the direct engine plays the
+                // provider original with its own controls.
+                pass = try await client.play(entry, featured: featured, engine: .direct)
+            }
             returnFocus = origin
             let episode = featured ? episodes?.items.first(where: { $0.watchPath == entry.featuredPath }) : entry
             select(pass, title ?? entry, pass.card.episodeTitle == nil ? nil : episode, playsDirectly)
@@ -1370,3 +1378,4 @@ private struct DetailsArtwork: View {
         }
     }
 }
+

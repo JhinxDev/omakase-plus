@@ -1067,6 +1067,7 @@ router.include_router(
         _product_context,
         subtitle_root=os.path.join(os.getenv("OMAKASE_DATA_DIR", "data"), "subtitles"),
         seek_root=os.path.join(os.getenv("OMAKASE_DATA_DIR", "data"), "seek"),
+        native_root=os.path.join(os.getenv("OMAKASE_DATA_DIR", "data"), "native-hls"),
     )
 )
 

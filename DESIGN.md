@@ -517,7 +517,36 @@ visible focus ring on the summary controls. Keep
 the settings navigation independently scrollable on desktop, with enough room
 below the final link for its focus ring, and horizontally scrollable on phones.
 
-## Native Apple TV direct-player controls, November 14
+## Native Apple TV player, November 14
+
+Owner decision: use the familiar Apple TV system player, AVKit's
+`AVPlayerViewController`, rather than app-drawn controls. The direct original-file
+route on TVVLCKit keeps its repaired compact overlay as the named fallback for a
+copy the system player cannot remux, and its November 14 repair remains historical
+evidence rather than the selected release.
+
+The app asks the server for the `native` engine. The server answers with a fixed
+VOD HLS timeline built from the Real-Debrid original: video and each audio track
+are stream-copied into fragmented MP4 windows, text subtitles arrive as WebVTT
+renditions, and the master playlist declares the audio and subtitle groups the
+system player's own menu reads. Only the window the player asks for is produced,
+so a far seek is a segment request, never a walk from the beginning. Nothing is
+prepared per title, and the temporary spool is capped and reclaimed.
+
+The tvOS rules for the direct fallback stay as written: compact resting transport,
+track choices only after Audio or Subtitles is opened, bounded scrollable selector
+with an explicit Off row, focus returned to the originating control. Those rules
+describe the fallback interface, not the default player.
+
+Controls must remain inside the TV safe area without overlap or compressed
+multiline transport labels. Validate actual production rendering with many audio
+and subtitle tracks, remote navigation, selection, Back and restored focus.
+Compilation and playback start do not establish visual usability. Physical
+MobLand acceptance failed on0.5.0 build31 with the old overlay;0.5.1 build32
+repaired that interface, and 0.6.0 build33 moves the default to Apple's player.
+Neither is an accepted device result until it has been installed and retested.
+
+## Native Apple TV direct-player controls, November 14 (historical)
 
 The direct original-file player keeps its low-storage transport and uses a
 TV-sized overlay. Its resting transport row shows compact backward, play/pause,
@@ -534,3 +563,4 @@ and subtitle tracks, remote navigation, selection, Back and restored focus.
 Compilation and playback start do not establish visual usability. Physical
 MobLand acceptance failed on0.5.0 build31;0.5.1 build32 is the repair candidate,
 not an accepted device result until it has been installed and retested.
+

@@ -152,9 +152,11 @@ private final class RefreshFixtureProtocol: URLProtocol {
                 let raw = try requestBody()
                 let selection = try JSONDecoder().decode([String: String].self, from: raw)
                 let host = try XCTUnwrap(url.host?.split(separator: ".").first)
+                // A refresh keeps the transport the item opened on: the native
+                // timeline for the system player, the original file for direct.
                 let expected = host == "direct"
                     ? ["watch_path": Self.watchPath, "engine": "direct"]
-                    : ["watch_path": Self.watchPath]
+                    : ["watch_path": Self.watchPath, "engine": "native"]
                 XCTAssertEqual(selection, expected)
                 body = try Self.payload(original: false, host: String(host))
                 status = 200
@@ -203,3 +205,4 @@ private final class RefreshFixtureProtocol: URLProtocol {
         }
     }
 }
+

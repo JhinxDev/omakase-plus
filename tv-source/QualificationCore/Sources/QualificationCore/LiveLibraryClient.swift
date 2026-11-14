@@ -307,17 +307,28 @@ public struct LiveLibraryClient: Sendable {
         return page
     }
 
+    /// Which transport the server should reserve for this item.
+    ///
+    /// `native` asks for the bounded VOD timeline that AVPlayer plays with
+    /// Apple's own controls. `direct` asks for the provider original itself,
+    /// which only the VLC engine can decode; it is the explicit fallback for a
+    /// copy the system player cannot remux.
+    public enum PlaybackEngine: String, Sendable {
+        case native
+        case direct
+    }
+
     public func play(_ entry: LiveLibraryEntry, featured: Bool = false,
-                     acceptsDirect: Bool = false) async throws -> LiveTestPass {
+                     engine: PlaybackEngine = .native) async throws -> LiveTestPass {
         guard let path = featured ? entry.featuredPath ?? entry.watchPath : entry.watchPath
         else { throw LiveLibraryError.copyUnavailable }
-        return try await play(path: path, acceptsDirect: acceptsDirect)
+        return try await play(path: path, engine: engine)
     }
 
     public func refreshPlayback(_ current: LiveTestPass, acceptUpdatedCopy: Bool = false) async throws -> LiveTestPass {
         guard let path = current.watchPath, current.mediaURL.host == origin.url.host,
               current.mediaURL.port == origin.url.port else { throw LiveLibraryError.copyUnavailable }
-        let replacement = try await play(path: path, acceptsDirect: current.isDirect)
+        let replacement = try await play(path: path, engine: current.isDirect ? .direct : .native)
         guard replacement.mediaID != current.mediaID else { throw FixtureConnectionError.invalidResponse }
         let previousIdentity = current.card.identity
         let replacementIdentity = replacement.card.identity
@@ -334,8 +345,8 @@ public struct LiveLibraryClient: Sendable {
         return replacement
     }
 
-    private func play(path: String, acceptsDirect: Bool) async throws -> LiveTestPass {
-        let body = try JSONEncoder().encode(Play(watch_path: path, engine: acceptsDirect ? "direct" : nil))
+    private func play(path: String, engine: PlaybackEngine) async throws -> LiveTestPass {
+        let body = try JSONEncoder().encode(Play(watch_path: path, engine: engine.rawValue))
         let data = try await send(
             scoped(Self.endpoint(origin, "play")), method: "POST", body: body, timeout: 30
         )
@@ -607,3 +618,4 @@ public final class LiveResumeWriter {
         }
     }
 }
+

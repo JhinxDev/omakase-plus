@@ -55,7 +55,7 @@ from omakase.plus.debrid_library import (
     account_token,
     playback_provider,
 )
-from omakase.plus.debrid_stream import DebridMedia, DebridStreams
+from omakase.plus.debrid_stream import DebridMedia, DebridStreams, subtitle_cache_key
 from omakase.plus.deps import get_db
 from omakase.plus.direct_stream import DirectError, DirectStream, RefreshedOrigin, open_direct
 from omakase.plus.direct_stream import source_for as direct_source_for
@@ -212,6 +212,15 @@ class TestPass:
     # generated timeline at all: the client plays provider ranges directly.
     direct: DirectStream | None = None
     engine: str = ""
+    # Set when this library pass is served by the bounded native HLS timeline
+    # that AVPlayer plays with Apple's own controls.
+    native_key: str = ""
+    native_subtitle_key: str = ""
+
+    def native_entry(self):
+        return DebridMedia(
+            b"", (), subtitle_key=self.native_subtitle_key, native_key=self.native_key
+        )
 
 
 @dataclass(frozen=True)
@@ -543,6 +552,7 @@ def create_native_tv_test_router(
     hls_database=_hls_database,
     subtitle_root=None,
     seek_root=None,
+    native_root=None,
 ):
     router = APIRouter(
         route_class=bounded_form_route(2048, "Apple TV test request too large", guard=_guard)
@@ -561,7 +571,11 @@ def create_native_tv_test_router(
     hls_slots = asyncio.Semaphore(2)
     cloud_library = DebridLibrary(transport, clock)
     cloud_streams = DebridStreams(
-        transport, clock, subtitle_root=subtitle_root, seek_root=seek_root
+        transport,
+        clock,
+        subtitle_root=subtitle_root,
+        seek_root=seek_root,
+        native_root=native_root,
     )
     resolved_cache = OrderedDict()
     preload_tasks = {}
@@ -1205,7 +1219,7 @@ def create_native_tv_test_router(
                 "media_token": token,
                 "media_format": "direct"
                 if grant.direct is not None
-                else ("hls" if grant.hls else "mp4"),
+                else ("hls" if grant.hls or grant.native_key else "mp4"),
                 **(
                     {
                         "media_url": f"/plus{API}/direct/{media_id}/{token}",
@@ -1220,7 +1234,8 @@ def create_native_tv_test_router(
                 ),
                 **(
                     {"media_playlist": "vod"}
-                    if isinstance(grant.hls, (NativeCompatibleStream, DebridMedia))
+                    if grant.native_key
+                    or isinstance(grant.hls, (NativeCompatibleStream, DebridMedia))
                     else {}
                 ),
                 "expires_in": ttl,
@@ -1775,7 +1790,7 @@ def create_native_tv_test_router(
         # the original file asks for it; every existing client keeps the HLS reply
         # it already understands.
         engine = body.get("engine") if isinstance(body, dict) else None
-        engine = engine if engine == "direct" else ""
+        engine = engine if engine in {"direct", "native"} else ""
         if not isinstance(path, str):
             raise HTTPException(400, "Choose a title", headers=NO_STORE)
         release = acquire("start", library.actor)
@@ -1858,6 +1873,29 @@ def create_native_tv_test_router(
                     if engine == "direct"
                     else None
                 )
+                # The native route serves a bounded VOD timeline that AVPlayer
+                # plays with Apple's own controls. It never borrows the direct
+                # range pass or the provider transcode playlist.
+                native = None
+                subtitle_key = ""
+                if engine == "native":
+                    job = cloud_streams.subtitles.start(
+                        subtitle_cache_key(source), source.direct, source.duration
+                    )
+                    subtitle_key = job.key if job is not None else ""
+                    native = cloud_streams.native.start(
+                        source.media_version,
+                        source.direct,
+                        source.duration,
+                        subtitle_key=subtitle_key,
+                    )
+                    timeline = await cloud_streams.native.ready(native, 25)
+                    if timeline is None:
+                        raise HTTPException(
+                            415,
+                            "This copy cannot use the Apple TV player yet.",
+                            headers=NO_STORE,
+                        )
                 ttl = min(
                     int(library.expires - clock()),
                     LIBRARY_MEDIA_TTL,
@@ -1866,7 +1904,13 @@ def create_native_tv_test_router(
                 if ttl < 1:
                     raise HTTPException(401, "Apple TV library link expired", headers=NO_STORE)
                 media_id, cookie = await cloud_streams.issue(
-                    source, library.actor, key, ttl, direct=direct
+                    source,
+                    library.actor,
+                    key,
+                    ttl,
+                    direct=direct,
+                    native=native,
+                    subtitle_key=subtitle_key,
                 )
         except DebridLibraryError as error:
             raise HTTPException(error.status, str(error), headers=NO_STORE) from None
@@ -1962,6 +2006,8 @@ def create_native_tv_test_router(
     ):
         prepared = None
         direct = None
+        native = None
+        native_subtitle_key = ""
         cloud_error = None
         resolved = None
         mode = playback_provider(db, scope.viewer_id) if scope.kind == "personal" else "plex"
@@ -1972,6 +2018,22 @@ def create_native_tv_test_router(
                     if candidate:
                         if engine == "direct":
                             direct = direct_pass(candidate[0].cloud)
+                        elif engine == "native":
+                            cloud = candidate[0].cloud
+                            job = cloud_streams.subtitles.start(
+                                subtitle_cache_key(cloud), cloud.direct, cloud.duration
+                            )
+                            subtitle_key = job.key if job is not None else ""
+                            native = cloud_streams.native.start(
+                                cloud.media_version,
+                                cloud.direct,
+                                cloud.duration,
+                                subtitle_key=subtitle_key,
+                            )
+                            if await cloud_streams.native.ready(native, 25) is None:
+                                raise DirectError(
+                                    "This copy cannot use the Apple TV player yet.", 415
+                                )
                         else:
                             prepared = await cloud_streams.prepare(
                                 candidate[0].cloud, wait_first=False
@@ -2017,9 +2079,13 @@ def create_native_tv_test_router(
         ttl = min(media_ttl, int(library.expires - clock()))
         if ttl < 1:
             raise HTTPException(401, "Apple TV library link expired", headers=NO_STORE)
-        hls = direct is None and prepared is None and native_hls_eligible(source)
+        hls = direct is None and prepared is None and native is None and native_hls_eligible(source)
         compatible = (
-            direct is None and prepared is None and not hls and native_compatible_eligible(source)
+            direct is None
+            and prepared is None
+            and native is None
+            and not hls
+            and native_compatible_eligible(source)
         )
         try:
             grant = test_pass(
@@ -2029,13 +2095,16 @@ def create_native_tv_test_router(
                 library.browser_session,
                 ttl,
                 key,
-                hls=bool(prepared) or bool(direct) or hls or compatible,
+                hls=bool(prepared) or bool(direct) or bool(native) or hls or compatible,
             )
         except ValueError as error:
             raise HTTPException(415, str(error), headers=NO_STORE) from None
         grant.hls = prepared
         grant.direct = direct
         grant.engine = engine
+        if native is not None:
+            grant.native_key = native.key
+            grant.native_subtitle_key = native_subtitle_key
         if direct is not None:
             direct.refresh = path_refresh(grant, path)
         _LOG.warning(
@@ -2457,6 +2526,22 @@ def create_native_tv_test_router(
                 if grant.hls is not None
                 else "source",
             )
+            if grant.native_key:
+
+                def authorize_native():
+                    _guard()
+                    if passes.get(media_id) is not grant:
+                        raise DeliveryError("Apple TV pass revoked", 404)
+                    checked(db, grant)
+
+                try:
+                    return await cloud_streams.deliver(
+                        grant.native_entry(), asset, request, authorize_native
+                    )
+                except DebridLibraryError as error:
+                    raise DeliveryError(str(error), error.status) from None
+                finally:
+                    release()
             if isinstance(grant.hls, DebridMedia):
 
                 def authorize_debrid():

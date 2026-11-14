@@ -6,6 +6,25 @@ GitHub Release. The update-feed identity (`PRODUCT_VERSION` in
 `src/omakase/plus/update_service.py`) is a separate operator-facing build
 identifier; it does not replace the public release version.
 
+## Unreleased
+
+### Changed
+
+- Apple TV playback now defaults to the system player. The app asks the server
+  for the `native` engine and AVKit presents Apple's own controls; the repaired
+  direct-player overlay stays as the named fallback for a copy the system player
+  cannot remux, instead of being the default interface.
+
+### Added
+
+- A bounded on-demand HLS timeline for Real-Debrid originals: video and each
+  audio track are stream-copied into fragmented MP4 windows, text subtitles are
+  delivered as WebVTT renditions, and the master playlist declares the audio and
+  subtitle groups the system player's menu reads. Segment boundaries come from
+  the file's own Matroska cue index, so a far seek is one window request rather
+  than a walk from the beginning. Nothing is prepared per title; the temporary
+  spool is capped per session and in total, refuses to overtake the server's free
+  space reserve, and is reclaimed on stop, failure, expiry and restart.
 ## 0.4.12 - 2026-11-12
 
 ### Added
@@ -208,6 +227,7 @@ identifier; it does not replace the public release version.
 
 - Public CI reliability, packaging hygiene and the documented release
   surface.
+
 
 
 
