@@ -73,7 +73,9 @@ struct TVTopShelfStore {
     #if os(tvOS)
     static func shared() -> Self? {
         guard let group = Bundle.main.object(forInfoDictionaryKey: "OmakaseTopShelfAppGroup") as? String,
-              let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)
+              let container = topShelfGroupCandidates(configured: group, bundleID: Bundle.main.bundleIdentifier)
+                  .lazy.compactMap({ FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0) })
+                  .first
         else { return nil }
         return Self(directory: container.appendingPathComponent("Library/Caches/TopShelf-v1", isDirectory: true))
     }
@@ -115,4 +117,17 @@ struct TVTopShelfStore {
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("shelf.json"))
         try? FileManager.default.removeItem(at: directory)
     }
+}
+
+func topShelfGroupCandidates(configured group: String, bundleID: String?) -> [String] {
+    let groupPrefix = "group."
+    let groupSuffix = ".top-shelf"
+    guard group.hasPrefix(groupPrefix), group.hasSuffix(groupSuffix), let bundleID else { return [group] }
+    let host = group.dropFirst(groupPrefix.count).dropLast(groupSuffix.count)
+    guard !host.isEmpty else { return [group] }
+    let prefix = String(host) + "."
+    guard bundleID.hasPrefix(prefix),
+          let team = bundleID.dropFirst(prefix.count).split(separator: ".").first,
+          team.range(of: #"^[A-Z0-9]{10}$"#, options: .regularExpression) != nil else { return [group] }
+    return ["\(group).\(team)", group]
 }
