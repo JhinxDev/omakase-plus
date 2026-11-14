@@ -2371,3 +2371,52 @@ def test_tv_hls_keeps_hevc_and_surround_through_the_authenticated_route(
         assert surround_packets == first_audio_packet_hashes(sample)
         assert native.post(f"{LIBRARY_API}/media/{grant['media_id']}/close").status_code == 200
         assert native.get(path + "/index.m3u8").status_code == 404
+
+
+def test_movie_and_tv_completion_results_expose_outbox_id(system):
+    """The resume endpoint reads outbox_id from the completion result.
+
+    The movie and television helpers used to return a bool, so the 85 percent
+    checkpoint raised AttributeError before history was durable.
+    """
+    _app, db, _sessions, _options = system
+    from omakase.plus.native_tv_test import _credit_movie_completion, _credit_tv_completion
+
+    db.execute(
+        "INSERT INTO movie_catalog(user_id,imdb_id,tmdb_id,title,updated_at) "
+        "VALUES(1,'tt0000002',102,'Second fixture movie','2026-01-01T00:00:00Z')"
+    )
+    db.execute(
+        "INSERT INTO tv_catalog(user_id,tmdb_id,metadata_json,updated_at) "
+        "VALUES(1,203,"
+        "'"
+        '{"title":"Second fixture show","in_collection":1}'
+        "'"
+        ","
+        "'"
+        "2026-01-01T00:00:00Z"
+        "'"
+        ")"
+    )
+    movie = SimpleNamespace(
+        flow_movie=True,
+        user_id=1,
+        domain="movie",
+        canonical_id="tt0000002",
+        season_number=0,
+        episode_number=0,
+        duration_seconds=1800,
+    )
+    tv = SimpleNamespace(
+        flow_tv=True,
+        user_id=1,
+        domain="tv",
+        canonical_id="203",
+        season_number=1,
+        episode_number=2,
+        duration_seconds=1800,
+    )
+    movie_credit = _credit_movie_completion(db, movie, "2026-01-01T00:00:00Z")
+    tv_credit = _credit_tv_completion(db, tv, "2026-01-01T00:00:00Z")
+    assert movie_credit is not None and movie_credit.outbox_id is None
+    assert tv_credit is not None and tv_credit.outbox_id is None

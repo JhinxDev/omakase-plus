@@ -137,7 +137,9 @@ def test_stale_segment_cache_entry_is_retried_not_served():
     assert streams.cached_bytes == len(b"fresh")
 
 
-def test_stalled_provider_segment_repeats_the_last_served_segment():
+def test_stalled_provider_segment_fails_instead_of_serving_other_content():
+    """A neighbour that never arrives must fail, not replay another segment."""
+
     async def scenario():
         streams = DebridStreams()
         streams._advance = lambda media, index: None
@@ -155,18 +157,22 @@ def test_stalled_provider_segment_repeats_the_last_served_segment():
         media = DebridMedia(b"#EXTM3U\n", segments, b"\x47first")
         opening = await streams.deliver(media, "00000.ts", _request(), lambda: None)
         assert opening.body == b"\x47first"
-        # The provider is already generating segment 1 but has not finished.
         streams.warm[segments[1]] = asyncio.create_task(asyncio.sleep(60))
         started = asyncio.get_running_loop().time()
-        next_segment = await streams.deliver(media, "00001.ts", _request(), lambda: None)
+        try:
+            await streams.deliver(media, "00001.ts", _request(), lambda: None)
+            outcome = "served"
+        except DebridLibraryError as error:
+            outcome = error.status
         elapsed = asyncio.get_running_loop().time() - started
         stalled.set()
-        return opening, next_segment, elapsed
+        return outcome, elapsed
 
-    opening, next_segment, elapsed = asyncio.run(scenario())
-    assert next_segment.status_code == 200
-    assert next_segment.body == opening.body
-    assert elapsed < 4
+    from omakase.plus.debrid_library import DebridLibraryError
+
+    outcome, elapsed = asyncio.run(scenario())
+    assert outcome == 503
+    assert elapsed < 8
 
 
 def test_uncached_segment_without_history_uses_the_provider():
@@ -234,5 +240,7 @@ def test_a_long_provider_stall_fails_instead_of_looping_forever():
         return outcomes
 
     outcomes = asyncio.run(scenario())
-    assert outcomes[:3] == [200, 200, 200]
-    assert outcomes[3] == 503
+    # No segment is ever replaced by another one, so the first stalled request
+    # fails honestly with a retryable status instead of looping frozen pictures.
+    assert outcomes[0] == 503
+    assert all(outcome == 503 for outcome in outcomes)

@@ -55,18 +55,13 @@ _TEXT_SUBTITLE_WAIT = 10.0
 _SEGMENT_READAHEAD = 8
 _SEGMENT_WAIT = 4.0
 # AVPlayer abandons a segment after roughly five seconds and reports
-# CoreMedia -12889. A provider segment that is not ready inside this budget is
-# answered with the last served segment so the player keeps its connection and
-# recovers on the next request instead of failing the item.
+# CoreMedia -12889, so a provider segment gets this first budget. If it is still
+# missing, the same fetch gets one short second window and the request then fails
+# with a retryable status. The fallback never serves another segment's bytes: the
+# player caches the response under the requested URL, so a substituted segment
+# would show the wrong moment for the rest of the session.
 _SEGMENT_GRACE = 2.5
-# Repeating one stored segment keeps the player alive through a short provider
-# hiccup, but a long outage must fail honestly: looping a frozen picture while
-# the subtitle timeline advances desyncs captions and hides the real problem.
-_SEGMENT_REPEAT_LIMIT = 3
-# A request that is this many segments past the previous request came from a seek
-# or a resume, not from normal playback. Serving old content to bridge a stall
-# would then replay a picture from minutes earlier.
-_SEGMENT_REQUEST_JUMP = 4
+_SEGMENT_RETRY_WAIT = 2.0
 _SEGMENT_CACHE_ENTRIES = 64
 _SEGMENT_CACHE_BYTES = 96 * 1024 * 1024
 _SEGMENT_TTL = 180.0
@@ -387,75 +382,6 @@ class DebridStreams:
         self.media_cache = OrderedDict()
         self.cached_bytes = 0
         self.pump = None
-        self.last_served = {}
-        self.repeat_streak = {}
-        # The last segment index the player asked for, per playback, so a stall
-        # after a seek can be told apart from a stall in normal playback.
-        self.requested = {}
-
-    @staticmethod
-    def _playback_key(media):
-        return media.segments[0] if media.segments else ""
-
-    def _repeat_last_segment(self, media, index, previous_index, request, headers):
-        """Answer with the last segment actually served for this media."""
-        key = self._playback_key(media)
-        record = self.last_served.get(key)
-        if record is None or record[0] > index:
-            return None
-        data = record[1]
-        if not data or request.method == "HEAD":
-            return None
-        # A player that seeks or resumes jumps far past the segment it was last
-        # served. Repeating that old content then shows pictures from minutes
-        # earlier, which is the visible jump back the owner reported after a
-        # skip: the plan had served 00001, the player asked for 00039, and the
-        # stall fallback answered 00001 three times. Only a request that follows
-        # on from the previous one may repeat.
-        if previous_index is not None and index - previous_index > _SEGMENT_REQUEST_JUMP:
-            _LOG.warning(
-                "provider segment %05d not ready after a jump from %05d; failing instead of "
-                "replaying %05d",
-                index,
-                previous_index,
-                record[0],
-            )
-            raise DebridLibraryError(
-                "Real-Debrid is not delivering this part of the video right now.", 503
-            )
-        # Even without a detected jump, never replay something far behind the
-        # requested position: that is a wrong picture, not a stall bridge.
-        if index - record[0] > _SEGMENT_REPEAT_LIMIT + _SEGMENT_REQUEST_JUMP:
-            return None
-        streak = self.repeat_streak.get(key, 0) + 1
-        self.repeat_streak[key] = streak
-        if streak > _SEGMENT_REPEAT_LIMIT:
-            _LOG.warning(
-                "provider segment %05d still not ready after %d repeats; failing the segment",
-                index,
-                streak,
-            )
-            raise DebridLibraryError(
-                "Real-Debrid is not delivering this part of the video right now.", 503
-            )
-        _LOG.warning(
-            "provider segment %05d not ready within %.1fs; repeating segment %05d (%d bytes)",
-            index,
-            _SEGMENT_GRACE,
-            record[0],
-            len(data),
-        )
-        return Response(
-            data,
-            media_type="video/mp2t",
-            headers=headers | {"Content-Length": str(len(data))},
-        )
-
-    def _remember(self, media, index, data):
-        if data:
-            key = self._playback_key(media)
-            self.last_served[key] = (index, data)
-            self.repeat_streak[key] = 0
 
     def _cache_segment(self, url, data):
         if not data:
@@ -1157,9 +1083,6 @@ class DebridStreams:
             return Response(data, media_type=media_type, headers=headers)
         if index >= len(entry.segments):
             raise DebridLibraryError("This stream is unavailable.", 404)
-        playback_key = self._playback_key(entry)
-        previous_index = self.requested.get(playback_key)
-        self.requested[playback_key] = index
         byte_range = request.headers.get("range")
         if byte_range and not re.fullmatch(r"bytes=[0-9]{1,9}-[0-9]{0,9}", byte_range):
             return Response(status_code=416, headers=HEADERS)
@@ -1183,24 +1106,25 @@ class DebridStreams:
                 pass
             stored = self.segment_cache.get(url)
             if stored is None or stored[0] <= self.clock():
-                # Real-Debrid stalled a segment past the player's deadline.
-                # Answer with the last real segment so AVPlayer keeps the item
-                # alive and retries, instead of failing with -12889.
-                repeated = self._repeat_last_segment(
-                    entry, index, previous_index, request, HEADERS.copy()
-                )
-                if repeated is not None:
-                    return repeated
-                # Nothing served yet for this media: wait the fetch out.
+                # The provider has not delivered this segment inside the player's
+                # first budget. Serving another segment's bytes would show the
+                # wrong moment, and the player would cache it under this URL for
+                # the rest of the session. Give the same fetch a short second
+                # window, then fail with a status the player may retry.
                 try:
-                    await asyncio.shield(task)
+                    async with asyncio.timeout(_SEGMENT_RETRY_WAIT):
+                        await asyncio.shield(task)
                 except (TimeoutError, asyncio.CancelledError):
                     pass
                 stored = self.segment_cache.get(url)
+                if stored is None or stored[0] <= self.clock():
+                    raise DebridLibraryError(
+                        "Real-Debrid is not delivering this part of the video right now.",
+                        503,
+                    )
         if stored is not None and stored[0] > self.clock():
             self.segment_cache.move_to_end(url)
             cached_segment = stored[1]
-            self._remember(entry, index, cached_segment)
             if request.method == "GET":
                 return Response(
                     cached_segment,
@@ -1233,7 +1157,6 @@ class DebridStreams:
                 elif stored is not None:
                     self.first_cache.pop(url, None)
         if index == 0 and cached:
-            self._remember(entry, 0, cached)
             if plan is not None and plan.index is not None and plan.index.video_codec == "hevc":
                 cached = await asyncio.to_thread(_repair_h264_level, cached)
             headers = HEADERS | {"Content-Length": str(len(cached))}
@@ -1286,13 +1209,21 @@ class DebridStreams:
                                     raise
                                 return None
 
-                        result = await attempt(entry.segments[0], 15)
-                        if result is None and len(entry.segments) > 1 and not byte_range:
-                            result = await attempt(entry.segments[1], 20)
+                        result = None
+                        for budget in (15, 20, 60):
+                            result = await attempt(entry.segments[0], budget)
+                            if result is not None:
+                                break
                         if result is None:
-                            result = await attempt(entry.segments[0], 60)
-                        if result is None:
-                            raise _unavailable()
+                            # Never answer the first segment with the second one's
+                            # bytes: the player caches the response under this URL,
+                            # so it would play a moment from later in the film and
+                            # keep doing it. A retryable failure lets it retry the
+                            # same segment instead.
+                            raise DebridLibraryError(
+                                "Real-Debrid is not delivering this part of the video right now.",
+                                503,
+                            )
                         data, status, upstream = result
                 else:
                     async with asyncio.timeout(65):
@@ -1313,7 +1244,6 @@ class DebridStreams:
                 raise _unavailable() from None
         if request.method == "GET" and status == 200 and not byte_range and data:
             self._cache_segment(url, data)
-            self._remember(entry, index, data)
         headers = HEADERS.copy()
         if status == 206:
             value = upstream.get("content-range", "")

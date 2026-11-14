@@ -217,6 +217,7 @@ class DebridLibrary:
             # that change restarts from a clean snapshot instead of failing.
             failure = None
             for attempt in range(3):
+                result = None
                 try:
                     async with asyncio.timeout(12):
                         result = await asyncio.gather(
@@ -226,24 +227,32 @@ class DebridLibrary:
                         )
                 except TimeoutError:
                     failure = DebridLibraryError()
-                    result = ()
-                for entries in result:
-                    if isinstance(entries, BaseException):
-                        if getattr(entries, "status", None) != 409:
-                            raise entries
-                        failure = entries
-                        break
-                else:
-                    result = tuple(result)
-                    self.cache[binding] = (self.clock() + _TTL, *result)
-                    self.cache.move_to_end(binding)
-                    if len(self.cache) > 16:
-                        self.cache.popitem(last=False)
-                    self.last_good[binding] = (self.clock(), *result)
-                    self.last_good.move_to_end(binding)
-                    if len(self.last_good) > 16:
-                        self.last_good.popitem(last=False)
-                    return result
+                if result is not None:
+                    for entries in result:
+                        if isinstance(entries, BaseException):
+                            if getattr(entries, "status", None) != 409:
+                                raise entries
+                            failure = entries
+                            break
+                    else:
+                        # Only a real two part inventory may be cached. A timeout
+                        # previously fell through with an empty tuple and cached a
+                        # one element entry, which then broke every caller that
+                        # unpacked it, long after the provider recovered.
+                        if len(result) != 2:
+                            failure = DebridLibraryError()
+                        else:
+                            failure = None
+                            result = tuple(result)
+                            self.cache[binding] = (self.clock() + _TTL, *result)
+                            self.cache.move_to_end(binding)
+                            if len(self.cache) > 16:
+                                self.cache.popitem(last=False)
+                            self.last_good[binding] = (self.clock(), *result)
+                            self.last_good.move_to_end(binding)
+                            if len(self.last_good) > 16:
+                                self.last_good.popitem(last=False)
+                            return result
                 if attempt < 2:
                     await asyncio.sleep(0.25 * (attempt + 1))
             # A recently read inventory is safer than blanking a section during a

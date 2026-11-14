@@ -206,6 +206,20 @@ class TestPass:
     watch_credited: bool = False
 
 
+@dataclass(frozen=True)
+class _WatchCredit:
+    """The result of projecting one completion into durable history.
+
+    Movie and television completions are plain SQL and carry no tracker intent.
+    An anime completion goes through the typed watch ingest and may carry an
+    outbox row. Both shapes answer ``outbox_id`` so the caller never has to know
+    which kind it credited; before this type the caller read ``outbox_id`` from a
+    bool and raised AttributeError at the 85 percent checkpoint.
+    """
+
+    outbox_id: int | None = None
+
+
 def _credit_movie_completion(db, target, stamp):
     catalog = db.execute(
         "SELECT tmdb_id FROM movie_catalog WHERE user_id=? AND imdb_id=?",
@@ -218,7 +232,7 @@ def _credit_movie_completion(db, target, stamp):
         (target.user_id, target.canonical_id),
     ).fetchone()
     if history is not None and history["status_source"] == "manual":
-        return True
+        return _WatchCredit()
     if history is None:
         db.execute(
             "INSERT INTO movie_history(user_id,imdb_id,tmdb_id,status,status_source,"
@@ -241,7 +255,7 @@ def _credit_movie_completion(db, target, stamp):
             "updated_at=? WHERE user_id=? AND imdb_id=?",
             (stamp, stamp, stamp, target.user_id, target.canonical_id),
         )
-    return True
+    return _WatchCredit()
 
 
 def _credit_tv_completion(db, target, stamp):
@@ -262,7 +276,7 @@ def _credit_tv_completion(db, target, stamp):
         ),
     ).fetchone()
     if episode is not None and episode["watch_source"] == "manual":
-        return True
+        return _WatchCredit()
     if episode is None:
         db.execute(
             "INSERT INTO tv_episodes(user_id,tmdb_id,season_number,episode_number,"
@@ -306,25 +320,47 @@ def _credit_tv_completion(db, target, stamp):
             "status_source_detail='apple_tv',updated_at=? WHERE user_id=? AND tmdb_id=?",
             (status, stamp, target.user_id, target.canonical_id),
         )
-    return True
+    return _WatchCredit()
 
 
-def _credit_native_watch(db, grant, *, position, observed_at):
-    """Project an Apple TV completion into the durable personal watch record."""
-    target = grant.target
-    duration = target.duration_seconds
+def _completion_fraction(grant, position):
+    duration = grant.target.duration_seconds
     if duration <= 0:
         return None
     fraction = min(1.0, max(0.0, position / duration))
-    if fraction < 0.85:
+    return fraction if fraction >= 0.85 else None
+
+
+def _credit_native_projection(db, grant, *, position, observed_at):
+    """Project a movie or television completion inside the caller's transaction.
+
+    These are plain SQL writes, so they must join the source transaction that
+    already saved the resume checkpoint. When they ran after that block, a request
+    teardown could roll the history back while the credited flag stayed set, which
+    is how a completion was lost for good.
+    """
+    fraction = _completion_fraction(grant, position)
+    if fraction is None:
         return None
     stamp = datetime.fromtimestamp(observed_at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if target.domain == "movie":
-        return _credit_movie_completion(db, target, stamp)
-    if target.domain == "tv":
-        return _credit_tv_completion(db, target, stamp)
-    if target.domain != "anime" or grant.anime_monitor_id is None:
+    if grant.target.domain == "movie":
+        return _credit_movie_completion(db, grant.target, stamp)
+    if grant.target.domain == "tv":
+        return _credit_tv_completion(db, grant.target, stamp)
+    return None
+
+
+def _credit_native_anime(db, grant, *, position, observed_at):
+    """Project an anime completion through the typed watch ingest.
+
+    The ingest owns its own transaction, so this cannot run inside the source
+    transaction and is called separately after the resume save commits.
+    """
+    fraction = _completion_fraction(grant, position)
+    if fraction is None or grant.target.domain != "anime" or grant.anime_monitor_id is None:
         return None
+    target = grant.target
+    stamp = datetime.fromtimestamp(observed_at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     from omakase.plus.watch.models import WatchEvent
     from omakase.plus.watch.service import WatchServiceError, ingest_watch_event
 
@@ -339,7 +375,7 @@ def _credit_native_watch(db, grant, *, position, observed_at):
         confidence="exact",
     )
     try:
-        return ingest_watch_event(
+        result = ingest_watch_event(
             db,
             user_id=target.user_id,
             monitor_id=grant.anime_monitor_id,
@@ -349,6 +385,15 @@ def _credit_native_watch(db, grant, *, position, observed_at):
     except WatchServiceError:
         _LOG.warning("native watch credit rejected", exc_info=True)
         return None
+    return _WatchCredit(outbox_id=getattr(result, "outbox_id", None))
+
+
+def _credit_native_watch(db, grant, *, position, observed_at):
+    """Project a completion of any kind. Used where no source transaction is held."""
+    credited = _credit_native_projection(db, grant, position=position, observed_at=observed_at)
+    if credited is not None:
+        return credited
+    return _credit_native_anime(db, grant, position=position, observed_at=observed_at)
 
 
 def _playback_languages(grant, streams=None):
@@ -1904,6 +1949,7 @@ def create_native_tv_test_router(
         now = clock()
         if grant.resume_last_save is not None and now - grant.resume_last_save < 0.25:
             raise HTTPException(429, "Try again shortly", headers=NO_STORE)
+        credited = None
         try:
             with fresh_source_transaction(db):
                 library_scope(db, library)
@@ -1916,29 +1962,40 @@ def create_native_tv_test_router(
                     expected=grant.resume_cursor,
                     barrier=grant.resume_barrier,
                 )
+                if not grant.watch_credited:
+                    # Movie and television history is plain SQL, so it joins this
+                    # transaction and can never be rolled back after the flag is
+                    # set. Anime uses the typed ingest below, which owns its own
+                    # transaction and therefore runs after this block commits.
+                    credited = _credit_native_projection(
+                        db,
+                        grant,
+                        position=body.position_seconds,
+                        observed_at=saved["updated_at"],
+                    )
         except store.PlaybackStoreError:
             raise HTTPException(409, "Playback position changed", headers=NO_STORE) from None
         grant.resume_cursor = (saved["revision"], saved["updated_at"])
         grant.resume_receipt = (body.seq, body.position_seconds, saved["updated_at"])
         grant.resume_last_save = now
-        if not grant.watch_credited:
-            credited = _credit_native_watch(
+        if credited is None and not grant.watch_credited:
+            credited = _credit_native_anime(
                 db, grant, position=body.position_seconds, observed_at=saved["updated_at"]
             )
-            if credited is not None:
-                grant.watch_credited = True
-                if (
-                    credited.outbox_id is not None
-                    and os.getenv("OMAKASE_PLUS_REVIEW_MODE", "").lower() != "true"
-                ):
-                    from omakase.plus.watch.anilist_sync import process_tracker_outbox
+        if credited is not None:
+            grant.watch_credited = True
+            if (
+                credited.outbox_id is not None
+                and os.getenv("OMAKASE_PLUS_REVIEW_MODE", "").lower() != "true"
+            ):
+                from omakase.plus.watch.anilist_sync import process_tracker_outbox
 
-                    try:
-                        await asyncio.to_thread(
-                            process_tracker_outbox, db, outbox_id=credited.outbox_id
-                        )
-                    except Exception:
-                        _LOG.warning("Apple TV tracker sync failed", exc_info=True)
+                try:
+                    await asyncio.to_thread(
+                        process_tracker_outbox, db, outbox_id=credited.outbox_id
+                    )
+                except Exception:
+                    _LOG.warning("Apple TV tracker sync failed", exc_info=True)
         duration = grant.target.duration_seconds
         if duration and body.position_seconds >= max(duration - 300, duration * 0.9):
             schedule_preload(key, grant)

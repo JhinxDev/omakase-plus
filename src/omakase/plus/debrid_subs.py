@@ -105,6 +105,9 @@ _MAX_TRACKS = 8
 _PROBE_TIMEOUT = 45
 _EXTRACT_TIMEOUT = 900
 _LANGUAGE = re.compile(r"[a-z]{2,3}")
+# A SubRip cue timing line accepts any hour value. The earlier parser required
+# "00:" and silently dropped every cue past the first hour of a film.
+_SRT_TIMING = re.compile(r"\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}")
 
 
 def _local_model_path(root, model_name):
@@ -323,7 +326,10 @@ class SubtitleCache:
         blocks = []
         for block in text.split("\n\n"):
             lines = [line.strip("\ufeff") for line in block.splitlines()]
-            if len(lines) < 3 or not lines[1].startswith("00:"):
+            # Any hour value is valid: a film over an hour produces timestamps
+            # that start 01: and up, and requiring 00: silently dropped every
+            # subtitle after the first hour.
+            if len(lines) < 3 or not _SRT_TIMING.fullmatch(lines[1].strip()):
                 continue
             timing = lines[1].replace(",", ".")
             blocks.append(timing + "\n" + "\n".join(lines[2:]))
@@ -444,8 +450,14 @@ class SubtitleCache:
     @staticmethod
     def _vtt_from_segments(rows):
         def stamp(seconds):
-            total = max(0, int(seconds))
-            return f"{total // 3600:02d}:{(total // 60) % 60:02d}:{total % 60:02d}.{int(round((seconds - total) * 1000)):03d}"
+            # Round the whole timestamp in milliseconds first. The earlier form
+            # computed milliseconds from the fractional part, so 1.9996 became
+            # 00:00:01.1000, an invalid four digit stamp.
+            total_ms = int(round(max(0.0, seconds) * 1000))
+            hours, rest = divmod(total_ms, 3_600_000)
+            minutes, rest = divmod(rest, 60_000)
+            whole, millis = divmod(rest, 1000)
+            return f"{hours:02d}:{minutes:02d}:{whole:02d}.{millis:03d}"
 
         blocks = [
             f"{stamp(start)} --> {stamp(end)}\n{text}"
