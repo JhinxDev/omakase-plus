@@ -114,7 +114,7 @@ def _status(kind, title_id, title, state, detail, href, *, timeline):
     }
 
 
-def _movie_status(db, user_id, title_id, library=None, movie_card=None):
+def _movie_status(db, user_id, title_id, library=None, movie_card=None, observation=None):
     row = db.execute(
         """SELECT c.title,r.code,r.created_at,r.updated_at FROM movie_requests r
            JOIN movie_catalog c USING(user_id,imdb_id)
@@ -143,14 +143,19 @@ def _movie_status(db, user_id, title_id, library=None, movie_card=None):
         timeline.append(
             _step("received", row["updated_at"], label="Riven acknowledged the request")
         )
-    progress = {
+    progress_labels = {
         "searching": "Riven started looking for a copy",
         "search_complete": "Riven finished searching",
         "acquiring": "Riven reported a transfer",
         "verifying": "Checking library availability",
-    }.get(code)
-    if progress:
+    }
+    if progress := progress_labels.get(code):
         timeline.append(_step("preparing", row["updated_at"], label=progress))
+    if observation and observation[0] in progress_labels:
+        observed_code, observed_at = observation
+        if observed_code != code:
+            timeline.append(_step("preparing", observed_at, label=progress_labels[observed_code]))
+            code = observed_code
     if ready:
         state, detail = "ready", "The matching copy passed its playback check."
         timeline.append(_step(state, ready["verified_at"]))

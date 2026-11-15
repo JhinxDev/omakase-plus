@@ -877,6 +877,23 @@ class MovieService:
             until is not None and self._clock() < until
         )
 
+    async def observe_request(self, user_id: int, imdb_id: str) -> tuple[str, str] | None:
+        """Read live Riven progress for an existing request without changing its record."""
+        self._guard(user_id)
+        metadata = store.get_movie(self.db, user_id, imdb_id)
+        request = store.get_request(self.db, user_id, imdb_id)
+        if (
+            not metadata
+            or not request
+            or request["code"] == "copy_removed"
+            or self._waiting(request)
+        ):
+            return None
+        item = await self._backend(imdb_id, metadata["tmdb_id"])
+        if item is None:
+            return None
+        return item["code"], _iso(self._clock())
+
     async def refresh(self, user_id: int, imdb_id: str) -> dict[str, Any]:
         self._guard(user_id)
         imdb_id = _imdb(imdb_id)

@@ -3,8 +3,7 @@
 .hub-shelf h2 { margin: 0; font-size: clamp(1.35rem, 2.6vw, 2rem); letter-spacing: -.025em; }
 .hub-shelf-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: .35rem 1.1rem; margin-bottom: .85rem; }
 .hub-shelf-heading p, .hub-meta, .hub-unavailable p { margin: 0; color: #b7bed0; font-size: .875rem; }
-.hub-rail { grid-auto-columns: clamp(8.5rem, 16vw, 12rem); align-items: start; gap: clamp(.75rem, 1.5vw, 1.25rem); }
-.hub-rail-featured { grid-auto-columns: clamp(10rem, 19vw, 15rem); }
+.hub-rail { grid-auto-columns: clamp(10rem, 19vw, 15rem); align-items: start; gap: clamp(.75rem, 1.5vw, 1.25rem); }
 .hub-poster, .hub-skeleton { aspect-ratio: 2 / 3; width: 100%; border-radius: .65rem; background: #151c2e; }
 .hub-skeleton { background: linear-gradient(145deg, #1c253b, #101726); }
 .hub-poster { position: relative; overflow: hidden; }

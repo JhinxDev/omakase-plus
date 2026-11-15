@@ -95,6 +95,42 @@ def browser(tmp_path, monkeypatch):
     db.close()
 
 
+def test_request_timeline_reads_exact_progress_without_mutation(browser, monkeypatch):
+    from omakase.plus import movies_store
+
+    client, svc, _ = browser
+    now = "2026-11-15T00:44:00Z"
+    imdb_id = "tt0084787"
+    movies_store.upsert_movie(
+        svc.db, 1, {"imdb_id": imdb_id, "tmdb_id": 1091, "title": "The Thing"}, now=now
+    )
+    before = movies_store.ensure_request(svc.db, 1, imdb_id, now=now, edition=None)
+    calls = []
+
+    async def indexed(user, titles):
+        assert user == 1 and titles == [imdb_id]
+        calls.append("inventory")
+        return {}
+
+    async def observe(user, item):
+        assert user == 1 and item == imdb_id
+        calls.append("observe")
+        return "acquiring", now
+
+    monkeypatch.setattr(svc, "indexed_requests", indexed, raising=False)
+    monkeypatch.setattr(svc, "observe_request", observe, raising=False)
+    response = client.get(f"/plus/movies/{imdb_id}/request-status")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.json()["timeline"][-1]["label"] == "Riven reported a transfer"
+    assert response.json()["play_url"] is None
+    assert client.get(f"/plus/movies/{imdb_id}/request-status").json() == response.json()
+    assert client.get("/plus/movies/tt0000020/request-status").status_code == 404
+    assert sorted(calls) == ["inventory", "observe"]
+    assert svc.calls == []
+    assert movies_store.get_request(svc.db, 1, imdb_id) == before
+
+
 def test_browsing_and_detail_never_acquire_or_probe(browser):
     client, svc, _ = browser
     assert client.get("/plus/movies").status_code == 200

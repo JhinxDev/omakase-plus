@@ -6,7 +6,7 @@
     <h2 id="hub-{{ row.key }}">{{ row.title }}</h2>
     {% if row.note %}<p>{{ row.note }}</p>{% endif %}
   </div>
-  <div id="hub-rail-{{ row.key }}" class="media-rail hub-rail{% if row.key == 'top' %} hub-rail-featured{% endif %}" role="group" aria-label="{{ row.title }}">
+  <div id="hub-rail-{{ row.key }}" class="media-rail hub-rail" role="group" aria-label="{{ row.title }}">
     {% for card in row.cards %}
     <div{% if card.kind == "anime" and row.key != "continue" %} data-hub-anime="{{ card.id }}"{% endif %}>
       <article class="hub-card">
@@ -76,12 +76,12 @@
   <h2 id="hub-requests">Your requests</h2>
   <ul class="request-list">
     {% for item in requests %}
-    <li class="request-card">
+    <li class="request-card"{% if item.kind == "movie" and item.can_check %} data-request-refresh="/plus/movies/{{ item.title_id }}/request-status"{% endif %}>
       <div class="request-card-heading">
         <h3><a href="{{ item.href }}">{{ item.title }}</a></h3>
-        <span class="hub-request-label">{{ item.label }}</span>
+        <span class="hub-request-label" data-request-label aria-live="polite">{{ item.label }}</span>
       </div>
-      <p class="hub-meta">{{ item.detail }}</p>
+      <p class="hub-meta" data-request-detail>{{ item.detail }}</p>
       {% if item.timeline %}
       <details class="request-progress" data-title-request="{{ item.kind }}:{{ item.title_id }}">
         <summary>Request timeline<span class="sr-only"> for {{ item.title }}</span></summary>
@@ -89,7 +89,7 @@
       </details>
       {% endif %}
       {% if item.can_check %}
-      <form method="post" action="/plus/discover/requests/check" data-busy-form data-single-flight>
+      <form method="post" action="/plus/discover/requests/check" data-busy-form data-single-flight data-request-check>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="kind" value="{{ item.kind }}">
         <input type="hidden" name="title_id" value="{{ item.title_id }}">

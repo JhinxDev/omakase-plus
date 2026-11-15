@@ -246,6 +246,7 @@ _STATIC_ASSETS = {
     "shelves.js": "application/javascript",
     "discover-hub.js": "application/javascript",
     "movie-plex-review.js": "application/javascript",
+    "request-timeline.js": "application/javascript",
     "profile.js": "application/javascript",
     "search.js": "application/javascript",
     "geist-variable.woff2": "font/woff2",

@@ -37,7 +37,7 @@
       fitPopup();
     };
     const category = () => ['all', 'anime', 'movies', 'tv'].includes(kind.value) ? kind.value : 'all';
-    const inside = () => form.contains(document.activeElement);
+    const inside = () => document.activeElement === input || list.contains(document.activeElement);
     let edgeFrame = 0;
     const resultEdges = () => {
       if (list.hidden) return;
@@ -123,7 +123,7 @@
         const title = document.createElement('strong');
         title.textContent = card.title;
         const facts = document.createElement('small');
-        facts.textContent = [{anime: 'Anime', movie: 'Movie', tv: 'TV'}[card.media_type] || '', card.year, card.format, card.library_id ? 'In your library' : '', card.watch_status === 'completed' ? 'Watched' : '', card.rating ? `Your rating ${card.rating}/10` : ''].filter(Boolean).join(' · ');
+        facts.textContent = [{anime: 'Anime', movie: 'Movie', tv: 'TV show'}[card.media_type] || '', card.year, card.media_type === 'anime' ? card.format : '', card.library_id ? 'In your library' : '', card.watch_status === 'completed' ? 'Watched' : '', card.rating ? `Your rating ${card.rating}/10` : ''].filter(Boolean).join(' · ');
         copy.append(title, facts);
         link.append(copy);
         row.append(link);
@@ -190,14 +190,17 @@
       }, 250);
     };
     input.addEventListener('input', search);
-    input.addEventListener('focus', search);
-    kind.addEventListener('change', search);
+    input.addEventListener('focus', () => {
+      if (!input.defaultValue || input.value !== input.defaultValue) search();
+    });
+    kind.addEventListener('change', dismiss);
+    form.addEventListener('submit', dismiss);
     input.addEventListener('keydown', event => {
       if (event.key === 'Escape') dismiss();
       if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && options.length) { event.preventDefault(); select(selected < 0 ? (event.key === 'ArrowDown' ? 0 : options.length - 1) : selected + (event.key === 'ArrowDown' ? 1 : -1)); }
       if (event.key === 'Enter' && selected >= 0 && !list.hidden) { event.preventDefault(); location.assign(options[selected].href); }
     });
-    document.addEventListener('pointerdown', event => { if (!form.contains(event.target)) dismiss(); });
+    document.addEventListener('pointerdown', event => { if (event.target !== input && !list.contains(event.target)) dismiss(); });
     form.addEventListener('focusout', () => requestAnimationFrame(() => { if (!inside()) dismiss(); }));
   });
 })();

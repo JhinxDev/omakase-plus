@@ -3,7 +3,7 @@
 {% from "_request_timeline.html" import request_timeline %}
 {% block title %}{{ card.title }} · Omakase{% endblock %}
 {% block masthead %}{% endblock %}
-{% block extra_head %}<link rel="stylesheet" href="/plus/static/discover-hub.css?v={{ asset_version }}"><script src="/plus/static/movie-plex-review.js?v={{ asset_version }}" defer></script>{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="/plus/static/discover-hub.css?v={{ asset_version }}"><script src="/plus/static/movie-plex-review.js?v={{ asset_version }}" defer></script><script src="/plus/static/request-timeline.js?v={{ asset_version }}" defer></script>{% endblock %}
 {% block content %}
 {% set history = card.history or {} %}
 {% set status_known = history.status_source and history.status_source != 'none' %}
@@ -35,7 +35,7 @@
     {% if card.genres %}<ul class="genre-chips" aria-label="Genres">{% for genre in card.genres %}{% set name = genre.name if genre is mapping else genre %}<li data-genre="{{ name | lower }}">{{ name }}</li>{% endfor %}</ul>{% endif %}
     {% if card.overview %}<p class="movie-overview">{{ card.overview }}</p>{% endif %}
     {% if card.reason %}<p class="movie-overview">{{ card.reason }}</p>{% endif %}
-    <div class="movie-detail-actions">
+    <div class="movie-detail-actions" data-request-play-slot>
       {% if can_play %}<a class="button button-primary" href="/plus/watch/title/movie/{{ card.imdb_id }}?play=1">Play movie</a>{% endif %}
       {% if card.plex_url and card.state == 'ready' and not can_play %}
       <a class="button button-primary" href="{{ card.plex_url }}" rel="noopener noreferrer" target="_blank">Open in Plex</a>
@@ -51,18 +51,18 @@
       {% endif %}
     </div>
     <div class="movie-detail-body">
-      <section class="movie-availability" aria-labelledby="movie-availability-heading">
+      <section class="movie-availability" aria-labelledby="movie-availability-heading"{% if title_request and title_request.can_check and not in_library %} data-request-refresh="/plus/movies/{{ card.imdb_id }}/request-status"{% endif %}>
         <h2 id="movie-availability-heading">Availability</h2>
         <div class="movie-detail-status" data-status-tone="{{ display.status_tone }}">
-          <strong class="status-pill">{{ title_request.label if title_request and not in_library else display.status_label }}</strong>
-          <p>{{ title_request.detail if title_request and not in_library else display.summary }}</p>
+          <strong class="status-pill" data-request-label aria-live="polite">{{ title_request.label if title_request and not in_library else display.status_label }}</strong>
+          <p data-request-detail>{{ title_request.detail if title_request and not in_library else display.summary }}</p>
         </div>
         {% if title_request and title_request.timeline %}
         <div class="movie-request-progress">
           <h3>Request timeline</h3>
           {{ request_timeline(title_request) }}
           {% if title_request.can_check and not in_library %}
-          <form method="post" action="/plus/movies/{{ card.imdb_id }}/refresh" data-busy-form data-single-flight>
+          <form method="post" action="/plus/movies/{{ card.imdb_id }}/refresh" data-busy-form data-single-flight data-request-check>
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="text-action" type="submit" data-busy-label="Checking…">Check status</button>
           </form>

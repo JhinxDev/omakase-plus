@@ -9,6 +9,7 @@
 {% block extra_head %}
 <link rel="stylesheet" href="/plus/static/discover-hub.css?v={{ asset_version }}">
 <script src="/plus/static/discover-hub.js?v={{ asset_version }}" defer></script>
+<script src="/plus/static/request-timeline.js?v={{ asset_version }}" defer></script>
 {% endblock %}
 {% block content %}
 <div class="discover-hub">
@@ -24,7 +25,7 @@
   <div data-hub-rows="{{ kind }}" aria-busy="true">
     <section class="hub-shelf" aria-label="{{ heading }}">
       <h2>{{ heading }}</h2>
-      <div class="media-rail hub-rail{% if kind == 'anime' %} hub-rail-featured{% endif %}" aria-hidden="true">
+      <div class="media-rail hub-rail" aria-hidden="true">
         {% for _ in range(6) %}<div class="hub-skeleton"></div>{% endfor %}
       </div>
       <p role="status" class="sr-only">Loading {{ heading }}</p>

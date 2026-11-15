@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
+from collections import OrderedDict
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -356,6 +358,77 @@ def create_movies_router(
                 "watch_in_app": web_player_enabled(),
             },
             headers={"Cache-Control": "private, no-store"},
+        )
+
+    request_reads: OrderedDict[tuple[int, str], tuple[float, object, object]] = OrderedDict()
+    polling: set[int] = set()
+    request_read_after: OrderedDict[int, float] = OrderedDict()
+
+    @router.get("/movies/{imdb_id}/request-status")
+    async def request_timeline_status(imdb_id: str, user=Depends(require_user), db=Depends(get_db)):
+        from omakase.plus.for_you import ForYouError, _movie_status, request_status
+
+        headers = {"Cache-Control": "private, no-store", "Vary": "Cookie"}
+        try:
+            if households_enabled() if callable(households_enabled) else households_enabled:
+                from omakase.plus.households import selected_scope
+
+                if selected_scope(db, viewer_id=user.id).kind != "personal":
+                    raise HTTPException(404, "Request unavailable", headers=headers)
+            status = request_status(db, user.id, "movie", imdb_id)
+        except ForYouError:
+            raise HTTPException(404, "Request unavailable", headers=headers) from None
+        if status is None:
+            raise HTTPException(404, "Request unavailable", headers=headers)
+
+        async def read(operation, *args):
+            try:
+                async with asyncio.timeout(5):
+                    return await operation(*args)
+            except (MovieError, TimeoutError):
+                return None
+
+        key = (user.id, imdb_id)
+        cached = request_reads.get(key)
+        now = time.monotonic()
+        if status["can_check"] and (cached is None or cached[0] <= now):
+            if user.id in polling or len(polling) >= 4 or request_read_after.get(user.id, 0) > now:
+                raise HTTPException(
+                    429, "Status check in progress", headers={**headers, "Retry-After": "60"}
+                )
+            polling.add(user.id)
+            request_read_after[user.id] = now + 15
+            request_read_after.move_to_end(user.id)
+            if len(request_read_after) > 128:
+                request_read_after.popitem(last=False)
+            try:
+                svc = service(db, user)
+                inventory, observation = await asyncio.gather(
+                    read(svc.indexed_requests, user.id, [imdb_id]),
+                    read(svc.observe_request, user.id, imdb_id),
+                )
+            finally:
+                polling.discard(user.id)
+            if cached and cached[2] and (observation is None or observation[0] == cached[2][0]):
+                observation = cached[2]
+            cached = (time.monotonic() + 50, (inventory or {}).get(imdb_id), observation)
+            request_reads[key] = cached
+            request_reads.move_to_end(key)
+            if len(request_reads) > 128:
+                request_reads.popitem(last=False)
+        if cached and status["can_check"]:
+            status = _movie_status(db, user.id, imdb_id, cached[1], observation=cached[2])
+        if status is None:
+            raise HTTPException(404, "Request unavailable", headers=headers)
+        from omakase.plus.web_playback_navigation import enabled as web_player_enabled
+
+        can_play = status["state"] in {"in_library", "ready"} and web_player_enabled()
+        return JSONResponse(
+            {
+                **{key: status[key] for key in ("label", "detail", "can_check", "timeline")},
+                "play_url": f"/plus/watch/title/movie/{imdb_id}?play=1" if can_play else None,
+            },
+            headers=headers,
         )
 
     async def action(request, user, db, operation, **kwargs):

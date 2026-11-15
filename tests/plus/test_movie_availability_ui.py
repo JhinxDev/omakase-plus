@@ -198,7 +198,7 @@ def test_indexed_movie_keeps_library_presence_separate_from_playback_check(code)
             "timeline": [{"key": "library", "label": "Added to your library", "occurred_at": None}],
         },
     )
-    assert '<strong class="status-pill">In your library</strong>' in html
+    assert 'data-request-label aria-live="polite">In your library</strong>' in html
     assert ">Play movie</a>" in html
     assert html.index("<summary>Check details</summary>") < html.index(">Check playback</button>")
     assert 'aria-current="step"' in html and "Added to your library" in html
