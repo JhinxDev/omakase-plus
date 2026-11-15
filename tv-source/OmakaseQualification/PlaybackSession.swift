@@ -201,6 +201,14 @@ final class PlaybackSession: ObservableObject {
                 cookies: cookies, expectedDuration: expectedDuration,
                 carried: itemCarriedSelections)
         itemCarriedSelections = []
+        if let resumePosition, resumePosition.isFinite, resumePosition > 0,
+           url.pathExtension.lowercased() == "m3u8" {
+            // Seed native HLS before attaching the item so AVFoundation can
+            // request media near the saved position. Readiness still checks
+            // where the seek landed before allowing playback or checkpoints.
+            item.seek(to: CMTime(seconds: resumePosition, preferredTimescale: 600),
+                      toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: nil)
+        }
         if player.currentItem !== item { player.replaceCurrentItem(with: item) }
         return true
     }
