@@ -184,6 +184,7 @@ def test_all_tables_exist(_fresh_db):
         "_migrations",  # internal tracking table
         "cloud_playback_resumes",
         "household_title_requests",
+        "for_you_requests",
         "native_tv_devices",
         "web_playback_native_resumes",
         # Durable anime completion intent: written inside the resume transaction
