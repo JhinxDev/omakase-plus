@@ -1,5 +1,7 @@
 # Actual-app screenshots
 
+- `omakase-plus-home-c298f7d6a9c7.webp`: owner-approved capture of the redesigned Home. The documentation website uses the same file bytes.
+
 These WebP files preserve pixels captured from the maintained local showcase:
 real anime, television and movie artwork with a synthetic Alex Morgan account.
 Only screenshot encoding/compression changed; controls and content were not
