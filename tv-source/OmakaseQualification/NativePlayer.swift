@@ -1,4 +1,5 @@
 import AVKit
+import CoreMedia
 import QualificationCore
 import SwiftUI
 import UIKit
@@ -357,9 +358,11 @@ struct NativePlayer: UIViewControllerRepresentable {
         if controller.player !== session.player { controller.player = session.player }
         let nearEnd = PlaybackSession.shouldSuggestNext(position: session.position, duration: session.duration)
         context.coordinator.updateNext(on: controller, action: nextAction, opening: openingNext, nearEnd: nearEnd)
+        context.coordinator.updateSubtitleItem(on: controller)
     }
 
     static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
+        coordinator.cancelSubtitleDiscovery()
         controller.player?.pause()
         controller.player = nil
         controller.delegate = nil
@@ -371,8 +374,50 @@ struct NativePlayer: UIViewControllerRepresentable {
         private var nextAction: (() -> Void)?
         private var transportState: NextControl = .hidden
         private var contextualVisible = false
+        private weak var subtitleItem: AVPlayerItem?
+        private var subtitleDiscovery: Task<Void, Never>?
+        private var subtitlePositions: [SubtitlePosition: AVTextStyleRule] = [:]
+        private var originalTextStyleRules: [AVTextStyleRule]?
+        private var subtitlePosition = SubtitlePosition.saved
 
         private enum NextControl { case hidden, opening, available }
+
+        private enum SubtitlePosition: String, CaseIterable {
+            case system, top, topLower, bottomHigher, bottom
+
+            static var saved: Self {
+                UserDefaults.standard.string(forKey: preferenceKey).flatMap(Self.init(rawValue:)) ?? .system
+            }
+
+            private static let preferenceKey = "omakase.tv.subtitle-position"
+
+            var title: String {
+                switch self {
+                case .system: "System Default"
+                case .top: "Top"
+                case .topLower: "Top (Lower)"
+                case .bottomHigher: "Bottom (Higher)"
+                case .bottom: "Bottom"
+                }
+            }
+
+            var styleRule: AVTextStyleRule? {
+                let percentage: Double
+                switch self {
+                case .system: return nil
+                case .top: percentage = 10
+                case .topLower: percentage = 16
+                case .bottomHigher: percentage = 84
+                case .bottom: percentage = 90
+                }
+                return AVTextStyleRule(textMarkupAttributes: [
+                    kCMTextMarkupAttribute_OrthogonalLinePositionPercentageRelativeToWritingDirection as String:
+                        NSNumber(value: percentage),
+                ])
+            }
+
+            func save() { UserDefaults.standard.set(rawValue, forKey: Self.preferenceKey) }
+        }
 
         init(dismiss: @escaping () -> Void) { self.dismiss = dismiss }
 
@@ -380,14 +425,82 @@ struct NativePlayer: UIViewControllerRepresentable {
             nextAction = action
             let transport: NextControl = action == nil ? .hidden : opening ? .opening : .available
             if transport != transportState {
-                controller.transportBarCustomMenuItems = transport == .hidden ? [] : [nextButton(disabled: opening)]
                 transportState = transport
+                updateTransport(on: controller)
             }
             let context = transport == .available && nearEnd
             if context != contextualVisible {
                 controller.contextualActions = context ? [nextButton()] : []
                 contextualVisible = context
             }
+        }
+
+        func updateSubtitleItem(on controller: AVPlayerViewController) {
+            let item = controller.player?.currentItem
+            guard item !== subtitleItem else { return }
+            cancelSubtitleDiscovery()
+            subtitleItem = item
+            if !subtitlePositions.isEmpty {
+                subtitlePositions = [:]
+                originalTextStyleRules = nil
+                updateTransport(on: controller)
+            }
+            guard let item else { return }
+
+            subtitleDiscovery = Task { [weak self, weak controller] in
+                guard let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
+                      !Task.isCancelled, let self, let controller, controller.player?.currentItem === item
+                else { return }
+                let isHLS = (item.asset as? AVURLAsset)?.url.pathExtension.lowercased() == "m3u8"
+                let containsWebVTT = group.options.contains { option in
+                    option.mediaSubTypes.contains { $0.uint32Value == kCMSubtitleFormatType_WebVTT }
+                        || (isHLS && option.mediaType == .subtitle && option.mediaSubTypes.isEmpty)
+                }
+                guard containsWebVTT else { return }
+                self.originalTextStyleRules = item.textStyleRules
+                for position in SubtitlePosition.allCases {
+                    self.subtitlePositions[position] = position.styleRule
+                }
+                self.applySubtitlePosition(to: item)
+                self.updateTransport(on: controller)
+            }
+        }
+
+        func cancelSubtitleDiscovery() {
+            subtitleDiscovery?.cancel()
+            subtitleDiscovery = nil
+        }
+
+        private func applySubtitlePosition(to item: AVPlayerItem) {
+            if let rule = subtitlePositions[subtitlePosition] {
+                item.textStyleRules = (originalTextStyleRules ?? []) + [rule]
+            } else {
+                item.textStyleRules = originalTextStyleRules
+            }
+        }
+
+        private func updateTransport(on controller: AVPlayerViewController) {
+            var items: [UIMenuElement] = []
+            if transportState != .hidden {
+                items.append(nextButton(disabled: transportState == .opening))
+            }
+            if !subtitlePositions.isEmpty {
+                let choices = SubtitlePosition.allCases.compactMap { position -> UIAction? in
+                    guard position == .system || subtitlePositions[position] != nil else { return nil }
+                    return UIAction(title: position.title, state: position == subtitlePosition ? .on : .off) {
+                        [weak self, weak controller] _ in
+                        guard let self, let controller, let item = self.subtitleItem,
+                              controller.player?.currentItem === item else { return }
+                        self.subtitlePosition = position
+                        position.save()
+                        self.applySubtitlePosition(to: item)
+                        self.updateTransport(on: controller)
+                    }
+                }
+                items.append(UIMenu(title: "Subtitle Position", image: UIImage(systemName: "arrow.up.and.down"),
+                                    options: .singleSelection, children: choices))
+            }
+            controller.transportBarCustomMenuItems = items
         }
 
         private func nextButton(disabled: Bool = false) -> UIAction {

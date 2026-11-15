@@ -27,6 +27,7 @@ struct LiveLibraryScreen: View {
     @State private var detailsReturnKey: String?
     @State private var suppressEpisodePlay: String?
     @State private var searchOpen = false
+    @State private var catalogSearchQuery: String?
     @State private var search = ""
     @State private var searchKeyboardRequest = false
     @State private var query = ""
@@ -199,11 +200,19 @@ struct LiveLibraryScreen: View {
             confirmsDisconnect = false
             focus = "device-settings"
         }) { deviceSettings }
-        .fullScreenCover(isPresented: $recommendationsOpen, onDismiss: { focus = "for-you" }) {
-            TVForYouScreen(client: client.selecting(nil)) { recommendationsOpen = false }
+        .fullScreenCover(isPresented: $recommendationsOpen, onDismiss: {
+            focus = catalogSearchQuery == nil ? "for-you" : "search"
+            catalogSearchQuery = nil
+        }) {
+            TVForYouScreen(client: client.selecting(nil), query: catalogSearchQuery) {
+                recommendationsOpen = false
+            }
         }
         .sheet(isPresented: $libraryPickerOpen) { libraryPicker }
-        .sheet(isPresented: $searchOpen, onDismiss: { focus = "search" }) { searchEditor }
+        .sheet(isPresented: $searchOpen, onDismiss: {
+            if catalogSearchQuery != nil { recommendationsOpen = true }
+            else { focus = "search" }
+        }) { searchEditor }
         .fullScreenCover(isPresented: $synopsisOpen, onDismiss: { focus = "details-secondary" }) {
             if let title, let synopsis = synopsis(for: title) {
                 TVSynopsisScreen(title: title.title, synopsis: synopsis) { synopsisOpen = false }
@@ -226,6 +235,7 @@ struct LiveLibraryScreen: View {
                     .disabled(expired || busy)
                 }
                 control("For You", key: "for-you", icon: "sparkles", compact: true) {
+                    catalogSearchQuery = nil
                     recommendationsOpen = true
                 }
                 .disabled(expired || busy)
@@ -287,12 +297,10 @@ struct LiveLibraryScreen: View {
 
     private var searchEditor: some View {
         VStack(alignment: .leading, spacing: 24) {
-            Text("Search library")
+            Text("Search titles")
                 .font(.largeTitle.bold())
                 .accessibilityAddTraits(.isHeader)
                 .accessibilityIdentifier("library.search.editor")
-            Text(client.selectedLibrary?.name ?? "Personal library")
-                .foregroundStyle(Color.tvMuted)
             Button { searchKeyboardRequest.toggle() } label: {
                 LibrarySearchPrompt(text: search)
             }
@@ -305,15 +313,19 @@ struct LiveLibraryScreen: View {
             .accessibilityIdentifier("library.search.field")
             .background {
                 TVSystemKeyboard(text: $search, requested: searchKeyboardRequest, prompt: "Title", returnKey: .search) {
-                    if !searchTerm.isEmpty { applySearch(searchTerm) }
+                    searchCatalog()
                 }
                 .frame(width: 1, height: 1)
                 .clipped()
                 .accessibilityHidden(true)
             }
             HStack(spacing: 20) {
-                Button("Search") { applySearch(searchTerm) }
+                Button("Search catalog") { searchCatalog() }
                     .buttonStyle(TVActionStyle(tint: .tvAccent))
+                    .focusEffectDisabled()
+                    .disabled(searchTerm.count < 2)
+                Button("Search library") { applySearch(searchTerm) }
+                    .buttonStyle(TVActionStyle())
                     .focusEffectDisabled()
                     .disabled(searchTerm.isEmpty)
                 if !query.isEmpty {
@@ -860,6 +872,12 @@ struct LiveLibraryScreen: View {
         return resume ? "Resume" : "Play"
     }
 
+    private func searchCatalog() {
+        guard searchTerm.count >= 2 else { return }
+        catalogSearchQuery = searchTerm
+        searchOpen = false
+    }
+
     private func applySearch(_ term: String) {
         guard !busy else { return }
         searchOpen = false
@@ -957,6 +975,7 @@ struct LiveLibraryScreen: View {
         guard isPresented, !expired, !busy, let destination = topShelfDestination else { return }
         topShelfDestination = nil
         recommendationsOpen = false
+        catalogSearchQuery = nil
         searchOpen = false
         synopsisOpen = false
         settingsOpen = false
@@ -1426,6 +1445,7 @@ private struct DetailsArtwork: View {
 @MainActor
 private struct TVForYouScreen: View {
     let client: LiveLibraryClient
+    let query: String?
     let dismiss: () -> Void
 
     @State private var category: LiveRecommendationCategory = .anime
@@ -1441,33 +1461,48 @@ private struct TVForYouScreen: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
             HStack(spacing: 18) {
-                Text("For You").font(.title2.bold()).accessibilityAddTraits(.isHeader)
-                Spacer()
-                ForEach(LiveRecommendationCategory.allCases) { item in
-                    action(item.label, key: item.id, selected: item == category && selected == nil) {
-                        selected = nil
-                        error = nil
-                        category = item
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(query == nil ? "For You" : "Search results")
+                        .font(.title2.bold()).accessibilityAddTraits(.isHeader)
+                    if let query {
+                        Text(query).font(.callout).foregroundStyle(Color.tvMuted).lineLimit(1)
                     }
-                    .accessibilityAddTraits(item == category && selected == nil ? .isSelected : [])
+                }
+                Spacer()
+                if query == nil {
+                    ForEach(LiveRecommendationCategory.allCases) { item in
+                        action(item.label, key: item.id, selected: item == category && selected == nil) {
+                            selected = nil
+                            error = nil
+                            category = item
+                        }
+                        .accessibilityAddTraits(item == category && selected == nil ? .isSelected : [])
+                    }
                 }
                 action("Close", key: "close", icon: "xmark") { dismiss() }
             }
             if let selected {
                 titleDetails(selected)
             } else if loading {
-                ProgressView("Loading recommendations").frame(maxWidth: .infinity, maxHeight: .infinity)
+                ProgressView(query == nil ? "Loading recommendations" : "Searching…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let page {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 36) {
+                        ForEach(page.warnings ?? []) { warning in
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(warning.label).font(.callout.bold())
+                                Text(warning.detail).font(.caption).foregroundStyle(Color.tvMuted)
+                            }
+                        }
                         if page.rows.allSatisfy({ $0.cards.isEmpty }) {
-                            Text("No recommendations are available right now.")
+                            Text(emptyMessage(page))
                                 .foregroundStyle(Color.tvMuted).font(.body)
                         }
                         ForEach(page.rows.filter { !$0.cards.isEmpty }) { row in
                             shelf(row)
                         }
-                        if !requests.isEmpty {
+                        if query == nil && !requests.isEmpty {
                             requestsView
                         }
                     }
@@ -1484,20 +1519,27 @@ private struct TVForYouScreen: View {
         .foregroundStyle(Color.tvText)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.tvBackground.ignoresSafeArea())
-        .defaultFocus($focus, category.id)
+        .defaultFocus($focus, query == nil ? category.id : "close")
         .task(id: category) { await load() }
         .onExitCommand {
             if selected != nil { closeDetails() }
             else { dismiss() }
         }
-        .accessibilityIdentifier("for-you")
+        .accessibilityIdentifier(query == nil ? "for-you" : "catalog-search")
+    }
+
+    private func emptyMessage(_ page: LiveRecommendationsPage) -> String {
+        if query == nil { return "No recommendations are available right now." }
+        if page.warnings?.isEmpty == false { return "No matches in the catalogs that responded." }
+        return "No matching titles."
     }
 
     private var requests: [LiveTitleRequest] {
         let saved = page?.requests ?? []
         let knownIDs = Set(saved.map(\.id))
-        return saved.map { resultByTitle[$0.id] ?? $0 }
+        let updated = saved.map { resultByTitle[$0.id] ?? $0 }
             + resultByTitle.values.filter { !knownIDs.contains($0.id) }.sorted { $0.title < $1.title }
+        return updated.filter { !["in_library", "ready", "removed"].contains($0.state) }
     }
 
     private func action(_ label: String, key: String, icon: String? = nil, selected: Bool = false,
@@ -1592,12 +1634,13 @@ private struct TVForYouScreen: View {
                 if let error { Text(error).font(.callout).foregroundStyle(Color.tvWarning) }
                 HStack(spacing: 16) {
                     action("Back", key: "title-back", icon: "chevron.left", perform: closeDetails)
-                    if (resultByTitle[card.key] ?? card.request) != nil {
+                    let status = resultByTitle[card.key] ?? card.request
+                    if let status, status.canCheck ?? (status.kind == "movie" && status.state != "ready") {
                         action(requesting ? "Checking…" : "Check status", key: "check") {
                             Task { await request(card, check: true) }
                         }
                         .disabled(requesting)
-                    } else if card.canRequest {
+                    } else if status == nil && card.canRequest {
                         action(requesting ? "Requesting…" : "Request", key: "request", icon: "plus") {
                             Task { await request(card, check: false) }
                         }
@@ -1627,13 +1670,15 @@ private struct TVForYouScreen: View {
         error = nil
         defer { if category == wanted { loading = false } }
         do {
-            let fetched = try await client.recommendations(wanted)
+            let fetched: LiveRecommendationsPage
+            if let query { fetched = try await client.searchCatalog(query) }
+            else { fetched = try await client.recommendations(wanted) }
             guard !Task.isCancelled, category == wanted else { return }
             page = fetched
             resultByTitle = [:]
         } catch {
             guard !Task.isCancelled, category == wanted else { return }
-            self.error = "Couldn’t load For You. Try again."
+            self.error = query == nil ? "Couldn’t load For You." : "Couldn’t search the catalog."
         }
     }
 

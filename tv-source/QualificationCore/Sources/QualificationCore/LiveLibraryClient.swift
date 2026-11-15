@@ -107,11 +107,12 @@ public struct LiveTitleRequest: Decodable, Identifiable, Sendable {
     public let state: String
     public let label: String
     public let detail: String
+    public let canCheck: Bool?
 
     public var id: String { kind + ":" + titleID }
 
     enum CodingKeys: String, CodingKey {
-        case kind, titleID = "title_id", title, state, label, detail
+        case kind, titleID = "title_id", title, state, label, detail, canCheck = "can_check"
     }
 }
 
@@ -140,9 +141,18 @@ public struct LiveRecommendationsPage: Decodable, Sendable {
         public var id: String { key }
     }
 
+    public struct Warning: Decodable, Identifiable, Sendable {
+        public let kind: String
+        public let label: String
+        public let detail: String
+
+        public var id: String { kind }
+    }
+
     public let category: String
     public let rows: [Row]
     public let requests: [LiveTitleRequest]
+    public let warnings: [Warning]?
 }
 
 public enum LiveLibraryError: Error {
@@ -339,17 +349,29 @@ public struct LiveLibraryClient: Sendable {
     }
 
     public func recommendations(_ category: LiveRecommendationCategory) async throws -> LiveRecommendationsPage {
-        var components = URLComponents(url: Self.endpoint(origin, "for-you"), resolvingAgainstBaseURL: false)
-        components?.queryItems = [URLQueryItem(name: "category", value: category.rawValue)]
+        let expected = category == .movies ? "movie" : category.rawValue
+        return try await catalogPage("for-you", query: .init(name: "category", value: category.rawValue),
+                                     category: category.rawValue, kinds: [expected])
+    }
+
+    public func searchCatalog(_ query: String) async throws -> LiveRecommendationsPage {
+        try await catalogPage("catalog-search", query: .init(name: "q", value: query),
+                              category: "all", kinds: ["anime", "movie", "tv"])
+    }
+
+    private func catalogPage(_ path: String, query: URLQueryItem, category: String,
+                             kinds: Set<String>) async throws -> LiveRecommendationsPage {
+        var components = URLComponents(url: Self.endpoint(origin, path), resolvingAgainstBaseURL: false)
+        components?.queryItems = [query]
         guard let url = components?.url else { throw FixtureConnectionError.invalidOrigin }
         let data = try await send(url, maxBytes: 256_000, timeout: 35)
         let page = try JSONDecoder().decode(LiveRecommendationsPage.self, from: data)
-        let expected = category == .movies ? "movie" : category.rawValue
-        guard page.category == category.rawValue, page.rows.count <= 12, page.requests.count <= 100,
+        guard page.category == category, page.rows.count <= 12, page.requests.count <= 100,
+              (page.warnings?.count ?? 0) <= 3,
               Set(page.rows.map(\.id)).count == page.rows.count,
               page.rows.allSatisfy({ row in
                   row.cards.count <= 30 && Set(row.cards.map(\.key)).count == row.cards.count
-                      && row.cards.allSatisfy { $0.kind == expected }
+                      && row.cards.allSatisfy { kinds.contains($0.kind) }
               }) else { throw FixtureConnectionError.invalidResponse }
         return page
     }

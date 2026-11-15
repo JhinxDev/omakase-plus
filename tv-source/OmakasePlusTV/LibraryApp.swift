@@ -472,7 +472,7 @@ struct TitleScreen: View {
         .onAppear {
             guard resumeImmediately, !attemptedDirectPlayback else { return }
             attemptedDirectPlayback = true
-            start(resume: saved != nil)
+            start(resume: true)
         }
         .onExitCommand {
             if showingPlayer || showingSynopsis || isSaving { return }
@@ -554,7 +554,7 @@ struct TitleScreen: View {
             }
             HStack(spacing: 18) {
                 Button {
-                    start(resume: !needsReload && saved != nil)
+                    start(resume: !needsReload && (resumeImmediately || saved != nil))
                 } label: {
                     Label(primaryLabel, systemImage: needsReload ? "arrow.clockwise" : "play.fill")
                 }
@@ -562,7 +562,7 @@ struct TitleScreen: View {
                 .focusEffectDisabled()
                 .focused($focus, equals: .play)
                 .accessibilityIdentifier("fixture.play")
-                if saved != nil && !needsReload {
+                if saved != nil && !needsReload && !resumeImmediately {
                     Button("Play from start") { start(resume: false) }
                         .buttonStyle(TVActionStyle(focused: focus == .restart, compact: true))
                         .focusEffectDisabled()
