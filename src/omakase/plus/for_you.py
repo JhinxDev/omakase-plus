@@ -114,7 +114,16 @@ def _status(kind, title_id, title, state, detail, href, *, timeline):
     }
 
 
-def _movie_status(db, user_id, title_id, library=None, movie_card=None, observation=None):
+_MOVIE_PROGRESS_LABELS = {
+    "requested": "Riven confirmed the request",
+    "searching": "Riven started looking for a copy",
+    "search_complete": "Riven finished searching",
+    "acquiring": "Riven reported a transfer",
+    "verifying": "Checking library availability",
+}
+
+
+def _movie_status(db, user_id, title_id, library=None, movie_card=None, observations=()):
     row = db.execute(
         """SELECT c.title,r.code,r.created_at,r.updated_at FROM movie_requests r
            JOIN movie_catalog c USING(user_id,imdb_id)
@@ -143,19 +152,22 @@ def _movie_status(db, user_id, title_id, library=None, movie_card=None, observat
         timeline.append(
             _step("received", row["updated_at"], label="Riven acknowledged the request")
         )
-    progress_labels = {
-        "searching": "Riven started looking for a copy",
-        "search_complete": "Riven finished searching",
-        "acquiring": "Riven reported a transfer",
-        "verifying": "Checking library availability",
-    }
-    if progress := progress_labels.get(code):
-        timeline.append(_step("preparing", row["updated_at"], label=progress))
-    if observation and observation[0] in progress_labels:
-        observed_code, observed_at = observation
-        if observed_code != code:
-            timeline.append(_step("preparing", observed_at, label=progress_labels[observed_code]))
-            code = observed_code
+    phases = {}
+    if code in _MOVIE_PROGRESS_LABELS and code != "requested":
+        phases[code] = row["updated_at"]
+    for observed_code, observed_at in observations:
+        if observed_code in _MOVIE_PROGRESS_LABELS:
+            phases.setdefault(observed_code, observed_at)
+            if observed_code != "requested" and (
+                code in _MOVIE_PREPARING or code in _MOVIE_WAITING or code == "requested"
+            ):
+                code = observed_code
+    for phase, at in sorted(phases.items(), key=lambda entry: entry[1]):
+        if phase == "requested":
+            if timeline[-1]["key"] != "received":
+                timeline.append(_step("received", at, label=_MOVIE_PROGRESS_LABELS[phase]))
+        else:
+            timeline.append(_step(phase, at, label=_MOVIE_PROGRESS_LABELS[phase]))
     if ready:
         state, detail = "ready", "The matching copy passed its playback check."
         timeline.append(_step(state, ready["verified_at"]))

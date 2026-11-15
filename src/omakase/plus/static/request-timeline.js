@@ -1,12 +1,14 @@
 (() => {
   'use strict';
   const interval = 60_000;
+  const requestSpacing = 16_000;
   const selector = '[data-request-refresh]';
   const formatter = new Intl.DateTimeFormat(undefined, {
     dateStyle: 'medium',
     timeStyle: 'short',
   });
   let busy = false;
+  let nextRead = 0;
 
   function text(container, selector, value) {
     const node = container.querySelector(selector);
@@ -56,14 +58,16 @@
   }
 
   async function refresh() {
-    if (busy || document.hidden) return;
     const now = Date.now();
-    const container = Array.from(document.querySelectorAll(selector)).find(item => {
+    if (busy || document.hidden || now < nextRead) return;
+    const dueAt = item => Number(item.dataset.requestNext || 0);
+    const [container] = Array.from(document.querySelectorAll(selector)).filter(item => {
       const disclosure = item.querySelector('.request-progress');
-      return (!disclosure || disclosure.open) && Number(item.dataset.requestNext || 0) <= now;
-    });
+      return (!disclosure || disclosure.open) && dueAt(item) <= now;
+    }).sort((a, b) => dueAt(a) - dueAt(b));
     if (!container) return;
     busy = true;
+    nextRead = now + requestSpacing;
     container.dataset.requestNext = String(now + interval);
     try {
       const response = await fetch(container.dataset.requestRefresh, {
@@ -72,6 +76,12 @@
         redirect: 'error',
         signal: AbortSignal.timeout(8000),
       });
+      if (response.status === 429) {
+        const retryAfter = Number(response.headers.get('Retry-After'));
+        const retryMs = retryAfter > 0 ? Math.min(retryAfter * 1000, interval) : requestSpacing;
+        nextRead = Math.max(nextRead, Date.now() + retryMs);
+        container.dataset.requestNext = String(nextRead);
+      }
       if (response.status === 404) delete container.dataset.requestRefresh;
       if (response.ok && container.isConnected) render(container, await response.json());
     } catch {

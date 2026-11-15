@@ -192,6 +192,84 @@ def test_the_served_playlist_is_the_media_it_names(produced_pass):
     assert "real-debrid" not in master and "http" not in master
 
 
+def test_backward_scrub_opens_only_the_last_distinct_window(tmp_path, monkeypatch):
+    timeline = native_hls.NativeTimeline(
+        "https://mock.invalid/episode", 180, 0,
+        tuple((6 * number, 6 * (number + 1)) for number in range(30)),
+        tuple(100 * number for number in range(30)),
+        3100, b"", b"", b"", "hevc",
+        audios=(native_hls.NativeAudio(0, "aac"),),
+    )
+    plan = NativePlan("scrub", timeline.url, timeline.duration, tmp_path)
+    plan.timeline = timeline
+    plan.continuous = True
+    streams = NativeStreams(tmp_path)
+    opened = []
+    audio = timeline.audios[0]
+    payload = b"test segment bytes "
+
+    def cache(number):
+        plan.video_segment_path(number).write_bytes(payload + bytes([number]))
+        plan.audio_segment_path(audio, number).write_bytes(payload + bytes([number]))
+
+    (tmp_path / "init.mp4").write_bytes(payload)
+    (tmp_path / audio.init).write_bytes(payload)
+    cache(15)
+
+    class Session:
+        def __init__(self, _streams, _plan, start, *, subtitles=0):
+            self.start = start
+            self.active = start
+            self.demand = asyncio.Event()
+
+        def can_serve(self, number):
+            return self.start <= number <= self.active + native_hls._LEAD_WINDOWS
+
+        async def open(self):
+            opened.append(self.start)
+            cache(self.start)
+
+        async def close(self, _reason):
+            pass
+
+    monkeypatch.setattr(native_hls, "_ContinuousSession", Session)
+    plan.session = Session(streams, plan, 16)
+
+    async def drive():
+        async def request(offset, number, kind):
+            await asyncio.sleep(offset)
+            try:
+                await streams.ensure(plan, number, 2, subtitles=1)
+            except native_hls.NativeError as error:
+                return error.code
+            path = (
+                plan.video_segment_path(number)
+                if kind == "video"
+                else plan.audio_segment_path(audio, number)
+            )
+            return path.read_bytes()
+
+        # Relative arrival times from the physical backward scrub. The paired
+        # renditions follow the same target. A late duplicate of window 13
+        # and an already cached earlier read must not move the pending target.
+        requests = (
+            (0.000, 14, "audio"), (0.010, 14, "video"),
+            (0.225, 13, "video"), (0.301, 13, "audio"),
+            (0.494, 12, "video"), (0.503, 12, "audio"),
+            (0.552, 13, "video"), (0.580, 15, "video"),
+            (0.636, 11, "audio"), (0.638, 11, "video"),
+            (0.799, 10, "video"), (0.801, 10, "audio"),
+        )
+        return await asyncio.gather(*(request(*args) for args in requests))
+
+    outcomes = asyncio.run(drive())
+    assert opened == [10]
+    assert outcomes[7] == payload + bytes([15])
+    assert outcomes[-2:] == [payload + bytes([10]), payload + bytes([10])]
+    assert all(outcome == "stale" for outcome in outcomes[:7] + outcomes[8:-2])
+    assert plan.session.start == 10
+
+
 def test_a_stale_request_cannot_restart_the_chosen_position(produced_pass):
     """Forward, back, then a burst for the abandoned position, concurrently.
 

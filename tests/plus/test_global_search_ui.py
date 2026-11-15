@@ -54,7 +54,7 @@ def test_mixed_result_kind_is_visible_and_full_title_is_escaped():
             }
         ]
     )
-    assert "<span>TV</span>" in html
+    assert "<span>TV show</span>" in html
     assert 'href="/plus/tv/1396"' in html
     assert "<script>bad()</script>" not in html
     assert "&lt;script&gt;bad()&lt;/script&gt;" in html

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-import time
 from collections import OrderedDict
+from math import ceil
+from time import monotonic
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -360,13 +361,20 @@ def create_movies_router(
             headers={"Cache-Control": "private, no-store"},
         )
 
-    request_reads: OrderedDict[tuple[int, str], tuple[float, object, object]] = OrderedDict()
+    request_reads: OrderedDict[
+        tuple[int, str, str], tuple[float, object, tuple[tuple[str, str], ...]]
+    ] = OrderedDict()
     polling: set[int] = set()
     request_read_after: OrderedDict[int, float] = OrderedDict()
 
     @router.get("/movies/{imdb_id}/request-status")
     async def request_timeline_status(imdb_id: str, user=Depends(require_user), db=Depends(get_db)):
-        from omakase.plus.for_you import ForYouError, _movie_status, request_status
+        from omakase.plus.for_you import (
+            _MOVIE_PROGRESS_LABELS,
+            ForYouError,
+            _movie_status,
+            request_status,
+        )
 
         headers = {"Cache-Control": "private, no-store", "Vary": "Cookie"}
         try:
@@ -388,13 +396,18 @@ def create_movies_router(
             except (MovieError, TimeoutError):
                 return None
 
-        key = (user.id, imdb_id)
+        # A new acquisition of the same movie has its own timeline.
+        key = (user.id, imdb_id, status["timeline"][0]["occurred_at"])
         cached = request_reads.get(key)
-        now = time.monotonic()
+        now = monotonic()
         if status["can_check"] and (cached is None or cached[0] <= now):
-            if user.id in polling or len(polling) >= 4 or request_read_after.get(user.id, 0) > now:
+            earliest = request_read_after.get(user.id, 0)
+            if user.id in polling or len(polling) >= 4 or earliest > now:
+                retry_after = max(5, ceil(earliest - now))
                 raise HTTPException(
-                    429, "Status check in progress", headers={**headers, "Retry-After": "60"}
+                    429,
+                    "Status check in progress",
+                    headers={**headers, "Retry-After": str(retry_after)},
                 )
             polling.add(user.id)
             request_read_after[user.id] = now + 15
@@ -409,15 +422,16 @@ def create_movies_router(
                 )
             finally:
                 polling.discard(user.id)
-            if cached and cached[2] and (observation is None or observation[0] == cached[2][0]):
-                observation = cached[2]
-            cached = (time.monotonic() + 50, (inventory or {}).get(imdb_id), observation)
+            observations = dict(cached[2]) if cached else {}
+            if observation and observation[0] in _MOVIE_PROGRESS_LABELS:
+                observations.setdefault(*observation)
+            cached = (monotonic() + 50, (inventory or {}).get(imdb_id), tuple(observations.items()))
             request_reads[key] = cached
             request_reads.move_to_end(key)
             if len(request_reads) > 128:
                 request_reads.popitem(last=False)
         if cached and status["can_check"]:
-            status = _movie_status(db, user.id, imdb_id, cached[1], observation=cached[2])
+            status = _movie_status(db, user.id, imdb_id, cached[1], observations=cached[2])
         if status is None:
             raise HTTPException(404, "Request unavailable", headers=headers)
         from omakase.plus.web_playback_navigation import enabled as web_player_enabled

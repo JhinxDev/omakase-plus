@@ -96,7 +96,7 @@ def browser(tmp_path, monkeypatch):
 
 
 def test_request_timeline_reads_exact_progress_without_mutation(browser, monkeypatch):
-    from omakase.plus import movies_store
+    from omakase.plus import movies_routes, movies_store
 
     client, svc, _ = browser
     now = "2026-11-15T00:44:00Z"
@@ -106,6 +106,15 @@ def test_request_timeline_reads_exact_progress_without_mutation(browser, monkeyp
     )
     before = movies_store.ensure_request(svc.db, 1, imdb_id, now=now, edition=None)
     calls = []
+    clock = [100.0]
+    monkeypatch.setattr(movies_routes, "monotonic", lambda: clock[0])
+    phases = iter(
+        [
+            ("requested", now),
+            ("acquiring", "2026-11-15T00:45:00Z"),
+            ("verifying", "2026-11-15T00:46:00Z"),
+        ]
+    )
 
     async def indexed(user, titles):
         assert user == 1 and titles == [imdb_id]
@@ -115,18 +124,26 @@ def test_request_timeline_reads_exact_progress_without_mutation(browser, monkeyp
     async def observe(user, item):
         assert user == 1 and item == imdb_id
         calls.append("observe")
-        return "acquiring", now
+        return next(phases)
 
     monkeypatch.setattr(svc, "indexed_requests", indexed, raising=False)
     monkeypatch.setattr(svc, "observe_request", observe, raising=False)
     response = client.get(f"/plus/movies/{imdb_id}/request-status")
     assert response.status_code == 200
     assert response.headers["cache-control"] == "private, no-store"
-    assert response.json()["timeline"][-1]["label"] == "Riven reported a transfer"
+    assert response.json()["timeline"][-1]["label"] == "Riven confirmed the request"
     assert response.json()["play_url"] is None
     assert client.get(f"/plus/movies/{imdb_id}/request-status").json() == response.json()
     assert client.get("/plus/movies/tt0000020/request-status").status_code == 404
     assert sorted(calls) == ["inventory", "observe"]
+    clock[0] += 60
+    assert (
+        client.get(f"/plus/movies/{imdb_id}/request-status").json()["timeline"][-1]["key"]
+        == "acquiring"
+    )
+    clock[0] += 60
+    history = client.get(f"/plus/movies/{imdb_id}/request-status").json()["timeline"]
+    assert [step["key"] for step in history] == ["requested", "received", "acquiring", "verifying"]
     assert svc.calls == []
     assert movies_store.get_request(svc.db, 1, imdb_id) == before
 

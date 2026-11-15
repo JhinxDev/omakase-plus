@@ -151,6 +151,9 @@ _STABLE_INIT_FLAG = "OMAKASE_CONTINUOUS_STABLE_INIT"
 _LEAD_WINDOWS = 4
 # Windows kept behind the requested one for a small backward seek.
 _KEEP_WINDOWS = 2
+# AVPlayer emits several distinct requests while scrubbing backward. Wait for
+# that burst to settle before replacing an otherwise usable forward reader.
+_BACKWARD_SETTLE_SECONDS = 0.4
 # A straggling request for a segment from before a seek must not drag the session
 # back: a restart this soon after the last one is answered as a retry instead.
 _SEEK_COOLDOWN = 4.0
@@ -253,6 +256,15 @@ class _SubtitleWindow:
 
 
 @dataclass
+class _BackwardSeek:
+    session: _ContinuousSession
+    number: int
+    ready_at: float
+    seen: set[int]
+    superseded: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+@dataclass
 class NativePlan:
     key: str
     url: str
@@ -280,6 +292,7 @@ class NativePlan:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     seek_at: float = 0.0
     backward_at: float = 0.0
+    backward_seek: _BackwardSeek | None = None
 
     def video_segment_path(self, number: int) -> Path:
         return self.root / f"v{number:05d}.m4s"
@@ -2441,12 +2454,48 @@ class NativeStreams:
             warn(_LOG, "native_window", "deadline", "native", plan.diagnostic_id)
             raise NativeError("deadline") from None
 
+    async def _settle_backward(self, plan, session, number):
+        now = asyncio.get_running_loop().time()
+        seek = plan.backward_seek
+        if seek is None or seek.session is not session or seek.number != number:
+            seen = set()
+            if seek is not None:
+                if seek.session is session and now < seek.ready_at:
+                    seen = seek.seen
+                    if number in seen:
+                        # The paired rendition of a superseded target can arrive
+                        # after the viewer has already moved farther back.
+                        raise NativeError("stale")
+                seek.superseded.set()
+            seen.add(number)
+            seek = _BackwardSeek(session, number, now + _BACKWARD_SETTLE_SECONDS, seen)
+            plan.backward_seek = seek
+        try:
+            async with asyncio.timeout_at(seek.ready_at):
+                await seek.superseded.wait()
+        except TimeoutError:
+            return seek
+        raise NativeError("stale")
+
     async def _ensure_continuous(self, plan, number, timeout, subtitles):
         """Serve one window from a single forward session, restarting for a seek."""
         if self._media_ready(plan, number):
             return
+        session = plan.session
+        seek = (
+            await self._settle_backward(plan, session, number)
+            if session is not None and number < session.start
+            else None
+        )
         async with plan.lock:
+            if self._media_ready(plan, number):
+                return
             session = plan.session
+            if seek is not None and (
+                seek.superseded.is_set()
+                or (session is not seek.session and (session is None or session.start != number))
+            ):
+                raise NativeError("stale")
             if session is None or not session.can_serve(number):
                 backward = session is not None and number < session.start
                 # Only a backward restart can thrash: a straggling request for a
@@ -2456,6 +2505,10 @@ class NativeStreams:
                 if backward and self.clock() - plan.backward_at < _SEEK_COOLDOWN:
                     warn(_LOG, "native_window", "stale", "native", plan.diagnostic_id)
                     raise NativeError("stale")
+                if plan.backward_seek is not None:
+                    if plan.backward_seek is not seek:
+                        plan.backward_seek.superseded.set()
+                    plan.backward_seek = None
                 if session is not None:
                     await session.close("restart")
                 session = _ContinuousSession(self, plan, number, subtitles=subtitles)
@@ -3235,6 +3288,9 @@ class NativeStreams:
             return
         session = plan.session
         plan.session = None
+        if plan.backward_seek is not None:
+            plan.backward_seek.superseded.set()
+            plan.backward_seek = None
         if session is not None:
             # Kill the forward session before its spool disappears, so no child
             # process can keep writing into a directory that is being removed.
