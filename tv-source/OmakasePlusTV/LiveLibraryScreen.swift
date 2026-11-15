@@ -165,18 +165,21 @@ struct LiveLibraryScreen: View {
             await load(0)
             libraryOptions = await options ?? []
         }
-        .task(id: isPresented) {
-            guard isPresented, let returnFocus else { return }
-            await Task.yield()
-            guard !Task.isCancelled else { return }
-            resetFocus(in: libraryFocusScope)
-            focus = returnFocus
-        }
         .onChange(of: isPresented) { _, visible in
             guard visible, !expired else { return }
             Task {
-                if topShelfDestination == nil { await refresh() }
-                else { await followTopShelf() }
+                if topShelfDestination != nil {
+                    await followTopShelf()
+                    return
+                }
+                let origin = returnFocus
+                await refresh(preservingContents: true)
+                guard !expired, let origin, returnFocus == origin, topShelfDestination == nil else { return }
+                focus = nil
+                await Task.yield()
+                guard returnFocus == origin, topShelfDestination == nil else { return }
+                resetFocus(in: libraryFocusScope)
+                focus = origin
             }
         }
         .onChange(of: topShelfDestination?.id, initial: true) { _, destination in
@@ -1007,12 +1010,14 @@ struct LiveLibraryScreen: View {
         show(entry, origin: returnFocus ?? focus ?? kind.id)
     }
 
-    private func refresh() async {
+    private func refresh(preservingContents: Bool = false) async {
         guard !busy, !expired else { return }
         spin = true
         defer { spin = false }
-        catalog = nil
-        episodes = nil
+        if !preservingContents {
+            catalog = nil
+            episodes = nil
+        }
         await load(0)
         if !expired {
             lastRefresh = Date()
