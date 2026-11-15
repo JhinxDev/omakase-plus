@@ -192,7 +192,8 @@ def test_the_served_playlist_is_the_media_it_names(produced_pass):
     assert "real-debrid" not in master and "http" not in master
 
 
-def test_backward_scrub_opens_only_the_last_distinct_window(tmp_path, monkeypatch):
+@pytest.mark.parametrize("session_start", [0, 16], ids=["evicted", "before-start"])
+def test_backward_scrub_opens_only_the_last_distinct_window(tmp_path, monkeypatch, session_start):
     timeline = native_hls.NativeTimeline(
         "https://mock.invalid/episode", 180, 0,
         tuple((6 * number, 6 * (number + 1)) for number in range(30)),
@@ -216,24 +217,22 @@ def test_backward_scrub_opens_only_the_last_distinct_window(tmp_path, monkeypatc
     (tmp_path / audio.init).write_bytes(payload)
     cache(15)
 
-    class Session:
-        def __init__(self, _streams, _plan, start, *, subtitles=0):
-            self.start = start
-            self.active = start
-            self.demand = asyncio.Event()
-
-        def can_serve(self, number):
-            return self.start <= number <= self.active + native_hls._LEAD_WINDOWS
-
+    class Session(native_hls._ContinuousSession):
         async def open(self):
             opened.append(self.start)
             cache(self.start)
 
         async def close(self, _reason):
-            pass
+            self.closed = True
 
     monkeypatch.setattr(native_hls, "_ContinuousSession", Session)
-    plan.session = Session(streams, plan, 16)
+    plan.session = Session(streams, plan, session_start)
+    plan.session.active = 22
+    for kind in ("video", "audio"):
+        track = native_hls._ContinuousTrack(kind)
+        track.frontier = 25
+        plan.session.tracks.append(track)
+    assert plan.session.frontier == 25 and not plan.session.can_serve(14)
 
     async def drive():
         async def request(offset, number, kind):
@@ -260,14 +259,21 @@ def test_backward_scrub_opens_only_the_last_distinct_window(tmp_path, monkeypatc
             (0.636, 11, "audio"), (0.638, 11, "video"),
             (0.799, 10, "video"), (0.801, 10, "audio"),
         )
-        return await asyncio.gather(*(request(*args) for args in requests))
+        outcomes = await asyncio.gather(*(request(*args) for args in requests))
+        assert opened == [10] and plan.session.start == 10
+
+        async def unexpected_backward_settle(*_args):
+            pytest.fail("a distant forward request should start immediately")
+
+        monkeypatch.setattr(streams, "_settle_backward", unexpected_backward_settle)
+        assert await request(0, 29, "video") == payload + bytes([29])
+        return outcomes
 
     outcomes = asyncio.run(drive())
-    assert opened == [10]
+    assert opened == [10, 29]
     assert outcomes[7] == payload + bytes([15])
     assert outcomes[-2:] == [payload + bytes([10]), payload + bytes([10])]
     assert all(outcome == "stale" for outcome in outcomes[:7] + outcomes[8:-2])
-    assert plan.session.start == 10
 
 
 def test_a_stale_request_cannot_restart_the_chosen_position(produced_pass):

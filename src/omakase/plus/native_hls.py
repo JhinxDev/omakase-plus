@@ -1448,17 +1448,17 @@ class _ContinuousSession:
             return False
         return True
 
+    def needs_rewind(self, number):
+        """This reader cannot produce an earlier or evicted window again."""
+        return number < self.start or (number <= self.frontier and not self.ready(number))
+
     def can_serve(self, number):
         """True when continuing this session is a better answer than restarting."""
         if self.closed or self.error is not None:
             return False
-        if number < self.start:
-            return False
         if number > self.active + _LEAD_WINDOWS:
             return False
-        # A window already passed that is no longer on disk has to be remade, and
-        # the session cannot walk backwards.
-        return not (number <= self.frontier and not self.ready(number))
+        return not self.needs_rewind(number)
 
     def fail(self, code):
         if self.error is None:
@@ -2484,7 +2484,7 @@ class NativeStreams:
         session = plan.session
         seek = (
             await self._settle_backward(plan, session, number)
-            if session is not None and number < session.start
+            if session is not None and number < session.active and session.needs_rewind(number)
             else None
         )
         async with plan.lock:
@@ -2497,12 +2497,11 @@ class NativeStreams:
             ):
                 raise NativeError("stale")
             if session is None or not session.can_serve(number):
-                backward = session is not None and number < session.start
-                # Only a backward restart can thrash: a straggling request for a
-                # segment from before a seek asks for one, and honouring a burst
-                # of them would keep tearing down the position the viewer chose.
-                # Forward requests are served by continuing the same session.
-                if backward and self.clock() - plan.backward_at < _SEEK_COOLDOWN:
+                before_start = session is not None and number < session.start
+                # After a backward restart, reject stragglers before its start.
+                # A recent seek does not prevent rebuilding evicted media on
+                # demand within the active reader's span.
+                if before_start and self.clock() - plan.backward_at < _SEEK_COOLDOWN:
                     warn(_LOG, "native_window", "stale", "native", plan.diagnostic_id)
                     raise NativeError("stale")
                 if plan.backward_seek is not None:
@@ -2513,7 +2512,7 @@ class NativeStreams:
                     await session.close("restart")
                 session = _ContinuousSession(self, plan, number, subtitles=subtitles)
                 plan.session = session
-                if backward:
+                if before_start or seek is not None:
                     plan.backward_at = self.clock()
                 try:
                     await session.open()
