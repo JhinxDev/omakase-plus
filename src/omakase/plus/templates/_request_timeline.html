@@ -1,0 +1,15 @@
+{% macro request_timeline(item) -%}
+{% if item and item.timeline %}
+<ol class="request-timeline" aria-label="Request timeline">
+  {% for step in item.timeline %}
+  <li{% if loop.last %} aria-current="step"{% endif %}>
+    <span class="request-timeline-dot" aria-hidden="true"></span>
+    <span class="request-timeline-label">{{ step.label }}</span>
+    {% if step.occurred_at %}
+    <time datetime="{{ step.occurred_at }}" data-local-datetime="{{ step.occurred_at }}">{{ step.occurred_at }}</time>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ol>
+{% endif %}
+{%- endmacro %}

@@ -8,6 +8,13 @@
       if (!response.ok || response.redirected) throw new Error('Recommendations unavailable');
       region.innerHTML = await response.text();
       document.dispatchEvent(new CustomEvent('omakase:rows-ready', { detail: region }));
+      const updatedRequest = new URLSearchParams(location.search).get('request');
+      const progress = [...region.querySelectorAll('[data-title-request]')]
+        .find(node => node.dataset.titleRequest === updatedRequest);
+      if (progress) {
+        progress.open = true;
+        progress.querySelector('summary')?.focus();
+      }
     }).catch(() => {
       const notice = document.createElement('p');
       notice.className = 'product-notice';

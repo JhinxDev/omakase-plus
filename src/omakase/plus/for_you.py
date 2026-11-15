@@ -11,6 +11,7 @@ from starlette.concurrency import run_in_threadpool
 
 from omakase.plus import discover_hub as hub
 from omakase.plus import households, movies_store
+from omakase.plus.catalog_search import AnimeCatalogSearch, CatalogSearchError, _plain
 from omakase.plus.connections import movie_connections
 from omakase.plus.debrid_anime import anime_episodes
 from omakase.plus.debrid_library import account_token
@@ -20,6 +21,7 @@ from omakase.plus.media_store import upsert_monitor
 from omakase.plus.media_sync import _monitor_withdrawn
 from omakase.plus.movies import MovieError, MovieService
 from omakase.plus.providers import playback as playback_providers
+from omakase.plus.search_routes import _input, _SearchLimit, shared_catalog_search
 from omakase.plus.secrets import read_secret
 from omakase.plus.tv_service import TVError, TVService
 from omakase.plus.web_playback_catalog import personal_scope
@@ -27,10 +29,12 @@ from omakase.plus.web_playback_navigation import _candidates
 from omakase.plus.web_playback_source import PlaybackSourceError, qualified_publication
 
 _CATEGORIES = {"anime": "anime", "tv": "tv", "movies": "movie"}
+_SEARCH_HEADINGS = {"anime": "Anime", "tv": "TV Shows", "movies": "Movies"}
 _LABELS = {
     "requested": "Requested",
     "preparing": "Preparing",
     "ready": "Ready to Play",
+    "in_library": "In your library",
     "needs_attention": "Needs Attention",
 }
 _POSTER = re.compile(
@@ -51,10 +55,11 @@ _MOVIE_PREPARING = {
 
 
 class ForYouError(ValueError):
-    def __init__(self, detail: str, status: int = 409):
+    def __init__(self, detail: str, status: int = 409, *, retry_after: int | None = None):
         super().__init__(detail)
         self.detail = detail
         self.status = status
+        self.retry_after = retry_after
 
 
 def _identity(kind, title_id):
@@ -91,7 +96,11 @@ def _scope(db, user_id):
         raise ForYouError("Your personal library is unavailable.", 404) from None
 
 
-def _status(kind, title_id, title, state, detail, href):
+def _step(state, occurred_at, *, label=None):
+    return {"key": state, "label": label or _LABELS[state], "occurred_at": occurred_at}
+
+
+def _status(kind, title_id, title, state, detail, href, *, timeline):
     return {
         "kind": kind,
         "title_id": title_id,
@@ -100,41 +109,105 @@ def _status(kind, title_id, title, state, detail, href):
         "label": _LABELS[state],
         "detail": detail,
         "href": href,
-        "can_check": kind == "movie" and state != "ready",
+        "can_check": kind == "movie" and state not in {"ready", "in_library"},
+        "timeline": timeline,
     }
 
 
-def _movie_status(db, user_id, title_id):
+def _movie_status(db, user_id, title_id, library=None, movie_card=None):
     row = db.execute(
-        """SELECT c.title,r.code,r.detail FROM movie_requests r
+        """SELECT c.title,r.code,r.created_at,r.updated_at FROM movie_requests r
            JOIN movie_catalog c USING(user_id,imdb_id)
-           WHERE r.user_id=? AND r.imdb_id=?""",
+           WHERE r.user_id=? AND r.imdb_id=? AND r.code!='copy_removed'""",
         (user_id, title_id),
     ).fetchone()
     if row is None:
         return None
-    code, detail = row["code"], row["detail"]
-    ready = (
-        code != "copy_removed"
-        and db.execute(
-            """SELECT 1 FROM movie_verifications
-           WHERE user_id=? AND imdb_id=? AND proof_schema=1 AND state='ready' AND plex_key!=''
-             AND julianday(expires_at)>julianday('now') LIMIT 1""",
-            (user_id, title_id),
+    code = row["code"]
+    card_matches = movie_card and movie_card.get("imdb_id") == title_id
+    if card_matches and movie_card.get("plex_present"):
+        library = ("", movie_card.get("plex_indexed_at"))
+    if card_matches and movie_card.get("state") == "ready" and movie_card.get("verified_at"):
+        ready = {"verified_at": movie_card["verified_at"]}
+    else:
+        fingerprint = library[0] if library else None
+        ready = db.execute(
+            """SELECT verified_at FROM movie_verifications
+               WHERE user_id=? AND imdb_id=? AND proof_schema=1 AND state='ready' AND plex_key!=''
+                 AND (? IS NULL OR fingerprint=?) AND julianday(expires_at)>julianday('now')
+               ORDER BY verified_at DESC LIMIT 1""",
+            (user_id, title_id, fingerprint, fingerprint),
         ).fetchone()
-    )
+    timeline = [_step("requested", row["created_at"], label="Request saved")]
+    if code == "acknowledgement_unconfirmed":
+        timeline.append(
+            _step("received", row["updated_at"], label="Riven acknowledged the request")
+        )
+    progress = {
+        "searching": "Riven started looking for a copy",
+        "search_complete": "Riven finished searching",
+        "acquiring": "Riven reported a transfer",
+        "verifying": "Checking library availability",
+    }.get(code)
+    if progress:
+        timeline.append(_step("preparing", row["updated_at"], label=progress))
     if ready:
-        state, detail = "ready", "The exact movie copy passed its latest Plex playback check."
+        state, detail = "ready", "The matching copy passed its playback check."
+        timeline.append(_step(state, ready["verified_at"]))
+    elif library:
+        state, detail = "in_library", "A matching copy is in your Movies library."
+        timeline.append(_step(state, library[1]))
     elif code in _MOVIE_PREPARING:
-        state = "preparing"
+        state, detail = "preparing", "Waiting for a matching copy to appear in your library."
+    elif code == "unreleased":
+        state, detail = "requested", "Waiting for the movie to be released."
+    elif code == "acknowledgement_unconfirmed":
+        state, detail = "requested", "Riven responded. Waiting for a matching copy."
     elif code == "requested" or code in _MOVIE_WAITING:
-        state = "requested"
+        state, detail = "requested", "Request saved. Waiting for a matching copy."
     else:
         state = "needs_attention"
-    result = _status("movie", title_id, row["title"], state, detail, f"/plus/movies/{title_id}")
-    if code == "copy_removed":
-        result["can_check"] = False
-    return result
+        if code in {"no_eligible_results", "backend_failed", "investigation_exhausted"}:
+            detail = "A matching copy could not be confirmed. Review the request."
+        else:
+            detail = "The latest status could not be confirmed. Check the request for an update."
+        timeline.append(_step(state, row["updated_at"]))
+    return _status(
+        "movie",
+        title_id,
+        row["title"],
+        state,
+        detail,
+        f"/plus/movies/{title_id}",
+        timeline=timeline,
+    )
+
+
+async def _movie_library(db, scope, *, candidates=None):
+    if candidates is None:
+        imdb_ids = [
+            row[0]
+            for row in db.execute(
+                """SELECT imdb_id FROM movie_requests WHERE user_id=? AND code!='copy_removed'
+                   ORDER BY updated_at DESC,imdb_id LIMIT 30""",
+                (scope.viewer_id,),
+            )
+        ]
+    else:
+        imdb_ids = [
+            imdb_id
+            for imdb_id in candidates
+            if (request := movies_store.get_request(db, scope.viewer_id, imdb_id))
+            and request["code"] != "copy_removed"
+        ]
+    if not imdb_ids:
+        return {}
+    try:
+        async with asyncio.timeout(5):
+            service = MovieService(db, movie_connections(db, scope.viewer_id))
+            return await service.indexed_requests(scope.viewer_id, imdb_ids)
+    except (MovieError, TimeoutError):
+        return {}
 
 
 def _anime_status(db, scope, title_id, monitor, *, publication=None):
@@ -173,17 +246,26 @@ def _anime_status(db, scope, title_id, monitor, *, publication=None):
     return "requested", "Waiting for a playable release or the next media check."
 
 
-def _request_status(db, scope, kind, title_id, *, publication=None):
+def _request_status(
+    db, scope, kind, title_id, *, publication=None, movie_library=None, movie_card=None
+):
     if kind == "movie":
         if not personal_legacy_visible(db, scope, domain=kind, canonical_id=title_id):
             return None
-        return _movie_status(db, scope.viewer_id, title_id)
+        return _movie_status(
+            db,
+            scope.viewer_id,
+            title_id,
+            (movie_library or {}).get(title_id),
+            movie_card,
+        )
     row = db.execute(
-        "SELECT title FROM for_you_requests WHERE user_id=? AND kind=? AND title_id=?",
+        "SELECT title,created_at FROM for_you_requests WHERE user_id=? AND kind=? AND title_id=?",
         (scope.viewer_id, kind, title_id),
     ).fetchone()
     if row is None:
         return None
+    timeline = [_step("requested", row["created_at"])]
     if kind == "tv":
         return _status(
             kind,
@@ -192,6 +274,7 @@ def _request_status(db, scope, kind, title_id, *, publication=None):
             "requested",
             "Waiting for owner review. TV acquisition requires a manual step.",
             f"/plus/tv/{title_id}",
+            timeline=timeline,
         )
     monitor = db.execute(
         "SELECT * FROM media_monitors WHERE user_id=? AND anilist_id=?",
@@ -205,24 +288,39 @@ def _request_status(db, scope, kind, title_id, *, publication=None):
             "needs_attention",
             "The anime monitor is unavailable.",
             f"/plus/catalog/anime/{title_id}",
+            timeline=timeline + [_step("needs_attention", None)],
         )
     try:
         _require_visible(db, scope, kind, title_id, season=monitor["season_number"] or 0)
     except ForYouError:
         return None
     state, detail = _anime_status(db, scope, title_id, monitor, publication=publication)
-    return _status(kind, title_id, row["title"], state, detail, f"/plus/library/{monitor['id']}")
+    if state != "requested":
+        timeline.append(_step(state, monitor["last_checked_at"] if state != "ready" else None))
+    return _status(
+        kind,
+        title_id,
+        row["title"],
+        state,
+        detail,
+        f"/plus/library/{monitor['id']}",
+        timeline=timeline,
+    )
 
 
-def request_status(db, user_id, kind, title_id):
+def request_status(db, user_id, kind, title_id, *, movie_card=None):
     title_id = _identity(kind, title_id)
-    return _request_status(db, _scope(db, user_id), kind, title_id)
+    return _request_status(db, _scope(db, user_id), kind, title_id, movie_card=movie_card)
 
 
-def _requests(db, scope, kind, *, publication=None):
+def _active_request(status):
+    return status["kind"] != "movie" or status["state"] not in {"ready", "in_library"}
+
+
+def _requests(db, scope, kind, *, publication=None, movie_library=None):
     if kind == "movie":
         rows = db.execute(
-            """SELECT imdb_id FROM movie_requests WHERE user_id=?
+            """SELECT imdb_id FROM movie_requests WHERE user_id=? AND code!='copy_removed'
                ORDER BY updated_at DESC,imdb_id LIMIT 30""",
             (scope.viewer_id,),
         )
@@ -235,30 +333,15 @@ def _requests(db, scope, kind, *, publication=None):
     return [
         status
         for row in rows
-        if (status := _request_status(db, scope, kind, str(row[0]), publication=publication))
+        if (
+            status := _request_status(
+                db, scope, kind, str(row[0]), publication=publication, movie_library=movie_library
+            )
+        )
     ]
 
 
-async def recommendations(db, user_id, category):
-    if category != "screen" and category not in _CATEGORIES:
-        raise ForYouError("Choose a For You category.", 422)
-    scope = _scope(db, user_id)
-    history_unavailable = False
-    if category == "anime":
-        catalog, watched = await asyncio.gather(
-            hub.anime_catalog(), hub.tracker_watched_ids(db, user_id)
-        )
-        history_unavailable = watched is None
-        rows = (
-            []
-            if history_unavailable
-            else hub.anime_shelves(db, user_id, catalog, hub.viewer_monitors(db, user_id), watched)
-        )
-    else:
-        rows = await hub.screen_shelves(db, user_id)
-        if category != "screen":
-            rows = [row for row in rows if row["key"] == category]
-
+def _publication_reader(db):
     @lru_cache(maxsize=1)
     def publication():
         try:
@@ -266,10 +349,10 @@ async def recommendations(db, user_id, category):
         except (ValueError, KeyError, TypeError, RecursionError):
             return None
 
-    kinds = ("movie", "tv") if category == "screen" else (_CATEGORIES[category],)
-    requests = [
-        status for kind in kinds for status in _requests(db, scope, kind, publication=publication)
-    ]
+    return publication
+
+
+def _project_shelves(db, scope, rows, *, publication, requests=(), movie_library=None):
     known = {(status["kind"], status["title_id"]): status for status in requests}
     shelves = []
     for row in rows:
@@ -279,9 +362,12 @@ async def recommendations(db, user_id, category):
             if "id" not in source:
                 cards.append(source)
                 continue
-            title_id = str(source["id"])
+            try:
+                title_id = _identity(kind, source["id"])
+            except ForYouError:
+                continue
             status = known.get((kind, title_id)) or _request_status(
-                db, scope, kind, title_id, publication=publication
+                db, scope, kind, title_id, publication=publication, movie_library=movie_library
             )
             poster = source.get("poster_url")
             cards.append(
@@ -296,15 +382,169 @@ async def recommendations(db, user_id, category):
                     "request": status,
                     "can_request": not status
                     and not source.get("owned")
-                    and not source.get("available"),
+                    and not source.get("available")
+                    and source.get("requestable", True),
                 }
             )
         shelves.append({**row, "cards": cards})
+    return shelves
+
+
+async def recommendations(db, user_id, category):
+    if category != "screen" and category not in _CATEGORIES:
+        raise ForYouError("Choose a For You category.", 422)
+    scope = _scope(db, user_id)
+    history_unavailable = False
+    movie_library = None
+    if category == "anime":
+        catalog, watched = await asyncio.gather(
+            hub.anime_catalog(), hub.tracker_watched_ids(db, user_id)
+        )
+        history_unavailable = watched is None
+        rows = (
+            []
+            if history_unavailable
+            else hub.anime_shelves(db, user_id, catalog, hub.viewer_monitors(db, user_id), watched)
+        )
+    else:
+        if category in {"movies", "screen"}:
+            rows, movie_library = await asyncio.gather(
+                hub.screen_shelves(db, user_id), _movie_library(db, scope)
+            )
+        else:
+            rows = await hub.screen_shelves(db, user_id)
+        if category != "screen":
+            rows = [row for row in rows if row["key"] == category]
+
+    publication = _publication_reader(db)
+
+    kinds = ("movie", "tv") if category == "screen" else (_CATEGORIES[category],)
+    requests = [
+        status
+        for kind in kinds
+        for status in _requests(
+            db, scope, kind, publication=publication, movie_library=movie_library
+        )
+    ]
     return {
         "category": category,
-        "rows": shelves,
-        "requests": requests,
+        "rows": _project_shelves(
+            db, scope, rows, publication=publication, requests=requests, movie_library=movie_library
+        ),
+        "requests": [status for status in requests if _active_request(status)],
         "history_unavailable": history_unavailable,
+    }
+
+
+async def _search_cards(db, scope, query, category):
+    user_id = scope.viewer_id
+    if category == "anime":
+        records = await AnimeCatalogSearch(db, user_id).search(query)
+        return [
+            {
+                "id": record["id"],
+                "title": record["title"],
+                "poster_url": record.get("catalog_poster_url"),
+                "summary": record.get("description"),
+                "owned": bool(record.get("library_id")),
+            }
+            for record in records[:8]
+        ]
+
+    connections = movie_connections(db, user_id)
+    if category == "movies":
+        records = await MovieService(db, connections).search(user_id, query)
+        return [
+            {
+                "id": record["imdb_id"],
+                "title": record["title"],
+                "poster_url": record.get("poster_url"),
+                "summary": _plain(record.get("overview")),
+            }
+            for record in records[:8]
+        ]
+
+    service = TVService(db, connections)
+    records = await service.search(user_id, query)
+    return [
+        {
+            "id": record["tmdb_id"],
+            "title": record["title"],
+            "poster_url": (service._raw(user_id, record["tmdb_id"]) or {}).get("poster_url"),
+            "summary": record.get("overview"),
+            "available": bool(record.get("in_plex_episodes")),
+        }
+        for record in records[:8]
+    ]
+
+
+async def search(db, user_id, query, category="all"):
+    """Search the same personal catalog as the web with one shared search budget."""
+    try:
+        query = _input(query, category)
+    except CatalogSearchError as error:
+        raise ForYouError(error.detail, error.status_code) from None
+    scope = _scope(db, user_id)
+    if len(query) < 2:
+        return {
+            "category": category,
+            "rows": [],
+            "requests": [],
+            "history_unavailable": False,
+            "warnings": [],
+        }
+
+    async def cards_for(kind):
+        return await _search_cards(db, scope, query, kind)
+
+    try:
+        categories, outcomes = await shared_catalog_search.run(user_id, category, cards_for)
+    except _SearchLimit as error:
+        raise ForYouError(error.detail, error.status_code, retry_after=error.retry_after) from None
+
+    rows = []
+    warnings = []
+    for key, (records, warning) in zip(categories, outcomes, strict=True):
+        if warning:
+            warnings.append(warning)
+        kind = _CATEGORIES[key]
+        cards = {}
+        for record in records:
+            try:
+                title_id = _identity(kind, record["id"])
+            except ForYouError:
+                continue
+            if kind != "anime":
+                try:
+                    _require_visible(db, scope, kind, title_id)
+                except ForYouError:
+                    continue
+            cards.setdefault(title_id, record)
+        if cards:
+            ranked = sorted(
+                cards.values(), key=lambda card: card["title"].casefold() != query.casefold()
+            )
+            rows.append(hub._shelf(key, _SEARCH_HEADINGS[key], ranked))
+    movie_candidates = {
+        str(card["id"]) for row in rows if row["key"] == "movies" for card in row["cards"]
+    }
+    movie_library = (
+        await _movie_library(db, scope, candidates=movie_candidates) if movie_candidates else {}
+    )
+    rows = _project_shelves(
+        db, scope, rows, publication=_publication_reader(db), movie_library=movie_library
+    )
+    return {
+        "category": category,
+        "rows": rows,
+        "requests": [
+            card["request"]
+            for row in rows
+            for card in row["cards"]
+            if card["request"] and _active_request(card["request"])
+        ],
+        "history_unavailable": False,
+        "warnings": warnings,
     }
 
 
@@ -312,7 +552,9 @@ async def _submit_movie(db, scope, title_id):
     _require_visible(db, scope, "movie", title_id)
     movie = movies_store.get_movie(db, scope.viewer_id, title_id)
     if movie is None or not movie["identity_verified"]:
-        raise ForYouError("Open this title in Movies for You to verify its identity.", 404)
+        raise ForYouError(
+            "Find this movie in Search or Movies for You to verify its identity.", 404
+        )
     service = MovieService(db, movie_connections(db, scope.viewer_id))
     await service.request(
         scope.viewer_id,

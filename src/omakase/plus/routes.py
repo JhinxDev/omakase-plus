@@ -1996,15 +1996,11 @@ async def discover_page(
     if mode not in {"browse", "recommend", "add"}:
         raise HTTPException(status_code=422, detail="Discover mode is unsupported")
     if mode == "browse" and run is None:
-        from omakase.plus.discover_hub import continue_shelf, viewer_monitors
-
-        continuing = continue_shelf(viewer_monitors(db, user.id)) if kind == "anime" else None
         return templates.TemplateResponse(
             request,
             "discover_hub.html",
             {
                 **_product_context(request, user, active_page="discover"),
-                "continue_shelf": continuing,
                 "discover_kind": kind,
                 "message": message,
             },
@@ -2099,14 +2095,16 @@ async def discover_title_request(
     if not _personal_for_you(db, user.id):
         raise HTTPException(409, "Switch to your personal library to request a For You title.")
     action = for_you.submit_request if operation == "submit" else for_you.refresh_request
+    category = "movies" if kind == "movie" else kind
+    params = {"kind": category}
     try:
         result = await action(db, user.id, kind, title_id)
-        message = f"{result['label']} · {result['title']}"
+        params["message"] = f"{result['label']} · {result['title']}"
+        params["request"] = f"{kind}:{result['title_id']}"
     except for_you.ForYouError as error:
-        message = error.detail
-    category = "movies" if kind == "movie" else kind
+        params["message"] = error.detail
     return RedirectResponse(
-        "/plus/discover?" + urlencode({"kind": category, "message": message}),
+        "/plus/discover?" + urlencode(params),
         status_code=303,
         headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
     )

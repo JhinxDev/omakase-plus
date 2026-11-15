@@ -151,6 +151,8 @@ def _anime_entries(db, scope, cards):
         monitor = _anime_monitor_id(db, scope, row["id"])
         featured = row.get("play_episode")
         episode = featured if row["lifecycle"] == "in_progress" and featured else None
+        path = urlsplit(row["play_url"]).path if row.get("play_url") else None
+        season = 0 if path and path.endswith("/0") else row["season_number"] or 1
         entries.append(
             _entry(
                 row["id"],
@@ -159,8 +161,9 @@ def _anime_entries(db, scope, cards):
                 artwork_id=monitor,
                 progress=row["progress_percent"] / 100,
                 watching=row["lifecycle"] == "in_progress",
-                featured_path=urlsplit(row["play_url"]).path if row.get("play_url") else None,
+                featured_path=path,
                 featured_episode=featured,
+                _resume_key=(str(row["anilist_id"]), season),
                 episode_artwork=f"episode-artwork/anime/{monitor}/{row['season_number']}/{episode}"
                 if monitor and episode and row.get("season_number")
                 else None,
@@ -363,25 +366,46 @@ def collection(
     return _feature(db, scope, _page(entries, offset), entries, kind, offset, query)
 
 
+def _latest_played_entry(db, scope, kind, entries):
+    by_identity = {
+        row.get("_resume_key", (row["id"], 0)): row
+        for row in entries
+        if row.get("watch_path") or row.get("featured_path")
+    }
+    if not by_identity:
+        return None
+    resumes = db.execute(
+        """SELECT canonical_id,season_number,episode_number,position_seconds,duration_seconds
+           FROM web_playback_resumes
+           WHERE user_id=? AND library_id=? AND domain IN (?,?) AND position_seconds>0
+           ORDER BY updated_at DESC,revision DESC,target_key""",
+        (scope.viewer_id, scope.library_id, kind, "anime-film" if kind == "anime" else kind),
+    )
+    for resume in resumes:
+        season = resume["season_number"]
+        key = (resume["canonical_id"], season if kind == "anime" else 0)
+        entry = by_identity.get(key)
+        if entry is None:
+            continue
+        path = entry.get("featured_path") or entry.get("watch_path")
+        episode = resume["episode_number"]
+        matches_play = kind == "movie" or (
+            path.endswith(f"/{season}/{episode}") if kind == "tv" else path.endswith(f"/{episode}")
+        )
+        position = resume["position_seconds"]
+        duration = resume["duration_seconds"]
+        if matches_play and position < duration:
+            return {**entry, "progress": position / duration}
+        return entry
+    return None
+
+
 def _feature(db, scope, response, entries, kind, offset, query):
     if not query and offset == 0:
-        by_id = {
-            row["id"]: row for row in entries if row.get("watch_path") or row.get("featured_path")
-        }
-        activity = db.execute(
-            """SELECT canonical_id, MAX(updated_at) AS played_at FROM web_playback_resumes
-               WHERE user_id=? AND library_id=? AND domain=? AND position_seconds>0
-               GROUP BY canonical_id ORDER BY played_at DESC,canonical_id""",
-            (scope.viewer_id, scope.library_id, kind),
-        )
-        latest = next(
-            (by_id[row["canonical_id"]] for row in activity if row["canonical_id"] in by_id), None
-        )
+        latest = _latest_played_entry(db, scope, kind, entries)
         continue_watching = [row for row in entries if row.get("watching")]
         continue_watching.sort(key=lambda row: row.get("_activity") or "", reverse=True)
         continue_watching = continue_watching[:8]
-        for row in entries:
-            row.pop("_activity", None)
         response["continue_watching"] = continue_watching
         featured = (
             latest
@@ -413,11 +437,15 @@ def _feature(db, scope, response, entries, kind, offset, query):
                     **featured,
                     "summary": cached_synopsis(db, anilist)["description_preview"],
                 }
-        response["featured"] = featured
+        response["featured"] = (
+            {key: value for key, value in featured.items() if not key.startswith("_")}
+            if featured is not None
+            else None
+        )
         response["featured_recent"] = latest is not None
-    else:
-        for row in entries:
-            row.pop("_activity", None)
+    for row in entries:
+        row.pop("_activity", None)
+        row.pop("_resume_key", None)
     return response
 
 

@@ -3102,7 +3102,7 @@ class NativeStreams:
             )
             part.unlink(missing_ok=True)
         for _track, subtitle in subtitle_paths:
-            _normalise_webvtt(subtitle)
+            _normalise_webvtt(subtitle, start)
             try:
                 written += subtitle.stat().st_size
             except OSError:
@@ -3119,11 +3119,15 @@ class NativeStreams:
         no audio or video file and evicts nothing.
         """
         timeline = plan.timeline
-        start = timeline.origin + timeline.segments[number][0]
-        end = timeline.origin + timeline.segments[number][1]
+        start, end = timeline.segments[number]
+        source_start = timeline.origin + start
+        source_end = timeline.origin + end
+        # The continuous remux anchors its fMP4 samples to Matroska source PTS.
+        # The window mux rebases its media to the VOD playlist clock instead.
+        media_start = source_start if plan.continuous else start
         written = 0
         for track, subtitle in subtitle_paths:
-            _clip_webvtt(subtitle, start, end)
+            _clip_webvtt(subtitle, source_start, source_end, media_start=media_start)
             written += subtitle.stat().st_size
             subtitle.replace(plan.subtitle_segment_path(track, number))
         return written
@@ -3477,10 +3481,17 @@ def _vtt_stamp(seconds):
     )
 
 
-def _clip_webvtt(path, start, end):
-    """Keep only this window's part of every cue, on the window's own clock."""
+def _vtt_header(media_start):
+    # LOCAL zero is the rebased VTT clock. MPEGTS is the corresponding media
+    # PTS in 90 kHz ticks, represented as a 33-bit timestamp.
+    mpegts = round(media_start * 90_000) % (1 << 33)
+    return ["WEBVTT", f"X-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:{mpegts}", ""]
+
+
+def _clip_webvtt(path, start, end, *, media_start):
+    """Clip source-clock cues to this window and map them to its media clock."""
     text = path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
-    cues = ["WEBVTT", ""]
+    cues = _vtt_header(media_start)
     for block in text.split("\n\n"):
         lines = [line for line in block.split("\n") if line.strip()]
         if not lines or lines[0].startswith(("WEBVTT", "NOTE", "STYLE", "REGION")):
@@ -3502,7 +3513,7 @@ def _clip_webvtt(path, start, end):
                 cues.append(payload)
             cues.append("")
             break
-    text = "\n".join(cues).rstrip() + "\n" if len(cues) > 2 else "WEBVTT\n\n"
+    text = "\n".join(cues) + "\n"
     path.write_text(text, encoding="utf-8")
 
 
@@ -3512,19 +3523,17 @@ def _write_atomic(path, data):
     temporary.replace(path)
 
 
-def _normalise_webvtt(path):
-    """Make sure a subtitle segment is a valid, short, well formed WebVTT file."""
+def _normalise_webvtt(path, media_start):
+    """Add the media clock to FFmpeg's already local WebVTT timestamps."""
     try:
-        data = path.read_bytes()
+        text = path.read_text(encoding="utf-8", errors="ignore").strip()
     except OSError:
-        path.write_text("WEBVTT\n\n", encoding="utf-8")
-        return
-    text = data.decode("utf-8", "ignore").replace("\r\n", "\n").strip()
-    if not text.startswith("WEBVTT"):
-        text = "WEBVTT\n\n" + text
-    if text.rstrip().endswith("WEBVTT"):
-        text = text.rstrip() + "\n\n"
-    path.write_text(text.rstrip() + "\n", encoding="utf-8")
+        text = ""
+    if text.startswith("WEBVTT"):
+        _, _, text = text.partition("\n")
+    header = "\n".join(_vtt_header(media_start)) + "\n"
+    body = text.strip()
+    path.write_text(header + (body + "\n" if body else ""), encoding="utf-8")
 
 
 class _Tail:

@@ -799,6 +799,42 @@ def test_native_feature_uses_the_latest_played_title_for_the_active_profile(syst
     assert catalog["featured_recent"] is True
 
 
+def test_anime_feature_matches_resume_by_anilist_id_and_season(system, monkeypatch):
+    _, db, _, _ = system
+    scope = personal_scope(db, 1)
+    cards = [
+        {
+            "id": monitor,
+            "anilist_id": 100,
+            "title": title,
+            "format": "TV",
+            "season_number": season,
+            "play_url": f"/plus/watch/{monitor}/1",
+            "play_episode": 1,
+            "lifecycle": "waiting",
+            "lifecycle_label": "Ready",
+            "progress_percent": 0,
+        }
+        for monitor, season, title in ((41, 1, "Season one"), (42, 2, "Season two"))
+    ]
+    monkeypatch.setattr(native_tv_library, "_anime", lambda *_args, **_options: cards)
+    db.execute(
+        """INSERT INTO web_playback_resumes(
+               target_key,user_id,library_id,domain,canonical_id,season_number,
+               episode_number,media_version,duration_seconds,position_seconds,updated_at
+           ) VALUES ('anime-played',1,?,'anime','100',2,1,?,1200,114,50)""",
+        (scope.library_id, "e" * 64),
+    )
+    db.commit()
+    catalog = native_tv_library.collection(db, scope, "anime", 0)
+    assert catalog["featured"]["id"] == "42"
+    assert catalog["featured"]["featured_path"] == "/plus/watch/42/1"
+    assert catalog["featured"]["progress"] == 114 / 1200
+    assert catalog["featured_recent"] is True
+    for row in catalog["items"] + [catalog["featured"]]:
+        assert not any(key.startswith("_") for key in row)
+
+
 def test_native_watchlist_is_scoped_to_the_paired_viewer(system, monkeypatch):
     native, db, _, _, _ = _anime_pass(system, monkeypatch)
     db.executemany(
@@ -834,6 +870,7 @@ def test_native_for_you_and_request_share_the_paired_viewer(system, monkeypatch)
         "state": "requested",
         "label": "Requested",
         "detail": "Awaiting review.",
+        "can_check": False,
     }
 
     async def recommendations(db, viewer_id, category):
@@ -861,6 +898,21 @@ def test_native_for_you_and_request_share_the_paired_viewer(system, monkeypatch)
         calls.append((viewer_id, kind, item))
         return saved
 
+    async def search(db, viewer_id, query, category):
+        assert query == "missing title"
+        return {
+            **await recommendations(db, viewer_id, category),
+            "warnings": [
+                {
+                    "kind": "movie",
+                    "label": "Movies",
+                    "detail": "Try again in a moment.",
+                    "internal_url": "https://private.invalid",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(for_you, "search", search)
     monkeypatch.setattr(for_you, "recommendations", recommendations)
     monkeypatch.setattr(for_you, "submit_request", submit_request)
     response = native.get(LIBRARY_API + "/for-you", params={"category": "tv"})
@@ -880,7 +932,15 @@ def test_native_for_you_and_request_share_the_paired_viewer(system, monkeypatch)
         ).status_code
         == 422
     )
-    assert calls == [(1, "tv"), (1, "tv", "42"), (1, "tv")]
+    search_results = native.get(LIBRARY_API + "/catalog-search", params={"q": "missing title"})
+    assert search_results.status_code == 200
+    assert search_results.headers["cache-control"] == "private, no-store"
+    assert search_results.json()["category"] == "all"
+    assert search_results.json()["rows"][0]["cards"][0]["can_request"] is True
+    assert search_results.json()["warnings"][0]["kind"] == "movie"
+    assert "private.invalid" not in search_results.text
+    assert native.get(LIBRARY_API + "/catalog-search", params={"q": "x" * 121}).status_code == 422
+    assert calls == [(1, "tv"), (1, "tv", "42"), (1, "tv"), (1, "all")]
 
 
 def test_personal_movie_catalog_keeps_removed_history_without_offering_play(system):

@@ -1759,22 +1759,14 @@ def create_native_tv_test_router(
         if status is None:
             return None
         return {
-            key: status[key] for key in ("kind", "title_id", "title", "state", "label", "detail")
+            **{
+                key: status[key]
+                for key in ("kind", "title_id", "title", "state", "label", "detail")
+            },
+            "can_check": bool(status.get("can_check")),
         }
 
-    @router.get(LIBRARY_API + "/for-you")
-    async def native_for_you(
-        request: Request, category: Literal["anime", "tv", "movies"], db=Depends(get_db)
-    ):
-        from omakase.plus.for_you import ForYouError, recommendations
-
-        _, _, scope = requested_scope(request, db)
-        if scope.kind != "personal":
-            raise HTTPException(404, "Personal recommendations unavailable", headers=NO_STORE)
-        try:
-            page = await recommendations(db, scope.viewer_id, category)
-        except ForYouError as error:
-            raise HTTPException(error.status, error.detail, headers=NO_STORE) from None
+    def native_catalog_page(page, category):
         # Return only the fields the paired client needs. Browser links and
         # provider-side request metadata are not part of the native contract.
         return JSONResponse(
@@ -1801,9 +1793,48 @@ def create_native_tv_test_router(
                     for row in page["rows"]
                 ],
                 "requests": [native_request_status(status) for status in page["requests"]],
+                "warnings": [
+                    {key: warning[key] for key in ("kind", "label", "detail")}
+                    for warning in page.get("warnings", [])
+                ],
             },
             headers=NO_STORE,
         )
+
+    @router.get(LIBRARY_API + "/for-you")
+    async def native_for_you(
+        request: Request, category: Literal["anime", "tv", "movies"], db=Depends(get_db)
+    ):
+        from omakase.plus.for_you import ForYouError, recommendations
+
+        _, _, scope = requested_scope(request, db)
+        if scope.kind != "personal":
+            raise HTTPException(404, "Personal recommendations unavailable", headers=NO_STORE)
+        try:
+            page = await recommendations(db, scope.viewer_id, category)
+        except ForYouError as error:
+            raise HTTPException(error.status, error.detail, headers=NO_STORE) from None
+        return native_catalog_page(page, category)
+
+    @router.get(LIBRARY_API + "/catalog-search")
+    async def native_catalog_search(
+        request: Request,
+        q: str = Query("", max_length=120),
+        db=Depends(get_db),
+    ):
+        from omakase.plus.for_you import ForYouError, search
+
+        _, _, scope = requested_scope(request, db)
+        if scope.kind != "personal":
+            raise HTTPException(404, "Personal catalog search unavailable", headers=NO_STORE)
+        try:
+            page = await search(db, scope.viewer_id, q, "all")
+        except ForYouError as error:
+            headers = dict(NO_STORE)
+            if error.retry_after is not None:
+                headers["Retry-After"] = str(error.retry_after)
+            raise HTTPException(error.status, error.detail, headers=headers) from None
+        return native_catalog_page(page, "all")
 
     @router.post(LIBRARY_API + "/for-you/request")
     async def native_for_you_request(

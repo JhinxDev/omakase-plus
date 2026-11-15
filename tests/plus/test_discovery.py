@@ -330,8 +330,8 @@ def test_for_you_shell_defers_catalog_and_ai_work(client):
     ):
         page = client.get("/plus/discover")
     assert page.status_code == 200
-    assert "Top Picks for You" in page.text
-    assert 'href="/plus/discover?mode=recommend">Ask for a menu' in page.text
+    assert "Anime for You" in page.text
+    assert "Ask for a menu" not in page.text
     assert 'data-hub-rows="anime"' in page.text
     assert 'id="run-form"' not in page.text
     legacy_menu.assert_not_called()
@@ -341,7 +341,7 @@ def test_for_you_shell_defers_catalog_and_ai_work(client):
         assert client.get(f"/plus/static/{name}").status_code == 200
 
 
-def test_for_you_rows_apply_account_feedback_and_expose_catalog_sections(client):
+def test_for_you_rows_apply_account_feedback_and_render_one_recommendation_shelf(client):
     from omakase.plus import discover_hub as hub
 
     _signup_and_login(client)
@@ -361,10 +361,11 @@ def test_for_you_rows_apply_account_feedback_and_expose_catalog_sections(client)
         response = client.get("/plus/discover/rows?kind=anime")
     assert response.status_code == 200
     assert response.headers["cache-control"] == "private, no-store"
-    assert "Currently Airing" in response.text
-    assert "Anime Movies for You" in response.text
+    assert response.text.count('<section class="hub-shelf"') == 1
+    assert "Anime for You" in response.text
+    assert "Current show" in response.text and "Animated film" in response.text
     assert "Dismissed title" not in response.text
-    assert "Add to library" in response.text
+    assert "Add to library" not in response.text
     assert "Save to watchlist" in response.text
     assert "<summary>Already watched</summary>" in response.text
     assert "<select data-feedback-score>" in response.text
@@ -381,7 +382,7 @@ def test_library_builds_rich_projection_once(client):
     build.assert_called_once()
 
 
-def test_anime_recommendations_allocate_distinct_titles_to_matching_shelves(client):
+def test_anime_recommendations_mix_distinct_titles_in_one_ranked_shelf(client):
     from omakase.plus import discover_hub as hub
 
     _signup_and_login(client)
@@ -415,31 +416,15 @@ def test_anime_recommendations_allocate_distinct_titles_to_matching_shelves(clie
         for index, (name, genres, status, format) in enumerate(groups)
         for count in range(8)
     ]
-    by_id = {card["id"]: card for card in catalog}
     with _connect_client_db(client) as db:
-        shelves = {
-            shelf["key"]: shelf["cards"]
-            for shelf in hub.anime_shelves(db, _user_id(client), catalog, anchors)
-        }
-    ids = [card["id"] for shelf in shelves.values() for card in shelf]
-    assert len(ids) == len(set(ids))
-    assert {
-        "top",
-        "liked-0",
-        "liked-1",
-        "genre-0",
-        "genre-1",
-        "airing",
-        "films",
-        "new",
-    } <= shelves.keys()
-    assert all(card["airing"] for card in shelves["airing"])
-    assert all(card["format"] == "Anime film" for card in shelves["films"])
-    assert "Action" in by_id[shelves["genre-0"][0]["id"]]["genres"]
-    assert "Adventure" not in by_id[shelves["genre-0"][0]["id"]]["genres"]
-    assert "Adventure" in by_id[shelves["genre-1"][0]["id"]]["genres"]
-    assert "Action" not in by_id[shelves["genre-1"][0]["id"]]["genres"]
-    assert not shelves["top"][0]["airing"]
+        shelves = hub.anime_shelves(db, _user_id(client), catalog, anchors)
+    assert len(shelves) == 1
+    assert shelves[0]["title"] == "Anime for You"
+    cards = shelves[0]["cards"]
+    assert len(cards) == 30 and len({card["id"] for card in cards}) == 30
+    assert any(card["airing"] for card in cards[:5])
+    assert any(card["format"] == "Anime film" for card in cards[:8])
+    assert "Action" in cards[0]["genres"]
 
 
 def test_for_you_tabs_render_and_fetch_only_the_selected_media_type(client):

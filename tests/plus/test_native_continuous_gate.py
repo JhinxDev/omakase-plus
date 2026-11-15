@@ -490,6 +490,83 @@ def test_subtitles_come_from_one_bounded_window_read(tmp_path, hevc_provider):
     asyncio.run(run())
 
 
+def test_webvtt_timestamp_map_matches_served_media_after_a_backward_seek(tmp_path, hevc_fixture):
+    shifted = tmp_path / "shifted.mkv"
+    _run(
+        "ffmpeg", "-v", "error", "-copyts", "-i", str(hevc_fixture), "-map", "0",
+        "-c", "copy", "-output_ts_offset", "0.250", str(shifted),
+    )
+    provider = _Provider(shifted.read_bytes())
+    try:
+        timeline, plan, streams = _make(tmp_path, provider)
+        assert timeline.origin >= 0.250
+        audio = timeline.audios[0]
+
+        async def run():
+            try:
+                await _bounded(_open(streams, plan, 4, subtitles=1))
+                first = plan.session
+                await _bounded(_open(streams, plan, 1, subtitles=1))
+                assert plan.session is not first and plan.session.start == 1
+                await _bounded(streams.ensure_subtitles(plan, 1, 1))
+
+                caption = plan.subtitle_segment_path(0, 1).read_text(encoding="utf-8")
+                match = re.search(
+                    r"^X-TIMESTAMP-MAP=LOCAL:00:00:00[.]000,MPEGTS:(\d+)$",
+                    caption, re.MULTILINE,
+                )
+                assert match, caption
+                mapped_start = int(match[1]) / 90_000
+                assert mapped_start == pytest.approx(timeline.segments[1][0] + timeline.origin)
+                cue = next(
+                    line.partition(" --> ")[0] for line in caption.splitlines() if " --> " in line
+                )
+                caption_pts = native_hls._vtt_seconds(cue) + mapped_start
+                assert caption_pts == pytest.approx(
+                    _source_packet_times(shifted, "s:0")[1], abs=0.001
+                )
+
+                # A segment can include reordered picture or earlier audio.
+                # Compare packets by content around the cue, not the first PTS.
+                for stream, init, media in (
+                    ("v:0", plan.root / "init.mp4", plan.video_segment_path(1)),
+                    ("a:0", plan.root / audio.init, plan.audio_segment_path(audio, 1)),
+                ):
+                    joined = tmp_path / f"seek-{stream[0]}.mp4"
+                    joined.write_bytes(init.read_bytes() + media.read_bytes())
+                    source = _packet_clock(shifted, stream)
+                    served = _packet_clock(joined, stream)
+                    near_cue = min(
+                        (key for key in source if key in served),
+                        key=lambda key: abs(source[key] - caption_pts),
+                    )
+                    assert served[near_cue] == pytest.approx(caption_pts, abs=3 / FRAME_RATE)
+            finally:
+                if plan.session is not None:
+                    await _bounded(plan.session.close("test"), 30)
+                await streams_running(streams)
+
+        asyncio.run(run())
+    finally:
+        provider.close()
+
+
+def _packet_clock(path: Path, stream: str) -> dict[str, float]:
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", stream, "-show_packets",
+            "-show_data_hash", "sha256", "-show_entries", "packet=pts_time,data_hash",
+            "-of", "json", str(path),
+        ],
+        check=True, capture_output=True, text=True,
+    )
+    return {
+        row["data_hash"]: float(row["pts_time"])
+        for row in json.loads(result.stdout)["packets"]
+        if "pts_time" in row and "data_hash" in row
+    }
+
+
 def _source_packet_times(path: Path, stream: str) -> list[float]:
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", stream, "-show_entries",
@@ -980,7 +1057,7 @@ def test_subtitle_clipping_keeps_crossing_and_preceding_cues(tmp_path):
     )
     path = tmp_path / "crossing.vtt"
     path.write_text(cues, encoding="utf-8")
-    native_hls._clip_webvtt(path, 6.006, 12.012)
+    native_hls._clip_webvtt(path, 6.006, 12.012, media_start=6.006)
     text = path.read_text(encoding="utf-8")
     assert text.startswith("WEBVTT")
     # The cue that started before the window keeps only its visible part and is
@@ -994,8 +1071,10 @@ def test_subtitle_clipping_keeps_crossing_and_preceding_cues(tmp_path):
 
     empty = tmp_path / "empty.vtt"
     empty.write_text(cues, encoding="utf-8")
-    native_hls._clip_webvtt(empty, 18.018, 24.024)
-    assert empty.read_text(encoding="utf-8") == "WEBVTT\n\n"
+    native_hls._clip_webvtt(empty, 18.018, 24.024, media_start=18.018)
+    assert empty.read_text(encoding="utf-8") == (
+        "WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:1621620\n\n"
+    )
 
 
 def test_a_window_with_no_cues_still_serves_a_track(tmp_path, hevc_provider):

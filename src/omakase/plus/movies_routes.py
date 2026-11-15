@@ -303,6 +303,7 @@ def create_movies_router(
                     status_code=307,
                     headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
                 )
+        from omakase.plus.for_you import request_status
         from omakase.plus.movie_history import MovieHistoryService
         from omakase.plus.movies import _imdb
         from omakase.plus.web_playback_navigation import enabled as web_player_enabled
@@ -318,6 +319,7 @@ def create_movies_router(
                 raise HTTPException(404, "Movie not found")
             card["history"] = MovieHistoryService(svc).get(user.id, imdb_id)
             card = present_movie(card)
+            title_request = request_status(db, user.id, "movie", imdb_id, movie_card=card)
             removal = cleanup_status(db, user.id, imdb_id)
             if removal == "removed" and (
                 card.get("plex_present") or card.get("requested") or card.get("request_observation")
@@ -335,6 +337,7 @@ def create_movies_router(
             {
                 **context(request, user),
                 "card": card,
+                "title_request": title_request,
                 "notice": notice
                 if notice
                 in {

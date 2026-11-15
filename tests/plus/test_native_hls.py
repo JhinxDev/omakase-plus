@@ -1190,6 +1190,8 @@ def test_subtitles_are_written_against_the_window_clock(tmp_path, provider):
     asyncio.run(streams.ensure(plan, 1, subtitles=1))
     text = plan.subtitle_segment_path(0, 1).read_text(encoding="utf-8")
     assert text.startswith("WEBVTT")
+    mpegts = round(timeline.segments[1][0] * 90_000)
+    assert f"X-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:{mpegts}" in text
     # The fixture cue runs 7.25-9.00 s; window 1 starts at about 6.006 s.
     assert "Second line" in text
     start = timeline.segments[1][0] + timeline.origin

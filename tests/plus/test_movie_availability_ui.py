@@ -189,10 +189,20 @@ def test_indexed_movie_keeps_library_presence_separate_from_playback_check(code)
         }
     )
     html = env.get_template("movie_detail.html").render(
-        card=card, csrf_token="fixture-csrf", email="sample@example.test", watch_in_app=True
+        card=card,
+        csrf_token="fixture-csrf",
+        email="sample@example.test",
+        watch_in_app=True,
+        title_request={
+            "can_check": False,
+            "timeline": [{"key": "library", "label": "Added to your library", "occurred_at": None}],
+        },
     )
     assert '<strong class="status-pill">In your library</strong>' in html
-    assert ">Play movie</a>" in html and ">Check playback</button>" in html
+    assert ">Play movie</a>" in html
+    assert html.index("<summary>Check details</summary>") < html.index(">Check playback</button>")
+    assert 'aria-current="step"' in html and "Added to your library" in html
+    assert ">Check status</button>" not in html
     assert "A separate playback check is needed." in html
     assert "Not checked in Plex" not in html and ">Request movie</button>" not in html
     assert card["state"] == "verifying" and card["code"] == code

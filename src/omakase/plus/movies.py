@@ -1023,6 +1023,65 @@ class MovieService:
             values.append(video.get("guid"))
         return {value[len(prefix) :] for value in values if value.startswith(prefix)}
 
+    def _indexed_movie_key(self, matches, metadata, section):
+        if len(matches) != 1:
+            return None
+        video = matches[0]
+        key = video.get("ratingKey", "")
+        if (
+            video.get("type") == "movie"
+            and video.get("librarySectionID", str(section)) == str(section)
+            and self._guids(video, "tmdb") in (set(), {str(metadata["tmdb_id"])})
+            and re.fullmatch(r"[1-9][0-9]{0,19}", key)
+        ):
+            return key
+        return None
+
+    async def indexed_requests(self, user_id, imdb_ids):
+        """Check one bounded Plex index without modifying request or playback records."""
+        self._guard(user_id)
+        metadata = {imdb_id: store.get_movie(self.db, user_id, imdb_id) for imdb_id in imdb_ids}
+        section, anime_section = await self._sections()
+        videos = await self._videos(section)
+        anime_ids = (
+            {
+                imdb_id
+                for video in await self._videos(anime_section)
+                for imdb_id in self._guids(video, "imdb")
+            }
+            if anime_section is not None
+            else set()
+        )
+        matches = {}
+        for video in videos:
+            imdb = self._guids(video, "imdb")
+            if len(imdb) == 1 and (imdb_id := next(iter(imdb))) in metadata:
+                matches.setdefault(imdb_id, []).append(video)
+        observed_at = _iso(self._clock())
+        evidence = {}
+        for imdb_id, rows in matches.items():
+            title = metadata[imdb_id]
+            if (
+                title is None
+                or imdb_id in anime_ids
+                or not self._indexed_movie_key(rows, title, section)
+            ):
+                continue
+            record = store.get_request(self.db, user_id, imdb_id)
+            fingerprint = ""
+            try:
+                observed = self._file(
+                    rows[0], section, title, record["requested_edition"] if record else None
+                )
+                if observed.eligibility_code is None:
+                    fingerprint = observed.fingerprint
+            except MovieError:
+                # The same positive index match still supports In your library.
+                # A part that cannot be bound to its receipt cannot claim Ready.
+                pass
+            evidence[imdb_id] = fingerprint, observed_at
+        return evidence
+
     async def _rich_videos(self, videos: list[ElementTree.Element]) -> list[ElementTree.Element]:
         """Complete abbreviated library rows with bounded, batched metadata only."""
         if len(videos) > 100:
@@ -1643,14 +1702,9 @@ class MovieService:
                 continue
             card = self._card(user_id, metadata)
             plex_matches = by_plex_imdb.get(imdb_id, [])
-            if (
-                len(plex_matches) == 1
-                and plex_matches[0].get("type") == "movie"
-                and plex_matches[0].get("librarySectionID", str(section)) == str(section)
-                and self._guids(plex_matches[0], "tmdb") in (set(), {str(metadata["tmdb_id"])})
-                and re.fullmatch(r"[1-9][0-9]{0,19}", plex_matches[0].get("ratingKey", ""))
-            ):
+            if self._indexed_movie_key(plex_matches, metadata, section):
                 card["plex_present"] = True
+                card["plex_indexed_at"] = _iso(self._clock())
             if view == "available" and not card.get("plex_present"):
                 continue
             if imdb_id in anime_ids:
