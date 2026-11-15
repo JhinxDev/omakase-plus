@@ -12,7 +12,7 @@ struct LiveLibraryScreen: View {
     let chooseLibrary: (LiveLibraryOption?) -> Void
     @Binding var returnSeries: LiveLibraryEntry?
     @Binding var topShelfDestination: TVTopShelfDestination?
-    @State private var recommendationsOpen = false
+    @State private var catalogPresentation: CatalogPresentation?
 
     @Binding var kind: LiveLibraryKind
     @State private var title: LiveLibraryEntry?
@@ -28,6 +28,11 @@ struct LiveLibraryScreen: View {
     @State private var suppressEpisodePlay: String?
     @State private var searchOpen = false
     @State private var catalogSearchQuery: String?
+
+    private struct CatalogPresentation: Identifiable {
+        let query: String?
+        var id: String { query ?? "" }
+    }
     @State private var search = ""
     @State private var searchKeyboardRequest = false
     @State private var query = ""
@@ -203,18 +208,21 @@ struct LiveLibraryScreen: View {
             confirmsDisconnect = false
             focus = "device-settings"
         }) { deviceSettings }
-        .fullScreenCover(isPresented: $recommendationsOpen, onDismiss: {
+        .fullScreenCover(item: $catalogPresentation, onDismiss: {
             focus = catalogSearchQuery == nil ? "for-you" : "search"
             catalogSearchQuery = nil
-        }) {
-            TVForYouScreen(client: client.selecting(nil), query: catalogSearchQuery) {
-                recommendationsOpen = false
+        }) { presentation in
+            TVForYouScreen(client: client.selecting(nil), query: presentation.query) {
+                catalogPresentation = nil
             }
         }
         .sheet(isPresented: $libraryPickerOpen) { libraryPicker }
         .sheet(isPresented: $searchOpen, onDismiss: {
-            if catalogSearchQuery != nil { recommendationsOpen = true }
-            else { focus = "search" }
+            if let catalogSearchQuery {
+                catalogPresentation = CatalogPresentation(query: catalogSearchQuery)
+            } else {
+                focus = "search"
+            }
         }) { searchEditor }
         .fullScreenCover(isPresented: $synopsisOpen, onDismiss: { focus = "details-secondary" }) {
             if let title, let synopsis = synopsis(for: title) {
@@ -239,7 +247,7 @@ struct LiveLibraryScreen: View {
                 }
                 control("For You", key: "for-you", icon: "sparkles", compact: true) {
                     catalogSearchQuery = nil
-                    recommendationsOpen = true
+                    catalogPresentation = CatalogPresentation(query: nil)
                 }
                 .disabled(expired || busy)
                 Spacer(minLength: 12)
@@ -977,7 +985,7 @@ struct LiveLibraryScreen: View {
     private func followTopShelf() async {
         guard isPresented, !expired, !busy, let destination = topShelfDestination else { return }
         topShelfDestination = nil
-        recommendationsOpen = false
+        catalogPresentation = nil
         catalogSearchQuery = nil
         searchOpen = false
         synopsisOpen = false

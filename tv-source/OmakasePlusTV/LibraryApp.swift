@@ -433,6 +433,7 @@ struct TitleScreen: View {
     @State private var showingSynopsis = false
     @State private var attemptedDirectPlayback = false
     @State private var passClosed = false
+    @State private var dismissedByPlayer = false
     @State private var launch: Task<Void, Never>?
     @FocusState private var focus: Action?
 
@@ -504,21 +505,20 @@ struct TitleScreen: View {
         }
         .fullScreenCover(isPresented: $showingPlayer, onDismiss: {
             session.stop()
-            if !passClosed {
+            let leave = dismissedByPlayer || (
+                session.errorMessage == nil && externalError == nil && !needsReload && !isSaving
+            )
+            dismissedByPlayer = false
+            guard !passClosed else { return }
+            if leave {
                 passClosed = true
-                if session.errorMessage == nil && externalError == nil && !needsReload && !isSaving {
-                    back()
-                } else {
-                    focus = .play
-                }
+                back()
+            } else {
+                focus = .play
             }
         }) {
             PlayerScreen(session: session, showsDiagnostics: false, playNext: playNext) {
-                session.stop()
-                if !passClosed {
-                    passClosed = true
-                    back()
-                }
+                dismissedByPlayer = true
                 showingPlayer = false
             }
         }
