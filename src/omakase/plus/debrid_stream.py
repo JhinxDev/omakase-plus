@@ -1033,17 +1033,8 @@ class DebridStreams:
             if timeline is None:
                 warn(_LOG, "native_open", "unsupported_media", "native", plan.diagnostic_id)
                 raise DebridLibraryError("This copy cannot use the Apple TV player yet.", 415)
-            opening = 0
-            if plan.warm is not None:
-                opening = self.native._position_index(timeline, plan.warm)
             try:
-                # Build a small buffer before answering, so the first segment the
-                # player asks for is already on disk and the next one is close.
-                for offset in range(_NATIVE_OPEN_WINDOWS):
-                    number = opening + offset
-                    if number >= len(timeline.segments):
-                        break
-                    await self.native.ensure(plan, number, _NATIVE_WARM_WAIT, len(tracks))
+                await self._prepare_native_opening(plan, timeline, request, len(tracks))
             except NativeError as error:
                 warn(_LOG, "native_open", error.code, "native", plan.diagnostic_id)
                 raise DebridLibraryError("This position could not be prepared.", 503) from None
@@ -1058,15 +1049,14 @@ class DebridStreams:
                 raise DebridLibraryError("This subtitle track is unavailable.", 404)
             return _playlist_reply(self.native.subtitle_playlist(plan, number), request)
         if asset == "init.mp4" or _AUDIO_INIT.fullmatch(asset):
-            # In continuous mode the session starts at the window this pass opens
-            # on, so an initialisation request must not pull it back to the top.
-            number = 0
-            if plan.timeline is not None and plan.continuous:
-                number = 0
-                if plan.warm is not None:
-                    number = self.native._position_index(plan.timeline, plan.warm)
-            await self._native_window(plan, number, len(tracks))
             path = plan.root / asset
+            # Continuous media uses a pinned init for the full pass. Re-reading
+            # it after eviction or a seek must not restart the opening window.
+            if not (plan.continuous and path.is_file()):
+                number = 0
+                if plan.timeline is not None and plan.continuous and plan.warm is not None:
+                    number = self.native._position_index(plan.timeline, plan.warm)
+                await self._native_window(plan, number, len(tracks))
             if not path.is_file():
                 raise DebridLibraryError("This stream is unavailable.", 404)
             return _binary_reply(path.read_bytes(), "video/mp4", request)
@@ -1110,6 +1100,24 @@ class DebridStreams:
                 raise DebridLibraryError("This subtitle is unavailable.", 404)
             return _binary_reply(path.read_bytes(), "text/vtt", request)
         raise DebridLibraryError("This stream is unavailable.", 404)
+
+    async def _prepare_native_opening(self, plan, timeline, request, tracks):
+        async with plan.opening_lock:
+            if plan.continuous:
+                if plan.opening_prepared or request.method == "HEAD":
+                    return
+                hint = request.query_params.get("start_ms", "")
+                if plan.warm is None and plan.session is None and re.fullmatch(r"[0-9]{1,8}", hint):
+                    position = int(hint) / 1000
+                    if 0 < position < timeline.duration:
+                        plan.warm = position
+
+            opening = 0 if plan.warm is None else self.native._position_index(timeline, plan.warm)
+            # Warm a small buffer at the requested position while preserving
+            # the full VOD timeline and its original segment numbering.
+            for number in range(opening, min(opening + _NATIVE_OPEN_WINDOWS, len(timeline.segments))):
+                await self.native.ensure(plan, number, _NATIVE_WARM_WAIT, tracks)
+            plan.opening_prepared = True
 
     async def _native_window(self, plan, number, tracks):
         try:

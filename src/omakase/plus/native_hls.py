@@ -282,6 +282,8 @@ class NativePlan:
     touched: float = field(default_factory=time.monotonic)
     diagnostic_id: str = field(default_factory=diagnostic_id)
     warm: float | None = None
+    opening_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    opening_prepared: bool = False
     # Bytes reserved for windows that are queued or running, so concurrent
     # producers cannot both pass admission against the same free space.
     reserved_bytes: int = 0

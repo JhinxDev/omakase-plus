@@ -47,6 +47,19 @@ public struct LiveTestPass: Sendable {
     public var isDirect: Bool { format == .direct }
     public var isGrowingHLS: Bool { isHLS && playlist != "vod" }
 
+    /// Fixed HLS can warm the saved position before returning its master
+    /// playlist. Older servers can serve the same playlist without the hint.
+    public func mediaURL(forResumeAt position: Double?) -> URL {
+        guard isHLS, !isGrowingHLS, let position, position.isFinite,
+              position > 0, position < duration,
+              var components = URLComponents(url: mediaURL, resolvingAgainstBaseURL: false)
+        else { return mediaURL }
+        let milliseconds = Int((position * 1000).rounded(.down))
+        guard milliseconds > 0 else { return mediaURL }
+        components.queryItems = [URLQueryItem(name: "start_ms", value: String(milliseconds))]
+        return components.url ?? mediaURL
+    }
+
     init(reply: LiveTestReply, origin: FixtureOrigin, watchPath: String? = nil) throws {
         guard let format = LiveMediaFormat(rawValue: reply.mediaFormat ?? LiveMediaFormat.mp4.rawValue)
         else { throw FixtureConnectionError.invalidResponse }

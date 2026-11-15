@@ -78,6 +78,27 @@ final class PlayerEngineContractTests: XCTestCase {
         XCTAssertEqual(pass.mediaURL.lastPathComponent, "index.m3u8")
     }
 
+    func testOnlyFixedHLSAddsABoundedResumeHint() throws {
+        let pass = try makePass {
+            $0["media_format"] = "hls"
+            $0["media_playlist"] = "vod"
+        }
+        let url = pass.mediaURL(forResumeAt: 8.125)
+        XCTAssertEqual(url.host, pass.mediaURL.host)
+        XCTAssertEqual(url.path, pass.mediaURL.path)
+        XCTAssertEqual(url.query, "start_ms=8125")
+        for position in [nil, 0, -1, 0.0005, .infinity, .nan, pass.duration] as [Double?] {
+            XCTAssertEqual(pass.mediaURL(forResumeAt: position), pass.mediaURL)
+        }
+        for playlist in ["event", nil] as [String?] {
+            let growing = try makePass {
+                $0["media_format"] = "hls"
+                $0["media_playlist"] = playlist
+            }
+            XCTAssertEqual(growing.mediaURL(forResumeAt: 8.125), growing.mediaURL)
+        }
+    }
+
     func testDirectUsesRangeURLAndHeaders() throws {
         let pass = try makePass {
             $0["media_format"] = "direct"

@@ -55,6 +55,7 @@ def native_plan(tmp_path, monkeypatch):
         plan = native_hls.NativePlan(key, url, duration, tmp_path / key, subtitle_key, warm=warm)
         plan.root.mkdir(parents=True, exist_ok=True)
         plan.timeline = timeline
+        plan.continuous = getattr(self, "test_continuous", False)
         plan.ready.set()
         self.plans[key] = plan
         return plan
@@ -157,6 +158,39 @@ def test_native_engine_returns_a_fixed_vod_pass(system, monkeypatch, native_plan
 
     unauthorized = native.get(media + "/v00000.m4s")
     assert unauthorized.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("hint", "windows"),
+    [("13250", [2, 3]), ("18000", [3]), ("", [0, 1]),
+     ("24000", [0, 1]), ("1.5", [0, 1]), ("123456789", [0, 1])],
+)
+def test_native_master_warms_one_opening_and_preserves_the_full_timeline(
+    system, monkeypatch, native_plan, hint, windows
+):
+    monkeypatch.setattr(native_hls.NativeStreams, "test_continuous", True, raising=False)
+    client, opened = _open_native(system, monkeypatch)
+    assert opened.status_code == 200
+    data = opened.json()
+    cookies = {"omakase_tv_test_media": data["media_token"]}
+    media = f"{API}/media/{data['media_id']}"
+    master = media + "/index.m3u8"
+    ensured = native_hls.NativeStreams.ensured
+
+    assert client.head(master, cookies=cookies).status_code == 200
+    assert not ensured
+    reply = client.get(master, params={"start_ms": hint}, cookies=cookies)
+    assert reply.status_code == 200 and ensured == windows
+    early = client.get(media + "/v00000.m4s", cookies=cookies)
+    assert early.status_code == 200 and early.content.endswith(bytes([0]))
+    for path, first_segment in [("stream.m3u8", "v00000.m4s"), ("audio0.m3u8", "a0-00000.m4s")]:
+        rendition = client.get(f"{media}/{path}", cookies=cookies)
+        assert rendition.text.count("#EXTINF:") == 4 and first_segment in rendition.text
+
+    ensured.clear()
+    assert client.get(master, params={"start_ms": "19000"}, cookies=cookies).content == reply.content
+    assert client.get(media + "/init.mp4", cookies=cookies).status_code == 200
+    assert not ensured
 
 
 def test_disconnected_caption_requests_release_the_producer(tmp_path, monkeypatch):

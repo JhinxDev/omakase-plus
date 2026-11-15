@@ -173,7 +173,7 @@ final class PlaybackSession: ObservableObject {
             liveCheckpoint = onCheckpoint
             return true
         }
-        guard begin(url: pass.mediaURL, resumePosition: resumePosition,
+        guard begin(url: pass.mediaURL(forResumeAt: resumePosition), resumePosition: resumePosition,
                     identity: pass.card.identity.resumeIdentity, cookies: pass.mediaCookies,
                     expectedDuration: pass.isGrowingHLS ? pass.duration : nil, card: pass.card)
         else { return false }
