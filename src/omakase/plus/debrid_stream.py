@@ -1113,9 +1113,11 @@ class DebridStreams:
                         plan.warm = position
 
             opening = 0 if plan.warm is None else self.native._position_index(timeline, plan.warm)
-            # Warm a small buffer at the requested position while preserving
-            # the full VOD timeline and its original segment numbering.
-            for number in range(opening, min(opening + _NATIVE_OPEN_WINDOWS, len(timeline.segments))):
+            # The continuous reader already reads ahead within its budget.
+            # Let the player begin with the first complete window while that
+            # reader prepares subsequent windows.
+            windows = 1 if plan.continuous else _NATIVE_OPEN_WINDOWS
+            for number in range(opening, min(opening + windows, len(timeline.segments))):
                 await self.native.ensure(plan, number, _NATIVE_WARM_WAIT, tracks)
             plan.opening_prepared = True
 

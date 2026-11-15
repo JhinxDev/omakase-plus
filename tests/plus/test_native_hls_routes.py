@@ -162,8 +162,8 @@ def test_native_engine_returns_a_fixed_vod_pass(system, monkeypatch, native_plan
 
 @pytest.mark.parametrize(
     ("hint", "windows"),
-    [("13250", [2, 3]), ("18000", [3]), ("", [0, 1]),
-     ("24000", [0, 1]), ("1.5", [0, 1]), ("123456789", [0, 1])],
+    [("13250", [2]), ("18000", [3]), ("", [0]),
+     ("24000", [0]), ("1.5", [0]), ("123456789", [0])],
 )
 def test_native_master_warms_one_opening_and_preserves_the_full_timeline(
     system, monkeypatch, native_plan, hint, windows
