@@ -1469,14 +1469,14 @@ private struct TVForYouScreen: View {
                     }
                 }
                 Spacer()
-                if query == nil {
+                if query == nil && selected == nil {
                     ForEach(LiveRecommendationCategory.allCases) { item in
-                        action(item.label, key: item.id, selected: item == category && selected == nil) {
-                            selected = nil
+                        action(item.label, key: item.id, selected: item == category) {
+                            selectionFocus = nil
                             error = nil
                             category = item
                         }
-                        .accessibilityAddTraits(item == category && selected == nil ? .isSelected : [])
+                        .accessibilityAddTraits(item == category ? .isSelected : [])
                     }
                 }
                 action("Close", key: "close", icon: "xmark") { dismiss() }
@@ -1519,13 +1519,18 @@ private struct TVForYouScreen: View {
         .foregroundStyle(Color.tvText)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.tvBackground.ignoresSafeArea())
-        .defaultFocus($focus, query == nil ? category.id : "close")
+        .defaultFocus($focus, defaultFocusKey)
         .task(id: category) { await load() }
         .onExitCommand {
             if selected != nil { closeDetails() }
             else { dismiss() }
         }
         .accessibilityIdentifier(query == nil ? "for-you" : "catalog-search")
+    }
+
+    private var defaultFocusKey: String {
+        if selected != nil { return "title-back" }
+        return selectionFocus ?? (query == nil ? category.id : "close")
     }
 
     private func emptyMessage(_ page: LiveRecommendationsPage) -> String {
@@ -1565,7 +1570,6 @@ private struct TVForYouScreen: View {
                             selectionFocus = key
                             error = nil
                             selected = card
-                            focus = "title-back"
                         } label: {
                             VStack(alignment: .leading, spacing: 10) {
                                 TVRecommendationPoster(card: card, client: client)
@@ -1651,6 +1655,12 @@ private struct TVForYouScreen: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 20)
+        .focusSection()
+        .task(id: card.key) {
+            await Task.yield()
+            guard !Task.isCancelled, selected?.key == card.key else { return }
+            focus = "title-back"
+        }
     }
 
     private func closeDetails() {
