@@ -28,6 +28,7 @@ import re
 import shutil
 import struct
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -170,6 +171,9 @@ _AUDIO_MOVFLAGS = _MOVFLAGS + "+negative_cts_offsets"
 # Every fragment keeps an absolute clock, so the partition never moves a sample in
 # time, and the boundary error stays inside a frame and a half.
 _AUDIO_FRAGMENT_US = 25_000
+# Audio fragments can come out before the picture muxer closes its first GOP.
+# Bound the memory shared by all audio readers while the video clock is unknown.
+_AUDIO_CLOCK_BUFFER_BYTES = 16 * 1024 * 1024
 # How far a fragment's earliest presentation may sit from the start of the window
 # it is filed into. A fragment opens on a source keyframe, so the only legitimate
 # distance is the reorder lead-in of that random access point; half a second is
@@ -1430,6 +1434,7 @@ class _ContinuousSession:
         self.first_video_keyframe = None
         self.audio_bases: dict[int, int] = {}
         self.clock_ready = asyncio.Event()
+        self.audio_clock_bytes = 0
 
     # -- state --------------------------------------------------------------
 
@@ -1747,8 +1752,23 @@ class _ContinuousSession:
 
     # -- fragments ----------------------------------------------------------
 
+    async def _flush_startup_audio(self, track, pending):
+        await self.clock_ready.wait()
+        try:
+            while pending:
+                await self._place(track, pending[0])
+                self.audio_clock_bytes -= len(pending.popleft())
+        except (NativeError, OSError, ValueError) as error:
+            # Even a quiet track waiting for its next stdout box can fail to
+            # flush. Notify the session without waiting for another audio box.
+            track.failed = True
+            self.fail(getattr(error, "code", "process_failed"))
+            raise
+
     async def _read_fragments(self, track):
         stream = track.process.stdout
+        pending = deque()
+        flush = None
         try:
             while not self.closed:
                 box = await _read_box(stream)
@@ -1799,13 +1819,35 @@ class _ContinuousSession:
                     break
                 if media[0] != b"mdat":
                     raise NativeError("fragment")
-                await self._place(track, data + media[1])
+                fragment = data + media[1]
+                if track.kind == "audio" and not self.clock_ready.is_set():
+                    # Waiting here can fill stdout and block this child's stdin,
+                    # leaving the shared feed unable to reach the first video GOP.
+                    if self.audio_clock_bytes + len(fragment) > _AUDIO_CLOCK_BUFFER_BYTES:
+                        raise NativeError("audio_clock_buffer")
+                    self.audio_clock_bytes += len(fragment)
+                    pending.append(fragment)
+                    if flush is None:
+                        flush = asyncio.create_task(self._flush_startup_audio(track, pending))
+                    continue
+                if flush is not None:
+                    await flush
+                    flush = None
+                await self._place(track, fragment)
+            if track.kind == "video" and not self.closed and not self.clock_ready.is_set():
+                raise NativeError("video_clock_unavailable")
+            if flush is not None:
+                await flush
         except asyncio.CancelledError:
             raise
         except (NativeError, OSError, ValueError) as error:
             track.failed = True
             self.fail(getattr(error, "code", "process_failed"))
         finally:
+            if flush is not None:
+                flush.cancel()
+                await asyncio.gather(flush, return_exceptions=True)
+            self.audio_clock_bytes -= sum(map(len, pending))
             self._publish_open(track)
             if track.kind != "subtitle":
                 self.readers_done += 1
@@ -1848,7 +1890,7 @@ class _ContinuousSession:
         if not pairs:
             raise NativeError("fragment_clock")
         earliest = min(decode + offset for decode, offset in pairs)
-        base = await self._base_for(track, earliest)
+        base = self._base_for(track, earliest)
         data = shift_decode_times(fragment, base)
         if track.kind == "video":
             # FFmpeg emits a fragment at every keyframe, while the playlist
@@ -1905,7 +1947,7 @@ class _ContinuousSession:
         await asyncio.to_thread(self._append, track.part, data)
         track.fragments += 1
 
-    async def _base_for(self, track, earliest):
+    def _base_for(self, track, earliest):
         """The constant that puts this track's first fragment on the pass timeline.
 
         The head writer reports where each track's first forwarded block really
@@ -1925,16 +1967,8 @@ class _ContinuousSession:
                 return self.audio_bases[track.ordinal]
         elif self.video_base is not None:
             return self.video_base
-        if track.kind == "audio":
-            if not self.clock_ready.is_set():
-                # The picture anchor decides the session-wide delay. Audio
-                # fragments are small and can arrive first, so wait for it rather
-                # than anchoring against a delay that does not exist yet.
-                try:
-                    async with asyncio.timeout(5):
-                        await self.clock_ready.wait()
-                except TimeoutError:
-                    raise NativeError("video_clock_unavailable") from None
+        if track.kind == "audio" and not self.clock_ready.is_set():
+            raise NativeError("video_clock_unavailable")
         source_ms = self.feed_first.get(number)
         if source_ms is None:
             # No head report: fall back to the cue, which is the old contract and

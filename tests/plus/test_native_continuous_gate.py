@@ -22,6 +22,7 @@ import re
 import struct
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -999,6 +1000,141 @@ def test_zero_sized_box_is_refused_without_buffering():
     reader = Stream(struct.pack(">I", 8) + b"free")
     box = asyncio.run(native_hls._read_box(reader))
     assert box == (b"free", struct.pack(">I", 8) + b"free")
+
+
+def _pipe_fragment(decode_time, composition_offset=0):
+    def box(kind, body):
+        return struct.pack(">I4s", len(body) + 8, kind) + body
+
+    tfdt = box(b"tfdt", struct.pack(">B3xI", 0, decode_time))
+    trun = box(b"trun", struct.pack(">IIII", 0x900, 1, 23, composition_offset))
+    return box(b"moof", box(b"traf", tfdt + trun)) + box(b"mdat", b"packet")
+
+
+def test_audio_pipe_keeps_draining_before_video_clock(tmp_path):
+    streams = NativeStreams(tmp_path, free_bytes=lambda: 16 * 1024**3)
+    plan = NativePlan("pipe", "https://mock.invalid/source", 12, tmp_path)
+    audio = native_hls.NativeAudio(0, "aac", number=2)
+    plan.timeline = native_hls.NativeTimeline(
+        plan.url, 12, 0, ((0, 6), (6, 12)), (0, 100), 200, b"", b"", b"", "hevc",
+        video_number=1, audios=(audio,),
+    )
+    session = native_hls._ContinuousSession(streams, plan, 0)
+    session.feed_first = {1: 0, 2: 60}
+    video_track = native_hls._ContinuousTrack("video")
+    audio_track = native_hls._ContinuousTrack("audio", audio=audio)
+    session.tracks = [video_track, audio_track]
+    audio_bytes = _synthetic_init(1000) + _pipe_fragment(0) + _pipe_fragment(23)
+
+    async def run():
+        audio_drained = asyncio.Event()
+
+        class AudioOutput(asyncio.StreamReader):
+            delivered = 0
+
+            async def read(self, count):
+                data = await super().read(count)
+                self.delivered += len(data)
+                if self.delivered == len(audio_bytes):
+                    audio_drained.set()
+                return data
+
+        audio_output = AudioOutput()
+        video_output = asyncio.StreamReader()
+
+        class AudioInput:
+            def write(self, data):
+                if data == b"first":
+                    audio_output.feed_data(audio_bytes)
+
+            async def drain(self):
+                # A full stdout pipe prevents the child accepting the input
+                # that would let the other muxer emit its first video fragment.
+                await audio_drained.wait()
+
+        class VideoInput:
+            def write(self, data):
+                if data == b"next":
+                    video_output.feed_data(_synthetic_init(1000) + _pipe_fragment(0, 83))
+
+            async def drain(self):
+                pass
+
+        audio_track.process = SimpleNamespace(stdin=AudioInput(), stdout=audio_output, returncode=0)
+        video_track.process = SimpleNamespace(stdin=VideoInput(), stdout=video_output, returncode=0)
+        readers = [asyncio.create_task(session._read_fragments(track)) for track in session.tracks]
+
+        async def broadcast():
+            await session._broadcast(b"first")
+            await session._broadcast(b"next")
+            # A quiet track may have no next stdout fragment. Its buffered
+            # packets must flush as soon as the video clock arrives.
+            while audio_track.fragments < 2:
+                await asyncio.sleep(0.005)
+
+        try:
+            try:
+                await asyncio.wait_for(broadcast(), 5.75)
+            except TimeoutError:
+                pytest.fail(f"shared input could not reach video: {session.error}")
+            for output in (audio_output, video_output):
+                output.feed_eof()
+            await asyncio.wait_for(asyncio.gather(*readers), 1)
+        finally:
+            for reader in readers:
+                reader.cancel()
+            await asyncio.gather(*readers, return_exceptions=True)
+
+        assert session.error is None
+        assert session.clock_delay == pytest.approx(0.083)
+        audio_result = plan.audio_segment_path(audio, 0).read_bytes()
+        assert [base for _, _, base in fragment_bases(audio_result)] == [143, 166]
+        assert audio_result.count(b"packet") == 2
+
+    asyncio.run(run())
+
+
+def test_audio_clock_buffer_is_shared_and_released_on_cancel(tmp_path, monkeypatch):
+    streams = NativeStreams(tmp_path)
+    plan = NativePlan("pipe", "https://mock.invalid/source", 12, tmp_path)
+    audios = (native_hls.NativeAudio(0, "aac"), native_hls.NativeAudio(1, "aac"))
+    plan.timeline = native_hls.NativeTimeline(
+        plan.url, 12, 0, ((0, 6), (6, 12)), (0, 100), 200, b"", b"", b"", "hevc",
+        audios=audios,
+    )
+    session = native_hls._ContinuousSession(streams, plan, 0)
+    fragment = _pipe_fragment(0)
+    monkeypatch.setattr(native_hls, "_AUDIO_CLOCK_BUFFER_BYTES", len(fragment))
+
+    async def run():
+        for audio in audios:
+            track = native_hls._ContinuousTrack("audio", audio.ordinal, audio)
+            output = asyncio.StreamReader()
+            output.feed_data(_synthetic_init(1000) + fragment)
+            output.feed_eof()
+            track.process = SimpleNamespace(stdout=output, returncode=0)
+            session.tracks.append(track)
+        first, second = session.tracks
+
+        async def wait_for_pending_fragment():
+            while session.audio_clock_bytes < len(fragment):
+                await asyncio.sleep(0.005)
+
+        pending = asyncio.create_task(session._read_fragments(first))
+        try:
+            await asyncio.wait_for(wait_for_pending_fragment(), 1)
+            await asyncio.wait_for(session._read_fragments(second), 1)
+            assert session.error == "audio_clock_buffer"
+            assert session.audio_clock_bytes == len(fragment)
+        finally:
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+        assert session.audio_clock_bytes == 0
+        assert not list(tmp_path.glob("*.m4s"))
+        assert not list(tmp_path.glob("*.part"))
+
+    asyncio.run(run())
 
 
 def test_overlapping_subtitle_requests_share_only_the_finished_window(tmp_path, monkeypatch):
