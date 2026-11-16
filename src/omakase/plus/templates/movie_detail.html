@@ -1,14 +1,23 @@
 {% extends "base.html" %}
 {% from "_movie_components.html" import movie_poster, movie_quality %}
+{% from "_request_timeline.html" import request_timeline %}
+{% from "_device_components.html" import apple_tv_link %}
+{% from "_watch_status.html" import watch_status_field %}
 {% block title %}{{ card.title }} · Omakase{% endblock %}
 {% block masthead %}{% endblock %}
-{% block extra_head %}<script src="/plus/static/movie-plex-review.js?v={{ asset_version }}" defer></script>{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="/plus/static/discover-hub.css?v={{ asset_version }}">{% if not cloud_playback %}<script src="/plus/static/movie-plex-review.js?v={{ asset_version }}" defer></script>{% endif %}<script src="/plus/static/request-timeline.js?v={{ asset_version }}" defer></script>{% endblock %}
 {% block content %}
 {% set history = card.history or {} %}
 {% set status_known = history.status_source and history.status_source != 'none' %}
 {% set display = card.display %}
-{% set in_library = card.plex_present or card.state == 'ready' %}
+{% set in_library = card.cloud_match if cloud_playback else card.plex_present or card.state == 'ready' %}
 {% set can_play = watch_in_app and in_library %}
+{% macro playback_check(button_class) -%}
+  <form method="post" action="/plus/movies/{{ card.imdb_id }}/verify" data-busy-form data-single-flight>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="{{ button_class }}" type="submit" data-busy-label="Checking playback…">{{ 'Check playback' if in_library else 'Check in Plex' }}</button>
+  </form>
+{%- endmacro %}
 {% if not cleanup_status and card.code == 'copy_removed' and not card.plex_present %}
   {% set cleanup_status = 'removed' %}
 {% endif %}
@@ -22,37 +31,70 @@
   {% if card.backdrop_url %}<picture class="detail-backdrop"><img src="/plus/movies/{{ card.imdb_id }}/artwork?variant=backdrop" alt="" fetchpriority="high" data-poster></picture>{% endif %}
   {{ movie_poster(card, true, false) }}
   <div class="movie-detail-copy">
-    <a href="/plus/movies" class="detail-back-link"><span aria-hidden="true">←</span>&nbsp; Your movies</a>
+    <a href="/plus/movies" class="detail-back-link" data-nav-back><span aria-hidden="true">←</span>&nbsp; Your movies</a>
     <h1 id="movie-detail-heading">{{ card.title }}</h1>
     <div class="detail-meta">{% if card.year %}<span>{{ card.year }}</span>{% endif %}<span>Movie</span>{{ movie_quality(card) }}<span class="watch-state" data-watch-state="{{ 'watched' if status_known and history.status == 'completed' else 'neutral' }}">{{ display.watch_label }}</span>{% if history.rating %}<span class="watched-count">Your rating {{ history.rating }}/10</span>{% endif %}</div>
     {% if card.genres %}<ul class="genre-chips" aria-label="Genres">{% for genre in card.genres %}{% set name = genre.name if genre is mapping else genre %}<li data-genre="{{ name | lower }}">{{ name }}</li>{% endfor %}</ul>{% endif %}
     {% if card.overview %}<p class="movie-overview">{{ card.overview }}</p>{% endif %}
     {% if card.reason %}<p class="movie-overview">{{ card.reason }}</p>{% endif %}
-    <div class="movie-detail-actions">
-      {% if can_play %}<a class="button button-primary" href="/plus/watch/title/movie/{{ card.imdb_id }}?play=1">Play movie</a>{% endif %}
-      {% if card.plex_url and card.state == 'ready' %}
-      <a class="button {{ 'button-secondary' if can_play else 'button-primary' }}" href="{{ card.plex_url }}" rel="noopener noreferrer" target="_blank">Open in Plex</a>
-      {% else %}
-      <form method="post" action="/plus/movies/{{ card.imdb_id }}/verify" data-busy-form data-single-flight>
+    <div class="movie-detail-actions" data-request-play-slot>
+      {% if can_play %}<a class="button button-primary" href="/plus/watch/title/movie/{{ card.imdb_id }}?play=1">Play movie</a>{{ apple_tv_link("/plus/watch/title/movie/" ~ card.imdb_id ~ "?play=1", native_tv_test_enabled, csrf_token) }}{% endif %}
+      {% if not cloud_playback and card.plex_url and card.state == 'ready' and not can_play %}
+      <a class="button button-primary" href="{{ card.plex_url }}" rel="noopener noreferrer" target="_blank">Open in Plex</a>
+      {% elif not in_library and not title_request and card.tmdb_id and card.requestable is not sameas false and not card.requested %}
+      <form method="post" action="/plus/movies/request" data-busy-form data-single-flight>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="button {{ 'button-secondary' if can_play else 'button-primary' }}" type="submit" data-busy-label="Checking playback…">{{ 'Check playback' if in_library else 'Check in Plex' }}</button>
+        <input type="hidden" name="imdb_id" value="{{ card.imdb_id }}">
+        <input type="hidden" name="tmdb_id" value="{{ card.tmdb_id }}">
+        <button class="button button-primary" type="submit" data-busy-label="Requesting…">Request movie</button>
       </form>
+      {% elif not cloud_playback and in_library and not can_play %}
+      {{ playback_check('button button-primary') }}
       {% endif %}
-      {% if not in_library and not card.requested and card.tmdb_id and card.requestable is not sameas false %}<form method="post" action="/plus/movies/request" data-busy-form data-single-flight><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="imdb_id" value="{{ card.imdb_id }}"><input type="hidden" name="tmdb_id" value="{{ card.tmdb_id }}"><button class="button button-secondary" type="submit" data-busy-label="Requesting…">Request movie</button></form>{% elif card.requested %}<form method="post" action="/plus/movies/{{ card.imdb_id }}/refresh" data-busy-form data-single-flight><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit" data-busy-label="Checking request…">Check request</button></form>{% endif %}
     </div>
     <div class="movie-detail-body">
-      <section class="movie-availability" aria-labelledby="movie-availability-heading">
+      <section class="movie-availability" aria-labelledby="movie-availability-heading"{% if title_request and title_request.can_check and not in_library %} data-request-refresh="/plus/movies/{{ card.imdb_id }}/request-status"{% endif %}>
         <h2 id="movie-availability-heading">Availability</h2>
-        <div class="movie-detail-status" data-status-tone="{{ display.status_tone }}">
-          <strong class="status-pill">{{ display.status_label }}</strong>
-          <p>{{ display.summary }}</p>
-          {% if not in_library and display.request_observed_at %}<p class="status-timestamp">Riven checked <time datetime="{{ display.request_observed_at }}" data-local-datetime="{{ display.request_observed_at }}">{{ display.request_observed_at }} UTC</time></p>
-          {% elif not in_library and display.request_recorded_at %}<p class="status-timestamp">Status saved <time datetime="{{ display.request_recorded_at }}" data-local-datetime="{{ display.request_recorded_at }}">{{ display.request_recorded_at }} UTC</time></p>{% endif %}
-          {% if card.retry_at %}<p class="status-timestamp">Try after <time datetime="{{ card.retry_at }}" data-local-datetime="{{ card.retry_at }}">{{ card.retry_at }} UTC</time></p>{% endif %}
+        <div class="movie-detail-status" data-status-tone="{{ display.status_tone }}"{% if cloud_playback %} data-movie-availability{% endif %}>
+          {% if cloud_playback %}
+          <strong class="status-pill" data-availability-label aria-live="polite">{{ display.status_label }}</strong>
+          <p data-availability-detail>{{ "Could not check the Real-Debrid library right now." if cloud_error else display.summary }}</p>
+          {% else %}
+          <strong class="status-pill" data-request-label aria-live="polite">{{ title_request.status_label if title_request and not in_library else display.status_label }}</strong>
+          <p data-request-detail>{{ title_request.detail if title_request and not in_library else display.summary }}</p>
+          {% endif %}
         </div>
+        {% if title_request and title_request.timeline %}
+        <div class="movie-request-progress">
+          <h3>Request timeline</h3>
+          {% if cloud_playback and not in_library %}
+          <strong data-request-label aria-live="polite">{{ title_request.status_label }}</strong>
+          <p data-request-detail>{{ title_request.detail }}</p>
+          {% endif %}
+          {{ request_timeline(title_request) }}
+          {% if title_request.can_check and not in_library %}
+          <form method="post" action="{{ title_request.detail_href }}/check" data-busy-form data-single-flight data-request-check>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="text-action" type="submit" data-busy-label="Checking…">Check status</button>
+          </form>
+          {% endif %}
+        </div>
+        {% endif %}
+        {% if not cloud_playback %}
         <details class="movie-verification-details">
           <summary>Check details</summary>
           <p>{{ card.detail }}</p>
+          {% if card.retry_at %}<p>Try after <time datetime="{{ card.retry_at }}" data-local-datetime="{{ card.retry_at }}">{{ card.retry_at }} UTC</time></p>{% endif %}
+          <div class="movie-detail-actions">
+            {% if can_play or not in_library %}{{ playback_check('button button-secondary') }}{% endif %}
+            {% if can_play and card.plex_url and card.state == 'ready' %}<a class="button button-secondary" href="{{ card.plex_url }}" rel="noopener noreferrer" target="_blank">Open in Plex</a>{% endif %}
+            {% if not title_request and card.requested and not in_library %}
+            <form method="post" action="/plus/movies/{{ card.imdb_id }}/refresh" data-busy-form data-single-flight>
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="button button-secondary" type="submit" data-busy-label="Checking…">Check status</button>
+            </form>
+            {% endif %}
+          </div>
           {% if in_library and display.request_observed_at %}<p>Riven checked <time datetime="{{ display.request_observed_at }}" data-local-datetime="{{ display.request_observed_at }}">{{ display.request_observed_at }} UTC</time>.</p>{% endif %}
           {% if display.request_recorded_at %}<p>Saved request: {{ display.request_label }}. <time datetime="{{ display.request_recorded_at }}" data-local-datetime="{{ display.request_recorded_at }}">{{ display.request_recorded_at }} UTC</time>.</p>{% endif %}
           <p>{% if card.verified_at %}Plex verified <time datetime="{{ card.verified_at }}" data-local-datetime="{{ card.verified_at }}">{{ card.verified_at }} UTC</time>.{% elif card.last_checked_at %}Previous Plex verification <time datetime="{{ card.last_checked_at }}" data-local-datetime="{{ card.last_checked_at }}">{{ card.last_checked_at }} UTC</time>.{% else %}No playback-access check is saved.{% endif %}{% if card.selected_audio %} Selected audio: {{ card.selected_audio }}.{% endif %}{% if card.edition %} Edition: {{ card.edition }}.{% endif %}</p>
@@ -61,6 +103,7 @@
           <p>Movie sources are managed in Riven. Check your connections or service health if a request needs attention.</p>
           <nav class="movie-check-help" aria-label="Movie request help"><a href="/plus/settings/connections">Connections</a><a href="/plus/health/overview">Service health</a>{% if not in_library %}<a href="https://www.justwatch.com/" target="_blank" rel="noopener noreferrer">Viewing options on JustWatch <span aria-hidden="true">↗</span></a>{% endif %}</nav>
         </details>
+        {% endif %}
       </section>
       {% if card.imdb_id and card.tmdb_id %}
       <section id="movie-rating" class="movie-rating-panel" aria-labelledby="movie-rating-heading" tabindex="-1">
@@ -68,11 +111,11 @@
         <p class="movie-history-help">Saved to your Omakase account. Your rating helps personalize movie picks.</p>
         <form class="product-form" method="post" action="/plus/movies/history" data-busy-form data-single-flight>
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="imdb_id" value="{{ card.imdb_id }}"><input type="hidden" name="tmdb_id" value="{{ card.tmdb_id }}">
-          <label><span>Watched status</span><select name="status"><option value="" {% if not status_known %}selected{% endif %}>Not recorded</option>{% for value,label in [('unwatched','Not watched'),('watching','Watching'),('completed','Watched'),('dropped','Stopped watching')] %}<option value="{{ value }}" {% if status_known and history.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+          {{ watch_status_field(history.status if status_known else '', 'movie-watch-status') }}
           <label><span>Your rating / 10</span><input type="number" name="rating" min="1" max="10" step="0.5" value="{{ history.rating if history.rating is not none else '' }}" placeholder="Not rated"></label>
           <button class="button button-secondary" type="submit" data-busy-label="Saving…">Save</button>
         </form>
-        {% if history.status == 'completed' and status_known %}
+        {% if not cloud_playback and history.status == 'completed' and status_known %}
         <section class="movie-after-watch" id="movie-after-watch" aria-labelledby="movie-after-watch-heading" tabindex="-1">
           <h3 id="movie-after-watch-heading">{{ 'Library copy' if cleanup_enabled else 'Plex after watching' }}</h3>
           {% if notice == 'saved' %}<p role="status">Your viewing changes were saved.</p>{% endif %}

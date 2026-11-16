@@ -12,7 +12,7 @@ import tempfile
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
@@ -20,9 +20,24 @@ import httpx
 from starlette.responses import Response
 
 from omakase.plus.debrid_library import CloudSource, DebridLibraryError
+from omakase.plus.debrid_pgs import BitmapError, render_window
 from omakase.plus.debrid_seek import SeekStreams
 from omakase.plus.debrid_subs import SubtitleCache
+from omakase.plus.native_hls import (
+    _AUDIO_INIT,
+    _AUDIO_PLAYLIST,
+    _AUDIO_SEGMENT,
+    _SUBTITLE_PLAYLIST,
+    _SUBTITLE_SEGMENT,
+    _VIDEO_SEGMENT,
+    NativeError,
+    NativeStreams,
+)
 from omakase.plus.outbound import OutboundError, _resolved_ips, blocked_address, pin_destination
+from omakase.plus.playback_diagnostics import diagnostic_id, warn
+from omakase.plus.prepared_hls import PreparedStore, prepared_key
+from omakase.plus.web_playback_delivery import DeliveryError as FileDeliveryError
+from omakase.plus.web_playback_delivery import parse_range
 
 _LOG = logging.getLogger(__name__)
 
@@ -36,6 +51,44 @@ PLAYLIST_TYPE = "application/vnd.apple.mpegurl"
 _PLAYLIST_LIMIT = 512 * 1024
 _SEGMENT_LIMIT = 32 * 1024 * 1024
 _MAX_SEGMENTS = 10000
+# A cached subtitle source only needs its WebVTT files read from disk, which is
+# fast enough to keep the first index request open so AVPlayer receives the
+# SUBTITLES group immediately. An uncached PGS/ASR job can take minutes.
+_WARM_SUBTITLE_WAIT = 12.0
+# A source whose only subtitle work is copying embedded text tracks to WebVTT
+# costs a demux and no decode, so the first index can wait for it too. The
+# probe wait is how the index learns which kind of job it is holding: the track
+# list arrives when ffprobe returns, and only then can a seconds-long text copy
+# be told apart from a minutes-long OCR or ASR job.
+_SUBTITLE_PROBE_WAIT = 6.0
+_TEXT_SUBTITLE_WAIT = 10.0
+# Keep a forward window of provider segments warm so a resume or a seek never
+# has to wait for Real-Debrid to generate the next segment mid-playback.
+_SEGMENT_READAHEAD = 8
+_SEGMENT_WAIT = 4.0
+# AVPlayer abandons a segment after roughly five seconds and reports
+# CoreMedia -12889, so a provider segment gets this first budget. If it is still
+# missing, the same fetch gets one short second window and the request then fails
+# with a retryable status. The fallback never serves another segment's bytes: the
+# player caches the response under the requested URL, so a substituted segment
+# would show the wrong moment for the rest of the session.
+_SEGMENT_GRACE = 2.5
+_SEGMENT_RETRY_WAIT = 2.0
+_BROWSER_SEGMENT_RETRY_WAIT = 15.0
+_SEGMENT_CACHE_ENTRIES = 64
+_SEGMENT_CACHE_BYTES = 96 * 1024 * 1024
+_SEGMENT_TTL = 180.0
+# A prepared segment is a few seconds of a stream copy read back from local
+# disk; the ceiling only refuses a pathological file, never a normal segment.
+_PREPARED_SEGMENT_LIMIT = 256 * 1024 * 1024
+# A cold stream-copy segment costs about five seconds (the source bitrate is
+# copied, not reduced), so the index waits for the player's opening segment
+# instead of letting AVPlayer abandon its five-second segment budget.
+_NATIVE_OPEN_WAIT = 30
+_NATIVE_WARM_WAIT = 30
+_NATIVE_OPEN_WINDOWS = 2
+_NATIVE_SUBTITLE_LIMIT = 6
+_SEEK_WARM_WAIT = 14.0
 _MEDIA_ID = re.compile(r"[a-f0-9]{32}")
 _SECRET = re.compile(r"[a-zA-Z0-9_-]{43}")
 
@@ -141,6 +194,15 @@ def _digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def _binary_reply(body, media_type, request):
+    headers = HEADERS | {"Content-Length": str(len(body))}
+    return Response(
+        b"" if request.method == "HEAD" else body,
+        media_type=media_type,
+        headers=headers,
+    )
+
+
 def _playlist_reply(body, request):
     return Response(
         body if request.method == "GET" else b"",
@@ -156,7 +218,7 @@ def _media_duration(playlist):
     return max(total, 1.0)
 
 
-def _master_playlist(entry, job=None):
+def _master_playlist(entry, job=None, *, prepared=None):
     lines = ["#EXTM3U", "#EXT-X-VERSION:6"]
     if job is not None:
         for number, track in enumerate(job.tracks):
@@ -168,12 +230,63 @@ def _master_playlist(entry, job=None):
                 f'LANGUAGE="{language}",DEFAULT={default},AUTOSELECT=YES,FORCED=NO,'
                 f'URI="subtitles{number}.m3u8"'
             )
-    stream = "#EXT-X-STREAM-INF:BANDWIDTH=8000000"
+    bandwidth = prepared.bandwidth if prepared is not None else 40000000
+    stream = f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth}"
+    if prepared is not None:
+        metadata = prepared.init_metadata()
+        stream += f",AVERAGE-BANDWIDTH={prepared.average_bandwidth}"
+        if metadata.codecs:
+            stream += f',CODECS="{metadata.codecs}"'
+        if metadata.resolution:
+            width, height = metadata.resolution
+            stream += f",RESOLUTION={width}x{height}"
+        if metadata.frame_rate is not None:
+            stream += f",FRAME-RATE={metadata.frame_rate:.3f}"
     if job is not None:
         stream += ',SUBTITLES="subs"'
     lines.append(stream)
     lines.append("stream.m3u8")
     return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+_VTT_TIME = re.compile(r"^(\d{2}):(\d{2}):(\d{2})\.(\d{3})$")
+
+
+def _shift_webvtt(data, offset):
+    """Move every cue earlier by ``offset`` seconds, clamped at zero."""
+    if not offset or abs(offset) < 0.02 or not data:
+        return data
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data
+    out = []
+    for line in text.splitlines():
+        if "-->" not in line:
+            out.append(line)
+            continue
+        parts = line.split("-->")
+        shifted = []
+        for part in parts:
+            token = part.strip()
+            pieces = token.split(" ")
+            stamp = pieces[0]
+            match = _VTT_TIME.match(stamp)
+            if not match:
+                shifted.append(part)
+                continue
+            hours, minutes, seconds, millis = (int(value) for value in match.groups())
+            total = hours * 3600 + minutes * 60 + seconds + millis / 1000 - offset
+            total = max(0.0, total)
+            whole = int(total)
+            stamp = (
+                f"{whole // 3600:02d}:{(whole % 3600) // 60:02d}:{whole % 60:02d}"
+                f".{round((total - whole) * 1000):03d}"
+            )
+            pieces[0] = stamp
+            shifted.append(" ".join(pieces))
+        out.append(" --> ".join(shifted))
+    return ("\n".join(out) + "\n").encode("utf-8")
 
 
 def _subtitle_playlist(entry, number):
@@ -200,6 +313,21 @@ class DebridMedia:
     first_segment: bytes = b""
     subtitle_key: str = ""
     seek_key: str = ""
+    # Set when the source path has a prepared directory, so delivery can serve
+    # the materialized timeline instead of generating chunks on demand.
+    prepared_key: str = ""
+    # True when the prepared store already held this title at the moment the pass
+    # was issued. From then on the pass is bound to prepared delivery: if those
+    # files disappear mid-session the answer is an honest failure, because the
+    # same segment URLs would otherwise start returning provider-time bytes from a
+    # different timeline.
+    prepared_pinned: bool = False
+    # Digest of the prepared playlist this pass opened. A re-prepared title is a
+    # different timeline even when its key is unchanged, so a generation swap is
+    # refused for a session that started on the older one.
+    prepared_generation: str = ""
+    # Set when this entry is served by the bounded native HLS timeline.
+    native_key: str = ""
 
 
 @dataclass(frozen=True, repr=False)
@@ -214,6 +342,13 @@ class CloudPass:
     first_segment: bytes = b""
     subtitle_key: str = ""
     seek_key: str = ""
+    # Set when the client plays the original file itself. A direct pass has no
+    # timeline here at all, so nothing in this registry can answer it with
+    # generated bytes.
+    direct: object = field(default=None, repr=False)
+    # Set when this pass is served by the bounded native HLS timeline that
+    # AVPlayer plays with Apple's own controls.
+    native_key: str = ""
 
 
 def _repair_h264_level(data):
@@ -261,19 +396,137 @@ def subtitle_cache_key(source):
     return hashlib.sha256(path.encode("utf-8")).hexdigest()
 
 
+def _playlist_digest(data):
+    """Identify one prepared timeline by its own playlist bytes."""
+    return hashlib.sha256(data or b"").hexdigest()[:32]
+
+
+@dataclass(frozen=True)
+class _PreparedRendition:
+    """A subtitle rendition declared by a prepared title's master playlist."""
+
+    name: str
+    language: str
+    sidecar: Path | None = None
+    data: bytes = b""
+
+
+@dataclass(frozen=True)
+class _PreparedSubtitles:
+    # The master helper reads ``tracks`` and their name/language attributes.
+    tracks: tuple[_PreparedRendition, ...]
+
+
+def _record_phase(plan, name, started):
+    """Record one startup phase on the plan, in whole milliseconds.
+
+    A saved-position open spends its time in distinct phases: resolving the
+    provider file, building the timeline, holding for caption readiness and
+    preparing the first playable window. Keeping them apart is what lets a slow
+    title be attributed to a phase instead of to "the player".
+    """
+    phases = getattr(plan, "phases", None)
+    if phases is None:
+        return
+    phases[name] = round((time.monotonic() - started) * 1000)
+
+
 class DebridStreams:
-    def __init__(self, transport=None, clock=time.monotonic, subtitle_root=None, seek_root=None):
+    def __init__(
+        self,
+        transport=None,
+        clock=time.monotonic,
+        subtitle_root=None,
+        seek_root=None,
+        prepared_root=None,
+        native_root=None,
+        subtitle_embedded_only=False,
+    ):
         self.transport = transport
         self.clock = clock
-        self.subtitles = SubtitleCache(subtitle_root, clock)
+        self.subtitles = SubtitleCache(subtitle_root, clock, embedded_only=subtitle_embedded_only)
         self.seek = SeekStreams(seek_root, clock)
+        self.native = NativeStreams(native_root, clock)
+        # A restart must not inherit another session's windows.
+        self.native.reset()
+        self.prepared = PreparedStore(prepared_root)
         self.passes = {}
         self.reads = asyncio.Semaphore(8)
+        self.bitmap_reads = asyncio.Semaphore(2)
+        self.bitmap_requests = {}
         # First segments that are being warmed without blocking the play reply.
         self.warm = {}
         self.first_cache = OrderedDict()
         self.segment_cache = OrderedDict()
         self.media_cache = OrderedDict()
+        self.cached_bytes = 0
+        self.pump = None
+
+    def _cache_segment(self, url, data):
+        if not data:
+            return
+        previous = self.segment_cache.pop(url, None)
+        if previous is not None:
+            self.cached_bytes -= len(previous[1])
+        self.segment_cache[url] = (self.clock() + _SEGMENT_TTL, data)
+        self.cached_bytes += len(data)
+        while self.segment_cache and (
+            self.cached_bytes > _SEGMENT_CACHE_BYTES
+            or len(self.segment_cache) > _SEGMENT_CACHE_ENTRIES
+        ):
+            _, (_, evicted) = self.segment_cache.popitem(last=False)
+            self.cached_bytes -= len(evicted)
+
+    def _advance(self, media, index):
+        """Keep provider segments ahead of playback without blocking it."""
+        if not media.segments:
+            return
+        target = min(len(media.segments), index + 1 + _SEGMENT_READAHEAD)
+        state = self.pump
+        if state is None or state["segments"] is not media.segments:
+            self.pump = {"segments": media.segments, "next": index + 1, "target": target}
+            state = self.pump
+        else:
+            state["next"] = max(state["next"], index + 1)
+            state["target"] = max(state["target"], target)
+        task = state.get("task")
+        if task is not None and not task.done():
+            return
+        pump = self._pump(state)
+        try:
+            state["task"] = asyncio.create_task(pump)
+        except RuntimeError:
+            # No running loop (a sync caller): the next async call restarts it.
+            pump.close()
+            state["task"] = None
+
+    async def _pump(self, state):
+        segments = state["segments"]
+        try:
+            while state["next"] < len(segments) and state["next"] < state["target"]:
+                url = segments[state["next"]]
+                stored = self.segment_cache.get(url)
+                if stored is not None and stored[0] > self.clock():
+                    state["next"] += 1
+                    continue
+                task = self.warm.get(url)
+                owns = task is None
+                if owns:
+                    task = asyncio.create_task(self._fetch_segment(url))
+                    self.warm[url] = task
+                try:
+                    await asyncio.shield(task)
+                except TimeoutError:
+                    return
+                except asyncio.CancelledError:
+                    if owns:
+                        task.cancel()
+                    return
+                finally:
+                    self.warm.pop(url, None)
+                state["next"] += 1
+        finally:
+            state["task"] = None
 
     async def _read(
         self, url, *, limit, method="GET", byte_range=None, authorize=None, timeout=12, attempts=3
@@ -348,17 +601,27 @@ class DebridStreams:
         except (httpx.HTTPError, OutboundError, OSError, TimeoutError):
             raise _unavailable() from None
 
+    def drop_pass(self, key):
+        grant = self.passes.pop(key, None)
+        if grant and grant.native_key:
+            if task := self.bitmap_requests.get(grant.native_key):
+                task.cancel()
+            self.native.close(grant.native_key)
+
     def prune(self):
         now = self.clock()
         for key, entry in tuple(self.passes.items()):
             if entry.expires <= now:
-                self.passes.pop(key, None)
+                self.drop_pass(key)
+        self.native.sweep()
 
     def _start_seek(self, source):
-        # The provider's own HLS transcode is the reliable Apple TV path for
-        # both H.264 and HEVC. Keep the seek engine available for tests and
-        # future direct-file work, but do not select it during playback.
-        return None
+        # Prefer the direct file. Real-Debrid's own transcode stalls for tens of
+        # seconds on arbitrary segments, while its direct link serves byte ranges
+        # at full speed and a stream copy needs no re-encode. HEVC still falls
+        # back to the provider transcode inside deliver() because copy fragments
+        # duplicate the leading GOP there.
+        return self._start_seek_disabled(source)
 
     def _start_seek_disabled(self, source):
         direct = getattr(source, "direct", "")
@@ -372,12 +635,27 @@ class DebridStreams:
             return None
         return self.subtitles.start(subtitle_cache_key(source), direct, source.duration)
 
+    def _repin(self, media):
+        """Re-read the prepared store so a cached media carries the live pin."""
+        key = getattr(media, "prepared_key", "")
+        if not key:
+            return media
+        store = self.prepared.open(key)
+        if store is None:
+            # Keep the earlier pin: delivery must still refuse to substitute.
+            return media
+        return replace(
+            media,
+            prepared_pinned=True,
+            prepared_generation=_playlist_digest(store.playlist),
+        )
+
     async def prepare(self, source, *, wait_first=True):
         cache_key = source.identity + ":" + source.media_version
         cached = self.media_cache.get(cache_key)
         if cached is not None and cached[0] > self.clock():
             self.media_cache.move_to_end(cache_key)
-            media = cached[1]
+            media = self._repin(cached[1])
             job = self._start_subtitles(source, media)
             media = replace(media, subtitle_key=job.key if job is not None else "")
             await self._subtitle_ready(job)
@@ -391,11 +669,21 @@ class DebridStreams:
         urls = [source.playlist]
         if source.playlist_alt:
             urls.append(source.playlist_alt)
+        # The prepared store is keyed from the direct link's path, computed once
+        # here because the provider link itself rotates on every play.
+        media_prepared_key = prepared_key(source.direct)
+        pinned_store = self.prepared.open(media_prepared_key) if media_prepared_key else None
+        pinned_generation = _playlist_digest(pinned_store.playlist) if pinned_store else ""
 
         async def load(url):
             try:
                 data, _, _ = await self._read(url, limit=_PLAYLIST_LIMIT, timeout=15, attempts=2)
-                return DebridMedia(*parse_playlist(data, url, source.duration))
+                return DebridMedia(
+                    *parse_playlist(data, url, source.duration),
+                    prepared_key=media_prepared_key,
+                    prepared_pinned=pinned_store is not None,
+                    prepared_generation=pinned_generation,
+                )
             except DebridLibraryError:
                 return None
 
@@ -404,7 +692,8 @@ class DebridStreams:
             raise _unavailable()
         job = self._start_subtitles(source, medias[0])
         subtitle_key = job.key if job is not None else ""
-        await self._subtitle_ready(job)
+        if not self.subtitles.embedded_only:
+            await self._subtitle_ready(job)
         seek_plan = self._start_seek(source)
         seek_key = source.media_version if seek_plan is not None else ""
         medias = [replace(media, subtitle_key=subtitle_key, seek_key=seek_key) for media in medias]
@@ -438,24 +727,20 @@ class DebridStreams:
         duration = _media_duration(media.playlist) or max(1.0, len(media.segments) * 5.0)
         step = max(1.0, duration / len(media.segments))
         index = min(len(media.segments) - 1, max(0, int(position / step)))
-        for number in range(max(0, index - 1), min(len(media.segments), index + 2)):
-            url = media.segments[number]
-            stored = self.segment_cache.get(url)
-            if stored is not None and stored[0] > self.clock():
-                continue
-            if url in self.warm:
-                continue
-            self.warm[url] = asyncio.create_task(self._fetch_segment(url))
+        # Resume at the saved point and keep a forward window warm, so the
+        # first segment AVPlayer asks for is already generated.
+        self._advance(media, max(0, index - 1))
+        plan = self.seek.get(getattr(media, "seek_key", ""))
+        if plan is not None:
+            self.seek.warm(plan, position)
 
     async def _fetch_segment(self, url):
         try:
-            data, status, _ = await self._read(url, limit=_SEGMENT_LIMIT, timeout=45, attempts=1)
-        except (DebridLibraryError, TimeoutError, asyncio.CancelledError):
+            data, status, _ = await self._read(url, limit=_SEGMENT_LIMIT, timeout=60, attempts=1)
+        except (DebridLibraryError, TimeoutError):
             return None
         if status == 200 and data:
-            self.segment_cache[url] = (self.clock() + 120, data)
-            while len(self.segment_cache) > 12:
-                self.segment_cache.popitem(last=False)
+            self._cache_segment(url, data)
         return data
 
     def _start_warm(self, media):
@@ -477,7 +762,7 @@ class DebridStreams:
             data, _, _ = await self._read(
                 media.segments[0], limit=_SEGMENT_LIMIT, timeout=45, attempts=1
             )
-        except (DebridLibraryError, TimeoutError, asyncio.CancelledError):
+        except (DebridLibraryError, TimeoutError):
             return None
         if data:
             self.first_cache[media.segments[0]] = (self.clock() + 300, data)
@@ -512,14 +797,27 @@ class DebridStreams:
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def issue(self, source, user_id, binding, ttl):
+    async def issue(
+        self, source, user_id, binding, ttl, *, direct=None, native=None, subtitle_key=""
+    ):
         self.prune()
         if len(self.passes) >= 64:
             raise DebridLibraryError("Playback is busy. Try again shortly.", 429)
-        media = await self.prepare(source)
+        if native is not None:
+            # The native pass owns the whole timeline: AVPlayer plays Apple's own
+            # controls over a VOD playlist this registry generates window by
+            # window. No provider playlist and no prepared title are involved.
+            media = DebridMedia(b"", (), subtitle_key=subtitle_key)
+        elif direct is not None:
+            # A direct pass forwards provider ranges, so it needs no provider HLS
+            # playlist at all. That is the point: original-file playback must not
+            # depend on transcode readiness.
+            media = DebridMedia(b"", ())
+        else:
+            media = await self.prepare(source)
         for key, existing in tuple(self.passes.items()):
             if existing.binding == binding:
-                self.passes.pop(key, None)
+                self.drop_pass(key)
         key, cookie = secrets.token_hex(16), secrets.token_urlsafe(32)
         self.passes[key] = CloudPass(
             source,
@@ -532,7 +830,11 @@ class DebridStreams:
             media.first_segment,
             media.subtitle_key,
             media.seek_key,
+            direct,
+            native.key if native is not None else "",
         )
+        if native is not None:
+            asyncio.get_running_loop().call_later(ttl, self.drop_pass, key)
         return key, cookie
 
     def for_client(self, key, binding):
@@ -564,19 +866,410 @@ class DebridStreams:
             raise DebridLibraryError("This subtitle track is unavailable.", 404)
         return job.tracks[index]
 
+    async def _wait_for_subtitles(self, job):
+        """Hold a first index long enough to carry the SUBTITLES group.
+
+        AVPlayer fetches the master playlist once per session, so an index that
+        opens without a subtitle group leaves the television with no subtitle
+        menu for the whole play. Waiting is therefore worth a few seconds, but
+        only for work that finishes in seconds: cached output, or a text-track
+        copy. OCR and ASR can run for minutes and are never waited for.
+        """
+        if job is None or job.done.is_set():
+            return
+        if not job.warm and job.text_only is None:
+            # Wait for the decision, not the work: once the source is known to
+            # need OCR or ASR, the index is released instead of holding the
+            # player for minutes.
+            if job.task is None:
+                return
+            await self.subtitles.wait_decision(job, _SUBTITLE_PROBE_WAIT)
+        if job.done.is_set():
+            return
+        if job.warm:
+            await self.subtitles.wait_tracks(job, _WARM_SUBTITLE_WAIT)
+        elif job.text_only:
+            await self.subtitles.wait_tracks(job, _TEXT_SUBTITLE_WAIT)
+
+    def _prepared_title(self, entry):
+        """Open the prepared directory for this media, if one was materialized."""
+        key = getattr(entry, "prepared_key", "")
+        if not key:
+            # A cloud pass keeps the resolved source, whose direct link carries
+            # the stable provider path the store is keyed from.
+            source = getattr(entry, "source", None)
+            key = prepared_key(getattr(source, "direct", ""))
+        return self.prepared.open(key) if key else None
+
+    def _prepared_renditions(self, entry, prepared):
+        """Subtitle renditions a prepared title can declare to the player.
+
+        The sidecars are authoritative because they were written against this
+        exact timeline. Without sidecars only a whole-title preparation may
+        reuse the source subtitle tracks: their cues are timed against the
+        source, so declaring them over a prepared window would put them on the
+        wrong picture.
+        """
+        if prepared.tracks:
+            return tuple(
+                _PreparedRendition(track.name, track.language, sidecar=track.sidecar)
+                for track in prepared.tracks
+            )
+        job = self.subtitles.get(getattr(entry, "subtitle_key", ""))
+        if job is None or not job.tracks or not all(track.data for track in job.tracks):
+            return ()
+        provider = _media_duration(getattr(entry, "playlist", b""))
+        if abs(prepared.duration - provider) > max(15.0, provider * 0.02):
+            return ()
+        return tuple(
+            _PreparedRendition(track.name, track.language, data=track.data) for track in job.tracks
+        )
+
+    def _prepared_segment(self, prepared, asset, request):
+        """Serve one prepared segment from disk, honouring a byte range."""
+        path = prepared.directory / asset
+        if path.is_symlink():
+            return None
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return None
+        if not 0 < size <= _PREPARED_SEGMENT_LIMIT:
+            return None
+        # fMP4 segments and the initialization segment are MP4 bytes; MPEG-TS
+        # segments are not. The player checks this before it decodes.
+        media_type = "video/mp4" if not asset.endswith(".ts") else "video/mp2t"
+        headers = HEADERS | {"Accept-Ranges": "bytes"}
+        if request.method == "HEAD":
+            headers["Content-Length"] = str(size)
+            return Response(b"", media_type=media_type, headers=headers)
+        byte_range = request.headers.get("range")
+        if byte_range:
+            try:
+                left, right = parse_range(byte_range, size)
+            except FileDeliveryError:
+                return Response(
+                    status_code=416,
+                    headers=headers | {"Content-Range": f"bytes */{size}"},
+                )
+            try:
+                with path.open("rb") as stream:
+                    stream.seek(left)
+                    body = stream.read(right - left + 1)
+            except OSError:
+                return None
+            if len(body) != right - left + 1:
+                return None
+            return Response(
+                body,
+                status_code=206,
+                media_type=media_type,
+                headers=headers
+                | {
+                    "Content-Range": f"bytes {left}-{right}/{size}",
+                    "Content-Length": str(len(body)),
+                },
+            )
+        try:
+            body = path.read_bytes()
+        except OSError:
+            return None
+        if len(body) != size:
+            return None
+        headers["Content-Length"] = str(size)
+        return Response(body, media_type=media_type, headers=headers)
+
+    async def _prepared_response(self, entry, prepared, asset, request):
+        """Answer one asset from a prepared title, or ``None`` to fall through."""
+        if asset == "index.m3u8":
+            if not prepared.tracks:
+                # No sidecars were written against this timeline, so fall back to
+                # the source's own subtitle job. The wait is bounded and only
+                # spent on work that can finish in seconds.
+                await self._wait_for_subtitles(
+                    self.subtitles.get(getattr(entry, "subtitle_key", ""))
+                )
+            renditions = self._prepared_renditions(entry, prepared)
+            job = _PreparedSubtitles(renditions) if renditions else None
+            return _playlist_reply(_master_playlist(entry, job, prepared=prepared), request)
+        if asset == "stream.m3u8":
+            # Byte for byte: this playlist was written by the same pass that
+            # wrote the segments, so its durations cannot disagree with them.
+            # Its segment URIs are relative names, so no rewriting is needed.
+            return _playlist_reply(prepared.playlist, request)
+        if match := re.fullmatch(r"subtitles([0-9]{1,2})\.m3u8", asset):
+            number = int(match[1])
+            if number >= len(self._prepared_renditions(entry, prepared)):
+                return None
+            return _playlist_reply(_subtitle_playlist(prepared, number), request)
+        if match := re.fullmatch(r"subtitles([0-9]{1,2})\.vtt", asset):
+            renditions = self._prepared_renditions(entry, prepared)
+            number = int(match[1])
+            if number >= len(renditions):
+                return None
+            rendition = renditions[number]
+            body = rendition.data
+            if rendition.sidecar is not None:
+                try:
+                    body = rendition.sidecar.read_bytes()
+                except OSError:
+                    raise DebridLibraryError("This subtitle track is unavailable.", 404) from None
+            if not body:
+                return None
+            headers = HEADERS | {"Content-Length": str(len(body))}
+            return Response(
+                b"" if request.method == "HEAD" else body,
+                media_type="text/vtt",
+                headers=headers,
+            )
+        if prepared.init is not None and asset == prepared.init:
+            # The fMP4 initialization segment is part of the timeline and is
+            # fetched before the first media segment.
+            response = self._prepared_segment(prepared, asset, request)
+            if response is None:
+                raise DebridLibraryError("This prepared segment is unavailable.", 404)
+            return response
+        if asset in prepared.segments:
+            response = self._prepared_segment(prepared, asset, request)
+            if response is None:
+                # The store owns this name, so a fall through to the provider
+                # path could answer with content from a different timeline.
+                raise DebridLibraryError("This prepared segment is unavailable.", 404)
+            return response
+        return None
+
+    async def _native_response(self, entry, plan, asset, request):
+        """Serve one asset of the bounded native timeline.
+
+        The timeline is complete before the first playlist is answered, so a seek
+        anywhere in the episode is a segment request rather than a rebuild. Only
+        the requested window is generated, and its own content clock is patched
+        in, so far seeks never walk the file from the beginning.
+        """
+        job = self.subtitles.get(getattr(entry, "subtitle_key", ""))
+        tracks = tuple(getattr(job, "tracks", ()) or ())[:_NATIVE_SUBTITLE_LIMIT]
+        if plan.web_codecs and (sidecar := re.fullmatch(r"subtitles([0-9]{1,2})\.vtt", asset)):
+            track = await self._subtitle_track(job, int(sidecar[1]))
+            offset = plan.timeline.origin if plan.timeline is not None else 0
+            return _binary_reply(_shift_webvtt(track.data, offset), "text/vtt", request)
+        if asset == "index.m3u8":
+            started = time.monotonic()
+            if plan.web_codecs:
+                tracks = ()
+            else:
+                await self._wait_for_subtitles(job)
+                tracks = tuple(getattr(job, "tracks", ()) or ())[:_NATIVE_SUBTITLE_LIMIT]
+            _record_phase(plan, "captions", started)
+            started = time.monotonic()
+            timeline = await self.native.ready(plan, _NATIVE_OPEN_WAIT)
+            _record_phase(plan, "timeline", started)
+            if timeline is None:
+                warn(_LOG, "native_open", "unsupported_media", "native", plan.diagnostic_id)
+                device = "web" if plan.web_codecs else "Apple TV"
+                raise DebridLibraryError(f"This copy cannot use the {device} player yet.", 415)
+            started = time.monotonic()
+            try:
+                await self._prepare_native_opening(plan, timeline, request, len(tracks))
+            except NativeError as error:
+                warn(_LOG, "native_open", error.code, "native", plan.diagnostic_id)
+                raise DebridLibraryError("This position could not be prepared.", 503) from None
+            _record_phase(plan, "opening", started)
+            return _playlist_reply(self.native.master_playlist(plan, tracks), request)
+        if asset == "stream.m3u8":
+            return _playlist_reply(self.native.video_playlist(plan), request)
+        if match := _AUDIO_PLAYLIST.fullmatch(asset):
+            return _playlist_reply(self.native.audio_playlist(plan, int(match[1])), request)
+        if match := _SUBTITLE_PLAYLIST.fullmatch(asset):
+            number = int(match[1])
+            if job is None or number >= len(tracks):
+                raise DebridLibraryError("This subtitle track is unavailable.", 404)
+            return _playlist_reply(self.native.subtitle_playlist(plan, number), request)
+        if asset == "init.mp4" or _AUDIO_INIT.fullmatch(asset):
+            path = plan.root / asset
+            # Continuous media uses a pinned init for the full pass. Re-reading
+            # it after eviction or a seek must not restart the opening window.
+            if not (plan.continuous and path.is_file()):
+                number = 0
+                if plan.timeline is not None and plan.continuous and plan.warm is not None:
+                    number = self.native._position_index(plan.timeline, plan.warm)
+                await self._native_window(plan, number, len(tracks))
+            if not path.is_file():
+                raise DebridLibraryError("This stream is unavailable.", 404)
+            return _binary_reply(path.read_bytes(), "video/mp4", request)
+        if match := _VIDEO_SEGMENT.fullmatch(asset):
+            number = int(match[1])
+            timeline = plan.timeline
+            if timeline is None or not 0 <= number < len(timeline.segments):
+                raise DebridLibraryError("This stream is unavailable.", 404)
+            await self._native_window(plan, number, len(tracks))
+            path = plan.video_segment_path(number)
+            if not path.is_file():
+                raise DebridLibraryError("This stream is unavailable.", 404)
+            return _binary_reply(path.read_bytes(), "video/mp4", request)
+        if match := _AUDIO_SEGMENT.fullmatch(asset):
+            ordinal, number = int(match[1]), int(match[2])
+            timeline = plan.timeline
+            audio = (
+                next((item for item in timeline.audios if item.ordinal == ordinal), None)
+                if timeline is not None
+                else None
+            )
+            if audio is None:
+                raise DebridLibraryError("This audio track is unavailable.", 404)
+            if not 0 <= number < len(timeline.segments):
+                raise DebridLibraryError("This stream is unavailable.", 404)
+            await self._native_window(plan, number, len(tracks))
+            path = plan.audio_segment_path(audio, number)
+            if not path.is_file():
+                raise DebridLibraryError("This stream is unavailable.", 404)
+            return _binary_reply(path.read_bytes(), "video/mp4", request)
+        if match := _SUBTITLE_SEGMENT.fullmatch(asset):
+            track, number = int(match[1]), int(match[2])
+            if job is None or track >= len(tracks):
+                raise DebridLibraryError("This subtitle track is unavailable.", 404)
+            timeline = plan.timeline
+            if timeline is None or not 0 <= number < len(timeline.segments):
+                raise DebridLibraryError("This subtitle is unavailable.", 404)
+            await self._native_subtitles(plan, number, len(tracks), request)
+            path = plan.subtitle_segment_path(track, number)
+            if not path.is_file():
+                raise DebridLibraryError("This subtitle is unavailable.", 404)
+            return _binary_reply(path.read_bytes(), "text/vtt", request)
+        raise DebridLibraryError("This stream is unavailable.", 404)
+
+    async def _prepare_native_opening(self, plan, timeline, request, tracks):
+        async with plan.opening_lock:
+            if plan.continuous:
+                if plan.opening_prepared or request.method == "HEAD":
+                    return
+                hint = request.query_params.get("start_ms", "")
+                if plan.warm is None and plan.session is None and re.fullmatch(r"[0-9]{1,8}", hint):
+                    position = int(hint) / 1000
+                    if 0 < position < timeline.duration:
+                        plan.warm = position
+
+            opening = 0 if plan.warm is None else self.native._position_index(timeline, plan.warm)
+            # The continuous reader already reads ahead within its budget.
+            # Let the player begin with the first complete window while that
+            # reader prepares subsequent windows.
+            windows = 1 if plan.continuous else _NATIVE_OPEN_WINDOWS
+            for number in range(opening, min(opening + windows, len(timeline.segments))):
+                await self.native.ensure(plan, number, _NATIVE_WARM_WAIT, tracks)
+            plan.opening_prepared = True
+
+    async def _native_window(self, plan, number, tracks):
+        try:
+            await self.native.ensure(plan, number, _NATIVE_WARM_WAIT, tracks)
+        except NativeError as error:
+            warn(_LOG, "native_delivery", error.code, "native", plan.diagnostic_id)
+            raise DebridLibraryError("This position could not be prepared.", 503) from None
+
+    async def _native_subtitles(self, plan, number, tracks, request):
+        if self.native._subtitle_ready(plan, number, tracks):
+            return
+        try:
+            await self._while_connected(
+                request, asyncio.create_task(self.native.ensure_subtitles(plan, number, tracks))
+            )
+        except NativeError as error:
+            warn(_LOG, "native_delivery", error.code, "native", plan.diagnostic_id)
+            raise DebridLibraryError("This subtitle is unavailable.", 503) from None
+
+    async def _while_connected(self, request, generation):
+        async def wait_for_disconnect():
+            try:
+                while (await request.receive())["type"] != "http.disconnect":
+                    pass
+            except (RuntimeError, OSError):
+                return
+
+        disconnect = asyncio.create_task(wait_for_disconnect())
+        try:
+            done, _ = await asyncio.wait(
+                (generation, disconnect), return_when=asyncio.FIRST_COMPLETED
+            )
+            if generation not in done or generation.cancelled():
+                raise DebridLibraryError("This subtitle request was closed.", 499)
+            return generation.result()
+        finally:
+            disconnect.cancel()
+            generation.cancel()
+            # An ASGI receive can remain suspended until this response is sent.
+            # Await producer cleanup, never transport teardown.
+            await asyncio.gather(generation, return_exceptions=True)
+
+    async def deliver_bitmap(self, entry, ordinal, position, request):
+        plan = self.native.get(entry.native_key)
+        timeline = plan.timeline if plan and plan.web_codecs else None
+        if timeline is None or not any(
+            track.ordinal == ordinal for track in timeline.bitmap_subtitles
+        ):
+            raise DebridLibraryError("This subtitle track is unavailable.", 404)
+        if not 0 <= position < timeline.duration:
+            raise DebridLibraryError("Invalid subtitle position.", 422)
+        if self.bitmap_reads.locked() or plan.key in self.bitmap_requests:
+            raise DebridLibraryError("Subtitles are still preparing.", 503)
+        async with self.bitmap_reads:
+            number = self.native._position_index(timeline, position)
+            generation = asyncio.create_task(render_window(self.native, plan, number, ordinal))
+            self.bitmap_requests[plan.key] = generation
+            try:
+                return await self._while_connected(request, generation)
+            except (BitmapError, NativeError) as error:
+                warn(
+                    _LOG, "bitmap_delivery", "generation_unavailable", "native", plan.diagnostic_id
+                )
+                raise DebridLibraryError("This subtitle window is unavailable.", 503) from error
+            finally:
+                self.bitmap_requests.pop(plan.key, None)
+
     async def deliver(self, entry, asset, request, authorize: Callable[[], None]):
         authorize()
+        request_id = diagnostic_id()
+        native_key = getattr(entry, "native_key", "")
+        if native_key and asset:
+            plan = self.native.get(native_key)
+            if plan is None:
+                # The timeline this pass was opened on is gone. Answering from a
+                # different timeline would be the substitution this work removes.
+                raise DebridLibraryError("This stream expired. Reopen the title.", 410)
+            return await self._native_response(entry, plan, asset, request)
+        prepared = self._prepared_title(entry)
+        if prepared is not None:
+            pinned = getattr(entry, "prepared_generation", "")
+            if pinned and _playlist_digest(prepared.playlist) != pinned:
+                # Same key, different timeline: a re-prepare finished under this
+                # session. Serving the new segments under the old playlist would
+                # put the player's cached index and this byte stream on two clocks.
+                warn(_LOG, "prepared_delivery", "generation_changed", "prepared", request_id)
+                raise DebridLibraryError("This title was prepared again. Reopen it.", 409)
+            # A prepared title is a complete timeline written by one pass, so it
+            # is served ahead of the predictive on-demand seek path. Any asset
+            # this store does not own falls through unchanged.
+            try:
+                response = await self._prepared_response(entry, prepared, asset, request)
+            except DebridLibraryError:
+                warn(_LOG, "prepared_delivery", "asset_missing", "prepared", request_id)
+                raise
+            if response is not None:
+                _LOG.info(
+                    "prepared timeline served segments=%d key=%s",
+                    len(prepared.segments),
+                    prepared.key,
+                )
+                return response
+        elif getattr(entry, "prepared_pinned", False):
+            # This pass opened a prepared timeline and the store no longer has it.
+            # Falling through would answer the same URLs with provider-time bytes
+            # from a different timeline, which is the substitution the audit
+            # reproduced. Fail instead; the player may reopen the title.
+            warn(_LOG, "prepared_delivery", "asset_missing", "prepared", request_id)
+            raise DebridLibraryError("This prepared title is no longer available.", 404)
         job = self.subtitles.get(getattr(entry, "subtitle_key", ""))
         plan = self.seek.get(getattr(entry, "seek_key", ""))
         if asset == "index.m3u8":
-            if job is not None and not job.ready.is_set():
-                # An uncached PGS/ASR job can take minutes. Do not hold the
-                # player's index request open for work that cannot finish now.
-                try:
-                    async with asyncio.timeout(0.2):
-                        await job.ready.wait()
-                except TimeoutError:
-                    pass
+            if not self.subtitles.embedded_only:
+                await self._wait_for_subtitles(job)
             if plan is not None:
                 if not plan.ready.is_set():
                     try:
@@ -589,9 +1282,51 @@ class DebridStreams:
                 # instead of generating a slow local seek stream.
                 if plan.index is not None and plan.index.video_codec != "hevc":
                     plan.mode = "seek"
-                    # The Apple TV rejects the master wrapper with CoreMedia
-                    # -12971. A seek timeline is a single VOD playlist already;
-                    # expose it directly so AVPlayer never takes the master hop.
+                    # Generate the first segment the player will ask for before
+                    # answering, because a cold stream copy takes about five
+                    # seconds and AVPlayer abandons a segment after five.
+                    opening = plan.warm_index if plan.warm_index is not None else 0
+                    # The player asks for the opening segment and then for the
+                    # next two immediately. Each cold segment costs about 5.5 s,
+                    # so build that small window before answering instead of
+                    # letting the player wait and fail the item with -12971.
+                    # Three segments are independent downloads, so start them
+                    # together: sequentially they cost about 33 s of waiting
+                    # before the playlist is handed over.
+                    results = await asyncio.gather(
+                        *[
+                            self.seek.ensure(plan, number, _SEEK_WARM_WAIT)
+                            for number in range(opening, min(opening + 3, len(plan.index.segments)))
+                        ],
+                        return_exceptions=True,
+                    )
+                    for result in results:
+                        if isinstance(result, asyncio.CancelledError):
+                            raise result
+                        if isinstance(result, Exception):
+                            warn(_LOG, "seek_open", "unexpected_error", "seek", request_id)
+                            raise DebridLibraryError(
+                                "This position could not be prepared.", 503
+                            ) from None
+                        if result is False:
+                            warn(_LOG, "seek_open", "segment_not_ready", "seek", request_id)
+                    # Record what is actually being served so a failed play can
+                    # be read back from the log without another guess.
+                    _LOG.info(
+                        "seek plan audio=%s index=%s video=%s container=%s segments=%d opening=%d",
+                        plan.index.audio_codec,
+                        plan.index.audio_index,
+                        plan.index.video_codec,
+                        plan.index.container,
+                        len(plan.index.segments),
+                        opening,
+                    )
+                    # A master is required for a subtitle group, and the player
+                    # only offers subtitles that the master declares. Serve one
+                    # only when the tracks are already readable, so a sub-less
+                    # source still opens without the master hop.
+                    if job is not None and job.tracks and all(track.data for track in job.tracks):
+                        return _playlist_reply(_master_playlist(entry, job), request)
                     return _playlist_reply(plan.index.playlist, request)
             if job is not None and job.tracks and all(track.data for track in job.tracks):
                 return _playlist_reply(_master_playlist(entry, job), request)
@@ -599,14 +1334,7 @@ class DebridStreams:
             # -12971. Serve the single provider media playlist directly; the
             # provider already chose one quality. Text subtitles are requested
             # separately and do not require a master for this path.
-            _LOG.warning(
-                "provider index class=%s seek=%s codec=%s master=%s bytes=%d",
-                type(entry).__name__,
-                bool(plan),
-                getattr(getattr(plan, "index", None), "video_codec", None),
-                b"#EXT-X-STREAM-INF" in entry.playlist,
-                len(entry.playlist),
-            )
+            _LOG.debug("provider media playlist selected")
             return _playlist_reply(entry.playlist, request)
         if asset == "stream.m3u8":
             if (
@@ -622,9 +1350,15 @@ class DebridStreams:
             return _playlist_reply(_subtitle_playlist(entry, int(match[1])), request)
         if match := re.fullmatch(r"subtitles([0-9]{1,2})\.vtt", asset):
             track = await self._subtitle_track(job, int(match[1]))
-            headers = HEADERS | {"Content-Length": str(len(track.data))}
+            body = track.data
+            if plan is not None and plan.index is not None:
+                # The generated timeline starts a measured distance after the
+                # source, so cues timed against the source run early. Shifting
+                # them by that same constant puts them back on the picture.
+                body = _shift_webvtt(body, plan.index.subtitle_offset)
+            headers = HEADERS | {"Content-Length": str(len(body))}
             return Response(
-                b"" if request.method == "HEAD" else track.data,
+                b"" if request.method == "HEAD" else body,
                 media_type="text/vtt",
                 headers=headers,
             )
@@ -660,8 +1394,11 @@ class DebridStreams:
             try:
                 data = await self.seek.segment(plan, index)
             except LookupError:
+                warn(_LOG, "seek_delivery", "segment_not_ready", "seek", request_id)
                 raise DebridLibraryError("This position is still preparing.", 503) from None
-            except RuntimeError:
+            except (RuntimeError, OSError) as error:
+                code = "resource_unavailable" if isinstance(error, OSError) else "generation_failed"
+                warn(_LOG, "seek_delivery", code, "seek", request_id)
                 raise DebridLibraryError("This position could not be prepared.", 503) from None
             headers = HEADERS | {"Content-Length": str(len(data))}
             if request.method == "HEAD":
@@ -692,7 +1429,47 @@ class DebridStreams:
         if byte_range and not re.fullmatch(r"bytes=[0-9]{1,9}-[0-9]{0,9}", byte_range):
             return Response(status_code=416, headers=HEADERS)
         url = entry.segments[index]
+        # Keep later segments generating while this request is being served.
+        self._advance(entry, index)
+        prepared_first = index == 0 and bool(getattr(entry, "first_segment", b""))
         stored = self.segment_cache.get(url)
+        if stored is None and not prepared_first and index > 0:
+            # One in-flight provider fetch per segment. The player's request
+            # reuses it instead of racing a second upstream read, which
+            # Real-Debrid answers by stalling both.
+            task = self.warm.get(url)
+            if task is None or task.done():
+                task = asyncio.create_task(self._fetch_segment(url))
+                self.warm[url] = task
+            try:
+                async with asyncio.timeout(_SEGMENT_GRACE):
+                    await asyncio.shield(task)
+            except TimeoutError:
+                pass
+            stored = self.segment_cache.get(url)
+            if stored is None or stored[0] <= self.clock():
+                # The provider has not delivered this segment inside the player's
+                # first budget. Serving another segment's bytes would show the
+                # wrong moment, and the player would cache it under this URL for
+                # the rest of the session. Give the same fetch a short second
+                # window, then fail with a status the player may retry.
+                try:
+                    grace = (
+                        _BROWSER_SEGMENT_RETRY_WAIT
+                        if self.subtitles.embedded_only
+                        else _SEGMENT_RETRY_WAIT
+                    )
+                    async with asyncio.timeout(grace):
+                        await asyncio.shield(task)
+                except TimeoutError:
+                    pass
+                stored = self.segment_cache.get(url)
+                if stored is None or stored[0] <= self.clock():
+                    warn(_LOG, "provider_delivery", "segment_not_ready", "provider", request_id)
+                    raise DebridLibraryError(
+                        "Real-Debrid is not delivering this part of the video right now.",
+                        503,
+                    )
         if stored is not None and stored[0] > self.clock():
             self.segment_cache.move_to_end(url)
             cached_segment = stored[1]
@@ -719,7 +1496,7 @@ class DebridStreams:
                     try:
                         async with asyncio.timeout(45):
                             await asyncio.shield(task)
-                    except (TimeoutError, asyncio.CancelledError):
+                    except TimeoutError:
                         pass
                 stored = self.first_cache.get(url)
                 if stored is not None and stored[0] > self.clock():
@@ -780,31 +1557,41 @@ class DebridStreams:
                                     raise
                                 return None
 
-                        result = await attempt(entry.segments[0], 15)
-                        if result is None and len(entry.segments) > 1 and not byte_range:
-                            result = await attempt(entry.segments[1], 20)
+                        result = None
+                        for budget in (15, 20, 60):
+                            result = await attempt(entry.segments[0], budget)
+                            if result is not None:
+                                break
                         if result is None:
-                            result = await attempt(entry.segments[0], 60)
-                        if result is None:
-                            raise _unavailable()
+                            # Never answer the first segment with the second one's
+                            # bytes: the player caches the response under this URL,
+                            # so it would play a moment from later in the film and
+                            # keep doing it. A retryable failure lets it retry the
+                            # same segment instead.
+                            raise DebridLibraryError(
+                                "Real-Debrid is not delivering this part of the video right now.",
+                                503,
+                            )
                         data, status, upstream = result
                 else:
-                    async with asyncio.timeout(35):
+                    async with asyncio.timeout(65):
+                        # One long attempt inside a wider budget: the previous
+                        # 35 s wrapper around two 20 s attempts could never let
+                        # the retry finish, so a slow but valid provider segment
+                        # always surfaced as a 502.
                         data, status, upstream = await self._read(
                             entry.segments[index],
                             limit=_SEGMENT_LIMIT,
                             method=request.method,
                             byte_range=byte_range,
                             authorize=authorize,
-                            timeout=20,
-                            attempts=2,
+                            timeout=60,
+                            attempts=1,
                         )
             except TimeoutError:
                 raise _unavailable() from None
         if request.method == "GET" and status == 200 and not byte_range and data:
-            self.segment_cache[url] = (self.clock() + 120, data)
-            while len(self.segment_cache) > 12:
-                self.segment_cache.popitem(last=False)
+            self._cache_segment(url, data)
         headers = HEADERS.copy()
         if status == 206:
             value = upstream.get("content-range", "")

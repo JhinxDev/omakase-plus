@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from omakase.plus import connections
-from omakase.plus.debrid_library import PLAYBACK_PROVIDER_KEY, PLAYBACK_PROVIDERS, playback_provider
 from omakase.plus.deps import get_db
 from omakase.plus.middleware import require_user
+from omakase.plus.providers import playback as playback_providers
 from omakase.plus.request_limits import bounded_form_route
 from omakase.plus.secrets import store_secret
 from omakase.plus.web_security import csrf_token, require_csrf
@@ -81,7 +81,9 @@ def create_connections_router(templates, context_factory=None) -> APIRouter:
                 "connections_notice": _NOTICES.get(notice, ""),
                 "connections_error": error,
                 "movies_ready": connections.movie_connections(db, user.id).enabled,
-                "playback_provider": playback_provider(db, user.id),
+                "playback_provider": playback_providers.saved_choice(db, user.id),
+                "playback_provider_options": playback_providers.provider_options(),
+                "playback_selection": playback_providers.select(db, user.id),
             },
             status_code=status_code,
             headers=_PRIVATE_HEADERS,
@@ -113,10 +115,10 @@ def create_connections_router(templates, context_factory=None) -> APIRouter:
         if (
             len(form.getlist("provider")) != 1
             or not isinstance(provider, str)
-            or provider not in PLAYBACK_PROVIDERS
+            or provider not in playback_providers.PLAYBACK_PROVIDERS
         ):
             raise HTTPException(422, "Choose a playback source")
-        store_secret(db, user.id, PLAYBACK_PROVIDER_KEY, provider)
+        store_secret(db, user.id, playback_providers.PROVIDER_KEY, provider)
         return redirect("playback-source", "playback-saved")
 
     @router.post("/settings/connections/{integration}/save")

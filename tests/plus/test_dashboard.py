@@ -320,6 +320,13 @@ class TestDashboardAccess:
         assert client.get("/plus/static/nope.css").status_code == 404
         assert client.get("/plus/static/..%2F..%2Fpyproject.toml").status_code == 404
 
+    def test_plus_static_asset_route_serves_bitmap_subtitle_renderer(self, client):
+        response = client.get("/plus/static/web-bitmap.js?v=subtitle-release")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/javascript")
+        assert "export class BitmapSubtitles" in response.text
+
     def test_dashboard_renders_direct_download_card(self, client):
         """The dashboard exposes a phone-friendly direct auto-download form."""
         try:
@@ -1946,12 +1953,16 @@ class TestProductShell:
 
             home = client.get("/plus/home").text
             library = client.get("/plus/library").text
-            assert "No fully verified titles yet." in home
+            # Empty Home keeps the three Continue Watching shelves, each with its
+            # own empty line, and a neutral banner that still offers a way in.
+            assert "Nothing in progress yet" in home
+            assert "Nothing here yet." in home
             assert 'href="/plus/discover">Find something to watch</a>' in home
-            assert 'href="/plus/library">Your anime</a>' in home
+            assert 'href="/plus/library">Browse your library</a>' in home
             assert 'href="/plus/add"' not in home
-            assert "Continue watching" in home
-            assert "Ready to watch" in home
+            assert "Continue Watching Anime" in home
+            assert "Continue Watching Movies" in home
+            assert "Continue Watching TV Shows" in home
             assert "nav-number" not in home
             assert 'list="library-title-suggestions"' in library
             assert 'name="content_type"' in library

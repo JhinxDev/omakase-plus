@@ -3,7 +3,7 @@
 {% block eyebrow %}From your tasting menu{% endblock %}
 {% block page_title %}{{ pick.title }}{% endblock %}
 {% block page_intro %}<p class="page-intro">{% if pick.format %}{{ pick.format | title }} · {% endif %}{% if pick.episodes and pick.format != 'MOVIE' %}{{ pick.episodes }} episode{{ 's' if pick.episodes != 1 else '' }} · {% endif %}{{ (pick.airing_status or 'Catalog details') | replace('_', ' ') | title }}</p>{% endblock %}
-{% block page_actions %}<a class="button button-secondary" href="/plus/discover?run={{ run.id }}">Back to your menu</a>{% endblock %}
+{% block page_actions %}<a class="button button-secondary" href="/plus/discover?run={{ run.id }}" data-nav-back>Back to your menu</a>{% endblock %}
 {% block content %}
 <section class="recommendation-detail">
   <div class="recommendation-detail-art poster-frame">{% if (pick.source or run.source) == 'anilist' %}<img src="/plus/media/{{ media_id }}/poster" alt="Poster for {{ pick.title }}" data-poster>{% endif %}</div>

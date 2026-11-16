@@ -31,7 +31,7 @@
   {% if cleanup.blocked %}
   <details class="bulk-cleanup-blocked">
     <summary>{{ cleanup.blocked | length }} selection{% if cleanup.blocked | length != 1 %}s{% endif %} blocked for safety</summary>
-    <ul>{% for item in cleanup.blocked %}<li>Title {{ item.monitor_id }} — {{ item.reason }}</li>{% endfor %}</ul>
+    <ul>{% for item in cleanup.blocked %}<li>Title {{ item.monitor_id }} ({{ item.reason }})</li>{% endfor %}</ul>
   </details>
   {% endif %}
 

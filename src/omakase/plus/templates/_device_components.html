@@ -1,0 +1,17 @@
+{# Owner review W-02: the Apple TV link left the player page and lives on the title
+   pages instead. One macro so every title surface offers the same action, and nothing
+   renders when the feature is disabled or the title has no playable copy yet. Passing
+   no library_id keeps the request inside the viewer's personal scope, which is the only
+   scope the route accepts.
+   The feature flag and the CSRF token are parameters, not free variables: an imported
+   Jinja macro does not inherit the importing template's context, so reading them here
+   would silently render nothing on every page. #}
+{% macro apple_tv_link(watch_path, enabled, token) %}
+{% if enabled and watch_path %}
+<form class="apple-tv-link-form" method="post" action="/plus/native-tv-test" data-busy-form>
+  <input type="hidden" name="csrf_token" value="{{ token }}">
+  <input type="hidden" name="watch_path" value="{{ watch_path }}">
+  <button class="button button-secondary" type="submit" aria-label="Create Apple TV link for this title">Create Apple TV link</button>
+</form>
+{% endif %}
+{% endmacro %}

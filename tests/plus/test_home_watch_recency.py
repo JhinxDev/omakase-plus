@@ -130,20 +130,21 @@ def test_continue_cards_share_series_progress_with_or_without_an_episode_resume(
 ):
     entry(db, anilist_id=21, title="A consistent series")
     context = home_view(db, user_id=1)
-    card = context["continue_watching"][0]
-    context["continue_watching"] = [
-        {
-            **card,
-            "progress_episodes": watched,
-            "progress_percent": watched / 12 * 100,
-            "episode_total": 12,
-            "play_episode": watched + 1,
-            "episode_resume": resume,
-            "partial_playback": bool(resume),
-        }
-    ]
+    row = next(row for row in context["home"]["rows"] if row["id"] == "continue-anime")
+    card = row["cards"][0]
+    card["anime"] = {
+        **card["anime"],
+        "progress_episodes": watched,
+        "progress_percent": watched / 12 * 100,
+        "episode_total": 12,
+        "play_episode": watched + 1,
+        "episode_resume": resume,
+        "partial_playback": bool(resume),
+    }
+    card["episode"] = {**card["episode"], "episode": watched + 1, "next_episode": watched + 1}
+    card["detail_label"] = f"{resume['minutes_left']} min left" if resume else "Up next"
     html = render("home.html", **context)
-    shelf = html.split('aria-labelledby="continue-heading"', 1)[1].split("</section>", 1)[0]
+    shelf = html.split('data-home-row="continue-anime"', 1)[1].split("</section>", 1)[0]
     text = " ".join(re.sub(r"<[^>]*>", " ", shelf).split())
     assert f"Watched {watched}/12" in text
     assert f"Episode {watched + 1} · {'23 min left' if resume else 'Up next'}" in text
@@ -156,16 +157,21 @@ def test_continue_cards_share_series_progress_with_or_without_an_episode_resume(
 def test_continue_card_does_not_invent_a_series_percentage_without_a_total(db):
     entry(db, anilist_id=21, title="An open-ended series")
     context = home_view(db, user_id=1)
-    context["continue_watching"][0].update(
-        progress_episodes=0,
-        progress_percent=0,
-        episode_total=None,
-        partial_playback=True,
-        play_episode=1,
-        episode_resume={"minutes_left": 23, "percent": 8},
-    )
+    row = next(row for row in context["home"]["rows"] if row["id"] == "continue-anime")
+    card = row["cards"][0]
+    card["anime"] = {
+        **card["anime"],
+        "progress_episodes": 0,
+        "progress_percent": 0,
+        "episode_total": None,
+        "partial_playback": True,
+        "play_episode": 1,
+        "episode_resume": {"minutes_left": 23, "percent": 8},
+    }
+    card["detail_label"] = "23 min left"
+    card["progress"] = {**card["progress"], "percent": 8, "remaining_label": "23 min left"}
     html = render("home.html", **context)
-    shelf = html.split('aria-labelledby="continue-heading"', 1)[1].split("</section>", 1)[0]
+    shelf = html.split('data-home-row="continue-anime"', 1)[1].split("</section>", 1)[0]
     assert "23 min left" in shelf
     assert "<progress" not in shelf
 
@@ -177,21 +183,36 @@ def test_hero_uses_same_first_resume_card_even_when_partial_ready(db, has_contin
     _, watch = entry(db, anilist_id=22, title="Zed newer partial title")
     event(db, watch, stamp="2026-10-29T00:00:00Z", key="newer")
     context = home_view(db, user_id=1)
-    cards = {card["anilist_id"]: card for card in context["continue_watching"]}
-    older = {**cards[21], "state": "ready", "usable": 12, "plex_visible": 12}
-    newer = {**cards[22], "state": "acquiring", "usable": 3, "plex_visible": 3}
-    context["continue_watching"] = [newer, older] if has_continue else []
-    context["ready_to_watch"] = [older]
+    rows = context["home"]["rows"]
+    anime = next(row for row in rows if row["id"] == "continue-anime")
+    cards = {card["title"]: card for card in anime["cards"]}
+    newer = cards["Zed newer partial title"]
+    older = cards["Alpha older ready title"]
+    anime["cards"] = [newer] if has_continue else []
+    anime["count"] = len(anime["cards"])
+    ready = next((row for row in rows if row["id"] == "ready-to-watch"), None)
+    if ready is None:
+        ready = {
+            "id": "ready-to-watch",
+            "label": "Ready to Watch",
+            "kind": "ready",
+            "domain": "anime",
+            "count": 0,
+            "cards": [],
+        }
+        rows.append(ready)
+    ready["cards"] = [] if has_continue else [older]
+    from omakase.plus.home_shell import select_banner
+
+    context["home"]["banner"] = select_banner(rows)
     html = render("home.html", **context)
     hero = html.split('<section class="cinema-hero"', 1)[1].split("</section>", 1)[0]
     expected = newer if has_continue else older
     assert re.search(r'<h1 id="featured-title">([^<]+)</h1>', hero).group(1) == expected["title"]
-    assert f'href="/plus/library/{expected["id"]}#overview"' in hero
+    assert expected["detail_url"] in hero
     if has_continue:
         hero_text = " ".join(re.sub(r"<[^>]*>", " ", hero).split())
-        assert "Availability unknown" in hero_text
-        assert "Watched 3/12" in hero_text
-        assert "In Plex 12/12" not in hero_text
+        assert expected["subtitle"] in hero_text
 
 
 def test_shared_home_ranks_only_this_viewers_visible_scoped_titles(db, monkeypatch):

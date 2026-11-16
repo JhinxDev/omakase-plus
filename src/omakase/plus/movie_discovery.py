@@ -474,3 +474,40 @@ class MovieDiscoveryService:
                 reason = "Popular on TMDB; save ratings to personalize this list."
             card.update(rank=index, ranking_basis=basis, recommendation_reason=reason)
         return filtered[:limit]
+
+
+async def movie_filter_results(db, user_id, *, genre_id, sort, include_completed):
+    from omakase.plus.connections import movie_connections
+    from omakase.plus.movie_presentation import present_movie
+
+    service = MovieService(db, movie_connections(db, user_id))
+    discovery = MovieDiscoveryService(service)
+    selected_genre = None
+    cards = []
+    error = ""
+    try:
+        raw_genre = (genre_id or "").strip()
+        if raw_genre:
+            if len(raw_genre) > 10 or not raw_genre.isascii() or not raw_genre.isdecimal():
+                raise ValueError("Invalid genre")
+            selected_genre = int(raw_genre)
+            if not 0 < selected_genre <= 2_147_483_647:
+                raise ValueError("Invalid genre")
+        result = await discovery.discover(
+            user_id, genre_id=selected_genre, sort=sort, include_completed=include_completed
+        )
+        history = MovieHistoryService(service)
+        for card in result["results"] if isinstance(result, dict) else result:
+            card["history"] = history.get(user_id, card["imdb_id"]) if card.get("imdb_id") else None
+            cards.append(present_movie(card))
+    except (MovieError, ValueError) as exc:
+        error = exc.detail if isinstance(exc, MovieError) else "Choose a valid discovery filter."
+    return {
+        "cards": cards,
+        "error": error,
+        "notice": discovery.notice,
+        "genres": discovery.last_options.get("genres", ()),
+        "genre_id": selected_genre,
+        "sort": sort,
+        "include_completed": include_completed,
+    }

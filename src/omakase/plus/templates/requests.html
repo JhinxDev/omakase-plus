@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Requests · Omakase{% endblock %}
+{% block eyebrow %}{% endblock %}
+{% block page_title %}Requests{% endblock %}
+{% from "_request_card.html" import request_cover %}
+{% block extra_head %}
+<link rel="stylesheet" href="/plus/static/requests.css?v={{ asset_version }}">
+<script src="/plus/static/requests.js?v={{ asset_version }}" defer></script>
+{% endblock %}
+{% block content %}
+<section class="requests-screen" data-requests-screen data-requests-status="/plus/requests/status">
+  {% for category in categories %}
+  <section class="requests-category" data-request-category="{{ category.key }}" data-request-count="{{ category.requests | length }}" aria-labelledby="requests-{{ category.key }}">
+    <div class="requests-category-heading">
+      <h2 id="requests-{{ category.key }}">{{ category.title }}</h2>
+      <span class="requests-count" aria-label="{{ category.requests | length }} requests">{{ category.requests | length }}</span>
+    </div>
+    {% if category.requests %}
+    <ul class="request-list">
+      {% for item in category.requests %}
+      <li class="request-card" data-request-row="{{ item.identity }}">
+        {{ request_cover(item) }}
+        <div class="request-card-copy">
+        <div class="request-card-heading">
+          <h3><a href="{{ item.detail_href }}">{{ item.title }}</a></h3>
+          <span class="hub-request-label" data-request-status>{{ item.status_label }}</span>
+        </div>
+        <p class="requests-type">{{ 'TV Show' if item.media_kind == 'tv' else item.media_kind | title }}{% if item.release_year %} · {{ item.release_year }}{% endif %}{% if item.season is not none %} · Season {{ item.season }}{% endif %}</p>
+        <p class="hub-meta requests-description" data-request-detail>{{ item.detail }}</p>
+        <p class="requests-checked" {% if not item.last_checked_at %}hidden{% endif %}>Last checked {% if item.last_checked_at %}<time datetime="{{ item.last_checked_at }}" data-local-datetime="{{ item.last_checked_at }}" data-request-checked>{{ item.last_checked_at }}</time>{% else %}<span data-request-checked>not yet</span>{% endif %}</p>
+        <div class="requests-actions">
+          {% if item.can_check %}
+          <form method="post" action="/plus/requests/{{ item.kind }}/{{ item.title_id }}/check" data-busy-form data-single-flight>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="text-action" type="submit" data-busy-label="Checking…"{% if item.next_action and item.next_action.kind == 'check' %} data-request-next{% endif %}>Check status<span class="sr-only"> for {{ item.title }}</span></button>
+          </form>
+          {% endif %}
+          {% if item.can_retry %}
+          <form method="post" action="/plus/requests/{{ item.kind }}/{{ item.title_id }}/retry" data-busy-form data-single-flight>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="text-action" type="submit" data-busy-label="Retrying…"{% if item.next_action and item.next_action.kind == 'retry' %} data-request-next{% endif %}>Retry request<span class="sr-only"> for {{ item.title }}</span></button>
+          </form>
+          {% endif %}
+          {% if not item.can_check and not item.can_retry %}<span class="requests-next" data-request-next>{% if item.next_action %}{{ item.next_action.label }}{% elif item.manual_note %}{{ item.manual_note }}{% endif %}</span>{% endif %}
+          {% if item.manual_note and (item.can_check or item.can_retry) %}<span class="requests-next">{{ item.manual_note }}</span>{% endif %}
+        </div>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="requests-empty">{% if category.key == 'active' %}No active requests.{% elif category.key == 'attention' %}Nothing needs attention.{% else %}No request history.{% endif %}</p>
+    {% endif %}
+  </section>
+  {% endfor %}
+</section>
+{% endblock %}

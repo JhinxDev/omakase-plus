@@ -9,7 +9,7 @@
 .notification-badge[hidden], .notification-panel[hidden], .notification-feedback[hidden] { display: none; }
 .notification-panel { position: absolute; z-index: 220; top: calc(100% + 12px); right: 0; width: 420px; max-width: calc(100vw - 32px); max-height: min(680px, calc(100dvh - 110px)); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #303640; border-radius: 14px; background: #111620; color: #f7f5f0; box-shadow: 0 20px 65px #0008; text-align: left; }
 .notification-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 14px 12px 18px; border-bottom: 1px solid #222831; }
-.notification-heading h2 { margin: 2px 0 5px; color: #f7f5f0; font: 600 16px/1.4 Geist, sans-serif; letter-spacing: -.01em; }
+.notification-heading h2 { margin: 2px 0 5px; color: #f7f5f0; font: 600 16px/1.4 Inter, sans-serif; letter-spacing: -.01em; }
 .notification-heading p { margin: 0; color: #a7abb2; font-size: 13px; line-height: 1.5; }
 .notification-close { flex-shrink: 0; font-size: 26px; line-height: 1; }
 .notification-content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
@@ -26,7 +26,7 @@
 .notification-message { color: #a7abb2; overflow-wrap: anywhere; }
 .notification-rating { color: #c4b5fd; }
 .notification-item-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 10px; }
-.notification-item-actions :is(a,button), .notification-retry { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 8px 10px; border: 1px solid #303640; border-radius: 10px; background: transparent; color: #c4b5fd; font: 500 13px/1.4 Geist, sans-serif; cursor: pointer; text-decoration: none; }
+.notification-item-actions :is(a,button), .notification-retry { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 8px 10px; border: 1px solid #303640; border-radius: 10px; background: transparent; color: #c4b5fd; font: 500 13px/1.4 Inter, sans-serif; cursor: pointer; text-decoration: none; }
 .notification-item-actions .notification-primary { background: #c4b5fd; color: #090b12; border-color: #c4b5fd; }
 .notification-item-actions button { color: #a7abb2; }
 .notification-item-actions button:hover, .notification-retry:hover { background: #1d2430; color: #f7f5f0; }

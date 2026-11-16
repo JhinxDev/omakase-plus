@@ -5,7 +5,6 @@ Mounted at ``/plus`` via an ``APIRouter``.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import math
@@ -22,7 +21,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
@@ -80,6 +79,7 @@ from omakase.plus.completion_cleanup import (
 )
 from omakase.plus.connections_routes import create_connections_router
 from omakase.plus.debrid_routes import create_debrid_router
+from omakase.plus.debrid_stream import DebridStreams
 from omakase.plus.deps import get_db
 from omakase.plus.discovery import DiscoveryRequest, save_preferences, saved_preferences
 from omakase.plus.feedback import feedback_for_prompt, save_feedback
@@ -143,6 +143,7 @@ from omakase.plus.repairs import (
     reprobe_asset,
     rescan_title,
 )
+from omakase.plus.request_limits import bounded_form_route
 from omakase.plus.search_routes import create_search_router
 from omakase.plus.secrets import delete_secret, read_secret, store_secret
 from omakase.plus.title_removal import (
@@ -233,6 +234,11 @@ _STATIC_ASSETS = {
     "tracker-bridge.css": "text/css",
     "settings-language.css": "text/css",
     "notifications.js": "application/javascript",
+    "navigation-restore.js": "application/javascript",
+    "product-shell.css": "text/css",
+    "overview.css": "text/css",
+    "overview-backdrop.webp": "image/webp",
+    "product-shell.js": "application/javascript",
     "credentials.css": "text/css",
     "credentials.js": "application/javascript",
     "devices.css": "text/css",
@@ -246,9 +252,13 @@ _STATIC_ASSETS = {
     "shelves.js": "application/javascript",
     "discover-hub.js": "application/javascript",
     "movie-plex-review.js": "application/javascript",
+    "request-timeline.js": "application/javascript",
     "profile.js": "application/javascript",
     "search.js": "application/javascript",
     "geist-variable.woff2": "font/woff2",
+    "inter-variable.woff2": "font/woff2",
+    "requests.css": "text/css",
+    "requests.js": "application/javascript",
     "dashboard.js": "application/javascript",
     "shaka-player-5.3.3.js": "application/javascript",
     "debrid-library.css": "text/css",
@@ -256,6 +266,7 @@ _STATIC_ASSETS = {
     "shaka-controls-5.3.3.css": "text/css",
     "web-player.css": "text/css",
     "web-player.js": "application/javascript",
+    "web-bitmap.js": "application/javascript",
     "web-ass.js": "application/javascript",
     "shaka-player-5.3.3-LICENSE.txt": "text/plain",
     "omakase-seal.svg": "image/svg+xml",
@@ -1039,7 +1050,20 @@ def _product_context(request: Request, user, *, active_page: str) -> dict[str, o
 
 router.include_router(create_google_router(templates, _set_session_cookie, _product_context))
 router.include_router(create_connections_router(templates, _product_context))
-router.include_router(create_debrid_router(templates, _product_context))
+_cloud_web_streams = DebridStreams(
+    subtitle_root=os.path.join(os.getenv("OMAKASE_DATA_DIR", "data"), "subtitles-web"),
+    native_root=os.path.join(os.getenv("OMAKASE_DATA_DIR", "data"), "native-hls-web")
+    if os.getenv("OMAKASE_PLUS_PRIVATE", "").strip().casefold() in {"1", "true", "yes", "on"}
+    else None,
+    subtitle_embedded_only=True,
+)
+router.include_router(
+    create_debrid_router(
+        templates,
+        _product_context,
+        streams=_cloud_web_streams,
+    )
+)
 router.include_router(create_updates_router(templates, _product_context))
 router.include_router(create_agent_router(templates, _product_context))
 router.include_router(create_avatar_router(templates, _product_context))
@@ -1060,13 +1084,16 @@ router.include_router(create_mal_router(templates, _product_context))
 router.include_router(create_language_router(templates, _product_context))
 router.include_router(create_history_artwork_router())
 router.include_router(create_onboarding_router(templates, _product_context))
-router.include_router(create_player_router(templates, _product_context))
+router.include_router(
+    create_player_router(templates, _product_context, close_cloud_pass=_cloud_web_streams.drop_pass)
+)
 router.include_router(
     create_native_tv_test_router(
         templates,
         _product_context,
         subtitle_root=os.path.join(os.getenv("OMAKASE_DATA_DIR", "data"), "subtitles"),
         seek_root=os.path.join(os.getenv("OMAKASE_DATA_DIR", "data"), "seek"),
+        native_root=os.path.join(os.getenv("OMAKASE_DATA_DIR", "data"), "native-hls"),
     )
 )
 
@@ -1084,6 +1111,8 @@ async def home_page(
     user=Depends(require_user),
     db=Depends(get_db),
 ):
+    from omakase.plus.providers import playback as playback_providers
+
     if pairing := resume_device_pairing(request):
         return pairing
     selected = (
@@ -1094,6 +1123,8 @@ async def home_page(
         "home.html",
         {
             **_product_context(request, user, active_page="home"),
+            "cloud_playback": (selected is None or selected.kind == "personal")
+            and playback_providers.select(db, user.id).cloud_route,
             **home_view(
                 db,
                 user_id=user.id,
@@ -1108,6 +1139,52 @@ async def home_page(
             "message": message,
         },
         headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+    )
+
+
+@router.post("/home/layout")
+async def save_home_layout(
+    request: Request,
+    action: str = "",
+    target: str = "",
+    rows: str = Form(""),
+    hidden: list[str] = Form([]),
+    csrf_token: str = Form(""),
+    user=Depends(require_user),
+    db=Depends(get_db),
+):
+    """Persist one profile's Home row order.
+
+    ``rows`` is the ordered comma-separated ids from the dialog; ``hidden`` names
+    the rows the profile wants out of the layout. The single-step actions
+    (move-up, move-down, add, remove, reset) let the same controls work with
+    JavaScript disabled and are what the Apple TV remote maps onto.
+    """
+    _require_csrf(request, csrf_token)
+    from omakase.plus.home_shell import (
+        HomeLayoutError,
+        apply_layout_action,
+        load_layout,
+        save_layout,
+    )
+
+    try:
+        if action in {"move-up", "move-down", "add", "remove"}:
+            current = load_layout(db, user_id=user.id)["rows"]
+            payload = apply_layout_action(current, action, target)
+        elif action == "reset":
+            payload = apply_layout_action([], "reset", "")
+        else:
+            if len(rows) > 256 or len(hidden) > 16:
+                raise HomeLayoutError("That Home layout is too large")
+            names = [name for name in rows.split(",") if name.strip()]
+            out = {name for name in hidden if isinstance(name, str) and len(name) <= 40}
+            payload = [{"id": name.strip(), "hidden": name.strip() in out} for name in names]
+        save_layout(db, user_id=user.id, rows=payload)
+    except HomeLayoutError as exc:
+        return RedirectResponse(f"/plus/home?message={quote(str(exc))}", status_code=303)
+    return RedirectResponse(
+        "/plus/home?message=" + quote("Home rows saved for this profile."), status_code=303
     )
 
 
@@ -1169,6 +1246,8 @@ async def library_page(
     user=Depends(require_user),
     db=Depends(get_db),
 ):
+    from omakase.plus.providers import playback as playback_providers
+
     selected = None
     if households.feature_enabled():
         selected = households.selected_scope(db, viewer_id=user.id)
@@ -1198,20 +1277,6 @@ async def library_page(
             content_type=content_type,
             query=query,
         )
-        title_suggestions = [
-            row["title"]
-            for row in db.execute(
-                """SELECT m.title FROM media_monitors m
-                   WHERE m.user_id=? AND NOT EXISTS (
-                       SELECT 1 FROM library_items i JOIN personal_libraries p
-                       ON p.library_id=i.library_id WHERE p.user_id=m.user_id
-                       AND i.domain='anime' AND i.state='removed'
-                       AND i.canonical_id=CAST(m.anilist_id AS TEXT)
-                       AND i.season_number=COALESCE(m.season_number,0))
-                   ORDER BY m.active DESC, m.title COLLATE NOCASE, m.id LIMIT 150""",
-                (user.id,),
-            )
-        ]
     except ProductViewError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return templates.TemplateResponse(
@@ -1230,7 +1295,7 @@ async def library_page(
             "state_filter": state,
             "provider_filter": provider,
             "content_type_filter": content_type,
-            "title_suggestions": title_suggestions,
+            "cloud_playback": playback_providers.select(db, user.id).cloud_route,
             "plex_library": latest_plex_library_summary(db),
             "query": query,
             "message": message,
@@ -1423,6 +1488,8 @@ async def title_page(
     user=Depends(require_user),
     db=Depends(get_db),
 ):
+    from omakase.plus.providers import playback as playback_providers
+
     if library_id is not None or households.feature_enabled():
         selected = (
             households.resolve_scope(db, viewer_id=user.id, library_id=library_id)
@@ -1468,6 +1535,7 @@ async def title_page(
         {
             **_product_context(request, user, active_page="library"),
             "title": title,
+            "cloud_playback": playback_providers.select(db, user.id).cloud_route,
             "message": message,
             "completed": completed,
             "tracker_state": tracker["sync_state"] if tracker else None,
@@ -1757,16 +1825,20 @@ def _render_title_removal(
     request: Request,
     user,
     preview: dict,
+    db,
     *,
     error: str = "",
     status_code: int = 200,
 ):
+    from omakase.plus.providers import playback as playback_providers
+
     return templates.TemplateResponse(
         request,
         "title_remove.html",
         {
             **_product_context(request, user, active_page="library"),
             "removal": preview,
+            "cloud_playback": playback_providers.select(db, user.id).cloud_route,
             "error": error,
         },
         status_code=status_code,
@@ -1900,7 +1972,7 @@ async def title_removal_page(
     preview["local_list_removed"] = local_removed(
         db, user_id=user.id, anilist_id=preview["anilist_id"], season=preview["season_number"]
     )
-    return _render_title_removal(request, user, preview)
+    return _render_title_removal(request, user, preview, db)
 
 
 @router.post("/library/{monitor_id}/local-list/{action}")
@@ -1969,6 +2041,7 @@ async def remove_title_media(
             request,
             user,
             preview,
+            db,
             error=str(exc),
             status_code=422,
         )
@@ -1989,22 +2062,35 @@ async def discover_page(
     kind: Literal["anime", "movies", "tv"] = "anime",
     run: int | None = None,
     message: str = "",
+    genre_id: str | None = None,
+    sort: str | None = None,
+    include_completed: bool | None = None,
     user=Depends(require_user),
     db=Depends(get_db),
 ):
     if mode not in {"browse", "recommend", "add"}:
         raise HTTPException(status_code=422, detail="Discover mode is unsupported")
     if mode == "browse" and run is None:
-        from omakase.plus.discover_hub import continue_shelf, viewer_monitors
+        filtered_movies = None
+        if kind == "movies" and any(
+            value is not None for value in (genre_id, sort, include_completed)
+        ):
+            from omakase.plus.movie_discovery import movie_filter_results
 
-        continuing = continue_shelf(viewer_monitors(db, user.id)) if kind == "anime" else None
+            filtered_movies = await movie_filter_results(
+                db,
+                user.id,
+                genre_id=genre_id,
+                sort="personalized" if sort is None else sort,
+                include_completed=bool(include_completed),
+            )
         return templates.TemplateResponse(
             request,
             "discover_hub.html",
             {
                 **_product_context(request, user, active_page="discover"),
-                "continue_shelf": continuing,
                 "discover_kind": kind,
+                "filtered_movies": filtered_movies,
                 "message": message,
             },
             headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
@@ -2054,34 +2140,66 @@ async def discover_rows(
     user=Depends(require_user),
     db=Depends(get_db),
 ):
-    from omakase.plus import discover_hub as hub
+    from omakase.plus import for_you
 
-    history_unavailable = False
-    if kind == "anime":
-        catalog, watched = await asyncio.gather(
-            hub.anime_catalog(), hub.tracker_watched_ids(db, user.id)
-        )
-        history_unavailable = watched is None
-        rows = (
-            []
-            if history_unavailable
-            else hub.anime_shelves(db, user.id, catalog, hub.viewer_monitors(db, user.id), watched)
-        )
-    else:
-        rows = await hub.screen_shelves(db, user.id)
-        if kind != "screen":
-            rows = [row for row in rows if row["key"] == kind]
+    payload = await for_you.recommendations(db, user.id, kind)
+    personal = _personal_for_you(db, user.id)
     return templates.TemplateResponse(
         request,
         "_discover_rows.html",
         {
-            "rows": rows,
+            **payload,
             "kind": kind,
-            "history_unavailable": history_unavailable,
             "csrf_token": _csrf_token(request),
+            "personal_requests": personal,
         },
         headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
     )
+
+
+def _personal_for_you(db, user_id):
+    return not households.feature_enabled() or (
+        households.selected_scope(db, viewer_id=user_id).kind == "personal"
+    )
+
+
+_for_you_form_router = APIRouter(
+    route_class=bounded_form_route(4096, "Title request form is too large.")
+)
+
+
+@_for_you_form_router.post("/discover/requests/{operation}")
+async def discover_title_request(
+    request: Request,
+    operation: Literal["submit", "check"],
+    kind: Literal["anime", "movie", "tv"] = Form(...),
+    title_id: str = Form(..., max_length=12),
+    csrf_token: str = Form(""),
+    user=Depends(require_user),
+    db=Depends(get_db),
+):
+    from omakase.plus import for_you
+
+    _require_csrf(request, csrf_token)
+    if not _personal_for_you(db, user.id):
+        raise HTTPException(409, "Switch to your personal library to request a For You title.")
+    action = for_you.submit_request if operation == "submit" else for_you.refresh_request
+    category = "movies" if kind == "movie" else kind
+    params = {"kind": category}
+    try:
+        result = await action(db, user.id, kind, title_id)
+        params["message"] = f"{result['label']} · {result['title']}"
+        params["request"] = f"{kind}:{result['title_id']}"
+    except for_you.ForYouError as error:
+        params["message"] = error.detail
+    return RedirectResponse(
+        "/plus/discover?" + urlencode(params),
+        status_code=303,
+        headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+    )
+
+
+router.include_router(_for_you_form_router)
 
 
 @router.get("/discover/tv-art/{tmdb_id}")
@@ -2147,6 +2265,8 @@ async def activity_page(
 ):
     if view not in {"watch", "system"}:
         raise HTTPException(422, "Invalid history view")
+    from omakase.plus.providers import playback as playback_providers
+
     try:
         activity_data = activity_view(db, user_id=user.id, outcome=outcome, page=page)
         history = viewing_history(db, user_id=user.id, limit=24, page=page)
@@ -2159,6 +2279,7 @@ async def activity_page(
             **_product_context(request, user, active_page="activity"),
             **activity_data,
             "activity_view": view,
+            "cloud_playback": playback_providers.select(db, user.id).cloud_route,
             "watch_history": history["items"],
             "history_page": history["page"],
             "history_has_more": history["has_more"],

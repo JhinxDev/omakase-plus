@@ -1,3 +1,4 @@
+{% from "_request_timeline.html" import request_timeline %}
 {% from "_watched_feedback.html" import watched_feedback %}
 {% macro shelf(row) -%}
 <section class="hub-shelf" aria-labelledby="hub-{{ row.key }}">
@@ -5,7 +6,7 @@
     <h2 id="hub-{{ row.key }}">{{ row.title }}</h2>
     {% if row.note %}<p>{{ row.note }}</p>{% endif %}
   </div>
-  <div id="hub-rail-{{ row.key }}" class="media-rail hub-rail{% if row.key == 'top' %} hub-rail-featured{% endif %}" role="group" aria-label="{{ row.title }}">
+  <div id="hub-rail-{{ row.key }}" class="media-rail hub-rail" role="group" aria-label="{{ row.title }}">
     {% for card in row.cards %}
     <div{% if card.kind == "anime" and row.key != "continue" %} data-hub-anime="{{ card.id }}"{% endif %}>
       <article class="hub-card">
@@ -16,21 +17,24 @@
           </div>
           <h3>{{ card.title }}</h3>
         </a>
-        <p class="hub-meta">{{ card.format }}{% if card.episodes and card.episodes > 1 %} · {{ card.episodes }} eps{% endif %}{% if card.airing %} · Airing{% endif %}{% if card.score %} · {{ card.score }}% AniList{% endif %}</p>
-        {% if card.kind == "anime" and row.key != "continue" %}
-        <details class="hub-options">
-          <summary aria-label="Options for {{ card.title }}">Options <span aria-hidden="true">+</span></summary>
-          <div class="feedback-actions" data-title="{{ card.title }}" data-source="anilist" data-media-id="{{ card.id }}">
-            {% if not card.owned %}
-            <form method="post" action="/plus/add/preview" data-busy-form>
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <input type="hidden" name="query" value="https://anilist.co/anime/{{ card.id }}/">
-              <button class="text-action" type="submit" data-busy-label="Checking…">Add to library</button>
-            </form>
-            {% if not card.saved %}<button type="button" class="text-action btn-plan" data-media-id="{{ card.id }}" data-title="{{ card.title }}">Save to watchlist</button>{% endif %}
+        <p class="hub-meta hub-card-meta"><span>{{ card.format }}</span>{% if card.episodes and card.episodes > 1 %}<span class="hub-episode-count">{{ card.episodes }} episodes</span>{% endif %}{% if card.airing %}<span class="hub-airing">Airing</span>{% endif %}{% if card.score %}<span class="hub-score">{{ card.score }}% AniList</span>{% endif %}</p>
+        {% if personal_requests and card.request %}
+        <p class="hub-request-label">{{ card.request.label }}</p>
+        {% endif %}
+        {% if row.key != "continue" %}
+        <details class="hub-options" name="recommendation-options">
+          <summary aria-label="Options for {{ card.title }}">Options <span aria-hidden="true">···</span></summary>
+          <div class="feedback-actions" {% if card.kind == "anime" %}data-title="{{ card.title }}" data-source="anilist" data-media-id="{{ card.id }}"{% endif %}>
+            {% if personal_requests and card.can_request %}{{ request_form(card, "text-action") }}{% endif %}
+            {% if card.kind == "anime" %}
+              {% if not card.owned and not card.saved %}<button type="button" class="text-action btn-plan" data-media-id="{{ card.id }}" data-title="{{ card.title }}">Save to watchlist</button>{% endif %}
+              {{ watched_feedback() }}
+              <button type="button" class="text-action btn-feedback" data-feedback="not_for_me">Not for me</button>
+            {% elif card.kind == "movie" %}
+              <a class="text-action" href="{{ card.href }}#movie-rating">Watch status &amp; rating</a>
+            {% elif card.kind == "tv" %}
+              <a class="text-action" href="{{ card.href }}#tv-history">Watch status &amp; rating</a>
             {% endif %}
-            {{ watched_feedback() }}
-            <button type="button" class="text-action btn-feedback" data-feedback="not_for_me">Not for me</button>
           </div>
         </details>
         {% endif %}
@@ -40,21 +44,60 @@
   </div>
 </section>
 {%- endmacro %}
+{% macro request_form(card, button_class) -%}
+<form method="post" action="/plus/discover/requests/submit" data-busy-form data-single-flight>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="kind" value="{{ card.kind }}">
+  <input type="hidden" name="title_id" value="{{ card.id }}">
+  <button class="{{ button_class }}" type="submit" aria-label="Request {{ card.title }}" data-busy-label="Requesting…">Request title</button>
+</form>
+{%- endmacro %}
 {% for row in rows %}{{ shelf(row) }}{% else %}
 <section class="hub-shelf hub-unavailable">
   {% if history_unavailable %}
   <h2>Your AniList history is temporarily unavailable</h2>
   <p><a href="/plus/discover">Try again</a> to load picks that exclude titles you’ve watched.</p>
   {% elif kind == "movies" %}
-  <h2>Movies for You</h2><p><a href="/plus/discover/movies">Browse movie discovery</a>.</p>
+  <h2>Movies for You</h2><p><a href="/plus/discover?kind=movies">Browse movie discovery</a>.</p>
   {% elif kind == "tv" %}
   <h2>TV Shows for You</h2><p><a href="/plus/tv">Browse your TV library</a>.</p>
   {% elif kind == "anime" %}
-  <h2>Anime recommendations are temporarily unavailable</h2>
-  <p><a href="/plus/search?kind=anime">Search anime</a> or <a href="/plus/discover?mode=recommend">ask for a menu</a>.</p>
+  <h2>Anime for You</h2>
+  <p>Recommendations are temporarily unavailable. <a href="/plus/search?kind=anime">Search anime</a>.</p>
   {% else %}
   <h2>Movies and TV</h2>
-  <p>Browse <a href="/plus/discover/movies">movie discovery</a> or <a href="/plus/tv">your TV library</a>.</p>
+  <p>Browse <a href="/plus/discover?kind=movies">movie discovery</a> or <a href="/plus/tv">your TV library</a>.</p>
   {% endif %}
 </section>
 {% endfor %}
+
+{% if personal_requests and requests %}
+<section class="hub-shelf hub-requests" aria-labelledby="hub-requests">
+  <h2 id="hub-requests">Your requests</h2>
+  <ul class="request-list">
+    {% for item in requests %}
+    <li class="request-card"{% if item.kind == "movie" and item.can_check %} data-request-refresh="/plus/movies/{{ item.title_id }}/request-status"{% endif %}>
+      <div class="request-card-heading">
+        <h3><a href="{{ item.href }}">{{ item.title }}</a></h3>
+        <span class="hub-request-label" data-request-label aria-live="polite">{{ item.label }}</span>
+      </div>
+      <p class="hub-meta" data-request-detail>{{ item.detail }}</p>
+      {% if item.timeline %}
+      <details class="request-progress" data-title-request="{{ item.kind }}:{{ item.title_id }}">
+        <summary>Request timeline<span class="sr-only"> for {{ item.title }}</span></summary>
+        {{ request_timeline(item) }}
+      </details>
+      {% endif %}
+      {% if item.can_check %}
+      <form method="post" action="/plus/discover/requests/check" data-busy-form data-single-flight data-request-check>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="kind" value="{{ item.kind }}">
+        <input type="hidden" name="title_id" value="{{ item.title_id }}">
+        <button class="text-action" type="submit" aria-label="Check status for {{ item.title }}" data-busy-label="Checking…">Check status</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}

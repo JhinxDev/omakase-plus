@@ -9,16 +9,16 @@ from __future__ import annotations
 
 import sqlite3
 
-from omakase.plus.db import _connect
+from omakase.plus.db import _connect_runtime
 
 
 def get_db() -> sqlite3.Connection:
     """FastAPI dependency — yields a per-request database connection.
 
-    Creates a fresh connection (WAL mode, foreign keys on, migrations checked),
-    yields it, and closes it when the request completes.
+    Opens a fresh connection to the migrated database, checks schema compatibility,
+    and closes it when the request completes.
     """
-    conn = _connect()
+    conn = _connect_runtime()
     try:
         yield conn
     finally:

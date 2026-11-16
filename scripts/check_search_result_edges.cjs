@@ -1,15 +1,20 @@
 /* Real native Edge scrolling: mixed result lengths, both ends and high contrast. */
+const { qaRuntime, qaPython } = require('./qa-environment.cjs');
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
-const runtime = process.env.OMAKASE_QA_NODE_MODULES || path.join(root, 'node_modules');
+// Pinned browser on purpose: the scroll container geometry below is measured with
+// native Edge scrollbars, which needs the installed msedge channel and the default
+// --hide-scrollbars argument removed. Registered as a documented exception in
+// scripts/qa-environment.test.cjs.
+const runtime = qaRuntime();
 const { chromium } = require(require.resolve('playwright', { paths: [runtime] }));
 const output = process.env.OMAKASE_SEARCH_EDGE_OUTPUT || path.join(root, '.qa-artifacts/search-edges');
 const poster = process.env.OMAKASE_SEARCH_EDGE_POSTER;
 if (poster) assert(fs.statSync(poster).isFile(), 'Use an existing cached poster fixture');
 fs.mkdirSync(output, { recursive: true });
-const html = execFileSync(process.env.OMAKASE_QA_PYTHON || path.join(root, '.venv/Scripts/python.exe'), ['-c', "import runpy; f=runpy.run_path('tests/plus/test_global_search_ui.py'); print(f['render_search'](kind='anime',query=''))"], { cwd: root, encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
+const html = execFileSync(qaPython(), ['-c', "import runpy; f=runpy.run_path('tests/plus/test_global_search_ui.py'); print(f['render_search'](kind='anime',query=''))"], { cwd: root, encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
 const titles = ['Solo Adventurer', 'The Very Long Journey Beyond Every Mountain and Across the Distant Kingdoms', 'A Quiet Film', 'A Story Told Across Three Different Generations', 'Summer', 'The Return of the Travelers Who Thought Their Journey Had Already Ended', 'A Short Story', 'The Last Adventure'];
 const cards = titles.map((title, index) => ({ title, media_type: 'anime', year: 2020 + index, format: index % 2 ? 'TV special feature' : 'TV', library_id: index % 2 ? 7 : null, watch_status: index % 3 ? 'watching' : 'completed', rating: index % 2 ? 8.5 : null, url: `/plus/catalog/anime/${index + 1}` }));
 if (poster) cards.forEach(card => { card.poster_url = '/plus/demo-poster.jpg'; });

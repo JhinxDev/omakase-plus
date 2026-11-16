@@ -22,6 +22,10 @@ from omakase.plus.outbound import OutboundError, pin_destination
 from omakase.plus.secrets import read_secret
 
 _ENDPOINT = "https://graphql.anilist.co"
+_ANIME_POSTER = re.compile(
+    r"https://s4\.anilist\.co/file/anilistcdn/media/anime/cover/(?:medium|large)/"
+    r"[A-Za-z0-9_-]{1,128}\.(?:jpg|jpeg|png|webp)"
+)
 _MAX_BYTES = 524288
 _TIMEOUT = 12.0
 _PUBLIC_CACHE: OrderedDict = OrderedDict()
@@ -37,7 +41,7 @@ _MESSAGES = {
     "authentication_failed": "AniList could not verify this connection. Reconnect it in Settings.",
 }
 _FIELDS = """id type title { english romaji native } seasonYear startDate { year }
-format episodes status(version:2) description(asHtml:false) genres
+format episodes status(version:2) description(asHtml:false) genres coverImage { large }
 studios(isMain:true) { nodes { name } }"""
 _PRIVATE = "mediaListEntry { mediaId userId status progress score(format:POINT_10_DECIMAL) }"
 
@@ -251,6 +255,8 @@ class AnimeCatalogSearch:
             if isinstance(row, dict) and row.get("name"):
                 studio = _plain(row["name"], 200)
                 break
+        cover = raw.get("coverImage")
+        poster = cover.get("large") if isinstance(cover, dict) else None
         return {
             "id": media_id,
             "anilist_id": media_id,
@@ -263,6 +269,9 @@ class AnimeCatalogSearch:
             "status": _plain(raw.get("status"), 40) or None,
             "studio": studio,
             "poster_url": f"/plus/media/{media_id}/poster",
+            "catalog_poster_url": poster
+            if isinstance(poster, str) and _ANIME_POSTER.fullmatch(poster)
+            else None,
             "url": f"/plus/catalog/anime/{media_id}",
         }
 

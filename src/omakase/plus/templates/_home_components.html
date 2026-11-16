@@ -1,0 +1,146 @@
+{% macro home_banner(banner) -%}
+{# One compact panoramic banner: artwork behind, title and playback controls over it. #}
+<section class="cinema-hero" aria-labelledby="featured-title" data-home-banner{% if banner.neutral %} data-banner-neutral{% endif %} data-banner-domain="{{ banner.domain or 'neutral' }}">
+  {% if banner.artwork.landscape or banner.artwork.poster %}<span class="home-banner-ambient" aria-hidden="true"></span>{% endif %}
+  {% if banner.artwork.landscape %}
+  <picture class="cinema-hero-art home-banner-art" data-hero-quality{% if banner.artwork.poster %} data-hero-poster="{{ banner.artwork.poster }}"{% endif %}>
+    <img src="{{ banner.artwork.landscape }}" alt="" fetchpriority="high" data-banner-landscape>
+  </picture>
+  <span class="home-banner-scrim" aria-hidden="true"></span>
+  {% elif banner.artwork.poster %}
+  <picture class="cinema-hero-art home-banner-art home-banner-art--poster" data-hero-quality>
+    <img src="{{ banner.artwork.poster }}" alt="" fetchpriority="high" data-banner-landscape>
+  </picture>
+  <span class="home-banner-scrim" aria-hidden="true"></span>
+  {% else %}
+  <span class="home-banner-void" data-banner-missing-art aria-hidden="true"></span>
+  {% endif %}
+  <div class="cinema-hero-copy home-banner-copy">
+    <div class="cinema-eyebrow"><img class="cinema-brandmark" src="/plus/static/omakase-seal.svg?v={{ asset_version }}" width="28" height="28" alt="" aria-hidden="true"><span>{{ banner.eyebrow }}</span></div>
+    <h1 id="featured-title">{{ banner.title }}</h1>
+    {% if banner.media_detail or banner.series or banner.progress.percent is not none %}
+    <div class="cinema-meta home-banner-meta">
+      {% if banner.series %}<span class="home-banner-count">Watched <b>{{ banner.series.watched }}/{{ banner.series.total }}</b></span>{% endif %}
+      {% if banner.media_detail %}<span class="home-banner-media-detail">{{ banner.media_detail }}</span>{% endif %}
+      {% if banner.progress.remaining_label %}<span class="home-banner-remaining">{{ banner.progress.remaining_label }}</span>{% endif %}
+      {% if banner.progress.percent is not none %}<span class="home-banner-percent">{{ banner.progress.percent }}% watched</span>{% endif %}
+    </div>
+    {% endif %}
+    <div class="home-banner-controls">
+      <div class="cinema-actions">
+        {% if banner.neutral %}
+        <a class="button button-primary" href="/plus/discover">Find something to watch</a>
+        <a class="button button-secondary" href="/plus/library">Browse your library</a>
+        {% else %}
+        <a class="button button-primary home-banner-play" href="{{ banner.play_url }}" aria-label="{{ banner.play_label }}"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>{{ banner.play_label if banner.play_action == 'detail' else 'Resume' if banner.play_action == 'resume' else 'Play' }}</a>
+        <a class="button button-secondary" href="{{ banner.detail_url }}"><span class="cinema-info-icon" aria-hidden="true">i</span> More info</a>
+        {% endif %}
+      </div>
+      {% if banner.progress.percent is not none %}<progress class="home-banner-progress" max="100" value="{{ banner.progress.percent }}" aria-hidden="true"></progress>{% elif banner.series and banner.series.total %}<progress class="home-banner-progress" max="{{ banner.series.total }}" value="{{ banner.series.watched }}" aria-hidden="true"></progress>{% endif %}
+    </div>
+  </div>
+</section>
+{%- endmacro %}
+
+{% macro home_card(card) -%}
+{# Shared card: 16:9 landscape artwork, progress, kebab menu. #}
+{% set anime = card.anime %}
+{% set label = card.title ~ (', resume at saved position' if card.play_action == 'resume' else '') %}
+{% set episode = card.episode.next_episode if card.play_action == 'play-next' else card.episode.episode %}
+<article class="om-card" data-domain="{{ card.domain }}" data-card-id="{{ card.id }}">
+  <div class="om-card-cover">
+    <span class="media-art-fallback om-card-art om-card-art--empty" data-fallback-title="{{ card.title }}" data-artwork-missing aria-hidden="true"><span>{{ card.title }}</span></span>
+    <a class="om-card-link" href="{{ card.play_url or card.detail_url }}" aria-label="{{ label }}">
+      {% if card.artwork.landscape %}
+      <img class="om-card-art" src="{{ card.artwork.landscape }}" alt="" loading="lazy" decoding="async" data-artwork data-fallback="poster" data-poster="{{ card.artwork.poster or '' }}">
+      {% elif card.artwork.poster %}
+      <img class="om-card-art om-card-art--poster" src="{{ card.artwork.poster }}" alt="" loading="lazy" decoding="async" data-artwork data-fallback="none">
+      {% endif %}
+      <span class="om-card-play" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span>
+    </a>
+    {% if anime and anime.episode_total %}
+    <progress max="100" value="{{ anime.progress_percent }}" class="om-card-progress" aria-label="{{ card.title }}: {{ anime.progress_episodes }} of {{ anime.episode_total }} episodes watched"></progress>
+    {% elif card.progress.percent is not none %}
+    <progress max="100" value="{{ card.progress.percent }}" class="om-card-progress" aria-label="{{ card.title }}: {{ card.progress.percent }}% watched"></progress>
+    {% endif %}
+  </div>
+  <div class="om-card-body">
+    <div class="om-card-copy">
+      <h3>{% if card.play_url %}<a class="om-card-title" href="{{ card.play_url }}">{{ card.title }}</a>{% else %}<a class="om-card-title" href="{{ card.detail_url }}">{{ card.title }}</a>{% endif %}</h3>
+      <p class="om-card-meta">
+        {% if anime %}
+        <span class="om-card-context">Watched <b>{{ anime.progress_episodes }}{% if anime.episode_total %}/{{ anime.episode_total }}{% endif %}</b></span>
+        {% if episode %}
+        {% set up_next = card.play_action == 'play-next' or not card.detail_label or card.detail_label == 'Up next' %}
+        <span class="om-card-episode"><span class="om-card-context">Episode {{ episode }}</span> · <span class="om-card-status{% if up_next %} om-card-up-next{% endif %}">{{ 'Up next' if up_next else card.detail_label }}</span></span>
+        {% elif card.detail_label %}<span class="om-card-status">{{ card.detail_label }}</span>{% endif %}
+        {% else %}
+        {% set up_next = card.domain == 'tv' and card.play_action == 'play-next' %}
+        <span class="om-card-context">{{ card.subtitle.removesuffix(' up next') if up_next else card.subtitle }}</span>
+        {% if card.detail_label %}<span class="om-card-status{% if up_next %} om-card-up-next{% endif %}">{{ 'Up next' if up_next else card.detail_label }}</span>{% endif %}
+        {% endif %}
+      </p>
+      {% if anime and anime.last_source_label and anime.last_source_label != 'Not tracked yet' and (not cloud_playback or anime.last_source_label != 'Plex') %}
+      <span class="om-card-source" data-watch-source="{{ anime.last_source_label | lower | replace(' ', '-') }}">Updated by {{ anime.last_source_label }}</span>
+      {% endif %}
+    </div>
+    <details class="om-card-menu">
+      <summary aria-label="More options for {{ card.title }}"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg></summary>
+      <div class="om-card-menu-panel">
+        {% if card.play_url %}<a href="{{ card.play_url }}">{{ card.play_label }}</a>{% endif %}
+        <a href="{{ card.detail_url }}">More info</a>
+        {% if anime and anime.playback_navigation_state %}<span class="om-card-menu-note">{{ anime.playback_navigation_state }}</span>{% endif %}
+      </div>
+    </details>
+  </div>
+</article>
+{%- endmacro %}
+
+{% macro home_row(row) -%}
+<section class="home-row" aria-labelledby="row-{{ row.id }}" data-home-row="{{ row.id }}">
+  <header class="stream-section-heading home-row-heading">
+    <div><h2 id="row-{{ row.id }}">{{ row.label }}</h2></div>
+    {% if row.count %}<a class="home-row-see-all" href="{{ '/plus/library?lifecycle=in_progress' if row.domain == 'anime' else ('/plus/movies' if row.domain == 'movie' else ('/plus/tv' if row.domain == 'tv' else '/plus/home')) }}">See all</a>{% endif %}
+  </header>
+  {% if row.cards %}
+  <div class="om-rail" id="rail-{{ row.id }}" data-nav-scroll role="group" aria-label="{{ row.label }}">{% for card in row.cards %}{{ home_card(card) }}{% endfor %}</div>
+  {% else %}
+  <p class="om-row-empty">Nothing here yet. <a href="/plus/library">Browse your library</a> to start something.</p>
+  {% endif %}
+</section>
+{%- endmacro %}
+
+{% macro edit_home_dialog(rows, addable, csrf_token, action_url='/plus/home/layout') -%}
+{% set order = namespace(rows=rows) %}
+{% set row_ids = rows | map(attribute='id') | list %}
+{% for row in addable if row.id not in row_ids %}
+  {% set order.rows = order.rows + [{'id': row.id, 'label': row.label, 'hidden': true}] %}
+{% endfor %}
+<dialog class="edit-home" id="edit-home" aria-labelledby="edit-home-heading" data-edit-home>
+  <form method="post" action="{{ action_url }}" class="edit-home-form" data-edit-home-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="rows" value="{{ order.rows | map(attribute='id') | list | join(',') }}" data-edit-home-order>
+    {% for row in order.rows if row.hidden %}<input type="hidden" name="hidden" value="{{ row.id }}" data-hidden-row>{% endfor %}
+    <header class="edit-home-head">
+      <div><h2 id="edit-home-heading">Edit Home</h2><p>Reorder, hide, or add rows. Saved for this profile on every device.</p></div>
+      <button type="button" class="edit-home-close" aria-label="Close Edit Home" data-edit-home-close><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+    </header>
+    <ol class="edit-home-rows" data-edit-home-rows>
+      {% for row in order.rows %}
+      <li class="edit-home-row{% if row.hidden %} is-hidden{% endif %}" data-row-id="{{ row.id }}">
+        <span class="edit-home-handle" aria-hidden="true">≡</span>
+        <span class="edit-home-name">{{ row.label }}{% if row.hidden %}<small>Hidden</small>{% endif %}</span>
+        <button type="submit" name="action" value="move-up" formaction="{{ action_url }}?action=move-up&amp;target={{ row.id }}"{% if loop.first %} disabled{% endif %} aria-label="Move {{ row.label }} up">↑</button>
+        <button type="submit" name="action" value="move-down" formaction="{{ action_url }}?action=move-down&amp;target={{ row.id }}"{% if loop.last %} disabled{% endif %} aria-label="Move {{ row.label }} down">↓</button>
+        <button type="submit" name="action" value="remove" formaction="{{ action_url }}?action=remove&amp;target={{ row.id }}"{% if row.hidden %} hidden{% endif %} aria-label="Hide {{ row.label }}">Hide</button>
+        <button type="submit" name="action" value="add" formaction="{{ action_url }}?action=add&amp;target={{ row.id }}"{% if not row.hidden %} hidden{% endif %} aria-label="Show {{ row.label }}">Show</button>
+      </li>
+      {% endfor %}
+    </ol>
+    <footer class="edit-home-foot">
+      <button type="submit" class="button button-secondary" name="action" value="reset" formaction="{{ action_url }}?action=reset">Reset to default</button>
+      <button type="submit" class="button button-primary" name="action" value="save">Done</button>
+    </footer>
+  </form>
+</dialog>
+{%- endmacro %}

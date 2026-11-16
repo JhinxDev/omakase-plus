@@ -51,16 +51,21 @@ def positions(db, user_id, file_keys):
     if not keys:
         return {}
     rows = db.execute(
-        "SELECT file_key,position_seconds,duration_seconds FROM cloud_playback_resumes "
+        "SELECT file_key,position_seconds,duration_seconds,updated_at FROM cloud_playback_resumes "
         f"WHERE user_id=? AND file_key IN ({','.join('?' for _ in keys)})",
         (user_id, *keys),
     ).fetchall()
     result = {}
-    for file_key, position, duration in rows:
+    for file_key, position, duration, updated in rows:
         position, duration = float(position), float(duration)
         if position <= 5 or position >= duration - 30:
             continue
-        result[file_key] = {"position_seconds": position, "label": clock(position)}
+        result[file_key] = {
+            "position_seconds": position,
+            "duration_seconds": duration,
+            "updated_at": updated,
+            "label": clock(position),
+        }
     return result
 
 

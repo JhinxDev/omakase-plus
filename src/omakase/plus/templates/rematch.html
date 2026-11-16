@@ -11,7 +11,7 @@
     <div><dt>Current title</dt><dd>{{ plan.identity.title }}</dd></div>
     <div><dt>AniList</dt><dd>{{ plan.identity.anilist_id }}</dd></div>
     <div><dt>Format</dt><dd>{{ plan.identity.format }}</dd></div>
-    <div><dt>Season</dt><dd>{{ plan.identity.season_number or '—' }}</dd></div>
+    <div><dt>Season</dt><dd>{{ plan.identity.season_number or 'Unknown' }}</dd></div>
     <div><dt>Aliases</dt><dd>{{ plan.identity.search_titles | join(', ') }}</dd></div>
   </dl>
   <ol>{% for action in plan.proposed_actions %}<li><span>{{ "%02d" | format(loop.index) }}</span>{{ action }}</li>{% endfor %}</ol>

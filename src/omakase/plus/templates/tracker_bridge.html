@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Personal tracker sync — Omakase Plus{% endblock %}
+{% block title %}Personal tracker sync | Omakase Plus{% endblock %}
 {% block masthead %}{% endblock %}
 {% macro tracker_value(name, value) -%}
 {% if value is none %}Not set{% elif name == 'score' %}{{ '%g' | format(value / 10) }}/10{% elif value is boolean %}{{ 'Yes' if value else 'No' }}{% elif value is mapping and value.year %}{{ value.year }}{% if value.month %}-{{ '%02d' | format(value.month) }}{% endif %}{% if value.day %}-{{ '%02d' | format(value.day) }}{% endif %}{% else %}{{ value }}{% endif %}

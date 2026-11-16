@@ -121,13 +121,24 @@ def test_home_prioritizes_continue_watching_and_uses_viewer_navigation(client):
     response = client.get("/plus/home")
 
     assert response.status_code == 200
-    assert response.text.index("Continue watching") < response.text.index("Ready to watch")
+    # The three Continue Watching shelves lead, in this order, and the opt-in
+    # Ready to Watch shelf is not part of the shipped default layout.
+    assert response.text.index("Continue Watching Anime") < response.text.index(
+        "Continue Watching Movies"
+    )
+    assert response.text.index("Continue Watching Movies") < response.text.index(
+        "Continue Watching TV Shows"
+    )
+    assert "Ready to Watch" not in response.text.split('class="edit-home"', 1)[0]
     assert 'aria-label="Primary navigation"' in response.text
+    assert 'class="app-sidebar"' in response.text
     assert 'aria-current="page"' in response.text
     assert "nav-number" not in response.text
     assert "product-sidebar" not in response.text
     assert "私設" not in response.text
     assert "おまかせ" not in response.text
+    # Edit Home belongs to Home only.
+    assert "data-edit-home-open" in response.text
 
 
 def test_home_keeps_continue_watching_in_a_compact_scannable_rail(client):
@@ -136,9 +147,44 @@ def test_home_keeps_continue_watching_in_a_compact_scannable_rail(client):
 
     html = client.get("/plus/home").text
 
-    assert 'aria-label="Continue watching"' in html
+    assert 'data-home-row="continue-anime"' in html
+    assert 'class="om-rail" id="rail-continue-anime" data-nav-scroll' in html
     assert "continue-feature" not in html
     assert "featured_media" not in html
+    # Edit Home is a top-bar control on Home and nowhere else.
+    library = client.get("/plus/library").text
+    assert "data-edit-home-open" not in library
+
+
+def test_edit_home_accepts_its_rendered_form_and_resets(client):
+    _signup(client)
+    home = client.get("/plus/home")
+    dialog = home.text.split('id="edit-home"', 1)[1].split("</dialog>", 1)[0]
+    assert dialog.count("<form ") == 1
+    csrf = re.search(r'name="csrf_token" value="([0-9a-f]{64})"', dialog).group(1)
+
+    saved = client.post(
+        "/plus/home/layout",
+        data={
+            "csrf_token": csrf,
+            "rows": "continue-tv,continue-anime,continue-movies,watchlist,ready-to-watch,recently-watched",
+            "hidden": ["continue-movies", "ready-to-watch", "recently-watched"],
+        },
+    )
+    assert saved.status_code == 200
+    assert re.findall(r'data-home-row="([^"]+)"', saved.text) == [
+        "continue-tv",
+        "continue-anime",
+        "watchlist",
+    ]
+
+    reset = client.post("/plus/home/layout?action=reset", data={"csrf_token": csrf})
+    assert reset.status_code == 200
+    assert re.findall(r'data-home-row="([^"]+)"', reset.text) == [
+        "continue-anime",
+        "continue-movies",
+        "continue-tv",
+    ]
 
 
 def test_review_mode_is_unmistakable_and_discloses_disconnected_external_actions(
@@ -215,16 +261,35 @@ def test_mobile_navigation_exposes_search_history_and_available_media_destinatio
         expected.extend([("/plus/movies", "Movies"), ("/plus/tv", "TV Shows")])
     expected.extend(
         [
+            ("/plus/discover", "For You"),
+            ("/plus/requests", "Requests"),
+            # Extra destinations are reachable from More inside the same bar.
             ("/plus/search", "Search"),
-            ("/plus/discover", "For you"),
             ("/plus/activity", "History"),
         ]
     )
     assert destinations == expected
+    assert re.search(r'<div class="account-popover">.*?href="/plus/settings"', html, re.DOTALL)
+    assert html.count('class="mobile-more"') == 2
+    assert "data-mobile-more" in html
     assert [href for href, attrs, _ in links if 'aria-current="page"' in attrs] == ["/plus/home"]
-    assert not {"/plus/health/overview", "/plus/setup", "/plus/settings", "/plus/add"} & {
+    assert not {"/plus/health/overview", "/plus/setup", "/plus/add"} & {
         href for href, _ in destinations
     }
+
+
+def test_personal_library_and_settings_stay_in_the_account_menu(client, monkeypatch):
+    monkeypatch.setenv("OMAKASE_PLUS_HOUSEHOLDS_ENABLED", "true")
+    _signup(client)
+    html = client.get("/plus/home").text
+    sidebar = html.split('<aside class="app-sidebar">', 1)[1].split("</aside>", 1)[0]
+    account = html.split('<div class="account-popover">', 1)[1].split("</div>", 1)[0]
+    assert "Personal library" not in sidebar
+    assert 'href="/plus/settings"' not in sidebar
+    assert (
+        '<a class="account-library" href="/plus/settings/household">Personal library</a>' in account
+    )
+    assert 'href="/plus/settings"' in account
 
 
 def test_continue_card_exposes_progress_source_and_artwork_fallback(client):
@@ -235,10 +300,12 @@ def test_continue_card_exposes_progress_source_and_artwork_fallback(client):
 
     assert f'href="/plus/library/{monitor_id}"' in html
     assert '<progress max="100" value="33"' in html
-    assert '<span class="watched-count">Watched <b>4/12</b></span>' in html
+    assert '<span class="om-card-context">Watched <b>4/12</b></span>' in html
     assert 'aria-label="Solo Leveling: 4 of 12 episodes watched"' in html
-    assert '<span class="source-badge">Updated by Manual</span>' in html
-    assert 'class="media-art-fallback"' in html
+    assert (
+        '<span class="om-card-source" data-watch-source="manual">Updated by Manual</span>' in html
+    )
+    assert "media-art-fallback" in html
     assert 'data-fallback-title="Solo Leveling"' in html
 
 
@@ -389,7 +456,7 @@ def test_title_page_leads_with_artwork_progress_and_separates_technical_details(
     assert 'class="title-view-hero streaming-title-hero series-hero"' in html
     assert '<h1 id="series-title">Solo Leveling</h1>' in html
     assert 'data-series-backdrop="/plus/media/151807/poster"' in html
-    assert '<span class="watched-count">Watched <b>4/12</b></span>' in html
+    assert '<span class="om-card-context">Watched <b>4/12</b></span>' in html
     assert 'aria-label="Solo Leveling: 4 of 12 episodes watched"' in html
     assert '<progress max="100" value="33"' in html
     assert "Media availability &amp; playback" in html
@@ -416,9 +483,11 @@ def test_activity_defaults_to_visual_viewing_history_and_keeps_system_work_separ
     assert "data-history-placeholder" in card.group(1)
     assert "Image unavailable" in card.group(1)
     assert 'aria-label="Solo Leveling, episode 4"' in card.group(1)
-    assert '<h3 title="Episode 4">E4</h3>' in card.group(1)
+    assert '<h3 class="history-title" title="Solo Leveling">Solo Leveling</h3>' in card.group(1)
+    assert '<span class="history-kind">E4</span>' in card.group(1)
     assert "Progress saved" in card.group(1)
-    assert 'Observed <time datetime="2026-08-27T12:00:00Z"' in card.group(1)
+    assert '<time datetime="2026-08-27T12:00:00Z"' in card.group(1)
+    assert 'Observed' in card.group(1)
     assert "Added manually" in card.group(1)
     assert "Library activity log" not in html
     assert 'class="activity-table"' not in html

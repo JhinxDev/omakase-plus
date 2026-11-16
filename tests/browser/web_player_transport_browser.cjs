@@ -193,11 +193,10 @@ const hashes=()=>Object.fromEntries(files.map(file=>[file,crypto.createHash('sha
    assert.equal(await next.getAttribute('aria-disabled'),'false');assert.equal(await next.locator('[data-next-label]').textContent(),'Next episode');
    assert(await next.locator('[data-next-label]').isVisible());
    if(trackMenus){
-    assert.equal(await page.getByRole('link',{name:'Next episode',exact:true}).count(),1,'only the in-player Next is initially visible');
-    const navigation=page.locator('[data-player-episode-navigation]');assert.equal(await navigation.getAttribute('open'),null);
-    await navigation.locator('summary').focus();await page.keyboard.press('Enter');assert(await page.locator('[data-player-sidebar-next]').isVisible(),'native disclosure retains optional adjacent navigation');
-    await page.keyboard.press('Enter');assert.equal(await page.getByRole('link',{name:'Next episode',exact:true}).count(),1);
-    assert.equal(await page.getByRole('link',{name:'See episodes',exact:false}).count(),1);
+    const navigation=page.getByRole('navigation',{name:'Episode navigation'});
+    assert(await navigation.getByRole('link',{name:'Next episode',exact:true}).isVisible());
+    assert(await navigation.getByRole('link',{name:'All episodes',exact:true}).isVisible());
+    assert((await navigation.boundingBox()).y > (await page.locator('[data-player-container]').boundingBox()).y);
    }
    await page.screenshot({path:path.join(out,'next-episode-390.png')});
    report.nextEpisode={href,visibleLabel:true};
@@ -205,9 +204,9 @@ const hashes=()=>Object.fromEntries(files.map(file=>[file,crypto.createHash('sha
    await context.close();current=null;
    if(trackMenus){
     const fallback=await browser.newContext({viewport:{width:390,height:844},javaScriptEnabled:false}),p=await fallback.newPage();
-    await p.goto(base+'/review/sign-in?title=tv');await p.locator('[data-player-episode-navigation] > summary').click();
+    await p.goto(base+'/review/sign-in?title=tv');
     assert(await p.locator('[data-player-sidebar-next]').isVisible(),'adjacent episode navigation remains usable without JavaScript');
-    await p.goto(base+'/plus/watch/title/tv/100/1/2');await p.locator('[data-player-episode-navigation] > summary').click();
+    await p.goto(base+'/plus/watch/title/tv/100/1/2');
     assert(await p.locator('[data-player-previous]').isVisible(),'Previous remains available without JavaScript');
     report.noScriptNavigation=true;await fallback.close();
    }

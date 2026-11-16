@@ -1,0 +1,29 @@
+{# Owner review W-05: the watch status control is the app's own listbox, not a native
+   <select>. Chromium draws a native option popup with the OS font and colours and no
+   author CSS can reach it, which is why the open menu did not match the app. The form
+   field name and values are unchanged, so the existing routes keep working: the visible
+   control writes into a hidden input named "status". #}
+{% macro watch_status_field(current, field_id) %}
+{% set options = [('', 'Not recorded'), ('unwatched', 'Not watched'), ('watching', 'Watching'), ('completed', 'Watched'), ('dropped', 'Stopped watching')] %}
+{% set selected = current if current in ['unwatched', 'watching', 'completed', 'dropped'] else '' %}
+<div class="watch-status-field" data-watch-status data-value="{{ selected }}">
+  <span class="watch-status-label" id="{{ field_id }}-label">Watch status</span>
+  <input type="hidden" name="status" value="{{ selected }}">
+  <button type="button" class="watch-status-trigger" id="{{ field_id }}-trigger"
+          data-watch-status-trigger
+          aria-haspopup="listbox" aria-expanded="false"
+          aria-labelledby="{{ field_id }}-label {{ field_id }}-trigger"
+          aria-controls="{{ field_id }}-list">
+    <span data-watch-status-text>{% for value, label in options if value == selected %}{{ label }}{% endfor %}</span>
+    <svg aria-hidden="true" focusable="false" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+  </button>
+  <ul class="watch-status-list" id="{{ field_id }}-list" role="listbox"
+      aria-labelledby="{{ field_id }}-label" data-watch-status-list hidden>
+    {% for value, label in options %}
+    <li role="option" id="{{ field_id }}-option-{{ loop.index }}" data-value="{{ value }}"
+        aria-selected="{{ 'true' if value == selected else 'false' }}"
+        tabindex="-1">{{ label }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endmacro %}

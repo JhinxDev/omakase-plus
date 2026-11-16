@@ -9,7 +9,7 @@
 <script src="/plus/static/household.js?v={{ asset_version }}" defer></script>
 <div class="household-content">
 {% if item %}
-<a class="button button-secondary" href="/plus/libraries/{{ scope.library_id }}">Back to library</a>
+<a class="button button-secondary" href="/plus/libraries/{{ scope.library_id }}" data-nav-back>Back to library</a>
 <section class="editorial-panel household-panel household-media-detail">
 <span class="household-poster-frame"><span class="household-art-fallback" aria-hidden="true">Image unavailable</span><img class="household-poster" src="{{ item.artwork_url }}" alt="" data-household-poster loading="lazy" decoding="async"></span>
 <div><p>{{ item.domain|title }}{% if item.metadata.year %} · {{ item.metadata.year }}{% endif %}</p><h2>{{ item.title }}</h2>{% if item.metadata.overview %}<p>{{ item.metadata.overview }}</p>{% endif %}

@@ -68,7 +68,9 @@ def _anime_event_times(row):
     return payload, recorded, watched
 
 
-def anime_viewing_recency(db, user_id: int) -> dict[tuple[int, int], str]:
+def anime_viewing_recency(
+    db, user_id: int, *, include_completed: bool = False
+) -> dict[tuple[int, int], str]:
     """Title/season activity for Home, not a fabricated episode watch date.
 
     A Plex snapshot's observation time is an import time. Its validated season
@@ -80,8 +82,8 @@ def anime_viewing_recency(db, user_id: int) -> dict[tuple[int, int], str]:
         "SELECT e.source,e.event_key,e.episode,e.observed_at,e.payload_json,"
         "w.anilist_id,w.season_number FROM watch_events e JOIN watch_entries w "
         "ON w.id=e.watch_entry_id AND w.user_id=e.user_id "
-        f"WHERE e.user_id=? AND w.user_id=? AND w.status='watching' AND {_ANIME_VIEWING_EVENTS}",
-        (user_id, user_id),
+        f"WHERE e.user_id=? AND w.user_id=? AND w.status IN ('watching', ?) AND {_ANIME_VIEWING_EVENTS}",
+        (user_id, user_id, "completed" if include_completed else "watching"),
     )
     recency = {}
     for row in rows:

@@ -282,21 +282,31 @@ def test_first_segment_gets_a_cold_start_deadline():
         assert second.body.startswith(b"\x47")
         assert captured[0][0].endswith("00000.ts")
         assert captured[0][1]["timeout"] == 15 and captured[0][1]["attempts"] == 1
-        assert captured[1][1]["timeout"] == 20 and captured[1][1]["attempts"] == 2
+        # A later segment gets one long attempt inside a wider outer budget.
+        # The old 35 s wrapper around two 20 s attempts could never let the
+        # retry finish, so a slow but valid provider segment always surfaced
+        # as a 502 and was thrown away instead of being cached.
+        assert captured[1][1]["timeout"] == 60 and captured[1][1]["attempts"] == 1
 
     asyncio.run(run())
 
 
-def test_first_segment_falls_back_to_the_next_segment_when_it_is_empty():
-    calls = {"segment": 0}
+def test_first_segment_never_falls_back_to_the_next_segment():
+    """An empty first segment must fail, not answer with the second one.
+
+    The player caches whatever arrives under the requested URL, so a substituted
+    first segment shows a moment from later in the film for the rest of the
+    session. The audit proved this path answered segment one with segment two.
+    """
+    calls = {"first": 0, "second": 0}
 
     def handler(request):
         path = request.url.path
         if path.endswith("00000.ts"):
-            calls["segment"] += 1
+            calls["first"] += 1
             return httpx.Response(200, stream=Stream(b""))
         if path.endswith("00001.ts"):
-            calls["segment"] += 1
+            calls["second"] += 1
             return httpx.Response(200, stream=Stream(b"\x47next"))
         raise AssertionError(path)
 
@@ -307,11 +317,14 @@ def test_first_segment_falls_back_to_the_next_segment_when_it_is_empty():
             (ORIGIN + "/00000.ts", ORIGIN + "/00001.ts"),
         )
         request = Request({"type": "http", "method": "GET", "headers": []})
-        response = await streams.deliver(media, "00000.ts", request, lambda: None)
-        assert response.body == b"\x47next"
-        assert calls["segment"] == 2
+        with pytest.raises(DebridLibraryError) as caught:
+            await streams.deliver(media, "00000.ts", request, lambda: None)
+        return caught.value.status
 
-    asyncio.run(run())
+    status = asyncio.run(run())
+    assert status == 503
+    assert calls["second"] == 0, "the second segment must never be read for this request"
+    assert calls["first"] >= 1
 
 
 def test_first_segment_retries_once_after_a_cold_provider_timeout():
@@ -412,7 +425,7 @@ def test_cached_first_segment_is_served_without_upstream_reads():
 
 
 def test_prepare_can_return_before_the_first_segment_is_ready():
-    calls = {"segment": 0}
+    calls = {"segment": 0, "paths": []}
     playlist = (
         b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n"
         b"#EXTINF:5,\n00000.ts\n#EXTINF:5,\n00001.ts\n#EXT-X-ENDLIST\n"
@@ -422,6 +435,7 @@ def test_prepare_can_return_before_the_first_segment_is_ready():
         if request.url.path.endswith(".m3u8"):
             return httpx.Response(200, stream=Stream(playlist))
         calls["segment"] += 1
+        calls["paths"].append(request.url.path)
         return httpx.Response(200, stream=Stream(b"\x47warm"))
 
     async def run():
@@ -432,7 +446,9 @@ def test_prepare_can_return_before_the_first_segment_is_ready():
         request = Request({"type": "http", "method": "GET", "headers": []})
         response = await streams.deliver(media, "00000.ts", request, lambda: None)
         assert response.body == b"\x47warm"
-        assert calls["segment"] == 1
+        # The warmed segment is reused, not fetched a second time. Any other
+        # upstream read here is the forward readahead for the next segment.
+        assert [path for path in calls["paths"] if path.endswith("00000.ts")] == ["/00000.ts"]
 
     asyncio.run(run())
 
@@ -470,7 +486,7 @@ def test_embedded_subtitles_are_served_as_hls_renditions():
         body = master.body.decode()
         assert "#EXT-X-MEDIA:TYPE=SUBTITLES" in body
         assert 'NAME="English"' in body and 'NAME="French"' in body
-        assert 'STREAM-INF:BANDWIDTH=8000000,SUBTITLES="subs"' in body
+        assert 'STREAM-INF:BANDWIDTH=40000000,SUBTITLES="subs"' in body
         assert body.rstrip().endswith("stream.m3u8")
         media_playlist = await streams.deliver(media, "stream.m3u8", request, lambda: None)
         assert media_playlist.body == playlist
@@ -488,3 +504,99 @@ def test_embedded_subtitles_are_served_as_hls_renditions():
         assert head.body == b""
 
     asyncio.run(run())
+
+
+def test_webvtt_shift_moves_cues_onto_the_picture():
+    import omakase.plus.debrid_stream as stream
+
+    body = (
+        b"WEBVTT\n\n00:00:01.668 --> 00:00:04.588\nHello\n\n00:00:00.200 --> 00:00:00.900\nEarly\n"
+    )
+    shifted = stream._shift_webvtt(body, 0.4).decode()
+    assert "00:00:01.268 --> 00:00:04.188" in shifted
+    # A cue that would fall before zero is clamped rather than negative.
+    assert "00:00:00.000 --> 00:00:00.500" in shifted
+    assert stream._shift_webvtt(body, 0.0) == body
+
+
+def test_asr_uses_a_local_snapshot_when_one_is_cached(tmp_path):
+    """Transcription must not depend on the Hugging Face Hub at runtime.
+
+    A version skew between huggingface_hub and its transfer layer raised before a
+    single cue was produced, so the cached snapshot is loaded by path instead.
+    """
+    import omakase.plus.debrid_subs as subs
+
+    root = tmp_path / "subtitles" / "mediahash"
+    root.mkdir(parents=True)
+    snapshot = (
+        tmp_path
+        / "subtitles"
+        / "whisper"
+        / ("models--Systran--faster-whisper-tiny/snapshots/abc123")
+    )
+    snapshot.mkdir(parents=True)
+    assert subs._local_model_path(root, "tiny") == "tiny"
+    (snapshot / "model.bin").write_bytes(b"x")
+    assert subs._local_model_path(root, "tiny") == str(snapshot)
+    assert subs._local_model_path(None, "tiny") == "tiny"
+    assert subs._local_model_path(root, "small") == "small"
+
+
+def test_browser_subtitle_cache_never_starts_ocr_or_asr(tmp_path, monkeypatch):
+    from omakase.plus.debrid_subs import SubtitleCache
+
+    cache = SubtitleCache(tmp_path, embedded_only=True)
+
+    async def picture_only(_source):
+        return [{"index": 1, "codec_name": "hdmv_pgs_subtitle"}]
+
+    async def unsupported_background_work(*args):
+        pytest.fail("Browser playback must not start OCR or ASR")
+
+    monkeypatch.setattr(cache, "_streams", picture_only)
+    monkeypatch.setattr(cache, "_ocr", unsupported_background_work)
+    monkeypatch.setattr(cache, "_asr", unsupported_background_work)
+
+    async def run():
+        job = cache.start("fixture", "https://3.stream.real-debrid.com/fixture.mkv", 180)
+        await job.task
+        assert job.done.is_set() and job.tracks == []
+        assert cache.disk_budget == 64 * 1024 * 1024
+
+    asyncio.run(run())
+
+
+def test_warm_text_subtitles_load_without_waiting_for_the_playback_pause(tmp_path):
+    """A cached text track must not wait for playback to stop.
+
+    Anime episodes carry embedded ASS text tracks. Their WebVTT files were cached
+    but the job still waited for the playback pause, so the index carried no
+    SUBTITLES group and the player was offered nothing. Reading cached files costs
+    no CPU, so it happens immediately; PGS sources already behaved this way.
+    """
+    import omakase.plus.debrid_subs as subs
+
+    workdir = tmp_path / "subs"
+    workdir.mkdir()
+    (workdir / "0.vtt").write_text(
+        "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhi\n", encoding="utf-8"
+    )
+    (workdir / "1.vtt").write_text(
+        "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nsalut\n", encoding="utf-8"
+    )
+    job = subs.SubtitleJob(key="warm")
+    job.tracks = [
+        subs.SubtitleTrack(3, "en", "English"),
+        subs.SubtitleTrack(4, "fr", "French"),
+    ]
+    assert subs.SubtitleCache._load_cached(job, workdir) is True
+    assert [track.data[:6] for track in job.tracks] == [b"WEBVTT", b"WEBVTT"]
+
+    (workdir / "1.vtt").write_bytes(b"")
+    empty = subs.SubtitleJob(key="partial")
+    empty.tracks = [
+        subs.SubtitleTrack(3, "en", "English"),
+        subs.SubtitleTrack(4, "fr", "French"),
+    ]
+    assert subs.SubtitleCache._load_cached(empty, workdir) is False

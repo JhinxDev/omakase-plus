@@ -40,6 +40,7 @@ query {
 }
 fragment card on Media {
   id title { english romaji } format episodes status genres averageScore
+  coverImage { large }
 }
 """
 _CARD_LIMIT = 12
@@ -68,8 +69,8 @@ def _json_list(value):
     return result if isinstance(result, list) else []
 
 
-def _shelf(key, title, cards, note=""):
-    return {"key": key, "title": title, "cards": list(islice(cards, _CARD_LIMIT)), "note": note}
+def _shelf(key, title, cards, note="", *, limit=_CARD_LIMIT):
+    return {"key": key, "title": title, "cards": list(islice(cards, limit)), "note": note}
 
 
 def _anime_card(
@@ -179,7 +180,6 @@ def anime_shelves(db, user_id, catalog, monitors, tracker_watched=()):
         row["anilist_id"] for row in monitors if row["status"] in {"watching", "completed"}
     )
     genres = Counter()
-    anchors = []
     by_id = {item["id"]: item for item in catalog}
     for row in monitors:
         known = [value for value in _json_list(row["genres_json"]) if isinstance(value, str)]
@@ -187,12 +187,10 @@ def anime_shelves(db, user_id, catalog, monitors, tracker_watched=()):
         weight = rating - 5 if rating else 2 if row["status"] == "completed" else 1
         for genre in known:
             genres[genre] += weight
-        if known and (rating and rating >= 8 or rating is None and row["status"] == "completed"):
-            anchors.append((rating or 6, row["title"], set(known)))
     for media_id in saved - owned.keys():
         genres.update(by_id.get(media_id, {}).get("genres", []))
 
-    pool = [card for card in catalog if card["id"] not in excluded]
+    pool = [card for card in by_id.values() if card["id"] not in excluded]
     ranked = sorted(
         pool,
         key=lambda card: (
@@ -219,60 +217,31 @@ def anime_shelves(db, user_id, catalog, monitors, tracker_watched=()):
             card["saved"] = True
         return card
 
-    fresh = [card for card in ranked if card["id"] not in owned]
-    # Give Top Picks a balanced entry point while retaining live and film rows.
-    top_picks = sorted(
-        fresh or ranked, key=lambda item: item["airing"] or item["format"] == "Anime film"
-    )
-    lanes = []
-
-    def lane(key, title, cards, note=""):
-        lanes.append((_shelf(key, title, (), note), iter(cards)))
-
-    lane(
-        "top",
-        "Top Picks for You",
-        top_picks,
-        "Matched to your viewing and ratings."
-        if any(genres.values())
-        else "Popular picks to get you started.",
-    )
-    for index, (_, title, liked) in enumerate(
-        sorted(anchors, key=lambda anchor: anchor[:2], reverse=True)[:2]
+    # Keep the strongest matches near the start, with a recent series and a
+    # film in the visible mix when they are available.
+    ranked.sort(key=lambda card: card["id"] in owned)
+    picks = ranked[:30]
+    for index, key in (
+        (4, lambda card: card["airing"]),
+        (7, lambda card: card["format"] == "Anime film"),
     ):
-        matched = [item for item in fresh if liked.intersection(item["genres"])]
-        matched.sort(
-            key=lambda item: (
-                len(liked.intersection(item["genres"])) / len(liked.union(item["genres"]))
-            ),
-            reverse=True,
+        if any(key(card) for card in picks[:index]):
+            continue
+        alternate = next((card for card in ranked if key(card)), None)
+        if alternate is not None:
+            picks = [card for card in picks if card["id"] != alternate["id"]]
+            picks.insert(index, alternate)
+    if not picks:
+        return []
+    return [
+        _shelf(
+            "top",
+            "Anime for You",
+            [project(card) for card in picks[:30]],
+            None if any(genres.values()) else "Popular picks to get you started.",
+            limit=30,
         )
-        lane(f"liked-{index}", f"Because You Liked {title}", matched)
-    favorite_genres = [genre for genre, weight in genres.most_common(2) if weight > 0]
-    for index, genre in enumerate(favorite_genres):
-        other_genres = set(favorite_genres) - {genre}
-        matches = [item for item in ranked if genre in item["genres"]]
-        matches.sort(key=lambda item: bool(other_genres.intersection(item["genres"])))
-        lane(f"genre-{index}", genre, matches, "One of your favorite genres")
-    lane("airing", "Currently Airing", (item for item in ranked if item["airing"]))
-    lane(
-        "films",
-        "Anime Movies for You",
-        (item for item in ranked if item["format"] == "Anime film"),
-    )
-    lane("new", "New for You", (item for item in fresh if item["id"] not in saved))
-
-    # Deal one title per shelf per round. The narrow format and airing shelves
-    # select first, so a broad shelf cannot use their whole candidate pool.
-    used = {card["id"] for card in continue_shelf(monitors)["cards"]}
-    allocation_order = sorted(lanes, key=lambda entry: entry[0]["key"] not in {"airing", "films"})
-    for _ in range(_CARD_LIMIT):
-        for row, candidates in allocation_order:
-            item = next((card for card in candidates if card["id"] not in used), None)
-            if item is not None:
-                used.add(item["id"])
-                row["cards"].append(project(item))
-    return [row for row, _ in lanes if row["cards"]]
+    ]
 
 
 async def _anilist_query(client, query, variables=None, token=None):
@@ -389,6 +358,7 @@ async def _refresh_catalog():
                     status=item.get("status"),
                     score=item.get("averageScore"),
                 )
+                card["poster_url"] = (item.get("coverImage") or {}).get("large")
                 card["genres"] = tuple(g for g in item.get("genres", []) if isinstance(g, str))[:12]
                 cards[media_id] = card
         if cards:
@@ -428,13 +398,18 @@ async def _screen_shelves(db, user_id, signature):
             return []
         return [
             {
+                "id": card["imdb_id"],
+                "kind": "movie",
                 "title": card["title"],
                 "href": f"/plus/movies/{card['imdb_id']}",
                 "poster": f"/plus/movies/{card['imdb_id']}/artwork"
                 if card.get("poster_url")
                 else None,
+                "poster_url": card.get("poster_url"),
+                "summary": card.get("overview"),
                 "format": "Movie",
                 "badge": "In your library" if card.get("state") == "ready" else "",
+                "available": card.get("state") == "ready",
             }
             for card in cards
             if card.get("imdb_id")
@@ -500,6 +475,12 @@ async def _screen_shelves(db, user_id, signature):
                     "href": f"/plus/tv/{media_id}",
                     "poster": f"/plus/discover/tv-art/{media_id}" if artwork else None,
                     "artwork": artwork,
+                    "poster_url": artwork,
+                    "kind": "tv",
+                    "summary": item.get("overview")
+                    if isinstance(item.get("overview"), str)
+                    else "",
+                    "available": media_id in present,
                     "format": "TV show",
                     "badge": "On Plex"
                     if media_id in present

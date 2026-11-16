@@ -605,10 +605,17 @@ class MovieService:
             tmdb_id = _positive(row.get("id"))
             if tmdb_id in seen:
                 continue
-            seen.add(tmdb_id)
-            if len(cards) >= 20:
+            if len(seen) >= 20:
                 break
-            metadata = await self._metadata(tmdb_id)
+            seen.add(tmdb_id)
+            try:
+                metadata = await self._metadata(tmdb_id)
+            except MovieError as error:
+                # Text search can omit unverified candidates. An exact lookup
+                # still requires the provider to confirm the requested identity.
+                if exact_imdb or error.code != "identity_mismatch":
+                    raise
+                continue
             if exact_imdb and metadata["imdb_id"] != exact_imdb:
                 raise MovieError("identity_mismatch")
             store.upsert_movie(self.db, user_id, metadata, now=_iso(self._clock()))
@@ -870,6 +877,23 @@ class MovieService:
             until is not None and self._clock() < until
         )
 
+    async def observe_request(self, user_id: int, imdb_id: str) -> tuple[str, str] | None:
+        """Read live Riven progress for an existing request without changing its record."""
+        self._guard(user_id)
+        metadata = store.get_movie(self.db, user_id, imdb_id)
+        request = store.get_request(self.db, user_id, imdb_id)
+        if (
+            not metadata
+            or not request
+            or request["code"] == "copy_removed"
+            or self._waiting(request)
+        ):
+            return None
+        item = await self._backend(imdb_id, metadata["tmdb_id"])
+        if item is None:
+            return None
+        return item["code"], _iso(self._clock())
+
     async def refresh(self, user_id: int, imdb_id: str) -> dict[str, Any]:
         self._guard(user_id)
         imdb_id = _imdb(imdb_id)
@@ -1015,6 +1039,65 @@ class MovieService:
         if video.get("guid", "").startswith(prefix):
             values.append(video.get("guid"))
         return {value[len(prefix) :] for value in values if value.startswith(prefix)}
+
+    def _indexed_movie_key(self, matches, metadata, section):
+        if len(matches) != 1:
+            return None
+        video = matches[0]
+        key = video.get("ratingKey", "")
+        if (
+            video.get("type") == "movie"
+            and video.get("librarySectionID", str(section)) == str(section)
+            and self._guids(video, "tmdb") in (set(), {str(metadata["tmdb_id"])})
+            and re.fullmatch(r"[1-9][0-9]{0,19}", key)
+        ):
+            return key
+        return None
+
+    async def indexed_requests(self, user_id, imdb_ids):
+        """Check one bounded Plex index without modifying request or playback records."""
+        self._guard(user_id)
+        metadata = {imdb_id: store.get_movie(self.db, user_id, imdb_id) for imdb_id in imdb_ids}
+        section, anime_section = await self._sections()
+        videos = await self._videos(section)
+        anime_ids = (
+            {
+                imdb_id
+                for video in await self._videos(anime_section)
+                for imdb_id in self._guids(video, "imdb")
+            }
+            if anime_section is not None
+            else set()
+        )
+        matches = {}
+        for video in videos:
+            imdb = self._guids(video, "imdb")
+            if len(imdb) == 1 and (imdb_id := next(iter(imdb))) in metadata:
+                matches.setdefault(imdb_id, []).append(video)
+        observed_at = _iso(self._clock())
+        evidence = {}
+        for imdb_id, rows in matches.items():
+            title = metadata[imdb_id]
+            if (
+                title is None
+                or imdb_id in anime_ids
+                or not self._indexed_movie_key(rows, title, section)
+            ):
+                continue
+            record = store.get_request(self.db, user_id, imdb_id)
+            fingerprint = ""
+            try:
+                observed = self._file(
+                    rows[0], section, title, record["requested_edition"] if record else None
+                )
+                if observed.eligibility_code is None:
+                    fingerprint = observed.fingerprint
+            except MovieError:
+                # The same positive index match still supports In your library.
+                # A part that cannot be bound to its receipt cannot claim Ready.
+                pass
+            evidence[imdb_id] = fingerprint, observed_at
+        return evidence
 
     async def _rich_videos(self, videos: list[ElementTree.Element]) -> list[ElementTree.Element]:
         """Complete abbreviated library rows with bounded, batched metadata only."""
@@ -1536,7 +1619,9 @@ class MovieService:
 
         await asyncio.gather(*(one(row) for row in candidates))
 
-    async def list(self, user_id: int, *, view: str = "all") -> list[dict[str, Any]]:
+    async def list(
+        self, user_id: int, *, view: str = "all", cloud_ids: set[str] | None = None
+    ) -> list[dict[str, Any]]:
         """List at most 100 cards, with current metadata and no media byte reads."""
         self._guard(user_id)
         if view not in {
@@ -1549,6 +1634,16 @@ class MovieService:
             "completed",
         }:
             raise MovieError("invalid_input")
+        if cloud_ids is not None:
+            records = store.collection_movies(
+                self.db,
+                user_id,
+                native_ids=cloud_ids,
+                requested_only=view == "requests",
+                available_only=view in {"available", "ready"},
+                watch_status=view if view in {"watching", "completed"} else None,
+            )
+            return [self._card(user_id, row) for row in records]
         inventory_error, plex_error = None, None
         inventory, videos, anime_ids, section = [], [], set(), None
         try:
@@ -1636,14 +1731,9 @@ class MovieService:
                 continue
             card = self._card(user_id, metadata)
             plex_matches = by_plex_imdb.get(imdb_id, [])
-            if (
-                len(plex_matches) == 1
-                and plex_matches[0].get("type") == "movie"
-                and plex_matches[0].get("librarySectionID", str(section)) == str(section)
-                and self._guids(plex_matches[0], "tmdb") in (set(), {str(metadata["tmdb_id"])})
-                and re.fullmatch(r"[1-9][0-9]{0,19}", plex_matches[0].get("ratingKey", ""))
-            ):
+            if self._indexed_movie_key(plex_matches, metadata, section):
                 card["plex_present"] = True
+                card["plex_indexed_at"] = _iso(self._clock())
             if view == "available" and not card.get("plex_present"):
                 continue
             if imdb_id in anime_ids:

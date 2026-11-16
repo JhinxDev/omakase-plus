@@ -15,6 +15,7 @@ from pathlib import PurePosixPath
 import httpx
 
 from omakase.plus import connections
+from omakase.plus.providers import playback as playback_providers
 from omakase.plus.realdebrid import RD_API
 
 _ID = r"[a-zA-Z0-9]{3,64}"
@@ -28,8 +29,11 @@ _MAX_ACCOUNT_ENTRIES = 10000
 _RESPONSE_BYTES = 2 * 1024 * 1024
 _TTL = 25
 _STALE = 900
-PLAYBACK_PROVIDERS = {"auto", "realdebrid", "plex"}
-PLAYBACK_PROVIDER_KEY = "preferred_playback_provider"
+
+# Compatibility re-exports: playback provider policy now lives in providers.playback.
+PLAYBACK_PROVIDERS = playback_providers.PLAYBACK_PROVIDERS
+PLAYBACK_PROVIDER_KEY = playback_providers.PROVIDER_KEY
+playback_provider = playback_providers.playback_provider
 
 
 class DebridLibraryError(ValueError):
@@ -46,15 +50,6 @@ def account_token(db, user_id):
 
 def account_binding(token):
     return hashlib.sha256(token.encode()).hexdigest()
-
-
-def playback_provider(db, user_id):
-    saved = connections._read(db, user_id, PLAYBACK_PROVIDER_KEY)
-    if saved in PLAYBACK_PROVIDERS:
-        return saved
-    if account_token(db, user_id) and not connections._read(db, user_id, "plex_token"):
-        return "realdebrid"
-    return "auto"
 
 
 def _text(text, limit=300):
@@ -99,6 +94,10 @@ class CloudSource:
     playlist: str = field(repr=False)
     playlist_alt: str = field(default="", repr=False)
     direct: str = field(default="", repr=False)
+    # Exact byte length of the original file. Direct range delivery needs it to
+    # prove that a rotated provider link still describes the same content, so it
+    # is carried rather than re-derived from a list response.
+    size: int = 0
 
 
 class DebridLibrary:
@@ -222,6 +221,7 @@ class DebridLibrary:
             # that change restarts from a clean snapshot instead of failing.
             failure = None
             for attempt in range(3):
+                result = None
                 try:
                     async with asyncio.timeout(12):
                         result = await asyncio.gather(
@@ -231,24 +231,38 @@ class DebridLibrary:
                         )
                 except TimeoutError:
                     failure = DebridLibraryError()
-                    result = ()
-                for entries in result:
-                    if isinstance(entries, BaseException):
-                        if getattr(entries, "status", None) != 409:
-                            raise entries
-                        failure = entries
-                        break
-                else:
-                    result = tuple(result)
-                    self.cache[binding] = (self.clock() + _TTL, *result)
-                    self.cache.move_to_end(binding)
-                    if len(self.cache) > 16:
-                        self.cache.popitem(last=False)
-                    self.last_good[binding] = (self.clock(), *result)
-                    self.last_good.move_to_end(binding)
-                    if len(self.last_good) > 16:
-                        self.last_good.popitem(last=False)
-                    return result
+                if result is not None:
+                    for entries in result:
+                        if isinstance(entries, BaseException):
+                            # A provider 5xx is exactly the transient hiccup the
+                            # stale fallback below exists for. Raising it here used
+                            # to bypass a usable last-good inventory and blank the
+                            # whole section for a few minutes. 401/403/429 still
+                            # propagate so access and rate-limit handling stay
+                            # owned by the caller.
+                            if getattr(entries, "status", None) not in {409, 502, 503, 504}:
+                                raise entries
+                            failure = entries
+                            break
+                    else:
+                        # Only a real two part inventory may be cached. A timeout
+                        # previously fell through with an empty tuple and cached a
+                        # one element entry, which then broke every caller that
+                        # unpacked it, long after the provider recovered.
+                        if len(result) != 2:
+                            failure = DebridLibraryError()
+                        else:
+                            failure = None
+                            result = tuple(result)
+                            self.cache[binding] = (self.clock() + _TTL, *result)
+                            self.cache.move_to_end(binding)
+                            if len(self.cache) > 16:
+                                self.cache.popitem(last=False)
+                            self.last_good[binding] = (self.clock(), *result)
+                            self.last_good.move_to_end(binding)
+                            if len(self.last_good) > 16:
+                                self.last_good.popitem(last=False)
+                            return result
                 if attempt < 2:
                     await asyncio.sleep(0.25 * (attempt + 1))
             # A recently read inventory is safer than blanking a section during a
@@ -477,7 +491,15 @@ class DebridLibrary:
         ):
             direct = ""
         return CloudSource(
-            _text(name, 120), identity, version, duration, account, playlist, playlist_alt, direct
+            _text(name, 120),
+            identity,
+            version,
+            duration,
+            account,
+            playlist,
+            playlist_alt,
+            direct,
+            size,
         )
 
     async def _api_result(self, token, path):

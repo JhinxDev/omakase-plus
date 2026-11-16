@@ -4,7 +4,7 @@ from pathlib import Path
 import httpx
 from starlette.requests import Request
 
-from omakase.plus.debrid_seek import SeekIndex, SeekPlan, SeekStreams, _segments
+from omakase.plus.debrid_seek import SeekIndex, SeekPlan, SeekStreams, _audio_args, _segments
 from omakase.plus.debrid_stream import DebridMedia, DebridStreams
 
 ORIGIN = "https://example.stream.real-debrid.com"
@@ -159,5 +159,134 @@ def test_hevc_seek_generates_exact_h264_segments(tmp_path, monkeypatch):
     assert "libx264" in args and "ultrafast" in args
     assert args[args.index("-output_ts_offset") + 1] == "0.000"
     assert args[args.index("-muxdelay") + 1] == "0"
+    # Segment zero seeks to the start of the media.
     assert args[args.index("-ss") + 1] == "0.000"
     assert (tmp_path / "00000.ts").read_bytes() == b"x" * 256
+
+
+def test_audio_policy_copies_ts_compatible_codecs_and_transcodes_the_rest():
+    """AVPlayer needs audio that muxes into MPEG-TS unchanged.
+
+    A transcoded track starts at the seek point while copied video starts at the
+    keyframe, which measured about a second of drift per segment and made the
+    Apple TV reject the item with CoreMedia -12971.
+    """
+    for codec in ("aac", "ac3", "eac3", "mp3"):
+        assert _audio_args(codec) == ["-c:a", "copy"], codec
+    for codec in ("truehd", "dts", "flac", "opus", "vorbis", ""):
+        args = _audio_args(codec)
+        assert args[:2] == ["-c:a", "aac"], codec
+        assert args[args.index("-ac") + 1] == "2", codec
+
+
+def test_seek_aims_at_the_next_keyframe_only_when_keyframes_are_dense(tmp_path, monkeypatch):
+    """The demuxer starts one keyframe before the time it is asked for.
+
+    Measured on a local sample: asking for 1.001 starts at 0.0 and asking for
+    1.877 starts at 1.001. So with a dense keyframe list the seek must ask for
+    the next keyframe after the segment start. With only boundary keyframes there
+    is no in-between keyframe, and aiming later overshoots a whole segment, so
+    the plain start is used instead.
+    """
+    import omakase.plus.debrid_seek as seek
+
+    async def generate(tmp_path, keyframes, segments, number):
+        calls = []
+
+        async def fake_ffmpeg(args):
+            calls.append(args)
+            Path(args[-1]).write_bytes(b"x" * 256)
+
+        monkeypatch.setattr(seek, "_run_ffmpeg", fake_ffmpeg)
+        index = SeekIndex(
+            url="https://chi9-4.download.real-debrid.com/x/y.mkv",
+            duration=12.0,
+            video_codec="h264",
+            audio_codec="aac",
+            keyframes=keyframes,
+            segments=segments,
+            container="ts",
+        )
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        plan = SeekPlan(key="aim", url=index.url, duration=12.0, root=tmp_path)
+        plan.index = index
+        plan.ready.set()
+        streams = SeekStreams(root=tmp_path)
+        await streams._generate(plan, number)
+        args = calls[0]
+        return args[args.index("-ss") + 1], args[args.index("-t") + 1]
+
+    dense = (0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0)
+    target, duration = asyncio.run(
+        generate(tmp_path / "dense", dense, ((0.0, 6.0), (6.0, 12.0)), 1)
+    )
+    assert target == "7.000"
+    assert duration == "6.000"
+    sparse = (0.0, 6.0, 12.0)
+    target, duration = asyncio.run(
+        generate(tmp_path / "sparse", sparse, ((0.0, 6.0), (6.0, 12.0)), 1)
+    )
+    assert target == "6.000"
+    assert duration == "6.000"
+
+
+def test_keyframe_cache_hit_actually_rebuilds_the_timeline(tmp_path, monkeypatch):
+    """A cached keyframe list must take effect, not silently fall back.
+
+    A missing dataclass field once raised TypeError inside the plan build, the
+    broad handler swallowed it, and every measured-timeline commit was dead code
+    in production with no line in the log. This test fails if a cache hit cannot
+    build the plan.
+    """
+    import json as jsonlib
+
+    import omakase.plus.debrid_seek as seek
+
+    url = "https://chi9-4.download.real-debrid.com/d/WOR2S6BMRLW6623/MobLand.S01E01.mkv"
+    duration = 30.0
+
+    async def fake_build_index(target_url, target_duration):
+        return SeekIndex(
+            url=target_url,
+            duration=target_duration,
+            video_codec="h264",
+            audio_codec="ac3",
+            keyframes=(0.0, 6.0, 12.0),
+            segments=((0.0, 6.0), (6.0, 12.0)),
+            container="ts",
+        )
+
+    monkeypatch.setattr(seek, "build_index", fake_build_index)
+    monkeypatch.setattr(seek, "_warm", _noop_warm, raising=False)
+    seek_root = tmp_path / "seek"
+    plan_root = seek_root / "plan-600"
+    plan_root.mkdir(parents=True)
+    cache = seek.keyframes_cache_path(seek_root, url)
+    cache.write_text(
+        jsonlib.dumps(
+            {
+                "keyframes": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+                "offset": 0.26,
+                "timeline": [[0.0, 0.0, 6.0], [6.2, 6.2, 6.0]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    plan = SeekPlan(key="cachehit", url=url, duration=duration, root=plan_root)
+    streams = SeekStreams(root=seek_root)
+    monkeypatch.setattr(streams, "_warm", _noop_warm_async, raising=False)
+    asyncio.run(streams._build(plan))
+    assert plan.error is None, plan.error
+    assert plan.index is not None
+    assert plan.index.measured_timeline is True
+    assert plan.index.seek_targets == (0.0, 6.2)
+    assert plan.index.segments == ((0.0, 6.0), (6.2, 12.2))
+    assert plan.index.subtitle_offset == 0.26
+
+
+async def _noop_warm_async(*args, **kwargs):
+    return None
+
+
+def _noop_warm(*args, **kwargs):
+    return None

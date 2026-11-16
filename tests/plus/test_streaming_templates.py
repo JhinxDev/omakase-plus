@@ -264,7 +264,7 @@ def test_ready_unstarted_title_keeps_full_title_without_empty_watched_progress()
     context["titles"] = [title]
     html = render("library.html", **context)
 
-    assert f'<h2 title="{title["title"]}">{title["title"]}</h2>' in html
+    assert f'<h2 class="catalog-card-title" title="{title["title"]}">{title["title"]}</h2>' in html
     assert "Available <b>24/24</b>" in html
     progress = html.split('<div class="media-progress media-progress-compact">', 1)[1].split(
         "</div>", 1
@@ -425,4 +425,4 @@ def test_missing_anime_is_never_ready_zero():
     assert "Missing 27 episodes" in html
     assert "Ready 0/27" not in html
     # Status follows the linked title and progress rather than occupying the poster.
-    assert html.index("Missing 27 episodes</span>") > html.index('<h2 title="Example anime"')
+    assert html.index("Missing 27 episodes</span>") > html.index('title="Example anime">Example anime</h2>')

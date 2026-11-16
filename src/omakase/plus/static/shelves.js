@@ -64,7 +64,7 @@
     update();
   }
   function enhance(root) {
-    root.querySelectorAll('.media-rail:not(.shelf-enhanced):not([aria-hidden="true"])').forEach(enhanceRail);
+    root.querySelectorAll(':is(.media-rail, .om-rail):not(.shelf-enhanced):not([aria-hidden="true"])').forEach(enhanceRail);
   }
   enhance(document);
   document.addEventListener('omakase:rows-ready', event => enhance(event.detail));

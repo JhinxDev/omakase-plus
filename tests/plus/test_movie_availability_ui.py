@@ -84,6 +84,32 @@ def test_movie_cards_combine_available_quality_without_claiming_playback(resolut
         )
 
 
+@pytest.mark.parametrize("matched", [False, True])
+def test_cloud_collection_and_details_use_real_debrid_availability(matched):
+    templates = Path(__file__).resolve().parents[2] / "src/omakase/plus/templates"
+    env = Environment(loader=FileSystemLoader(templates), autoescape=True)
+    imdb = "tt0084787"
+    card = present_movie(
+        dict(imdb_id=imdb, title="The Thing", plex_present=True, resolution=2160),
+        cloud_ids={imdb} if matched else set(),
+    )
+    availability = "In Real-Debrid" if matched else "Availability unconfirmed"
+    rendered_card = env.get_template("_movie_components.html").module.movie_card(card)
+    assert availability in rendered_card
+    assert "Available · 4K" not in rendered_card
+    details = env.get_template("movie_detail.html").render(
+        card=card,
+        cloud_playback=True,
+        watch_in_app=True,
+        csrf_token="fixture-csrf",
+        email="sample@example.test",
+    )
+    assert availability in details
+    assert ("Play movie" in details) is matched
+    assert "movie-quality" not in details
+    assert "movie-plex-review.js" not in details
+
+
 @pytest.mark.parametrize("expired", [False, True])
 def test_idle_availability_never_claims_an_active_check_or_changes_history(expired):
     env = Environment(
@@ -189,10 +215,20 @@ def test_indexed_movie_keeps_library_presence_separate_from_playback_check(code)
         }
     )
     html = env.get_template("movie_detail.html").render(
-        card=card, csrf_token="fixture-csrf", email="sample@example.test", watch_in_app=True
+        card=card,
+        csrf_token="fixture-csrf",
+        email="sample@example.test",
+        watch_in_app=True,
+        title_request={
+            "can_check": False,
+            "timeline": [{"key": "library", "label": "Added to your library", "occurred_at": None}],
+        },
     )
-    assert '<strong class="status-pill">In your library</strong>' in html
-    assert ">Play movie</a>" in html and ">Check playback</button>" in html
+    assert 'data-request-label aria-live="polite">In your library</strong>' in html
+    assert ">Play movie</a>" in html
+    assert html.index("<summary>Check details</summary>") < html.index(">Check playback</button>")
+    assert 'aria-current="step"' in html and "Added to your library" in html
+    assert ">Check status</button>" not in html
     assert "A separate playback check is needed." in html
     assert "Not checked in Plex" not in html and ">Request movie</button>" not in html
     assert card["state"] == "verifying" and card["code"] == code

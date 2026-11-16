@@ -184,8 +184,14 @@ def test_all_tables_exist(_fresh_db):
         "_migrations",  # internal tracking table
         "cloud_playback_resumes",
         "household_title_requests",
+        "for_you_requests",
         "native_tv_devices",
         "web_playback_native_resumes",
+        # Per-profile Home row order shared by web and the Apple TV client.
+        "viewer_home_layout",
+        # Durable anime completion intent: written inside the resume transaction
+        # so a completion can never be committed without a retryable credit claim.
+        "native_watch_credits",
     }
     assert tables == expected, (
         f"Mismatch — missing: {expected - tables}, extra: {tables - expected}"

@@ -1,6 +1,7 @@
 """Synthetic navigation never grants a source or acquires another episode."""
 
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -148,8 +149,8 @@ def test_partial_first_episode_with_zero_progress_is_home_continue_even_flag_off
     assert card["progress_episodes"] == 0
     assert not card.get("play_url")
     html = render("home.html", **context)
-    assert "Episode in progress" in html and "More info" in html
-    assert f"/plus/library/{monitor}#episode-1" in html
+    assert "More info" in html
+    assert f"/plus/library/{monitor}#overview" in html
     assert db.total_changes == changes
 
 
@@ -162,65 +163,107 @@ def test_unrelated_actor_partial_does_not_create_personal_continue(db):
     assert home_view(db, user_id=1)["continue_watching"] == []
 
 
+def _home_row(cards, *, row_id="continue-anime", label="Continue Watching Anime"):
+    """Minimal projection row for template-level render tests."""
+    return [
+        {
+            "id": row_id,
+            "label": label,
+            "kind": "continue",
+            "domain": "anime",
+            "count": len(cards),
+            "cards": cards,
+        }
+    ]
+
+
+def _home(cards):
+    from omakase.plus.home_shell import select_banner
+
+    rows = _home_row(cards)
+    return {
+        "banner": select_banner(rows),
+        "rows": rows,
+        "layout": {"rows": [], "updated_at": ""},
+        "addable": [],
+        "empty": False,
+    }
+
+
 def test_home_play_retains_more_info_and_episode_links():
     card = dict(
-        id=7,
+        id="anime-7",
         title="Synthetic",
         anilist_id=123,
-        progress_episodes=0,
-        episode_total=12,
-        next_episode=1,
-        state="planned",
+        domain="anime",
+        key="7",
+        title_id="7",
+        subtitle="Episode 1",
+        detail_label="Up next",
+        progress={
+            "percent": 0,
+            "remaining_label": "",
+            "position_seconds": None,
+            "duration_seconds": None,
+            "minutes_left": None,
+        },
+        episode={"season": 1, "episode": 1, "next_episode": 1, "next_playable": True},
+        artwork={"landscape": "/plus/media/123/banner", "poster": "/plus/media/123/poster"},
         play_url="/plus/watch/7/1?library_id=opaque",
         play_label="Play",
+        play_action="play",
+        detail_url="/plus/library/7#overview",
+        last_watch_at="2026-10-31T12:00:00Z",
+        hidden=False,
+        anime=None,
     )
-    html = render(
-        "home.html",
-        continue_watching=[],
-        ready_to_watch=[card],
-        confirmation_needed=[],
-        attention=[],
-        recent_activity=[],
-        new_episodes=[],
-    )
+    html = render("home.html", home=_home([card]))
     assert "/plus/watch/7/1?library_id=opaque" in html
     assert "/plus/library/7#overview" in html and "More info" in html
 
 
 def test_home_resume_hero_shows_episode_and_watched_count_once():
     card = dict(
-        id=7,
+        id="anime-7",
         title="Synthetic",
         anilist_id=123,
-        progress_episodes=10,
-        progress_percent=10 / 13 * 100,
-        episode_total=13,
-        next_episode=11,
-        partial_playback=True,
-        state="ready",
-        required=13,
-        usable=13,
-        plex_visible=13,
+        domain="anime",
+        key="7",
+        title_id="7",
+        subtitle="S1 E11",
+        detail_label="14 min left",
+        progress={
+            "percent": 40,
+            "remaining_label": "14 min left",
+            "position_seconds": 800,
+            "duration_seconds": 1400,
+            "minutes_left": 14,
+        },
+        episode={"season": 1, "episode": 11, "next_episode": 11, "next_playable": True},
+        artwork={"landscape": "/plus/media/123/banner", "poster": "/plus/media/123/poster"},
         play_url="/plus/watch/7/11?library_id=opaque",
-        play_label="Resume",
-        play_episode=11,
-        episode_resume={"percent": 40, "minutes_left": 14},
+        play_label="Resume episode 11",
+        play_action="resume",
+        detail_url="/plus/library/7#overview",
+        last_watch_at="2026-10-31T12:00:00Z",
+        hidden=False,
+        anime={
+            "id": 7,
+            "title": "Synthetic",
+            "anilist_id": 123,
+            "progress_episodes": 10,
+            "progress_percent": 10 / 13 * 100,
+            "episode_total": 13,
+            "next_episode": 11,
+        },
     )
-    html = render(
-        "home.html",
-        continue_watching=[card],
-        ready_to_watch=[{**card, "progress_episodes": 0, "partial_playback": False}],
-        confirmation_needed=[],
-        attention=[],
-        recent_activity=[],
-        new_episodes=[card],
-    )
+    html = render("home.html", home=_home([card]))
     hero = html.split('<section class="cinema-hero"', 1)[1].split("</section>", 1)[0]
     assert "Resume episode 11" in hero
     assert "Watched <b>10/13</b>" in hero
     assert "episodes watched through" not in hero
-    rail = html.split('aria-label="Continue watching">', 1)[1].split("</section>", 1)[0]
-    assert "Episode 11 · 14 min left" in rail
+    rail = html.split('data-home-row="continue-anime"', 1)[1].split("</section>", 1)[0]
+    assert "Episode 11 · 14 min left" in " ".join(re.sub(r"<[^>]*>", " ", rail).split())
     assert rail.count("<progress ") == 1
     assert f'<progress max="100" value="{10 / 13 * 100}"' in rail
     assert "Watched <b>10/13</b>" in rail

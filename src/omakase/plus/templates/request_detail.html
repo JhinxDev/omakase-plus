@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% from "_request_timeline.html" import request_timeline %}
+{% block title %}{{ item.title }} request · Omakase{% endblock %}
+{% from "_request_card.html" import request_cover %}
+{% block masthead %}
+<header class="product-masthead overview-masthead request-detail-masthead">
+  <div class="request-detail-title">
+    {{ request_cover(item) }}
+    <div><a class="request-back" href="/plus/requests">All requests</a>
+    <h1>{{ item.title }}</h1>
+    <p class="page-intro">{{ 'TV Show' if item.media_kind == 'tv' else item.media_kind | title }}{% if item.release_year %} · {{ item.release_year }}{% endif %}{% if item.season is not none %} · Season {{ item.season }}{% endif %}</p></div>
+  </div>
+</header>
+{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="/plus/static/discover-hub.css?v={{ asset_version }}">
+<link rel="stylesheet" href="/plus/static/requests.css?v={{ asset_version }}">
+<script src="/plus/static/request-timeline.js?v={{ asset_version }}" defer></script>
+{% endblock %}
+{% block content %}
+<article class="requests-detail" data-request-identity="{{ item.identity }}"{% if item.category != 'history' %} data-request-refresh="{{ '/plus/movies/' ~ item.title_id ~ '/request-status' if item.kind == 'movie' else '/plus/requests/status' }}"{% endif %}>
+  {% if notice == 'checked' %}<p class="requests-notice" role="status">Status refreshed.</p>{% elif notice == 'retried' %}<p class="requests-notice" role="status">Existing request refreshed.</p>{% endif %}
+  <section class="requests-panel movie-availability" aria-labelledby="request-status-heading">
+    <h2 id="request-status-heading">Current status</h2>
+    <div class="movie-detail-status">
+      <strong class="status-pill" data-request-label data-request-status role="status">{{ item.status_label }}</strong>
+      <p data-request-detail>{{ item.detail }}</p>
+    </div>
+    <p class="requests-next-step" data-request-next{% if not item.next_action or item.next_action.kind == 'check' %} hidden{% endif %}>
+      <strong>Next step</strong>
+      <span data-request-next-text>{% if item.next_action %}{{ item.next_action.label }}{% if item.next_action.reason %} · {{ item.next_action.reason }}{% endif %}{% endif %}</span>
+    </p>
+    <dl class="requests-facts requests-facts-grid">
+      <div><dt>Last checked</dt><dd data-request-checked>{% if item.last_checked_at %}<time datetime="{{ item.last_checked_at }}" data-local-datetime="{{ item.last_checked_at }}">{{ item.last_checked_at }}</time>{% else %}Not yet{% endif %}</dd></div>
+      <div><dt>Last confirmed update</dt><dd data-request-confirmed>{% if item.last_confirmed_at %}<time datetime="{{ item.last_confirmed_at }}" data-local-datetime="{{ item.last_confirmed_at }}">{{ item.last_confirmed_at }}</time>{% else %}Not yet{% endif %}</dd></div>
+    </dl>
+    {% if item.manual %}<p class="requests-manual" data-request-manual>{{ item.manual_note }}</p>{% endif %}
+  </section>
+
+  {# Owner review W-06: Omakase's own search, stated as evidence rather than a promise.
+     When the feature is off this says so plainly instead of implying a search happened;
+     when it is on it names every candidate and the single reason it could not be used. #}
+  {% if request_search %}
+  <section class="requests-panel request-search" aria-labelledby="request-search-heading" data-request-search="{{ 'on' if request_search.enabled else 'off' }}">
+    <h2 id="request-search-heading">Omakase's own search</h2>
+    <p data-request-search-headline>{{ request_search.headline }}</p>
+    {% if request_search.enabled and request_search.candidates %}
+    <ul class="request-search-candidates" aria-label="Candidates found">
+      {% for candidate in request_search.candidates %}
+      <li data-candidate-accepted="{{ 'true' if candidate.accepted else 'false' }}">
+        <span class="request-search-title">{{ candidate.title }}</span>
+        <span class="request-search-verdict">{% if candidate.accepted %}usable{% else %}{{ candidate.text }}{% endif %}</span>
+        {% if candidate.seeders is not none %}<span class="request-search-meta">{{ candidate.seeders }} seeding{% if candidate.indexer %} · {{ candidate.indexer }}{% endif %}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <section class="requests-panel" aria-labelledby="request-stages-heading">
+    <h2 id="request-stages-heading">Stage timeline</h2>
+    <ol class="request-timeline requests-stages" aria-label="Request stages">
+      {% for stage in item.stages %}
+      <li data-stage="{{ stage.stage }}" data-state="{{ stage.state }}"{% if stage.state == 'current' %} aria-current="step"{% endif %}>
+        <span class="request-timeline-dot" aria-hidden="true"></span>
+        <span class="request-timeline-label">{{ stage.label }}</span>
+        <span data-request-stage-time>{% if stage.occurred_at %}<time datetime="{{ stage.occurred_at }}" data-local-datetime="{{ stage.occurred_at }}">{{ stage.occurred_at }}</time>{% elif stage.state == 'pending' %}not yet{% elif stage.state == 'unknown' %}not confirmed{% endif %}</span>
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
+
+  <section class="requests-stop" aria-labelledby="request-stop-heading" data-stopped-at="{{ item.stopped_at or '' }}"{% if not item.stopped_at %} hidden{% endif %}>
+    <h2 id="request-stop-heading">Where it stopped</h2>
+    <strong data-request-stop-label>{{ item.stage_label }}</strong>
+    <p class="{{ 'requests-unknown' if item.unknown_reason else '' }}" data-request-stop-reason{% if item.unknown_reason %} data-unknown-reason{% else %} data-verified-reason{% endif %}>{{ (item.reason_text if item.unknown_reason else item.reason) or '' }}</p>
+    <p class="requests-facts" data-request-rejections{% if not item.candidates_rejected %} hidden{% endif %}>{% if item.candidates_rejected %}The acquisition service rejected {{ item.candidates_rejected }} candidate{{ 's' if item.candidates_rejected != 1 else '' }} before it stopped.{% endif %}</p>
+  </section>
+
+  <section aria-label="Request actions">
+    <div class="requests-actions">
+      <form method="post" action="/plus/requests/{{ item.kind }}/{{ item.title_id }}/check" data-request-check data-busy-form data-single-flight{% if not item.can_check %} hidden{% endif %}>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button button-secondary" type="submit" data-busy-label="Checking…">Check status</button>
+      </form>
+      <form method="post" action="/plus/requests/{{ item.kind }}/{{ item.title_id }}/retry" data-request-retry data-busy-form data-single-flight{% if not item.can_retry %} hidden{% endif %}>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button button-primary" type="submit" data-busy-label="Retrying…">Retry request</button>
+      </form>
+      <span class="requests-facts" data-request-no-action{% if item.can_check or item.can_retry %} hidden{% endif %}>No automatic action is available for this request.{% if item.manual %} It needs a manual acquisition step.{% endif %}</span>
+    </div>
+  </section>
+
+  <details class="movie-verification-details request-progress" data-request-milestones{% if not item.timeline %} hidden{% endif %}>
+    <summary>Provider milestones</summary>
+    {% if item.timeline %}{{ request_timeline(item) }}{% else %}<ol class="request-timeline" aria-label="Request timeline"></ol>{% endif %}
+    <p class="requests-facts">These are the confirmed provider events the server observed. Intermediate events are bounded and may expire.</p>
+  </details>
+</article>
+{% endblock %}

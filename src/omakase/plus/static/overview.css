@@ -1,0 +1,144 @@
+/* Semantic colors support the labels used on media and activity cards. */
+.product-body {
+  --media-episode: #d6c7ff;
+  --media-complete: #a2ebc0;
+  --media-score: #f6d690;
+  --media-plex: #f1ca82;
+  --media-apple-tv: #a7d2ff;
+}
+
+/* Put page artwork behind the workspace so headings and controls remain legible. */
+.app-main:has(.overview-masthead) {
+  position: relative;
+  isolation: isolate;
+}
+.app-main:has(.overview-masthead)::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0 0 auto;
+  block-size: min(620px, 85dvh);
+  background: linear-gradient(90deg, #0b0e18 5%, #13152a55 100%), url("overview-backdrop.webp") right top / cover;
+  mask-image: linear-gradient(#000 24%, transparent 100%);
+  filter: blur(12px);
+  clip-path: inset(0);
+  opacity: .55;
+  pointer-events: none;
+}
+html[data-dim-artwork] .app-main:has(.overview-masthead)::before { opacity: .23; }
+
+body.product-body .product-masthead.overview-masthead {
+  margin-block: clamp(.75rem, 2vw, 1.5rem) .85rem;
+  padding-block: clamp(.75rem, 2vw, 1.75rem);
+  padding-inline: 0;
+  border: 0;
+  background: transparent;
+}
+.overview-masthead .page-kicker { color: var(--media-episode); }
+.overview-masthead .page-kicker:empty { display: none; }
+body.product-body .overview-masthead .page-intro { color: #c3cadc; }
+
+
+.product-body .history-card h3.history-title {
+  margin: .28rem 0 .3rem;
+  min-height: 0;
+  line-height: 1.3;
+  color: #f4f2fb;
+  font-size: 1rem;
+  font-weight: 660;
+  overflow-wrap: anywhere;
+}
+
+.history-card .history-card-tags,
+.history-card .history-provenance {
+  display: flex;
+  gap: .28rem .55rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.history-card-tags { justify-content: space-between; }
+.history-card-tags:empty { display: none; }
+.history-provenance { margin-top: .48rem; }
+.history-card .history-kind { color: var(--media-episode); font-weight: 600; }
+.history-provenance .history-origin { font-size: .77rem; color: #d7cbea; font-weight: 600; }
+.history-provenance .history-origin[data-source="plex"] { color: var(--media-plex); }
+.history-provenance .history-origin[data-source="apple-tv"] { color: var(--media-apple-tv); }
+.history-provenance .history-date,
+.history-provenance .history-date time { font-size: .77rem; color: #b7c2d5; }
+.history-provenance .history-date { min-inline-size: 0; }
+.history-shelf { gap: 1rem; }
+.history-shelf .history-date { white-space: nowrap; }
+@media (min-width: 1280px) {
+  .history-shelf.media-rail { grid-auto-columns: calc((100% - 5rem) / 6); }
+  .history-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+.product-body .history-card .history-rating {
+  display: inline-flex;
+  align-items: baseline;
+  gap: .25rem;
+  margin: 0;
+  font-size: .76rem;
+}
+.product-body .history-card .history-rating strong { color: var(--media-score); font-size: .9rem; }
+.product-body .history-card .history-artwork-caption { margin-top: .22rem; min-height: 1.05rem; }
+
+.discover-hub .hub-card-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: .24rem .5rem;
+  color: #c0c8d9;
+}
+.hub-card-meta .hub-episode-count { color: var(--media-episode); font-weight: 600; }
+.hub-card-meta .hub-airing { color: var(--media-complete); font-weight: 620; }
+.hub-card-meta .hub-score { color: var(--media-score); font-weight: 620; }
+.discover-hub .hub-card h3 { color: #f4f2fb; }
+.discover-hub .hub-shelf-heading { align-items: flex-start; flex-direction: column; }
+
+@media (max-width: 440px) {
+  .product-body .history-card h3.history-title { font-size: .92rem; }
+}
+
+/* Compact library activity, shared status sizing across both event sources. */
+.activity-feed, .tracker-activity { max-inline-size: 68rem; }
+.activity-feed ul { display: grid; gap: .5rem; list-style: none; margin: 0; padding: 0; }
+.activity-feed li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: .6rem 1rem;
+  padding: .75rem .95rem;
+  border: 1px solid var(--om-line-soft);
+  border-radius: 10px;
+  background: var(--om-surface);
+}
+.activity-event-main a { color: var(--om-ink); text-decoration: none; font-size: .94rem; font-weight: 600; overflow-wrap: anywhere; }
+.activity-event-main a:hover { color: var(--om-accent); text-decoration: underline; }
+.activity-event-main p { margin: .22rem 0 0; color: var(--om-muted); font-size: .82rem; }
+.activity-coverage { display: block; margin-block-start: .15rem; color: var(--media-episode); font-size: .8rem; }
+.activity-event-state { display: grid; align-content: start; justify-items: end; gap: .22rem; }
+.activity-event-state time { color: var(--om-muted); font-size: .76rem; }
+.activity-tracker-status { display: grid; justify-items: start; gap: .25rem; }
+.activity-state {
+  display: inline-flex;
+  justify-self: start;
+  inline-size: max-content;
+  max-inline-size: 100%;
+  padding: .18rem .5rem;
+  color: var(--om-muted);
+  background: #232b38;
+  border-radius: 999px;
+  font-size: .75rem;
+  font-weight: 600;
+}
+.activity-state[data-outcome="success"] { color: var(--media-complete); background: #1b3029; }
+.activity-state[data-outcome="attention"] { color: #ffc3a7; background: #38231e; }
+.activity-state[data-outcome="running"] { color: #c7baff; background: #2a2246; }
+.activity-event-state .activity-state { justify-self: end; }
+.discover-tool-tabs { display: flex; gap: .85rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.discover-tool-tabs a { display: inline-flex; align-items: center; min-height: 44px; color: var(--om-muted); text-decoration: none; border-bottom: 2px solid transparent; }
+.discover-tool-tabs a[aria-current="page"] { color: var(--om-accent); border-bottom-color: currentColor; }
+@media (max-width: 540px) {
+  .activity-feed li { grid-template-columns: minmax(0, 1fr); }
+  .activity-event-state { display: flex; align-items: center; flex-wrap: wrap; gap: .25rem .6rem; }
+}

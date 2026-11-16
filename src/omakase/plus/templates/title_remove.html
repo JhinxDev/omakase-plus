@@ -10,7 +10,7 @@
 <section class="removal-review" aria-labelledby="removal-heading">
   <header class="removal-heading">
     <img class="removal-poster" src="/plus/media/{{ removal.anilist_id }}/poster" alt="" width="80" height="120" data-poster>
-    <div><span class="section-index">Anime · {{ 'Removal status' if removal.progress else 'Media removal' }}</span>
+    <div><span class="section-index">Anime · {{ 'Removal status' if removal.progress else 'Watchlist' if cloud_playback else 'Media removal' }}</span>
     <h2 id="removal-heading">{{ removal.title }}</h2>
     <p>{% if removal.season_number %}Season {{ removal.season_number }} · {% endif %}Watch history and ratings stay saved.</p></div>
   </header>
@@ -36,7 +36,9 @@
   {% if removal.progress %}
   {% set progress = removal.progress %}
   <div class="removal-status" role="status" aria-live="polite">
-    {% if progress.status == 'awaiting_plex' %}
+    {% if cloud_playback %}
+    <h3>{{ {'complete': 'Completed', 'provider_failed': 'Cleanup needs attention'}.get(progress.status, 'Library removal in progress') }}</h3>
+    {% elif progress.status == 'awaiting_plex' %}
     <h3>Queued · waiting for Plex</h3><p>Monitoring has stopped. Omakase is waiting for the next library sync to confirm removal from Plex. {% if progress.scope == 'plex_only' %}Source media will be kept.{% else %}Source downloads stay in place until then.{% endif %}</p>
     {% elif progress.status == 'plex_removed' %}
     <h3>In progress · removed from Plex</h3><p>{% if progress.scope == 'plex_only' %}The library update is finishing. Source media is kept.{% else %}Eligible Real-Debrid items are next. Shared and adopted items are kept.{% endif %}</p>
@@ -48,9 +50,9 @@
     {% if progress.retained_count %}<p>{{ progress.retained_count }} source item{{ 's' if progress.retained_count != 1 else '' }} kept. Shared, adopted and unsupported source media are protected.</p>{% endif %}
   </div>
   <p class="removal-boundary"><strong>Watch history, progress and ratings are kept. AniList is unchanged.</strong></p>
-  <details class="removal-details"><summary>Technical details</summary><p>{{ progress.detail }}</p></details>
+  {% if not cloud_playback %}<details class="removal-details"><summary>Technical details</summary><p>{{ progress.detail }}</p></details>{% endif %}
   <div class="removal-actions"><a class="button button-primary" href="/plus/library/{{ removal.monitor_id }}">Back to title</a><a class="button button-secondary" href="/plus/library">Your anime</a></div>
-  {% else %}
+  {% elif not cloud_playback %}
   {% if removal.asset_count > 0 %}
   <h3 class="removal-media-heading">Remove managed media</h3>
   <p class="removal-lead">Remove this anime’s managed media from Plex{% if removal.eligible_provider_count %} and delete eligible Real-Debrid downloads{% endif %}. Automatic monitoring will stop. Your Omakase list entry is kept.</p>

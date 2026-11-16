@@ -36,7 +36,7 @@ def source_episode_presentation(source):
     )
 
 
-def watch_context(db, monitor, scope, episode_number):
+def watch_context(db, monitor, scope, episode_number, *, candidates=None):
     """Only matching local catalog/publication data; never fetch a provider."""
     from omakase.plus.web_playback_navigation import _candidates, _url
 
@@ -47,10 +47,11 @@ def watch_context(db, monitor, scope, episode_number):
         genres = [g for g in genres[:6] if isinstance(g, str) and 0 < len(g) <= 60]
     except (ValueError, TypeError, KeyError):
         genres = []
-    try:
-        candidates = _candidates(db, scope, monitor)
-    except (ValueError, KeyError, TypeError, RecursionError):
-        candidates = {}
+    if candidates is None:
+        try:
+            candidates = _candidates(db, scope, monitor)
+        except (ValueError, KeyError, TypeError, RecursionError):
+            candidates = {}
     previous = episode_number - 1
     following = episode_number + 1
     return {

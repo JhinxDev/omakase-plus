@@ -1,9 +1,10 @@
 /* Home hero only: source pixels decide landscape cover versus a composed portrait. */
 (() => {
   "use strict";
-  document.querySelectorAll("picture[data-hero-quality]").forEach((picture) => {
+  function observeArtwork(picture) {
     const image = picture.querySelector("img");
     if (!image) return;
+    const events = new AbortController();
     let fallbackAttempted = false;
     let frame = 0;
     let lastSource = "";
@@ -72,7 +73,7 @@
 
     function fallback() {
       const url = picture.dataset.heroPoster;
-      if (fallbackAttempted || !url || new URL(image.currentSrc || image.src, location.href).pathname === new URL(url, location.href).pathname) return;
+      if (fallbackAttempted || !url || new URL(image.currentSrc || image.src, location.href).href === new URL(url, location.href).href) return;
       fallbackAttempted = true;
       picture.dataset.heroState = "contained";
       picture.querySelectorAll("source").forEach((source) => source.removeAttribute("srcset"));
@@ -103,28 +104,43 @@
       const rect = picture.getBoundingClientRect();
       const scale = Math.max(rect.width / image.naturalWidth, rect.height / image.naturalHeight);
       const landscape = image.naturalWidth / image.naturalHeight >= 1.35;
-      // Cover tolerates at most 25% CSS-pixel enlargement. Portraits keep
+      // Cover tolerates at most 50% CSS-pixel enlargement. Portraits keep
       // their source pixels and exact aspect; sampled gradients supply atmosphere.
       const density = 1;
       picture.style.setProperty("--hero-native-width", `${image.naturalWidth / density}px`);
       picture.style.setProperty("--hero-native-height", `${image.naturalHeight / density}px`);
-      picture.dataset.heroState = transparent ? "unavailable" : landscape && scale <= 1.25 ? "cover" : "contained";
+      picture.dataset.heroState = transparent ? "unavailable" : landscape && scale <= 1.5 ? "cover" : "contained";
       placeAtmosphere();
-      if (transparent || (picture.dataset.heroState === "contained" && !fallbackAttempted)) fallback();
+      if (transparent) fallback();
     }
 
     function schedule() {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(assess);
     }
-    image.addEventListener("load", () => { lastSource = ''; schedule(); });
+    image.addEventListener("load", () => { lastSource = ''; schedule(); }, {signal: events.signal});
     image.addEventListener("error", () => {
       clearPalette();
       picture.dataset.heroState = "unavailable";
       fallback();
-    });
-    if (typeof ResizeObserver !== "undefined") new ResizeObserver(schedule).observe(picture);
-    window.addEventListener("resize", schedule, {passive: true});
+    }, {signal: events.signal});
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(schedule) : null;
+    if (observer) observer.observe(picture);
+    window.addEventListener("resize", schedule, {passive: true, signal: events.signal});
     schedule();
-  });
+    return () => {
+      events.abort();
+      observer?.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }
+
+  let stopObserving = [];
+  function wireArtwork() {
+    stopObserving.forEach(stop => stop?.());
+    stopObserving = Array.from(document.querySelectorAll("picture[data-hero-quality]"), observeArtwork);
+  }
+
+  wireArtwork();
+  document.addEventListener("omakase:hero-replaced", wireArtwork);
 })();

@@ -98,6 +98,103 @@ def _input(q, kind):
     return q.strip()
 
 
+def _failure(error):
+    from omakase.plus.households import HouseholdError
+
+    if isinstance(error, HouseholdError):
+        return str(error), "shared_catalog_unavailable", 503, None
+    if isinstance(error, (CatalogSearchError, _SearchLimit)):
+        return error.detail, error.code, error.status_code, error.retry_after
+    if isinstance(error, (MovieError, TVError)):
+        return (
+            error.detail,
+            error.code,
+            429 if error.code == "rate_limited" else 503,
+            getattr(error, "retry_after", None),
+        )
+    return "Catalog search is temporarily unavailable.", "unavailable", 503, None
+
+
+class CatalogSearchBudget:
+    """Apply the existing viewer, process and provider search limits across clients."""
+
+    def __init__(self):
+        self.budgets = OrderedDict()
+        self.pauses = {}
+        self.active = {}
+        self.inflight = 0
+
+    async def run(self, user_id, kind, cards_for):
+        now = time.monotonic()
+        if (
+            self.inflight >= _SEARCH_GLOBAL_INFLIGHT
+            or self.active.get(user_id, 0) >= _SEARCH_OWNER_INFLIGHT
+        ):
+            raise _SearchLimit("Search is already running. Wait a moment before trying again.", 1)
+        history = self.budgets.setdefault(user_id, deque())
+        while history and now - history[0] >= _SEARCH_WINDOW:
+            history.popleft()
+        if len(history) >= _SEARCH_RATE_LIMIT:
+            raise _SearchLimit(
+                "Too many catalog searches. Please wait before trying again.",
+                max(1, math.ceil(_SEARCH_WINDOW - now + history[0])),
+            )
+        history.append(now)
+        self.budgets.move_to_end(user_id)
+        while len(self.budgets) > 256:
+            owner = next((owner for owner in self.budgets if not self.active.get(owner)), None)
+            if owner is None:
+                break
+            self.budgets.pop(owner)
+            for key in [key for key in self.pauses if key[0] == owner]:
+                self.pauses.pop(key)
+        self.inflight += 1
+        self.active[user_id] = self.active.get(user_id, 0) + 1
+
+        async def one(category):
+            paused = self.pauses.get((user_id, category))
+            if paused and paused[0] > time.monotonic_ns():
+                return [], {
+                    **paused[1],
+                    "retry_after": max(
+                        1, (paused[0] - time.monotonic_ns() + 999_999_999) // 1_000_000_000
+                    ),
+                }
+            try:
+                return await asyncio.wait_for(cards_for(category), _SEARCH_TIMEOUT), None
+            except Exception as exc:
+                detail, code, status, retry = _failure(exc)
+                warning = {
+                    "kind": category,
+                    "label": _KINDS[category],
+                    "detail": detail,
+                    "code": code,
+                    "status": status,
+                    "retry_after": retry,
+                }
+                if code == "rate_limited":
+                    warning["retry_after"] = _retry_seconds(retry)
+                    self.pauses[(user_id, category)] = (
+                        time.monotonic_ns() + warning["retry_after"] * 1_000_000_000,
+                        warning,
+                    )
+                return [], warning
+
+        try:
+            categories = list(_KINDS) if kind == "all" else [kind]
+            # Exactly one bounded task per selected domain. Domains fail independently.
+            outcomes = await asyncio.gather(*(one(category) for category in categories))
+            return categories, outcomes
+        finally:
+            self.inflight -= 1
+            self.active[user_id] -= 1
+            if not self.active[user_id]:
+                self.active.pop(user_id)
+
+
+shared_catalog_search = CatalogSearchBudget()
+
+
 def create_search_router(
     templates,
     context_factory=None,
@@ -230,137 +327,63 @@ def create_search_router(
             )
         return cards
 
-    def failure(error):
-        from omakase.plus.households import HouseholdError
-
-        if isinstance(error, HouseholdError):
-            return str(error), "shared_catalog_unavailable", 503, None
-        if isinstance(error, (CatalogSearchError, _SearchLimit)):
-            return error.detail, error.code, error.status_code, error.retry_after
-        if isinstance(error, (MovieError, TVError)):
-            return (
-                error.detail,
-                error.code,
-                429 if error.code == "rate_limited" else 503,
-                getattr(error, "retry_after", None),
-            )
-        return "Catalog search is temporarily unavailable.", "unavailable", 503, None
-
-    budgets = OrderedDict()
-    pauses = {}
-    active = {}
-    inflight = 0
+    search_budget = (
+        CatalogSearchBudget()
+        if any(factory is not None for factory in (anime_factory, movie_factory, tv_factory))
+        else shared_catalog_search
+    )
 
     async def search_for(db, user, query, kind):
-        nonlocal inflight
         if len(query) < 2:
             return {"results": [], "warnings": []}, 200, {}
-        now = time.monotonic()
-        if inflight >= _SEARCH_GLOBAL_INFLIGHT or active.get(user.id, 0) >= _SEARCH_OWNER_INFLIGHT:
-            raise _SearchLimit("Search is already running. Wait a moment before trying again.", 1)
-        history = budgets.setdefault(user.id, deque())
-        while history and now - history[0] >= _SEARCH_WINDOW:
-            history.popleft()
-        if len(history) >= _SEARCH_RATE_LIMIT:
-            raise _SearchLimit(
-                "Too many catalog searches. Please wait before trying again.",
-                max(1, math.ceil(_SEARCH_WINDOW - now + history[0])),
-            )
-        history.append(now)
-        budgets.move_to_end(user.id)
-        while len(budgets) > 256:
-            owner = next((owner for owner in budgets if not active.get(owner)), None)
-            if owner is None:
-                break
-            budgets.pop(owner)
-            for key in [key for key in pauses if key[0] == owner]:
-                pauses.pop(key)
-        inflight += 1
-        active[user.id] = active.get(user.id, 0) + 1
 
-        async def one(category):
-            paused = pauses.get((user.id, category))
-            if paused and paused[0] > time.monotonic_ns():
-                return [], {
-                    **paused[1],
-                    "retry_after": max(
-                        1, (paused[0] - time.monotonic_ns() + 999_999_999) // 1_000_000_000
-                    ),
-                }
-            try:
-                return await asyncio.wait_for(
-                    cards_for(db, user, query, category), _SEARCH_TIMEOUT
-                ), None
-            except Exception as exc:
-                detail, code, status, retry = failure(exc)
-                warning = {
-                    "kind": category,
-                    "label": _KINDS[category],
-                    "detail": detail,
-                    "code": code,
-                    "status": status,
-                    "retry_after": retry,
-                }
-                if code == "rate_limited":
-                    warning["retry_after"] = _retry_seconds(retry)
-                    pauses[(user.id, category)] = (
-                        time.monotonic_ns() + warning["retry_after"] * 1_000_000_000,
+        async def provider_cards(category):
+            return await cards_for(db, user, query, category)
+
+        categories, outcomes = await search_budget.run(user.id, kind, provider_cards)
+        if households_enabled() if callable(households_enabled) else households_enabled:
+            from omakase.plus.household_views import search_cards
+            from omakase.plus.households import selected_scope
+
+            selected = selected_scope(db, viewer_id=user.id)
+            if selected.kind == "household":
+                outcomes = [
+                    (
+                        search_cards(
+                            db,
+                            selected,
+                            query=query,
+                            domain={"anime": "anime", "movies": "movie", "tv": "tv"}[category],
+                        )
+                        + [
+                            {**record, "library_id": None, "library_status": None}
+                            for record in records
+                        ],
                         warning,
                     )
-                return [], warning
-
-        try:
-            categories = list(_KINDS) if kind == "all" else [kind]
-            # Exactly one bounded task per selected domain. Domains fail independently.
-            outcomes = await asyncio.gather(*(one(category) for category in categories))
-            if households_enabled() if callable(households_enabled) else households_enabled:
-                from omakase.plus.household_views import search_cards
-                from omakase.plus.households import selected_scope
-
-                selected = selected_scope(db, viewer_id=user.id)
-                if selected.kind == "household":
-                    outcomes = [
-                        (
-                            search_cards(
-                                db,
-                                selected,
-                                query=query,
-                                domain={"anime": "anime", "movies": "movie", "tv": "tv"}[category],
-                            )
-                            + [
-                                {**record, "library_id": None, "library_status": None}
-                                for record in records
-                            ],
-                            warning,
-                        )
-                        for category, (records, warning) in zip(categories, outcomes, strict=True)
-                    ]
-            warnings = [warning for _, warning in outcomes if warning]
-            cards, seen = [], set()
-            for row in zip_longest(*(cards for cards, _ in outcomes)):
-                for card in row:
-                    if card is None:
-                        continue
-                    identity = (card.get("media_type"), card.get("id"))
-                    if identity not in seen:
-                        seen.add(identity)
-                        cards.append(card)
-            # Exact title matches lead, while round-robin order prevents a domain
-            # with many results from hiding another domain behind the eight-card cap.
-            cards.sort(key=lambda card: card["title"].casefold() != query.casefold())
-            status = 200
-            if not cards and len(warnings) == len(categories):
-                status = 429 if all(w["status"] == 429 for w in warnings) else 503
-            if not cards and kind != "all" and warnings:
-                status = warnings[0]["status"]
-            retry = max((w["retry_after"] or 0 for w in warnings), default=0)
-            headers = {"Retry-After": str(retry)} if retry else {}
-            return {"results": cards[:8], "warnings": warnings}, status, headers
-        finally:
-            inflight -= 1
-            active[user.id] -= 1
-            if not active[user.id]:
-                active.pop(user.id)
+                    for category, (records, warning) in zip(categories, outcomes, strict=True)
+                ]
+        warnings = [warning for _, warning in outcomes if warning]
+        cards, seen = [], set()
+        for row in zip_longest(*(cards for cards, _ in outcomes)):
+            for card in row:
+                if card is None:
+                    continue
+                identity = (card.get("media_type"), card.get("id"))
+                if identity not in seen:
+                    seen.add(identity)
+                    cards.append(card)
+        # Exact title matches lead, while round-robin order prevents a domain
+        # with many results from hiding another domain behind the eight-card cap.
+        cards.sort(key=lambda card: card["title"].casefold() != query.casefold())
+        status = 200
+        if not cards and len(warnings) == len(categories):
+            status = 429 if all(w["status"] == 429 for w in warnings) else 503
+        if not cards and kind != "all" and warnings:
+            status = warnings[0]["status"]
+        retry = max((w["retry_after"] or 0 for w in warnings), default=0)
+        headers = {"Retry-After": str(retry)} if retry else {}
+        return {"results": cards[:8], "warnings": warnings}, status, headers
 
     @router.get("/search", response_class=HTMLResponse)
     async def page(
@@ -380,7 +403,7 @@ def create_search_router(
             if kind != "all" and warnings:
                 error = warnings[0]["detail"]
         except (CatalogSearchError, MovieError, TVError, ValueError, _SearchLimit) as exc:
-            error, _, status, retry = failure(exc)
+            error, _, status, retry = _failure(exc)
             if retry is not None:
                 headers["Retry-After"] = str(retry)
         return templates.TemplateResponse(
@@ -413,7 +436,7 @@ def create_search_router(
                 )
             return JSONResponse(payload, status_code=status, headers={**_CACHE, **headers})
         except (CatalogSearchError, MovieError, TVError, ValueError, _SearchLimit) as exc:
-            detail, code, status, retry = failure(exc)
+            detail, code, status, retry = _failure(exc)
             headers = {**_CACHE}
             if retry is not None:
                 headers["Retry-After"] = str(retry)
@@ -476,7 +499,7 @@ def create_search_router(
                 card = {**card, "library_id": None, "library_status": None}
 
         except (CatalogSearchError, ValueError) as exc:
-            error, _, status, retry = failure(exc)
+            error, _, status, retry = _failure(exc)
             if retry is not None:
                 headers["Retry-After"] = str(retry)
         return templates.TemplateResponse(

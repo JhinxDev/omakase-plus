@@ -1,0 +1,14 @@
+{% macro catalog_card_copy(title, year=none, format_label='', heading_level=2) -%}
+{% if heading_level == 3 %}
+<h3 class="catalog-card-title" title="{{ title }}">{{ title }}</h3>
+{% else %}
+<h2 class="catalog-card-title" title="{{ title }}">{{ title }}</h2>
+{% endif %}
+{% if year or format_label %}
+<p class="catalog-card-meta">{% if year %}<span>{{ year }}</span>{% endif %}{% if format_label %}<span>{{ format_label }}</span>{% endif %}</p>
+{% endif %}
+{%- endmacro %}
+
+{% macro catalog_progress(title, percent, scope_label="watched") -%}
+{% if percent is defined and percent is not none %}<progress class="catalog-watch-progress" max="100" value="{{ percent }}" aria-label="{{ title }}: {{ percent }}% {{ scope_label }}"></progress>{% endif %}
+{%- endmacro %}

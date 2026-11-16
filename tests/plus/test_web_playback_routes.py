@@ -203,11 +203,13 @@ def test_page_does_not_resolve_media_or_create_history(setup, play):
     assert db.execute("SELECT COUNT(*) FROM watch_events").fetchone()[0] == 0
 
 
-def test_realdebrid_only_routes_web_watch_links_without_starting_plex(setup, monkeypatch):
-    from omakase.plus import web_playback_routes
+def test_realdebrid_only_routes_web_watch_links_without_starting_plex(setup):
+    from omakase.plus.secrets import store_secret
 
     app, db, sessions, calls, _ = setup
-    monkeypatch.setattr(web_playback_routes, "playback_provider", lambda *_: "realdebrid")
+    store_secret(db, 1, "realdebrid_api_key", "fixture-token")
+    store_secret(db, 1, "preferred_playback_provider", "realdebrid")
+    db.commit()
     viewer = client(app, sessions[1])
     for source, target in (
         ("/plus/watch/1/1", "/plus/cloud/title/anime/1/0/1"),
@@ -215,7 +217,10 @@ def test_realdebrid_only_routes_web_watch_links_without_starting_plex(setup, mon
         ("/plus/watch/title/tv/100/1/2", "/plus/cloud/title/tv/100/1/2"),
     ):
         reply = viewer.get(source, params={"play": 1})
-        assert reply.status_code == 307 and reply.headers["location"] == target
+        assert reply.status_code == 307 and reply.headers["location"] == target + "?play=1"
+        opened_without_play = viewer.get(source)
+        assert opened_without_play.status_code == 307
+        assert opened_without_play.headers["location"] == target
     assert calls == []
     assert db.execute("SELECT COUNT(*) FROM web_playback_sessions").fetchone()[0] == 0
 
@@ -247,15 +252,20 @@ def test_actual_source_guard_start_and_resource_routes_keep_atomic_authorization
     app.state.actual_source_guard = True
     monkeypatch.setenv("OMAKASE_PLUS_PLEX_MANAGED_ROOT", "/synthetic")
     monkeypatch.setattr(source_module, "_publication", lambda *a: ("synthetic.mp4", 100, "b" * 64))
+    plex_secrets = {
+        "plex_url": "https://plex.invalid",
+        "plex_token": "dummy-only",
+        "plex_machine_id": "synthetic-server",
+    }
     monkeypatch.setattr(
         source_module.connections,
         "_values",
-        lambda *a: ("https://plex.invalid", "dummy-only"),
+        lambda *a: (plex_secrets["plex_url"], plex_secrets["plex_token"]),
     )
     monkeypatch.setattr(
         source_module.connections,
         "_read",
-        lambda db, uid, key: "synthetic-server" if key == "plex_machine_id" else "dummy-only",
+        lambda db, uid, key: plex_secrets.get(key, ""),
     )
     owner = client(app, sessions[1])
     created = owner.post("/plus/api/playback/sessions", json={"monitor_id": 1, "episode_number": 1})
@@ -412,11 +422,15 @@ async def test_start_reserves_before_resolution_and_recovers_on_cancel(setup):
 
 @run_async
 async def test_stalled_media_reads_are_bounded_and_release_on_completion(setup):
+    from omakase.plus.web_playback_admission import READ_LIMIT_VIEWER
+
     app, _, sessions, _, _ = setup
     owner = client(app, sessions[1])
     created = owner.post(
         "/plus/api/playback/sessions", json={"monitor_id": 1, "episode_number": 1}
     ).json()
+    allowed = READ_LIMIT_VIEWER
+    rejected = 6
     app.state.read_wait = asyncio.Event()
     app.state.reads_opened = 0
     async with httpx.AsyncClient(
@@ -424,17 +438,19 @@ async def test_stalled_media_reads_are_bounded_and_release_on_completion(setup):
         base_url="https://testserver",
         cookies={"omakase_session": sessions[1]},
     ) as http:
-        tasks = [asyncio.create_task(http.get(created["media_url"])) for _ in range(20)]
-        for _ in range(100):
-            if sum(t.done() for t in tasks) == 12:
+        tasks = [
+            asyncio.create_task(http.get(created["media_url"])) for _ in range(allowed + rejected)
+        ]
+        for _ in range(200):
+            if sum(t.done() for t in tasks) == rejected:
                 break
             await asyncio.sleep(0.005)
-        assert app.state.reads_opened == 8
-        assert sum(t.done() for t in tasks) == 12
+        assert app.state.reads_opened == allowed
+        assert sum(t.done() for t in tasks) == rejected
         assert all(t.result().status_code == 429 for t in tasks if t.done())
         app.state.read_wait.set()
         results = await asyncio.gather(*tasks)
-        assert sum(r.status_code == 200 for r in results) == 8
+        assert sum(r.status_code == 200 for r in results) == allowed
         assert (
             await http.get(created["media_url"], headers={"range": "bytes=0-9"})
         ).status_code == 206
@@ -444,6 +460,8 @@ async def test_stalled_media_reads_are_bounded_and_release_on_completion(setup):
 async def test_ass_read_collision_retries_after_one_slot_releases_without_raising_cap(
     setup, tmp_path
 ):
+    from omakase.plus.web_playback_admission import READ_LIMIT_VIEWER
+
     app, _, sessions, _, _ = setup
     app.state.source_container = "mkv"
     app.state.remux_resources = ["manifest.mpd", "subtitle-5.ass"]
@@ -461,6 +479,7 @@ async def test_ass_read_collision_retries_after_one_slot_releases_without_raisin
     app.state.resource_override = tmp_path / "subtitle-5.ass"
     app.state.resource_override.write_bytes(b"[Script Info]\n[Events]\n")
     entered, release_body = asyncio.Event(), asyncio.Event()
+    allowed = READ_LIMIT_VIEWER
     calls = []
 
     async def stalled_app(scope, receive, send):
@@ -472,8 +491,8 @@ async def test_ass_read_collision_retries_after_one_slot_releases_without_raisin
                 accepted = message["status"] == 200
             if accepted and message["type"] == "http.response.body" and message.get("body"):
                 calls.append(1)
-                if len(calls) <= 8:
-                    if len(calls) == 8:
+                if len(calls) <= allowed:
+                    if len(calls) == allowed:
                         entered.set()
                     await release_body.wait()
             await send(message)
@@ -481,27 +500,27 @@ async def test_ass_read_collision_retries_after_one_slot_releases_without_raisin
         await app(scope, receive, stalled_send)
 
     # Actual authenticated local bodies remain open at the ASGI send boundary.
-    # Cancellation must release one permit before a ninth ASS GET can enter.
+    # Cancellation must release one permit before another ASS GET can enter.
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=stalled_app),
         base_url="https://testserver",
         cookies={"omakase_session": sessions[1]},
     ) as http:
-        held = [asyncio.create_task(http.get(resource)) for _ in range(8)]
+        held = [asyncio.create_task(http.get(resource)) for _ in range(allowed)]
         await asyncio.wait_for(entered.wait(), 2)
         rejected = await http.get(resource)
         assert rejected.status_code == 429 and rejected.headers["retry-after"] == "1"
-        assert len(calls) == 8
+        assert len(calls) == allowed
         held[0].cancel()
         with pytest.raises(asyncio.CancelledError):
             await held[0]
         await asyncio.sleep(int(rejected.headers["retry-after"]))
         retry = asyncio.create_task(http.get(resource))
-        for _ in range(50):
-            if len(calls) == 9:
+        for _ in range(100):
+            if len(calls) == allowed + 1:
                 break
             await asyncio.sleep(0.005)
-        assert len(calls) == 9
+        assert len(calls) == allowed + 1
         release_body.set()
         results = await asyncio.gather(*held[1:], retry)
         assert all(response.status_code == 200 for response in results)
@@ -855,7 +874,7 @@ def test_watch_page_uses_only_scoped_cached_context_and_omits_missing_scores(set
     assert "Your viewing progress" not in response.text
     assert "data-player-timeline" in response.text
     assert "data-player-skip hidden" in response.text
-    assert "See episodes" in response.text
+    assert "All episodes" in response.text
     assert "Public score" not in response.text
     assert calls == []
     assert db.total_changes == before
@@ -905,8 +924,13 @@ def test_catalog_plays_exact_personal_copy_and_saves_resume(setup, monkeypatch, 
     compatible = os.getenv("OMAKASE_PLAYBACK_STREAMING") == "true"
     base_url = "https://plex.invalid"
     fixture_auth = secrets.token_urlsafe(24)
+    plex_secrets = {
+        "plex_url": base_url,
+        "plex_token": fixture_auth,
+        "plex_machine_id": "synthetic-server",
+    }
     monkeypatch.setattr(connections, "_values", lambda *args: (base_url, fixture_auth))
-    monkeypatch.setattr(connections, "_read", lambda *args: "synthetic-server")
+    monkeypatch.setattr(connections, "_read", lambda db, user, key: plex_secrets.get(key, ""))
     db.execute(
         "INSERT INTO movie_catalog(user_id,imdb_id,tmdb_id,title,year,identity_verified,updated_at) "
         "VALUES(1,'tt1234567',100,'Synthetic film',2025,1,'now')"

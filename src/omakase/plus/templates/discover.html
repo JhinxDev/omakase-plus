@@ -1,19 +1,18 @@
 {% extends "base.html" %}
 {% from "_watched_feedback.html" import watched_feedback %}
 {% block title %}For you · Omakase{% endblock %}
-{% block eyebrow %}A little more you. A little less scrolling.{% endblock %}
-{% block page_title %}{% if discover_mode == 'add' %}Add to your library{% else %}Find your next favorite.{% endif %}{% endblock %}
-{% block page_intro %}<p class="page-intro">{% if discover_mode == 'add' %}Confirm the exact title and season, then check your options.{% else %}Your ratings, your taste, and a reason behind every pick.{% endif %}</p>{% endblock %}
-{% block page_actions %}{% if latest and latest.picks %}<a class="button button-primary" href="#recommendation-controls" data-open-details>Make a new menu</a>{% endif %}<a class="button button-secondary" href="/plus/search">Search titles</a>{% endblock %}
+{% block eyebrow %}{% endblock %}
+{% block page_title %}{% if discover_mode == 'add' %}Find anime{% else %}AI recommendations{% endif %}{% endblock %}
+{% block page_actions %}{% if discover_mode != 'add' and latest and latest.picks %}<a class="button button-primary" href="#recommendation-controls" data-open-details>New recommendations</a>{% endif %}{% endblock %}
 {% block content %}
-{% if movies_enabled %}<nav class="movie-tabs" aria-label="Discover media"><a href="/plus/discover">For You</a><a href="/plus/discover?mode=recommend" aria-current="page">AI menu</a><a href="/plus/discover/movies">Movies</a></nav>{% endif %}
-{% if discover_mode == 'add' %}<nav class="discover-mode-switch" aria-label="Discover mode">
-  <a href="/plus/discover" {% if discover_mode == 'recommend' %}aria-current="page"{% endif %}>For you</a>
-  <a href="/plus/discover?mode=add" {% if discover_mode == 'add' %}aria-current="page"{% endif %}>Find a specific anime</a>
-</nav>{% endif %}
+<nav class="hub-divisions discover-tool-tabs" aria-label="Discovery tools">
+  <a href="/plus/discover">For You</a>
+  <a href="/plus/discover?mode=recommend"{% if discover_mode != 'add' %} aria-current="page"{% endif %}>AI recommendations</a>
+  <a href="/plus/discover?mode=add"{% if discover_mode == 'add' %} aria-current="page"{% endif %}>Find anime</a>
+</nav>
 {% if discover_mode == 'add' %}
 <section class="utility-panel add-search" aria-labelledby="add-direct-heading">
-  <header class="panel-heading"><div><h2 id="add-direct-heading">What are you looking for?</h2><p>Search a title, or paste its AniList link.</p></div></header>
+  <header class="panel-heading"><div><h2 id="add-direct-heading">Find an anime title</h2><p>Enter a title or paste an AniList link.</p></div></header>
   <form class="product-form add-intake-form" method="post" action="/plus/add/preview" data-busy-form>
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label><span>Anime title or AniList link</span><input type="search" name="query" maxlength="500" placeholder="Frieren: Beyond Journey's End" required autofocus></label>

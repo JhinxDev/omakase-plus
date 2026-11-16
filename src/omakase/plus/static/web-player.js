@@ -172,7 +172,7 @@
     if (localization.resolve('UNDETERMINED_LANGUAGE') === 'Unknown language') return;
     for (const locale of new Set(['en', ...localization.getCurrentLocales()])) localization.insert(locale, new Map([['UNDETERMINED_LANGUAGE', 'Unknown language']]));
   }
-  function subtitleChoices(nativeTracks, styledTracks) {
+  function subtitleChoices(nativeTracks, styledTracks, bitmapTracks = []) {
     const language = track => trackLanguage(track.language);
     const description = track => {
       const label = typeof track.label === 'string' ? track.label.trim() : '';
@@ -183,7 +183,9 @@
       ...nativeTracks.filter(track => track.id != null).map(track => ({ value: `native:${track.id}`, kind: 'native',
         label: [language(track), description(track), ...flags(track)].filter(Boolean).join(' · ') })),
       ...styledTracks.map(track => ({ value: `ass:${track.plex_stream_id}`, kind: 'ass',
-        label: [language(track), description(track), 'Styled', ...flags(track)].filter(Boolean).join(' · ') }))];
+        label: [language(track), description(track), 'Styled', ...flags(track)].filter(Boolean).join(' · ') })),
+      ...bitmapTracks.map(track => ({ value: `bitmap:${track.id}`, kind: 'bitmap',
+        label: [language(track), description(track)].filter(Boolean).join(' · ') }))];
     const counts = new Map(), indexes = new Map();
     for (const choice of choices) counts.set(choice.label, (counts.get(choice.label) || 0) + 1);
     return [{ value: 'off', label: 'Off', kind: 'off' }, ...choices.map(choice => {
@@ -191,8 +193,8 @@
       return counts.get(choice.label) > 1 ? { ...choice, label: `${choice.label} · Track ${index}` } : choice;
     })];
   }
-  function initialSubtitleValue(nativeTracks, styledTracks, savedId, versionChanged = false, policy = 'auto') {
-    const choices = subtitleChoices(nativeTracks, styledTracks);
+  function initialSubtitleValue(nativeTracks, styledTracks, savedId, versionChanged = false, policy = 'auto', bitmapTracks = []) {
+    const choices = subtitleChoices(nativeTracks, styledTracks, bitmapTracks);
     if (policy === 'off' || (policy !== 'always' && !versionChanged && savedId === 'off')) return 'off';
     if (!versionChanged && savedId != null && savedId !== 'off') {
       if (choices.some(choice => choice.value === savedId)) return savedId;
@@ -205,8 +207,9 @@
       ];
       const full = tracks.filter(track => !track.forced);
       const preferred = full.length ? full : tracks;
+      const bitmap = bitmapTracks.find(track => /^(en|eng)(-|$)/i.test(track.language || '')) || bitmapTracks[0];
       return (preferred.find(track => /^(en|eng)(-|$)/i.test(track.language || ''))
-        || preferred.find(track => track.active || track.selected || track.default) || preferred[0])?.value ?? 'off';
+        || preferred.find(track => track.active || track.selected || track.default) || preferred[0])?.value ?? (bitmap ? `bitmap:${bitmap.id}` : 'off');
     }
     const styled = styledTracks.find(track => track.selected);
     if (styled) return `ass:${styled.plex_stream_id}`;
@@ -693,6 +696,7 @@
   if (typeof document === 'undefined') return;
   const root = document.querySelector('[data-web-player]');
   if (!root) return;
+  const assetVersion = document.currentScript ? new URL(document.currentScript.src).search : '';
   const movedNodes = new Map();
   const find = name => root.querySelector(`[data-player-${name}]`) || movedNodes.get(name) || null;
   for (const name of ['ass-options', 'ass-select', 'ass-status', 'caption-mode-note', 'subtitle-unavailable', 'next']) movedNodes.set(name, find(name));
@@ -709,7 +713,7 @@
     chromeTimer = window.setTimeout(() => {
       if (video.paused || video.ended || root.contains(document.activeElement) && document.activeElement !== video) return;
       if (container.querySelector(':is(.shaka-overflow-menu, .shaka-settings-menu):not(.shaka-hidden), .web-player-timeline :active')) return;
-      if (root.querySelector('.web-player-back:hover, .shaka-bottom-controls:hover, .web-player-timeline:hover, .web-player-skip:hover')) return;
+      if (root.querySelector('.web-player-quiet-back:hover, .shaka-bottom-controls:hover, .web-player-timeline:hover, .web-player-skip:hover')) return;
       container.setAttribute('data-cinema-idle', '');
     }, 3000);
   }
@@ -753,9 +757,12 @@
   let leaving = false;
   let triedAgain = false;
   let regularStreamVersion = null;
+  let cloudProviderOnly = false;
   let failed = false;
   let periodic = null;
   let captions = null;
+  let bitmapRenderer = null;
+  let bitmapTracks = [];
   let captionTasks = Promise.resolve();
   let captionIntent = 0;
   let assTracks = [];
@@ -972,16 +979,18 @@
     transportLayoutObserver?.disconnect();
     const panel = container.querySelector('.shaka-controls-button-panel');
     if (panel) {
+      const transport = panel.closest('.shaka-bottom-controls');
       const measureTransport = () => {
         const height = panel.getBoundingClientRect().height;
         if (height > 0) container.style.setProperty('--player-row-height', `${height}px`);
-        const primaryHeight = Math.max(...Array.from(panel.querySelectorAll('.shaka-play-button, .omakase-playback-clock, .shaka-fullscreen-button'), item => item.getBoundingClientRect().height));
-        if (height > 0 && primaryHeight > 0) container.style.setProperty('--player-secondary-band', `${Math.max(0, height - primaryHeight) + 8}px`);
+        const transportHeight = transport?.getBoundingClientRect().height;
+        if (transportHeight > 0) container.style.setProperty('--player-inline-controls', `${Math.ceil(transportHeight)}px`);
         positionTrackMenus();
       };
       measureTransport();
       transportLayoutObserver = new ResizeObserver(measureTransport);
       transportLayoutObserver.observe(panel);
+      if (transport) transportLayoutObserver.observe(transport);
       for (const menu of container.querySelectorAll(trackMenuSelector)) transportLayoutObserver.observe(menu);
     }
     enhanceRangeControls(container);
@@ -994,8 +1003,6 @@
     sidebar.hidden = !next;
     if (next) sidebar.href = next;
     else sidebar.removeAttribute('href');
-    const navigation = find('episode-navigation');
-    if (navigation) navigation.hidden = !next && !root.querySelector('[data-player-previous]');
     for (const item of barItems) { item.checkAvailability(); if ((!ready || failed) && item.menu) { item.menu.classList.add('shaka-hidden'); item.button.setAttribute('aria-expanded', 'false'); } }
     if (!ready || failed) trackSlot.hidden = true;
   }
@@ -1063,6 +1070,8 @@
   }
   async function stopCaptions() {
     captionIntent++;
+    bitmapRenderer?.destroy();
+    bitmapRenderer = null;
     const old = captions;
     captions = null;
     captionLoading = false;
@@ -1071,6 +1080,8 @@
   }
   function captionUnavailable() {
     customTextId = 'off';
+    bitmapRenderer?.destroy();
+    bitmapRenderer = null;
     void captions?.clear().catch(() => {});
     find('ass-select').value = 'off';
     find('ass-status').textContent = 'Subtitles unavailable.';
@@ -1085,14 +1096,26 @@
     const intent = ++captionIntent;
     const source = session;
     captionLoading = true;
-    find('ass-status').textContent = id === 'off' ? 'Turning subtitles off…' : id.startsWith('native:') ? 'Preparing browser subtitles…' : 'Preparing styled subtitles…';
+    find('ass-status').textContent = id === 'off' ? 'Turning subtitles off…' : id.startsWith('native:') ? 'Preparing browser subtitles…' : id.startsWith('bitmap:') ? 'Preparing image subtitles…' : 'Preparing styled subtitles…';
     find('ass-select').disabled = true;
     if (id.startsWith('ass:')) video.disablePictureInPicture = true;
     refreshBarControls();
     const task = captionTasks.catch(() => {}).then(async () => {
       if (intent !== captionIntent || source !== session || leaving) return;
       try {
-        const applied = await switchSubtitleRenderer(id, {
+        bitmapRenderer?.destroy();
+        bitmapRenderer = null;
+        if (id.startsWith('bitmap:')) {
+          const track = bitmapTracks.find(track => `bitmap:${track.id}` === id);
+          if (!track) throw new Error('Subtitle track unavailable');
+          await captions?.clear();
+          if (intent !== captionIntent || source !== session || leaving) return;
+          player.selectTextTrack(null);
+          const { BitmapSubtitles } = await import('/plus/static/web-bitmap.js' + assetVersion);
+          if (intent !== captionIntent || source !== session || leaving) return;
+          bitmapRenderer = new BitmapSubtitles({ video, container, url: track.url });
+          customTextId = id;
+        } else if (!await switchSubtitleRenderer(id, {
           nativeTracks: player.getTextTracks(), styledTracks: assTracks,
           clearStyled: async () => { if (captions) await captions.clear(); },
           selectNative: track => player.selectTextTrack(track), setCustom: value => { customTextId = value; },
@@ -1110,12 +1133,11 @@
           const success = await captions.setTrack({ url: track.url, fonts: source.fonts || [], timeOffset: 0 });
           return success;
           },
-        });
-        if (!applied) return;
+        })) return;
         if (intent !== captionIntent || source !== session || leaving) return;
         if (id.startsWith('ass:')) customTextId = id;
         find('ass-select').value = id;
-        find('ass-status').textContent = id === 'off' ? (assTracks.length ? 'Styled subtitles are off.' : 'Subtitles are off.') : id.startsWith('native:') ? 'Browser subtitle track selected.' : 'Styled subtitles ready.';
+        find('ass-status').textContent = id === 'off' ? (assTracks.length ? 'Styled subtitles are off.' : 'Subtitles are off.') : id.startsWith('native:') ? 'Browser subtitle track selected.' : id.startsWith('bitmap:') ? 'Image subtitles selected.' : 'Styled subtitles ready.';
         captionLoading = false;
         refreshBarControls();
         capture('progress');
@@ -1181,20 +1203,72 @@
   function subtitlePolicy() {
     return subtitleDefault.value === 'anime' ? (config.catalog_target ? 'auto' : 'always') : subtitleDefault.value;
   }
+  async function discoverCloudSubtitles(target) {
+    const statusPath = target.cloud_subtitles_url;
+    if (typeof statusPath !== 'string' || !/^\/plus\/cloud\/media\/[a-f0-9]{32}\/subtitles\.json$/.test(statusPath)) return;
+    const mediaDirectory = statusPath.slice(0, -'subtitles.json'.length);
+    const owningPlayer = player;
+    const current = () => session === target && player === owningPlayer && ready && !failed && !leaving;
+    const deadline = performance.now() + 75000;
+    subtitlePending = true;
+    refreshBarControls();
+    try {
+      while (current() && performance.now() < deadline) {
+        const response = await fetch(statusPath, {
+          credentials: 'same-origin', redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(5000),
+        });
+        if (!current()) return;
+        if (response.status === 202) {
+          await new Promise(resolve => window.setTimeout(resolve, 2000));
+          continue;
+        }
+        if (!response.ok) return;
+        const { tracks } = await response.json();
+        if (!Array.isArray(tracks)) return;
+        let added = false;
+        for (const track of tracks.slice(0, 4)) {
+          if (!current()) return;
+          if (typeof track?.url !== 'string' || !track.url.startsWith(mediaDirectory) ||
+              !/^subtitles[0-3]\.vtt$/.test(track.url.slice(mediaDirectory.length))) continue;
+          const language = typeof track.language === 'string' && /^[a-z]{2,3}(-[a-z0-9]{2,8})*$/i.test(track.language) ? track.language : 'und';
+          const label = typeof track.name === 'string' ? track.name.slice(0, 40) : undefined;
+          try {
+            await owningPlayer.addTextTrackAsync(new URL(track.url, window.location.origin).href, language, 'subtitles', 'text/vtt', undefined, label);
+            added = true;
+          } catch { /* Missing or unsupported text leaves video playing. */ }
+        }
+        if (added && current()) await prepareTracks();
+        return;
+      }
+    } catch { /* Subtitle discovery is independent of playback. */ }
+    finally {
+      if (current()) { subtitlePending = false; refreshBarControls(); }
+    }
+  }
   function prepareTracks() {
     assTracks = styledSubtitleTracks(session.subtitles || []);
+    bitmapTracks = Array.isArray(session.bitmap_subtitles) ? session.bitmap_subtitles.slice(0, 4).filter(track =>
+      Number.isInteger(track?.id) && track.id >= 0 && track.id <= 999 && typeof track.url === 'string'
+      && /^\/plus\/cloud\/media\/[a-f0-9]{32}\/bitmap[0-9]{1,3}\.json$/.test(track.url)
+      && track.url.endsWith(`/bitmap${track.id}.json`)).map(track => ({ ...track, label: track.name })) : [];
     const selector = find('ass-select');
     selector.disabled = true;
     const nativeTracks = player.getTextTracks();
     selector.replaceChildren(new Option('Off', 'off'));
-    for (const [kind, label] of [['native', 'Browser subtitles'], ['ass', 'Styled ASS']]) {
-      const options = subtitleChoices(nativeTracks, assTracks).filter(choice => choice.kind === kind);
+    for (const [kind, label] of [['native', 'Browser subtitles'], ['ass', 'Styled ASS'], ['bitmap', 'Image subtitles']]) {
+      const options = subtitleChoices(nativeTracks, assTracks, bitmapTracks).filter(choice => choice.kind === kind);
       if (options.length) { const group = document.createElement('optgroup'); group.label = label; for (const option of options) group.appendChild(new Option(option.label, option.value)); selector.appendChild(group); }
     }
-    find('subtitle-unavailable').hidden = !!(nativeTracks.length || assTracks.length);
+    find('subtitle-unavailable').hidden = !!(nativeTracks.length || assTracks.length || bitmapTracks.length);
     const policy = subtitlePolicy();
-    const initial = subtitleOverride ?? initialSubtitleValue(nativeTracks, assTracks, session.text_id, session.resume_version_changed, policy);
+    const initial = subtitleOverride ?? initialSubtitleValue(nativeTracks, assTracks, session.text_id, session.resume_version_changed, policy, bitmapTracks);
     refreshBarControls();
+    if (initial.startsWith('bitmap:')) {
+      selector.value = initial;
+      if (initial === customTextId && bitmapRenderer) selector.disabled = false;
+      else void changeCaption(initial);
+      return;
+    }
     if (initial === 'off' && !subtitleOverride && policy !== 'off' && !nativeTracks.length && !assTracks.length && session.subtitle_url) {
       selector.disabled = false;
       return;
@@ -1228,6 +1302,7 @@
     }
     session = null;
     assTracks = [];
+    bitmapTracks = [];
     customTextId = null;
     subtitleOverride = null;
     subtitlePending = false;
@@ -1260,6 +1335,7 @@
     starting = true;
     const currentAttempt = ++attempt;
     let useRegularStream = false;
+    let retryCloudDelivery = false;
     failed = false;
     container.removeAttribute('data-playback-failed');
     start.disabled = true;
@@ -1289,6 +1365,7 @@
       const startUrl = config.cloud_file ? '/plus/api/playback/cloud-sessions' : config.catalog_target ? '/plus/api/playback/catalog-sessions' : '/plus/api/playback/sessions';
       const payload = startPayload(config, browserCapabilities(window, video));
       if (!find('resume').checked) payload.resume = false;
+      if (cloudProviderOnly) payload.prefer_on_demand = false;
       if (regularStreamVersion) {
         payload.prefer_on_demand = false;
         payload.media_version = regularStreamVersion;
@@ -1320,7 +1397,7 @@
         if (safeLink(find('plex'), session.source?.plex_url)) find('fallback').hidden = true;
       }
       if (currentAttempt !== attempt || leaving) return;
-      nextCandidate = session.next_url;
+      nextCandidate = session.next_url ?? config.next_url;
       const media = new URL(session.media_url, window.location.origin);
       if (media.origin !== window.location.origin || !['http:', 'https:'].includes(media.protocol)) throw new Error('Invalid media source');
       mediaUri = media.href;
@@ -1334,6 +1411,7 @@
         if (request.uris.some(uri => new URL(uri, media).origin !== window.location.origin)) throw new Error('External playback request blocked');
       });
       player.addEventListener('error', () => {
+        if (starting && session?.source?.delivery === 'fragmented') return;
         if (!leaving && (!session?.seek_url || activeSeekSession !== session)) showError(new Error('Unsupported stream'));
       });
       const position = find('resume').checked && !session.resume_version_changed ? Math.max(0, Number(session.position_seconds) || 0) : 0;
@@ -1509,12 +1587,15 @@
       capture('seek');
       periodic = window.setInterval(() => { if (!video.paused && !video.ended) capture('progress'); }, 5000);
       await playReady();
+      if (currentAttempt === attempt && !leaving && session) void discoverCloudSubtitles(session);
     } catch (error) {
       if (currentAttempt === attempt && !leaving) {
         const version = session?.source?.media_version;
         useRegularStream = error.code === 'saved_position_unavailable' && !!session?.seek_url
           && !config.catalog_target && !regularStreamVersion && /^[a-f0-9]{64}$/.test(version || '');
+        retryCloudDelivery = !cloudProviderOnly && !ready && session?.source?.delivery === 'fragmented';
         if (useRegularStream) regularStreamVersion = version;
+        else if (retryCloudDelivery) cloudProviderOnly = true;
         else showError(error);
       }
     }
@@ -1525,7 +1606,7 @@
         container.removeAttribute('aria-busy');
       }
     }
-    if (useRegularStream) await begin();
+    if (useRegularStream || retryCloudDelivery) await begin();
   }
   find('cancel-preparation').addEventListener('click', async () => {
     if (!preparation) return;

@@ -13,7 +13,7 @@ from omakase.plus import connections, household_views, households
 from omakase.plus.anime_synopsis import cached_synopsis
 from omakase.plus.debrid_anime import DebridTitleSource, anime_episodes
 from omakase.plus.debrid_catalog import catalog_title as debrid_catalog_title
-from omakase.plus.debrid_library import account_token, playback_provider
+from omakase.plus.debrid_library import account_token
 from omakase.plus.history_artwork import (
     EpisodeArtworkUnavailable,
     anime_series_identity,
@@ -22,6 +22,7 @@ from omakase.plus.history_artwork import (
 from omakase.plus.household_media import binding, matching_item, personal_legacy_visible
 from omakase.plus.movies import MovieConnections, MovieError, MovieService
 from omakase.plus.product_views import library_titles
+from omakase.plus.providers import playback as playback_providers
 from omakase.plus.tv_service import episode_runtime, plain
 from omakase.plus.web_playback_catalog import catalog_target
 from omakase.plus.web_playback_navigation import attach_navigation, exact_next_url
@@ -51,12 +52,15 @@ def _tmdb_image(value):
 
 def _anime(db, scope, *, debrid_torrents=None):
     cards = library_titles(db, user_id=scope.viewer_id, lifecycle="all", library_scope=scope)
-    mode = playback_provider(db, scope.viewer_id) if scope.kind == "personal" else "plex"
-    if mode != "plex":
+    selection = (
+        playback_providers.select(db, scope.viewer_id)
+        if scope.kind == "personal"
+        else playback_providers.shared_publication()
+    )
+    if selection.cloud_route:
         has_debrid = bool(account_token(db, scope.viewer_id))
         for card in cards:
-            if mode == "realdebrid":
-                card.update(play_url=None, play_episode=None, episode_play_urls={})
+            card.update(play_url=None, play_episode=None, episode_play_urls={})
             if card.get("state") == "archived":
                 continue
             monitor_id = card["id"]
@@ -74,6 +78,10 @@ def _anime(db, scope, *, debrid_torrents=None):
                     card.update(
                         play_url=paths[preferred], play_episode=preferred or None, play_label="Play"
                     )
+    elif selection.provider is not None and not selection.supports("play"):
+        # A catalog-only provider must not borrow another provider's play paths.
+        for card in cards:
+            card.update(play_url=None, play_episode=None, episode_play_urls={})
     return cards
 
 
@@ -143,6 +151,8 @@ def _anime_entries(db, scope, cards):
         monitor = _anime_monitor_id(db, scope, row["id"])
         featured = row.get("play_episode")
         episode = featured if row["lifecycle"] == "in_progress" and featured else None
+        path = urlsplit(row["play_url"]).path if row.get("play_url") else None
+        season = 0 if path and path.endswith("/0") else row["season_number"] or 1
         entries.append(
             _entry(
                 row["id"],
@@ -151,8 +161,9 @@ def _anime_entries(db, scope, cards):
                 artwork_id=monitor,
                 progress=row["progress_percent"] / 100,
                 watching=row["lifecycle"] == "in_progress",
-                featured_path=urlsplit(row["play_url"]).path if row.get("play_url") else None,
+                featured_path=path,
                 featured_episode=featured,
+                _resume_key=(str(row["anilist_id"]), season),
                 episode_artwork=f"episode-artwork/anime/{monitor}/{row['season_number']}/{episode}"
                 if monitor and episode and row.get("season_number")
                 else None,
@@ -355,16 +366,50 @@ def collection(
     return _feature(db, scope, _page(entries, offset), entries, kind, offset, query)
 
 
+def _latest_played_entry(db, scope, kind, entries):
+    by_identity = {
+        row.get("_resume_key", (row["id"], 0)): row
+        for row in entries
+        if row.get("watch_path") or row.get("featured_path")
+    }
+    if not by_identity:
+        return None
+    resumes = db.execute(
+        """SELECT canonical_id,season_number,episode_number,position_seconds,duration_seconds
+           FROM web_playback_resumes
+           WHERE user_id=? AND library_id=? AND domain IN (?,?) AND position_seconds>0
+           ORDER BY updated_at DESC,revision DESC,target_key""",
+        (scope.viewer_id, scope.library_id, kind, "anime-film" if kind == "anime" else kind),
+    )
+    for resume in resumes:
+        season = resume["season_number"]
+        key = (resume["canonical_id"], season if kind == "anime" else 0)
+        entry = by_identity.get(key)
+        if entry is None:
+            continue
+        path = entry.get("featured_path") or entry.get("watch_path")
+        episode = resume["episode_number"]
+        matches_play = kind == "movie" or (
+            path.endswith(f"/{season}/{episode}") if kind == "tv" else path.endswith(f"/{episode}")
+        )
+        position = resume["position_seconds"]
+        duration = resume["duration_seconds"]
+        if matches_play and position < duration:
+            return {**entry, "progress": position / duration}
+        return entry
+    return None
+
+
 def _feature(db, scope, response, entries, kind, offset, query):
     if not query and offset == 0:
+        latest = _latest_played_entry(db, scope, kind, entries)
         continue_watching = [row for row in entries if row.get("watching")]
         continue_watching.sort(key=lambda row: row.get("_activity") or "", reverse=True)
         continue_watching = continue_watching[:8]
-        for row in entries:
-            row.pop("_activity", None)
         response["continue_watching"] = continue_watching
         featured = (
-            next(
+            latest
+            or next(
                 (
                     row
                     for row in continue_watching
@@ -392,10 +437,15 @@ def _feature(db, scope, response, entries, kind, offset, query):
                     **featured,
                     "summary": cached_synopsis(db, anilist)["description_preview"],
                 }
-        response["featured"] = featured
-    else:
-        for row in entries:
-            row.pop("_activity", None)
+        response["featured"] = (
+            {key: value for key, value in featured.items() if not key.startswith("_")}
+            if featured is not None
+            else None
+        )
+        response["featured_recent"] = latest is not None
+    for row in entries:
+        row.pop("_activity", None)
+        row.pop("_resume_key", None)
     return response
 
 
@@ -432,6 +482,8 @@ def episodes(
     debrid_episodes=(),
     debrid_only=False,
     debrid_torrents=None,
+    debrid_partial_seasons=(),
+    requested_season=None,
 ):
     pattern = (
         r"[0-9a-f]{32}" if kind == "anime" and scope.kind == "household" else r"[1-9][0-9]{0,17}"
@@ -480,19 +532,7 @@ def episodes(
         if anilist := row.get("anilist_id"):
             title_summary = cached_synopsis(db, anilist)["description"]
     else:
-        owner = _tv_catalog_owner(db, scope, key)
-        if owner is None:
-            return _page([], offset)
-        rows = db.execute(
-            """SELECT e.season_number,e.episode_number,e.metadata_json,e.plex_present,v.watched,v.watch_source
-               FROM tv_episodes e JOIN tv_catalog c USING(user_id,tmdb_id)
-               LEFT JOIN tv_episodes v ON v.user_id=? AND v.tmdb_id=e.tmdb_id
-                   AND v.season_number=e.season_number AND v.episode_number=e.episode_number
-               WHERE e.user_id=? AND e.tmdb_id=?
-                   AND (? OR json_extract(c.metadata_json,'$.in_collection')=1)
-               ORDER BY e.season_number,e.episode_number""",
-            (scope.viewer_id, owner, key, scope.kind == "household"),
-        )
+        rows = _tv_episode_rows(db, scope, key, offset, requested_season)
         entries = []
         for row in rows:
             season, episode = row["season_number"], row["episode_number"]
@@ -511,15 +551,66 @@ def episodes(
                     or (row["plex_present"] and not debrid_only)
                     else None,
                     watched=bool(row["watched"] and row["watch_source"] in {"manual", "plex"}),
+                    **(
+                        {"availability": "partial"}
+                        if season in debrid_partial_seasons
+                        and (season, episode) not in debrid_episodes
+                        and (debrid_only or not row["plex_present"])
+                        else {}
+                    ),
                     summary=summary,
                     duration_seconds=episode_runtime(metadata.get("runtime_seconds")),
                     episode_artwork=f"episode-artwork/tv/{key}/{season}/{episode}",
                 )
             )
-    response = _page(entries, offset)
+    if kind == "tv":
+        response = {
+            "items": entries[:PAGE_SIZE],
+            "next_offset": offset + PAGE_SIZE if len(entries) > PAGE_SIZE else None,
+        }
+        if debrid_partial_seasons:
+            response["availability"] = {
+                "state": "partial",
+                "seasons": list(debrid_partial_seasons),
+                "retry_offset": offset,
+            }
+    else:
+        response = _page(entries, offset)
     if title_summary:
         response["title_summary"] = title_summary
     return response
+
+
+def _tv_episode_rows(db, scope, key, offset, season):
+    owner = _tv_catalog_owner(db, scope, key)
+    if owner is None:
+        return []
+    return db.execute(
+        """SELECT e.season_number,e.episode_number,e.metadata_json,e.plex_present,v.watched,v.watch_source
+           FROM tv_episodes e JOIN tv_catalog c USING(user_id,tmdb_id)
+           LEFT JOIN tv_episodes v ON v.user_id=? AND v.tmdb_id=e.tmdb_id
+               AND v.season_number=e.season_number AND v.episode_number=e.episode_number
+           WHERE e.user_id=? AND e.tmdb_id=?
+               AND (? OR json_extract(c.metadata_json,'$.in_collection')=1)
+               AND (? IS NULL OR e.season_number=?)
+           ORDER BY e.season_number,e.episode_number
+           LIMIT ? OFFSET ?""",
+        (
+            scope.viewer_id,
+            owner,
+            key,
+            scope.kind == "household",
+            season,
+            season,
+            PAGE_SIZE + 1,
+            offset,
+        ),
+    ).fetchall()
+
+
+def tv_episode_page_seasons(db, scope, key, offset, season):
+    rows = _tv_episode_rows(db, scope, key, offset, season)
+    return tuple(dict.fromkeys(row["season_number"] for row in rows[:PAGE_SIZE]))
 
 
 def _tv_catalog_owner(db, scope, key):

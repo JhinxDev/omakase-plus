@@ -488,7 +488,7 @@
     update();
   }
 
-  function setupLocalDateTimes() {
+  function setupLocalDateTimes(root = document) {
     const formatter = new Intl.DateTimeFormat(undefined, {
       year: "numeric",
       month: "short",
@@ -498,7 +498,15 @@
       second: "2-digit",
       timeZoneName: "short",
     });
-    document.querySelectorAll("[data-local-datetime]").forEach((node) => {
+    const compact = new Intl.DateTimeFormat(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    const day = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+    root.querySelectorAll("[data-local-datetime]").forEach((node) => {
       const raw = node.dataset.localDatetime?.trim();
       if (!raw) return;
       const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
@@ -506,10 +514,14 @@
       const date = new Date(isoValue);
       if (Number.isNaN(date.getTime())) return;
       node.dateTime = date.toISOString();
-      node.textContent = formatter.format(date);
-      node.title = `${date.toISOString().replace(".000Z", "Z")} · shown in your local timezone`;
+      const format = node.hasAttribute("data-local-datetime-day") ? day
+        : node.hasAttribute("data-local-datetime-compact") ? compact : formatter;
+      node.textContent = format.format(date);
+      node.title = `${formatter.format(date)} · ${date.toISOString().replace(".000Z", "Z")}`;
     });
   }
+
+  document.addEventListener("omakase:rows-ready", ({ detail }) => setupLocalDateTimes(detail));
 
   document.addEventListener("DOMContentLoaded", () => {
     document.querySelectorAll('[data-open-details]').forEach((link) => {

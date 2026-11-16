@@ -83,7 +83,7 @@ def fixtures():
     library = env.get_template("library.html").render(
         **base,
         active_page="library",
-        lifecycle_filter="active",
+        lifecycle_filter="all",
         query="",
         state_filter="all",
         provider_filter="all",

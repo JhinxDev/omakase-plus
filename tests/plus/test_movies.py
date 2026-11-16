@@ -546,6 +546,29 @@ def test_exact_imdb_lookup_uses_seerrs_external_id_provider(db):
     assert fake.posts == []
 
 
+def test_text_search_keeps_verified_movies_when_a_candidate_has_no_imdb_id(db):
+    fake = NativeMovies()
+    unverified_tmdb = TMDB + 1
+    fake.search_rows.insert(0, {"id": unverified_tmdb, "mediaType": "movie"})
+
+    def route(request):
+        if request.url.path == f"/api/v1/movie/{unverified_tmdb}":
+            return httpx.Response(
+                200, json={"id": unverified_tmdb, "title": "Unverified movie", "externalIds": {}}
+            )
+        return fake(request)
+
+    svc = service(db, route)
+    results = run(svc.search(1, "The Thing"))
+
+    assert [result["imdb_id"] for result in results] == [IMDB]
+    assert [row[0] for row in db.execute("SELECT tmdb_id FROM movie_catalog")] == [TMDB]
+    assert fake.posts == []
+    with pytest.raises(backend().MovieError) as error:
+        run(svc.search(1, IMDB))
+    assert error.value.code == "identity_mismatch"
+
+
 def test_search_cache_stays_out_of_collection_but_exact_detail_still_opens(db):
     fake = NativeMovies()
 

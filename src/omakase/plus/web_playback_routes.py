@@ -24,10 +24,10 @@ from omakase.plus import web_playback_remux as remux
 from omakase.plus import web_playback_store as store
 from omakase.plus.auth import authenticate_session
 from omakase.plus.completion_cleanup import process_deferred_completion_cleanup
-from omakase.plus.debrid_library import playback_provider
 from omakase.plus.deps import get_db
 from omakase.plus.middleware import require_user
 from omakase.plus.playback_proof import _insert_binding
+from omakase.plus.providers import playback as playback_providers
 from omakase.plus.request_limits import bounded_form_route
 from omakase.plus.web_playback_admission import Admission, Busy
 from omakase.plus.web_playback_catalog import (
@@ -340,6 +340,21 @@ def _monitor(db, user_id, monitor_id, library_id=None, *, prepare=False):
     return monitor, scope
 
 
+def _require_publication_route(selection) -> None:
+    """Refuse the web player for a provider that does not serve this gateway.
+
+    Only the publication route is played here. A request that arrives for
+    another selected route is refused instead of quietly borrowing Plex.
+    """
+    if selection.provider is None or selection.publication_route:
+        return
+    raise HTTPException(
+        409,
+        f"{selection.label} playback is not available in the web player yet.",
+        headers=HEADERS,
+    )
+
+
 def create_player_router(
     templates,
     product_context,
@@ -352,6 +367,7 @@ def create_player_router(
     resource_getter=None,
     stream_launcher=None,
     cache_root=None,
+    close_cloud_pass=None,
 ):
     resolver = resolver or resolve_anime_source
     anime_source_guard = source_guard or revalidate_source
@@ -923,10 +939,15 @@ def create_player_router(
         monitor, scope = _monitor(db, user.id, monitor_id, library_id)
         if (episode_number == 0) != (monitor["format"] == "MOVIE"):
             raise HTTPException(404, "Title unavailable")
-        if scope.kind == "personal" and playback_provider(db, user.id) == "realdebrid":
-            return RedirectResponse(
-                f"/plus/cloud/title/anime/{monitor_id}/0/{episode_number}", headers=HEADERS
-            )
+        if scope.kind == "personal":
+            selection = playback_providers.select(db, user.id)
+            if selection.cloud_route:
+                intent = "?play=1" if play else ""
+                return RedirectResponse(
+                    f"/plus/cloud/title/anime/{monitor_id}/0/{episode_number}{intent}",
+                    headers=HEADERS,
+                )
+            _require_publication_route(selection)
         return templates.TemplateResponse(
             request,
             "player.html",
@@ -952,10 +973,17 @@ def create_player_router(
         domain, canonical, season, episode = _catalog_key(target)
         try:
             scope = personal_scope(db, user.id)
-            if playback_provider(db, user.id) == "realdebrid":
-                return RedirectResponse(
-                    f"/plus/cloud/title/{domain}/{canonical}/{season}/{episode}", headers=HEADERS
-                )
+        except PlaybackSourceError:
+            raise HTTPException(404, "Title unavailable in your library") from None
+        selection = playback_providers.select(db, user.id)
+        if selection.cloud_route:
+            intent = "?play=1" if play else ""
+            return RedirectResponse(
+                f"/plus/cloud/title/{domain}/{canonical}/{season}/{episode}{intent}",
+                headers=HEADERS,
+            )
+        _require_publication_route(selection)
+        try:
             catalog, entry = catalog_target(db, scope, domain, canonical, season, episode)
         except PlaybackSourceError:
             raise HTTPException(404, "Title unavailable in your library") from None
@@ -1029,10 +1057,12 @@ def create_player_router(
         if (body.episode_number == 0) != (monitor["format"] == "MOVIE"):
             raise HTTPException(404, "Title unavailable")
         if scope.kind == "personal":
-            if playback_provider(db, user.id) == "realdebrid":
+            selection = playback_providers.select(db, user.id)
+            if selection.cloud_route:
                 raise HTTPException(
                     409, "Reopen the title to play it from Real-Debrid", headers=HEADERS
                 )
+            _require_publication_route(selection)
             monitor, scope = _monitor(db, user.id, body.monitor_id, scope.library_id, prepare=True)
         return await start_session(request, body, user, db, scope, monitor=monitor)
 
@@ -1048,10 +1078,16 @@ def create_player_router(
         return await start_session(request, body, user, db, scope)
 
     async def start_session(request, body, user, db, scope, *, monitor=None):
-        if monitor is None and playback_provider(db, user.id) == "realdebrid":
+        selection = (
+            playback_providers.select(db, user.id)
+            if scope.kind == "personal"
+            else playback_providers.shared_publication()
+        )
+        if monitor is None and selection.cloud_route:
             raise HTTPException(
                 409, "Reopen the title to play it from Real-Debrid", headers=HEADERS
             )
+        _require_publication_route(selection)
         for sid, item in list(handles.items()):
             active = db.execute(
                 "SELECT 1 FROM web_playback_sessions s JOIN web_playback_resumes r "
@@ -1471,6 +1507,8 @@ def create_player_router(
                         binding_digest=_binding(request),
                         expected_snapshot=cloud,
                     )
+                if close_cloud_pass and (media_pass := cloud["source"].get("media_pass")):
+                    close_cloud_pass(media_pass)
                 return Response(status_code=204, headers=HEADERS)
             except store.PlaybackStoreError:
                 raise HTTPException(

@@ -1,6 +1,6 @@
 /* Give the artwork a fixed stage so long synopses and forms can grow below it. */
 body.product-body .series-hero {
-  --series-art-height: clamp(300px, 38vw, 490px);
+  --series-art-height: clamp(320px, 41vw, 560px);
   display: block;
   margin: 0 0 2rem;
   padding: clamp(1.25rem, 3.8vw, 3.5rem);
@@ -13,15 +13,15 @@ body.product-body .series-hero::after {
   inset: 0 0 auto;
   height: var(--series-art-height);
 }
-body.product-body .series-hero > .detail-backdrop img { object-position: 70% 32%; }
+body.product-body .series-hero > .detail-backdrop img { object-position: center 16%; }
 body.product-body .series-hero > .series-backdrop--poster img {
   object-fit: contain;
   object-position: 90% 10%;
   opacity: .7;
 }
 body.product-body .series-hero::after {
-  background: linear-gradient(90deg, #11131ef5 0%, #11131edb 37%, #11131e2e 82%),
-    linear-gradient(0deg, #11131e 2%, #11131e8c 32%, transparent 78%);
+  background: linear-gradient(90deg, #11131eed 0%, #11131ea6 32%, #11131e14 73%, transparent 100%),
+    linear-gradient(0deg, #11131e 1%, #11131e4d 24%, transparent 62%);
   pointer-events: none;
 }
 .series-hero :is(.title-view-progress, .title-view-progress > div:first-child, .tv-detail-copy) { display: block; min-width: 0; }
@@ -64,6 +64,12 @@ body.product-body .series-hero::after {
 .series-management .watch-actions { display: grid; gap: 1rem; }
 .series-management .watch-actions > form { min-width: 0; }
 .series-management :is(input, select) { max-width: 100%; }
+.series-hero-facts .series-management { margin: .75rem 0 0; }
+.series-hero-facts .tv-history { margin: .65rem 0 0; padding: .8rem; background: #11131ee8; }
+.series-hero-facts .tv-history .panel-heading { padding: 0; border: 0; }
+.series-hero-facts .tv-history .product-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); gap: .6rem; padding: .65rem 0 0; }
+.series-hero-facts .tv-history :is(input, select) { width: 100%; min-inline-size: 0; }
+.series-hero-facts .tv-history .button { justify-self: start; align-self: end; }
 
 .tv-page .tv-availability { margin: 1.5rem 0 2rem; }
 #tv-seasons, #tv-history, [id^="tv-episode-"] { scroll-margin-top: 100px; }
@@ -93,8 +99,7 @@ body.product-body .series-hero::after {
 .series-episode-placeholder { position: absolute; inset: 0; width: 100%; height: 100%; }
 .series-episode-frame .series-episode-image { object-fit: cover; }
 .series-episode-image[data-artwork-pending] { visibility: hidden; }
-.series-episode-image[data-artwork-scope="series"] { object-position: center 32%; filter: brightness(.76); }
-.series-episode.is-watched .series-episode-image { filter: brightness(.63); }
+.series-episode-image[data-artwork-scope="series"] { object-position: center 20%; }
 .series-episode.is-next .series-episode-frame { border-color: #c3b1ff; }
 .series-episode-placeholder {
   display: grid;

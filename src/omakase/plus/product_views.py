@@ -199,8 +199,6 @@ def cached_title_languages(title):
 
 
 def home_view(db, *, user_id: int, library_scope=None) -> dict[str, Any]:
-    from omakase.plus.home_activity import present_home_activity
-
     titles = library_titles(db, user_id=user_id, library_scope=library_scope)
     states = {state: sum(item["state"] == state for item in titles) for state in _states()}
     attention = [item for item in titles if item["state"] == "attention"][:5]
@@ -219,7 +217,10 @@ def home_view(db, *, user_id: int, library_scope=None) -> dict[str, Any]:
     confirmation_needed = [item for item in titles if item["has_pending_confirmation"]][:5]
     ready = [item for item in titles if item["lifecycle"] == "ready_to_start"][:10]
     new_episodes = [item for item in ordered_resume if item.get("new_episode_available")][:10]
-    recent = activity_view(db, user_id=user_id, limit=24)["events"]
+    # One profile-scoped projection drives both web Home and the Apple TV
+    # client, so a shelf order saved anywhere renders everywhere.
+    from omakase.plus.home_shell import projection
+
     return {
         "summary": {
             "titles": len(titles),
@@ -231,7 +232,7 @@ def home_view(db, *, user_id: int, library_scope=None) -> dict[str, Any]:
         "ready": ready,
         "ready_to_watch": ready,
         "new_episodes": new_episodes,
-        "recent_activity": present_home_activity(db, recent, include_checks=False)[:6],
+        "home": projection(db, user_id=user_id, library_scope=library_scope, anime_titles=titles),
     }
 
 

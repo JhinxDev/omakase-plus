@@ -95,6 +95,116 @@ def browser(tmp_path, monkeypatch):
     db.close()
 
 
+def test_request_timeline_reads_exact_progress_without_mutation(browser, monkeypatch):
+    from omakase.plus import movies_routes, movies_store
+
+    client, svc, _ = browser
+    now = "2026-11-15T00:44:00Z"
+    imdb_id = "tt0084787"
+    movies_store.upsert_movie(
+        svc.db, 1, {"imdb_id": imdb_id, "tmdb_id": 1091, "title": "The Thing"}, now=now
+    )
+    before = movies_store.ensure_request(svc.db, 1, imdb_id, now=now, edition=None)
+    calls = []
+    clock = [100.0]
+    monkeypatch.setattr(movies_routes, "monotonic", lambda: clock[0])
+    phases = iter(
+        [
+            ("requested", now),
+            ("acquiring", "2026-11-15T00:45:00Z"),
+            ("verifying", "2026-11-15T00:46:00Z"),
+        ]
+    )
+
+    async def indexed(user, titles):
+        assert user == 1 and titles == [imdb_id]
+        calls.append("inventory")
+        return {}
+
+    async def observe(user, item):
+        assert user == 1 and item == imdb_id
+        calls.append("observe")
+        return next(phases)
+
+    monkeypatch.setattr(svc, "indexed_requests", indexed, raising=False)
+    monkeypatch.setattr(svc, "observe_request", observe, raising=False)
+    response = client.get(f"/plus/movies/{imdb_id}/request-status")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.json()["timeline"][-1]["label"] == "Riven confirmed the request"
+    assert response.json()["identity"] == f"movie:{imdb_id}"
+    assert response.json()["status_label"] == "Received by Riven"
+    assert response.json()["play_url"] is None
+    assert client.get(f"/plus/movies/{imdb_id}/request-status").json() == response.json()
+    assert client.get("/plus/movies/tt0000020/request-status").status_code == 404
+    assert sorted(calls) == ["inventory", "observe"]
+    clock[0] += 60
+    acquiring = client.get(f"/plus/movies/{imdb_id}/request-status").json()
+    assert acquiring["timeline"][-1]["key"] == "acquiring"
+    assert acquiring["state"] == "preparing"
+    assert acquiring["stage_label"] == "Acquiring a copy"
+    clock[0] += 60
+    history = client.get(f"/plus/movies/{imdb_id}/request-status").json()["timeline"]
+    assert [step["key"] for step in history] == ["requested", "received", "acquiring", "verifying"]
+    assert svc.calls == []
+    assert movies_store.get_request(svc.db, 1, imdb_id) == before
+
+
+@pytest.mark.parametrize(
+    "matched,error,label",
+    [
+        (True, False, "In Real-Debrid"),
+        (False, False, "Availability unconfirmed"),
+        (False, True, "Availability unconfirmed"),
+    ],
+)
+def test_movie_poll_uses_only_selected_cloud_inventory(browser, monkeypatch, matched, error, label):
+    from omakase.plus import movies_routes, movies_store, web_playback_navigation
+    from omakase.plus.debrid_library import DebridLibraryError
+
+    client, svc, _ = browser
+    imdb_id = "tt0084787"
+    now = "2026-11-15T00:44:00Z"
+    movies_store.upsert_movie(
+        svc.db, 1, {"imdb_id": imdb_id, "tmdb_id": 1091, "title": "The Thing"}, now=now
+    )
+    before = movies_store.ensure_request(svc.db, 1, imdb_id, now=now, edition=None)
+    calls = []
+
+    async def cloud(*args):
+        calls.append("cloud")
+        if error:
+            raise DebridLibraryError("fixture unavailable")
+        return {imdb_id} if matched else set()
+
+    async def indexed(*args):
+        calls.append("plex")
+        return {imdb_id: ("fixture-plex-copy", now)}
+
+    async def observe(*args):
+        calls.append("observe")
+        return ("requested", now)
+
+    monkeypatch.setattr(
+        movies_routes.playback_providers, "select", lambda *args: SimpleNamespace(cloud_route=True)
+    )
+    monkeypatch.setattr(movies_routes, "movie_ids", cloud)
+    monkeypatch.setattr(web_playback_navigation, "enabled", lambda: True)
+    monkeypatch.setattr(svc, "indexed_requests", indexed, raising=False)
+    monkeypatch.setattr(svc, "observe_request", observe, raising=False)
+    url = f"/plus/movies/{imdb_id}/request-status"
+    response = client.get(url)
+    assert response.status_code == 200
+    status = response.json()
+    assert status["availability"]["label"] == label
+    assert status["availability"]["detail"].startswith("Could not check") is error
+    assert status["can_check"] is not matched
+    assert status["play_url"] == (f"/plus/watch/title/movie/{imdb_id}?play=1" if matched else None)
+    assert client.get(url).json() == status
+    assert sorted(calls) == ["cloud", "observe"]
+    assert movies_store.get_request(svc.db, 1, imdb_id) == before
+
+
 def test_browsing_and_detail_never_acquire_or_probe(browser):
     client, svc, _ = browser
     assert client.get("/plus/movies").status_code == 200
@@ -134,7 +244,12 @@ def test_html_request_check_preserves_its_outcome_through_redirect(browser, outc
     page = client.get(response.headers["location"])
     assert page.status_code == 200 and message in page.text
     assert ">No viewing record</span>" in page.text
-    assert 'value="" selected' in page.text
+    # Owner review W-05 replaced the native <select name="status"> with the app's own
+    # listbox. The unset selection is now carried by the hidden input plus aria-selected,
+    # which is the control the form actually posts; a native "selected" attribute no
+    # longer exists to assert.
+    assert 'name="status" value=""' in page.text
+    assert page.text.count('aria-selected="true"') == 1
     assert svc.calls == ["refresh", "list"] and svc.db.total_changes == before
 
 
@@ -316,6 +431,13 @@ def test_history_form_preserves_omitted_fields(
     )
 
 
+def _mount_discover_page(client, monkeypatch, movie_service):
+    from omakase.plus import movie_discovery, routes
+
+    monkeypatch.setattr(movie_discovery, "MovieService", lambda *args: movie_service)
+    client.app.add_api_route("/plus/discover", routes.discover_page, methods=["GET"])
+
+
 @pytest.mark.parametrize("genre", ["", "27"])
 @pytest.mark.parametrize("watched", [False, True])
 def test_discovery_native_get_form_empty_or_selected_genre_is_html(
@@ -351,20 +473,35 @@ def test_discovery_native_get_form_empty_or_selected_genre_is_html(
             if tag == "form":
                 self.forms.append(dict(attrs))
 
+    _mount_discover_page(client, monkeypatch, svc)
     monkeypatch.setattr("omakase.plus.movie_discovery.MovieDiscoveryService", Discovery)
-    initial = client.get("/plus/discover/movies")
+    redirect = client.get("/plus/discover/movies", follow_redirects=False)
+    assert redirect.status_code == 307
+    assert redirect.headers["location"] == "/plus/discover?kind=movies"
+    legacy = client.get(
+        "/plus/discover/movies?sort=personalized&genre_id=27&include_completed=true&kind=tv"
+    )
+    assert legacy.status_code == 307
+    assert (
+        legacy.headers["location"]
+        == "/plus/discover?kind=movies&genre_id=27&sort=personalized&include_completed=true"
+    )
+    initial = client.get(legacy.headers["location"])
+    assert 'aria-label="For You categories"' in initial.text
+    assert "/plus/discover?kind=tv" in initial.text
+    assert "Find your next favorite." not in initial.text
     assert initial.status_code == 200
     form = Form()
     form.feed(initial.text)
-    native = next(f for f in form.forms if f.get("action") == "/plus/discover/movies")
+    native = next(f for f in form.forms if f.get("action") == "/plus/discover")
     assert native["method"] == "get"
-    fields = {"genre_id": genre, "sort": "personalized"}
+    fields = {"kind": "movies", "genre_id": genre, "sort": "personalized"}
     if watched:
         fields["include_completed"] = "true"
     response = client.get(native["action"], params=fields)
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "Explore movies" in response.text
+    assert "Apply filters" in response.text
     assert calls[-1] == {
         "genre_id": int(genre) if genre else None,
         "sort": "personalized",
@@ -378,7 +515,7 @@ def test_discovery_native_get_form_empty_or_selected_genre_is_html(
 
 @pytest.mark.parametrize("genre", ["not-a-number", "-1", "0", "9" * 40])
 def test_invalid_discovery_genre_returns_a_useful_html_state(browser, monkeypatch, genre):
-    client, _, _ = browser
+    client, svc, _ = browser
     client.templates.env.loader = FileSystemLoader(
         Path(__file__).resolve().parents[2] / "src/omakase/plus/templates"
     )
@@ -394,8 +531,11 @@ def test_invalid_discovery_genre_returns_a_useful_html_state(browser, monkeypatc
         async def discover(self, user_id, **filters):
             pytest.fail("Invalid genre must be rejected before discovery")
 
+    _mount_discover_page(client, monkeypatch, svc)
     monkeypatch.setattr("omakase.plus.movie_discovery.MovieDiscoveryService", Discovery)
-    response = client.get("/plus/discover/movies", params={"genre_id": genre})
+    response = client.get(
+        "/plus/discover/movies", params={"genre_id": genre}, follow_redirects=True
+    )
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert "Choose a valid discovery filter." in response.text

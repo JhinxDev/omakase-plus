@@ -1,11 +1,16 @@
 /* Real movie router, native forms and local synthetic service responses only.
    Start tests.plus.movie_feedback_fixture:create_app on loopback before running. */
+const { qaRuntime } = require('./qa-environment.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '..');
-const runtime = process.env.OMAKASE_QA_NODE_MODULES || path.join(root, 'node_modules');
+// Pinned browser on purpose: the feedback list is measured with native Edge
+// scrollbars, which needs the installed msedge channel and the default
+// --hide-scrollbars argument removed. Registered as a documented exception in
+// scripts/qa-environment.test.cjs.
+const runtime = qaRuntime();
 const { chromium } = require(require.resolve('playwright', { paths: [runtime] }));
 const base = process.env.OMAKASE_MOVIE_QA_BASE || 'http://127.0.0.1:4423';
 assert.equal(new URL(base).hostname, '127.0.0.1');

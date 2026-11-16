@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections import OrderedDict
+from math import ceil
+from time import monotonic
+from typing import Literal
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -11,6 +16,8 @@ from starlette.concurrency import run_in_threadpool
 
 from omakase.plus.artwork_delivery import optimized_artwork
 from omakase.plus.connections import movie_connections
+from omakase.plus.debrid_catalog import movie_ids
+from omakase.plus.debrid_library import DebridLibrary, DebridLibraryError
 from omakase.plus.deps import get_db
 from omakase.plus.middleware import require_user
 from omakase.plus.movie_artwork import movie_artwork
@@ -20,7 +27,11 @@ from omakase.plus.movie_presentation import present_movie
 from omakase.plus.movies import MovieError, MovieService
 from omakase.plus.movies_store import get_movie
 from omakase.plus.posters import PosterUnavailable
+from omakase.plus.providers import playback as playback_providers
 from omakase.plus.request_limits import bounded_form_route
+from omakase.plus.web_playback_catalog import personal_scope
+from omakase.plus.web_playback_navigation import catalog_resume_progress
+from omakase.plus.web_playback_source import PlaybackSourceError
 from omakase.plus.web_security import csrf_token, require_csrf
 
 
@@ -39,6 +50,16 @@ def create_movies_router(
             bounded_form_route(16_384, "Movie form is too large", guard=_private)
         )
     )
+    cloud_library = DebridLibrary()
+
+    async def cloud_availability(db, user, *, timeout=8):
+        if not playback_providers.select(db, user.id).cloud_route:
+            return None, False
+        try:
+            async with asyncio.timeout(timeout):
+                return await movie_ids(db, personal_scope(db, user.id), cloud_library), False
+        except (DebridLibraryError, PlaybackSourceError, TimeoutError):
+            return set(), True
 
     def service(db, user):
         return (
@@ -90,12 +111,17 @@ def create_movies_router(
                     headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
                 )
         svc = service(db, user)
+        cloud_ids, cloud_error = await cloud_availability(db, user)
         cards, error = [], ""
         try:
             if q and view in {"all", "discover"}:
                 cards = await svc.search(user.id, q)
             else:
-                cards = await svc.list(user.id, view=view)
+                cards = (
+                    await svc.list(user.id, view=view)
+                    if cloud_ids is None
+                    else await svc.list(user.id, view=view, cloud_ids=cloud_ids)
+                )
                 if q:
                     needle = q.strip().casefold()
                     cards = [
@@ -109,16 +135,31 @@ def create_movies_router(
         from omakase.plus.movie_history import MovieHistoryService
 
         history = MovieHistoryService(svc)
+        try:
+            progress = catalog_resume_progress(
+                db, personal_scope(db, user.id), "movie", cloud=cloud_ids is not None
+            )
+        except PlaybackSourceError:
+            progress = {}
         for card in cards:
             card["history"] = history.get(user.id, card["imdb_id"]) if card.get("imdb_id") else None
+            card["watched_percent"] = (
+                100
+                if (card["history"] or {}).get("status") == "completed"
+                else progress.get(card.get("imdb_id"))
+            )
         if view == "requests":
             cards = [
                 card
                 for card in cards
-                if not card.get("plex_present")
+                if (
+                    card["imdb_id"] not in cloud_ids
+                    if cloud_ids is not None
+                    else not card.get("plex_present")
+                )
                 and (card["history"] or {}).get("status") != "completed"
             ]
-        cards = [present_movie(card) for card in cards]
+        cards = [present_movie(card, cloud_ids=cloud_ids) for card in cards]
         if households_enabled() if callable(households_enabled) else households_enabled:
             from omakase.plus.household_media import personal_legacy_visible
             from omakase.plus.households import selected_scope
@@ -142,9 +183,10 @@ def create_movies_router(
                 "movies_error": error,
                 "notice": notice,
                 "action_card": action_card,
-                "discover_movies": False,
                 "sync_result": sync_result,
-                "history_sync": history.sync_status(user.id),
+                "cloud_playback": cloud_ids is not None,
+                "cloud_error": cloud_error,
+                "history_sync": history.sync_status(user.id) if cloud_ids is None else None,
             },
             headers={"Cache-Control": "private, no-store"},
         )
@@ -303,6 +345,7 @@ def create_movies_router(
                     status_code=307,
                     headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
                 )
+        from omakase.plus.for_you import request_status
         from omakase.plus.movie_history import MovieHistoryService
         from omakase.plus.movies import _imdb
         from omakase.plus.web_playback_navigation import enabled as web_player_enabled
@@ -310,14 +353,16 @@ def create_movies_router(
         try:
             _imdb(imdb_id)
             svc = service(db, user)
-            cards = await svc.list(user.id)
+            cloud_ids, cloud_error = await cloud_availability(db, user)
+            cards = await svc.list(user.id) if cloud_ids is None else []
             card = next((item for item in cards if item["imdb_id"] == imdb_id), None)
             if card is None:
                 card = await svc.detail(user.id, imdb_id)
             if card is None:
                 raise HTTPException(404, "Movie not found")
             card["history"] = MovieHistoryService(svc).get(user.id, imdb_id)
-            card = present_movie(card)
+            card = present_movie(card, cloud_ids=cloud_ids)
+            title_request = request_status(db, user.id, "movie", imdb_id, movie_card=card)
             removal = cleanup_status(db, user.id, imdb_id)
             if removal == "removed" and (
                 card.get("plex_present") or card.get("requested") or card.get("request_observation")
@@ -335,6 +380,9 @@ def create_movies_router(
             {
                 **context(request, user),
                 "card": card,
+                "cloud_playback": cloud_ids is not None,
+                "cloud_error": cloud_error,
+                "title_request": title_request,
                 "notice": notice
                 if notice
                 in {
@@ -353,6 +401,358 @@ def create_movies_router(
                 "watch_in_app": web_player_enabled(),
             },
             headers={"Cache-Control": "private, no-store"},
+        )
+
+    request_reads: OrderedDict[
+        tuple[int, str, str, bool],
+        tuple[float, object, tuple[tuple[str, str], ...], tuple[bool, bool] | None],
+    ] = OrderedDict()
+    polling: set[int] = set()
+    request_read_after: OrderedDict[int, float] = OrderedDict()
+
+    @router.get("/movies/{imdb_id}/request-status")
+    async def request_timeline_status(imdb_id: str, user=Depends(require_user), db=Depends(get_db)):
+        from omakase.plus.for_you import (
+            _MOVIE_PROGRESS_LABELS,
+            ForYouError,
+            _movie_status,
+            request_status,
+        )
+
+        headers = {"Cache-Control": "private, no-store", "Vary": "Cookie"}
+        try:
+            if households_enabled() if callable(households_enabled) else households_enabled:
+                from omakase.plus.households import selected_scope
+
+                if selected_scope(db, viewer_id=user.id).kind != "personal":
+                    raise HTTPException(404, "Request unavailable", headers=headers)
+            cloud_playback = playback_providers.select(db, user.id).cloud_route
+            movie_card = {"imdb_id": imdb_id, "cloud_match": False} if cloud_playback else None
+            status = request_status(db, user.id, "movie", imdb_id, movie_card=movie_card)
+        except ForYouError:
+            raise HTTPException(404, "Request unavailable", headers=headers) from None
+        if status is None:
+            raise HTTPException(404, "Request unavailable", headers=headers)
+
+        async def read(operation, *args):
+            try:
+                async with asyncio.timeout(5):
+                    return await operation(*args)
+            except (MovieError, TimeoutError):
+                return None
+
+        key = (user.id, imdb_id, status["timeline"][0]["occurred_at"], cloud_playback)
+        cached = request_reads.get(key)
+        now = monotonic()
+        if status["can_check"] and (cached is None or cached[0] <= now):
+            earliest = request_read_after.get(user.id, 0)
+            if user.id in polling or len(polling) >= 4 or earliest > now:
+                retry_after = max(5, ceil(earliest - now))
+                raise HTTPException(
+                    429,
+                    "Status check in progress",
+                    headers={**headers, "Retry-After": str(retry_after)},
+                )
+            polling.add(user.id)
+            request_read_after[user.id] = now + 15
+            request_read_after.move_to_end(user.id)
+            if len(request_read_after) > 128:
+                request_read_after.popitem(last=False)
+            try:
+                svc = service(db, user)
+                inventory, observation = await asyncio.gather(
+                    cloud_availability(db, user, timeout=5)
+                    if cloud_playback
+                    else read(svc.indexed_requests, user.id, [imdb_id]),
+                    read(svc.observe_request, user.id, imdb_id),
+                )
+            finally:
+                polling.discard(user.id)
+            observations = dict(cached[2]) if cached else {}
+            if observation and observation[0] in _MOVIE_PROGRESS_LABELS:
+                observations.setdefault(*observation)
+            if cloud_playback:
+                cloud_ids, cloud_error = inventory
+                library, cloud_match = None, (imdb_id in (cloud_ids or ()), cloud_error)
+            else:
+                library, cloud_match = (inventory or {}).get(imdb_id), None
+            cached = (monotonic() + 50, library, tuple(observations.items()), cloud_match)
+            request_reads[key] = cached
+            request_reads.move_to_end(key)
+            if len(request_reads) > 128:
+                request_reads.popitem(last=False)
+        availability = None
+        if cached and status["can_check"]:
+            if movie_card is not None:
+                matched, failed = cached[3]
+                movie_card["cloud_match"] = matched
+                display = present_movie(movie_card, cloud_ids={imdb_id} if matched else set())[
+                    "display"
+                ]
+                availability = {
+                    "label": display["status_label"],
+                    "detail": (
+                        "Could not check the Real-Debrid library right now."
+                        if failed
+                        else display["summary"]
+                    ),
+                    "tone": display["status_tone"],
+                }
+            status = _movie_status(
+                db, user.id, imdb_id, cached[1], movie_card=movie_card, observations=cached[2]
+            )
+        if status is None:
+            raise HTTPException(404, "Request unavailable", headers=headers)
+        from omakase.plus.web_playback_navigation import enabled as web_player_enabled
+
+        can_play = status["state"] in {"in_library", "ready"} and web_player_enabled()
+        return JSONResponse(
+            {
+                **request_payload(status),
+                "label": status["status_label"],
+                "availability": availability,
+                "play_url": f"/plus/watch/title/movie/{imdb_id}?play=1" if can_play else None,
+            },
+            headers=headers,
+        )
+
+    # The Requests dashboard reads the same shared status model as the movie
+    # timeline and the native client. Reads are bounded per viewer; explicit
+    # actions stay separate and CSRF-checked.
+    request_status_reads: OrderedDict[int, tuple[float, bool, dict]] = OrderedDict()
+    request_status_polling: set[int] = set()
+    request_status_read_after: OrderedDict[int, float] = OrderedDict()
+
+    def _no_store():
+        return {"Cache-Control": "private, no-store", "Vary": "Cookie"}
+
+    def requests_scope(db, user):
+        if households_enabled() if callable(households_enabled) else households_enabled:
+            from omakase.plus.households import selected_scope
+
+            if selected_scope(db, viewer_id=user.id).kind != "personal":
+                raise HTTPException(404, "Requests unavailable", headers=_no_store())
+
+    def request_payload(model):
+        return {
+            key: model[key]
+            for key in (
+                "identity",
+                "kind",
+                "media_kind",
+                "title_id",
+                "title",
+                "season",
+                "stage",
+                "stage_label",
+                "stages",
+                "state",
+                "label",
+                "status_label",
+                "detail",
+                "category",
+                "manual",
+                "manual_note",
+                "stopped_at",
+                "reason",
+                "unknown_reason",
+                "reason_text",
+                "last_checked_at",
+                "last_confirmed_at",
+                "next_action",
+                "can_check",
+                "can_retry",
+                "resolved",
+                "removed",
+                "candidates_rejected",
+                "candidates_considered",
+                "detail_href",
+                "timeline",
+            )
+        }
+
+    def requests_context(request, user):
+        base = context(request, user)
+        base["active_page"] = "requests"
+        return base
+
+    def wants_json(request):
+        return "application/json" in request.headers.get("accept", "")
+
+    @router.get("/requests", response_class=HTMLResponse)
+    async def requests_page(request: Request, user=Depends(require_user), db=Depends(get_db)):
+        from omakase.plus import for_you
+
+        requests_scope(db, user)
+        try:
+            page = await for_you.dashboard(db, user.id)
+        except for_you.ForYouError:
+            raise HTTPException(404, "Requests unavailable", headers=_no_store()) from None
+        return templates.TemplateResponse(
+            request,
+            "requests.html",
+            {
+                **requests_context(request, user),
+                "categories": page["categories"],
+                "counts": page["counts"],
+                "csrf_token": csrf_token(request),
+            },
+            headers=_no_store(),
+        )
+
+    @router.get("/requests/status")
+    async def requests_status(user=Depends(require_user), db=Depends(get_db)):
+        """Read-only dashboard projection with the movie timeline backoff."""
+        from omakase.plus import for_you
+
+        headers = _no_store()
+        requests_scope(db, user)
+        now = monotonic()
+        cloud_playback = playback_providers.select(db, user.id).cloud_route
+        cached = request_status_reads.get(user.id)
+        if cached is not None and cached[0] > now and cached[1] == cloud_playback:
+            return JSONResponse(cached[2], headers=headers)
+        earliest = request_status_read_after.get(user.id, 0.0)
+        if user.id in request_status_polling or len(request_status_polling) >= 4 or earliest > now:
+            raise HTTPException(
+                429,
+                "Status check in progress",
+                headers={**headers, "Retry-After": str(max(5, ceil(earliest - now)))},
+            )
+        request_status_polling.add(user.id)
+        request_status_read_after[user.id] = now + 15
+        request_status_read_after.move_to_end(user.id)
+        if len(request_status_read_after) > 128:
+            request_status_read_after.popitem(last=False)
+        try:
+            page = await for_you.dashboard(db, user.id)
+        except for_you.ForYouError:
+            raise HTTPException(404, "Requests unavailable", headers=headers) from None
+        finally:
+            request_status_polling.discard(user.id)
+        payload = {
+            "categories": [
+                {
+                    "key": category["key"],
+                    "title": category["title"],
+                    "requests": [request_payload(model) for model in category["requests"]],
+                }
+                for category in page["categories"]
+            ],
+            "counts": page["counts"],
+        }
+        request_status_reads[user.id] = (monotonic() + 50, cloud_playback, payload)
+        request_status_reads.move_to_end(user.id)
+        if len(request_status_reads) > 128:
+            request_status_reads.popitem(last=False)
+        return JSONResponse(payload, headers=headers)
+
+    @router.get("/requests/{kind}/{title_id}", response_class=HTMLResponse)
+    async def requests_detail(
+        request: Request,
+        kind: Literal["movie", "anime", "tv"],
+        title_id: str,
+        checked: int = 0,
+        retried: int = 0,
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        from omakase.plus import for_you, request_candidates
+
+        requests_scope(db, user)
+        try:
+            model = await for_you.request_detail(db, user.id, kind, title_id)
+        except for_you.ForYouError as error:
+            raise HTTPException(error.status or 404, error.detail, headers=_no_store()) from None
+        return templates.TemplateResponse(
+            request,
+            "request_detail.html",
+            {
+                **requests_context(request, user),
+                "item": model,
+                # Owner review W-06: the page states what Omakase's own search found and
+                # why each candidate failed, or says plainly that the search is switched
+                # off or could not run. It never presents a re-stamped check time as
+                # progress. The search is bounded and cached, so rendering stays cheap.
+                "request_search": await request_candidates.refresh(
+                    db,
+                    user.id,
+                    kind,
+                    title_id,
+                    request_candidates.JudgeRequest(
+                        title=str(
+                            getattr(model, "title", "")
+                            or getattr(model, "title_label", "")
+                            or title_id
+                        ),
+                        kind=kind,
+                        year=getattr(model, "year", None),
+                        season=getattr(model, "season", None),
+                        episode=getattr(model, "episode", None),
+                    ),
+                ),
+                "notice": "checked" if checked else ("retried" if retried else ""),
+                "csrf_token": csrf_token(request),
+            },
+            headers=_no_store(),
+        )
+
+    @router.post("/requests/{kind}/{title_id}/check")
+    async def requests_check(
+        request: Request,
+        kind: Literal["movie", "anime", "tv"],
+        title_id: str,
+        csrf: str = Form("", alias="csrf_token"),
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        """Explicit status check. Reads provider/library state; no new request."""
+        from omakase.plus import for_you
+
+        require_csrf(request, csrf)
+        requests_scope(db, user)
+        try:
+            model = await for_you.refresh_request(db, user.id, kind, title_id)
+        except for_you.ForYouError as error:
+            if wants_json(request):
+                return JSONResponse(
+                    {"detail": error.detail}, status_code=error.status, headers=_no_store()
+                )
+            raise HTTPException(error.status, error.detail, headers=_no_store()) from None
+        request_status_reads.pop(user.id, None)
+        if wants_json(request):
+            return JSONResponse(request_payload(model), headers=_no_store())
+        return RedirectResponse(
+            f"/plus/requests/{kind}/{title_id}?checked=1", status_code=303, headers=_no_store()
+        )
+
+    @router.post("/requests/{kind}/{title_id}/retry")
+    async def requests_retry(
+        request: Request,
+        kind: Literal["movie", "anime", "tv"],
+        title_id: str,
+        csrf: str = Form("", alias="csrf_token"),
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        """Explicit idempotent retry; returns the existing request, never a second one."""
+        from omakase.plus import for_you
+
+        require_csrf(request, csrf)
+        requests_scope(db, user)
+        try:
+            model = await for_you.retry_request(db, user.id, kind, title_id)
+        except for_you.ForYouError as error:
+            if wants_json(request):
+                return JSONResponse(
+                    {"detail": error.detail}, status_code=error.status, headers=_no_store()
+                )
+            raise HTTPException(error.status, error.detail, headers=_no_store()) from None
+        request_status_reads.pop(user.id, None)
+        if wants_json(request):
+            return JSONResponse(request_payload(model), headers=_no_store())
+        return RedirectResponse(
+            f"/plus/requests/{kind}/{title_id}?retried=1", status_code=303, headers=_no_store()
         )
 
     async def action(request, user, db, operation, **kwargs):
@@ -607,65 +1007,12 @@ def create_movies_router(
             },
         )
 
-    @router.get("/discover/movies", response_class=HTMLResponse)
-    async def discover(
-        request: Request,
-        genre_id: str | None = None,
-        sort: str = "personalized",
-        include_completed: bool = False,
-        user=Depends(require_user),
-        db=Depends(get_db),
-    ):
-        from omakase.plus.movie_discovery import MovieDiscoveryService
-        from omakase.plus.movie_history import MovieHistoryService
-
-        svc = service(db, user)
-        discovery = MovieDiscoveryService(svc)
-        cards, options, error = [], {}, ""
-        selected_genre = None
-        try:
-            # A native GET form submits the All genres option as genre_id=.
-            # Normalize it here so both ordinary submits and bad input render HTML.
-            raw_genre = (genre_id or "").strip()
-            if raw_genre:
-                if len(raw_genre) > 10 or not raw_genre.isascii() or not raw_genre.isdecimal():
-                    raise ValueError("Invalid genre")
-                selected_genre = int(raw_genre)
-                if not 0 < selected_genre <= 2_147_483_647:
-                    raise ValueError("Invalid genre")
-            result = await discovery.discover(
-                user.id, genre_id=selected_genre, sort=sort, include_completed=include_completed
-            )
-            cards = result["results"] if isinstance(result, dict) else result
-            history = MovieHistoryService(svc)
-            for card in cards:
-                card["history"] = (
-                    history.get(user.id, card["imdb_id"]) if card.get("imdb_id") else None
-                )
-            cards = [present_movie(card) for card in cards]
-        except (MovieError, ValueError) as exc:
-            error = (
-                exc.detail if isinstance(exc, MovieError) else "Choose a valid discovery filter."
-            )
-        options = discovery.last_options
-        return templates.TemplateResponse(
-            request,
-            "movies.html",
-            {
-                **context(request, user),
-                "active_page": "discover",
-                "cards": cards,
-                "query": "",
-                "view": "discover",
-                "movies_error": error,
-                "discover_movies": True,
-                "discovery_notice": discovery.notice,
-                "genre_options": options,
-                "genre_id": selected_genre,
-                "sort": sort,
-                "include_completed": include_completed,
-            },
-            headers={"Cache-Control": "private, no-store"},
-        )
+    @router.get("/discover/movies", response_class=RedirectResponse)
+    async def discover_movies_redirect(request: Request, user=Depends(require_user)):
+        params = {"kind": "movies"}
+        for field in ("genre_id", "sort", "include_completed"):
+            if field in request.query_params:
+                params[field] = request.query_params[field]
+        return RedirectResponse("/plus/discover?" + urlencode(params), status_code=307)
 
     return router

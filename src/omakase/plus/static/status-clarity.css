@@ -63,3 +63,85 @@
 @media (prefers-reduced-motion: reduce) {
   .status-clarity-health .health-orb { animation: none; }
 }
+
+/* The three library catalogs share a poster grid while retaining their own status evidence. */
+.catalog-poster-grid:is(.library-grid, .movie-grid, .tv-grid) {
+  --catalog-grid-gap: clamp(.75rem, 1.4vw, 1.5rem);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(max(min(100%, 9rem), calc((100% - 5 * var(--catalog-grid-gap)) / 6)), 1fr));
+  align-items: start;
+  gap: clamp(1.5rem, 2.6vw, 2.75rem) var(--catalog-grid-gap);
+}
+
+.catalog-poster-grid .catalog-card :is(.library-poster, .movie-poster, .tv-poster) {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 2 / 3;
+  border-radius: 10px;
+}
+
+.catalog-poster-grid .catalog-card :is(.library-card-copy, .movie-card-body, .tv-card-copy) {
+  padding: .65rem 0 0;
+}
+
+.catalog-poster-grid .catalog-card :is(h2, h3).catalog-card-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  block-size: auto;
+  min-block-size: 2.6em;
+  margin: 0;
+  color: var(--om-ink, #f4f3f8);
+  font-family: inherit;
+  font-size: clamp(.875rem, 1.3vw, 1rem);
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -.015em;
+}
+
+.catalog-poster-grid .catalog-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .25rem .5rem;
+  margin: .2rem 0 0;
+  color: var(--p-muted, #b8c3d5);
+}
+
+.catalog-poster-grid .catalog-card-meta span + span::before {
+  content: "\00b7";
+  margin-inline-end: .5rem;
+}
+
+.catalog-poster-grid .catalog-card :is(.media-progress, .tv-card-facts, .movie-card-status) {
+  margin-block-start: .45rem;
+}
+
+.catalog-poster-grid .catalog-card .media-progress-meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: .25rem;
+}
+
+.catalog-poster-grid .catalog-card .media-progress-meta > :is(.watched-count, .not-started, .ready-count, .collection-card-progress, .collection-card-availability) {
+  grid-column: 1;
+  grid-row: auto;
+  justify-self: start;
+  text-align: start;
+  margin: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.catalog-poster-grid .catalog-card :is(.catalog-card-meta, .media-progress-meta > span, .media-progress-meta > p) {
+  font-size: .78rem;
+  line-height: 1.4;
+}
+
+@media (min-width: 320px) and (max-width: 600px) {
+  .catalog-poster-grid:is(.library-grid, .movie-grid, .tv-grid) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

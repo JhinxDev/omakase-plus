@@ -1,0 +1,18 @@
+{% from "_movie_components.html" import movie_card %}
+{% from "_media_components.html" import empty_state %}
+<form class="movie-search product-form" method="get" action="/plus/discover" aria-label="Movie filters" data-busy-form>
+  <input type="hidden" name="kind" value="movies">
+  <label><span id="movie-filter-genre">Genre</span><select name="genre_id" aria-labelledby="movie-filter-genre"><option value="">All genres</option>{% for genre in filtered_movies.genres %}<option value="{{ genre.id }}" {% if genre.id == filtered_movies.genre_id %}selected{% endif %}>{{ genre.name }}</option>{% endfor %}</select></label>
+  <label><span id="movie-filter-sort">Sort by</span><select name="sort" aria-labelledby="movie-filter-sort">{% for value,label in [('personalized','For you'),('popular','Popular'),('top_rated','Top rated'),('newest','Recent releases')] %}<option value="{{ value }}" {% if filtered_movies.sort == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <label class="movie-completed-toggle"><input type="checkbox" name="include_completed" value="true" {% if filtered_movies.include_completed %}checked{% endif %}>Include watched</label>
+  <button class="button button-primary" type="submit" data-busy-label="Finding movies…">Apply filters</button>
+  <a href="/plus/discover?kind=movies">Clear filters</a>
+</form>
+{% if filtered_movies.notice %}<p class="product-notice" role="status">{{ filtered_movies.notice }}</p>{% endif %}
+{% if filtered_movies.error %}<p class="product-notice" role="status">{{ filtered_movies.error }}</p>
+{% elif filtered_movies.cards %}
+<header class="stream-section-heading"><h2>Movies for You</h2><span class="movie-result-count">{{ filtered_movies.cards | length }} {{ 'movie' if filtered_movies.cards | length == 1 else 'movies' }}</span></header>
+<div class="movie-grid catalog-poster-grid">{% for card in filtered_movies.cards %}{{ movie_card(card, collection=true) }}{% endfor %}</div>
+{% else %}
+{{ empty_state('No matching movies', 'Try a different genre or include titles you’ve watched.') }}
+{% endif %}

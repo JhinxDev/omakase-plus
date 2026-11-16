@@ -2,31 +2,38 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from omakase.plus.artwork_delivery import optimized_artwork
 from omakase.plus.connections import movie_connections
+from omakase.plus.debrid_catalog import tv_episode_ids, tv_ids
+from omakase.plus.debrid_library import DebridLibrary, DebridLibraryError
 from omakase.plus.deps import get_db
 from omakase.plus.middleware import require_user
 from omakase.plus.movie_artwork import movie_artwork
 from omakase.plus.movies import MovieError, _positive
 from omakase.plus.movies_routes import _private
 from omakase.plus.posters import PosterUnavailable
+from omakase.plus.providers import playback as playback_providers
 from omakase.plus.request_limits import bounded_form_route
 from omakase.plus.tv_service import UNSET, TVError, TVService, number
+from omakase.plus.web_playback_catalog import personal_scope
+from omakase.plus.web_playback_navigation import catalog_resume_progress
+from omakase.plus.web_playback_source import PlaybackSourceError
 from omakase.plus.web_security import csrf_token, require_csrf
 
 
-def _episode_navigation(db, user_id, card):
+def _episode_navigation(db, user_id, card, *, cloud_episodes=None):
     """Project existing exact catalog/player records without resolving Plex on page load."""
     from omakase.plus.language_source import digest
-    from omakase.plus.web_playback_catalog import _snapshot, personal_scope
+    from omakase.plus.web_playback_catalog import _snapshot
     from omakase.plus.web_playback_navigation import episode_resume
-    from omakase.plus.web_playback_source import PlaybackSourceError
 
-    if not card.get("coverage_complete"):
+    if cloud_episodes is None and not card.get("coverage_complete"):
         return None
     media_id = str(card["tmdb_id"])
     episodes = {
@@ -54,6 +61,32 @@ def _episode_navigation(db, user_id, card):
             "episode": episode,
             "continue": resume,
         }
+
+    if cloud_episodes is not None:
+        from omakase.plus.cloud_progress import positions
+
+        keys = {
+            f"named:tv:{media_id}:{season}:{number}": (season, number)
+            for season, number in cloud_episodes
+            if (season, number) in episodes
+        }
+        saved = positions(db, user_id, keys)
+        featured = None
+        for key, record in sorted(
+            saved.items(), key=lambda item: item[1]["updated_at"], reverse=True
+        ):
+            episode = episodes[keys[key]]
+            resume = episode_resume(record["position_seconds"], record["duration_seconds"])
+            if resume and not episode["watched"]:
+                episode["resume"] = resume
+                featured = featured or link(keys[key], resume=True)
+        if featured or card.get("status") == "completed":
+            return featured
+        first = next(
+            (key for key in sorted(keys.values()) if key[0] > 0 and not episodes[key]["watched"]),
+            None,
+        )
+        return link(first) if first else None
 
     resumes = db.execute(
         "SELECT season_number,episode_number,position_seconds,duration_seconds,publication_identity "
@@ -111,6 +144,7 @@ def create_tv_router(
             bounded_form_route(16384, "TV form is too large", guard=_private)
         )
     )
+    cloud_library = DebridLibrary()
 
     def service(db, user):
         return (
@@ -152,12 +186,23 @@ def create_tv_router(
                 )
         cards = []
         collection_page = None
+        cloud_playback = playback_providers.select(db, user.id).cloud_route
+        cloud_ids = set()
+        cloud_error = False
+        if cloud_playback:
+            try:
+                async with asyncio.timeout(8):
+                    cloud_ids = await tv_ids(db, personal_scope(db, user.id), cloud_library)
+            except (DebridLibraryError, PlaybackSourceError, TimeoutError):
+                cloud_error = True
         try:
             svc = service(db, user)
             if q and view == "all":
                 cards = await svc.search(user.id, q)
             elif hasattr(svc, "collection_page"):
                 filters = {"query": q.strip()} if q else {}
+                if cloud_playback:
+                    filters["cloud_ids"] = cloud_ids
                 collection_page = await svc.collection_page(
                     user.id, view=view, offset=offset, **filters
                 )
@@ -166,6 +211,36 @@ def create_tv_router(
                 cards = await svc.list(user.id, view=view)
         except (TVError, MovieError) as exc:
             error = exc.detail
+        try:
+            progress = catalog_resume_progress(
+                db, personal_scope(db, user.id), "tv", cloud=cloud_playback
+            )
+        except PlaybackSourceError:
+            progress = {}
+        for card in cards:
+            card["watched_percent"] = 100 if card.get("status") == "completed" else None
+            seasons = [
+                row
+                for row in card.get("seasons", [])
+                if row["season_number"] > 0 and row.get("released")
+            ]
+            if (
+                card["watched_percent"] is None
+                and seasons
+                and all(row.get("episodes_loaded") for row in seasons)
+            ):
+                released = [
+                    episode
+                    for row in seasons
+                    for episode in row.get("episodes", [])
+                    if episode.get("released")
+                ]
+                watched = sum(bool(episode.get("watched")) for episode in released)
+                if watched:
+                    card["watched_percent"] = round(100 * watched / len(released))
+            if card["watched_percent"] is None:
+                card["watched_percent"] = progress.get(str(card["tmdb_id"]))
+                card["progress_scope"] = "of the current episode watched"
         if households_enabled() if callable(households_enabled) else households_enabled:
             from omakase.plus.household_media import personal_legacy_visible
             from omakase.plus.households import selected_scope
@@ -182,6 +257,9 @@ def create_tv_router(
             {
                 **context(request, user),
                 "cards": cards,
+                "cloud_playback": cloud_playback,
+                "cloud_ids": cloud_ids,
+                "cloud_error": cloud_error,
                 "collection_page": collection_page,
                 "query": q,
                 "view": view,
@@ -308,6 +386,9 @@ def create_tv_router(
                     status_code=307,
                     headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
                 )
+        cloud_playback = playback_providers.select(db, user.id).cloud_route
+        cloud_episodes = set() if cloud_playback else None
+        cloud_error = False
         try:
             _positive(tmdb_id)
             if season is not None:
@@ -323,6 +404,14 @@ def create_tv_router(
                     ),
                     seasons[0]["season_number"],
                 )
+            if cloud_playback and season is not None:
+                selected = next(row for row in seasons if row["season_number"] == season)
+                if not selected.get("episodes_loaded"):
+                    try:
+                        async with asyncio.timeout(6):
+                            card = await service(db, user).season(user.id, tmdb_id, season)
+                    except (TVError, MovieError, TimeoutError):
+                        pass
         except (TVError, MovieError) as exc:
             if exc.code == "invalid_input":
                 raise HTTPException(422, exc.detail) from None
@@ -330,6 +419,19 @@ def create_tv_router(
         from omakase.plus.web_playback_navigation import enabled as web_player_enabled
 
         watch_in_app = web_player_enabled()
+        if cloud_playback and watch_in_app and season is not None:
+            try:
+                async with asyncio.timeout(8):
+                    availability = await tv_episode_ids(
+                        db,
+                        personal_scope(db, user.id),
+                        str(tmdb_id),
+                        cloud_library,
+                        seasons=[season],
+                    )
+                cloud_episodes = availability.episodes
+            except (DebridLibraryError, PlaybackSourceError, TimeoutError):
+                cloud_error = True
         return templates.TemplateResponse(
             request,
             "tv_detail.html",
@@ -338,7 +440,12 @@ def create_tv_router(
                 "card": card,
                 "selected_season": season,
                 "watch_in_app": watch_in_app,
-                "featured_episode": _episode_navigation(db, user.id, card)
+                "cloud_playback": cloud_playback,
+                "cloud_episodes": cloud_episodes,
+                "cloud_error": cloud_error,
+                "featured_episode": _episode_navigation(
+                    db, user.id, card, cloud_episodes=cloud_episodes
+                )
                 if watch_in_app
                 else None,
                 "tv_error": "",

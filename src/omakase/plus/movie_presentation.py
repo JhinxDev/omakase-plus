@@ -138,7 +138,7 @@ def _stamp(value, now):
     return parsed.astimezone(timezone.utc)
 
 
-def present_movie(card, *, now=None):
+def present_movie(card, *, now=None, cloud_ids=None):
     """Add display vocabulary without changing history, records or connections."""
     now = now or datetime.now(timezone.utc)
     code = card.get("code", "verifying")
@@ -173,6 +173,21 @@ def present_movie(card, *, now=None):
             "ready",
             "A matching copy was found. A playback check can confirm access to the file.",
         )
+    if cloud_ids is not None:
+        cloud_match = card.get("imdb_id") in cloud_ids
+        card = {**card, "cloud_match": cloud_match}
+        if cloud_match:
+            label, tone, summary = (
+                "In Real-Debrid",
+                "ready",
+                "A matching copy was found in your Real-Debrid library.",
+            )
+        elif code != "copy_removed":
+            label, tone, summary = (
+                "Availability unconfirmed",
+                "neutral",
+                "Omakase has no confirmed matching copy in Real-Debrid.",
+            )
     history = card.get("history") or {}
     watch_label = (
         {

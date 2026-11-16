@@ -181,29 +181,52 @@ def test_legacy_raw_inventory_never_claims_a_season_count():
     assert "38 in Plex" not in html and "38 seasons" not in html
 
 
-def test_collection_inventory_is_optional_and_separate_from_browse_cards():
+def test_collection_inventory_and_sync_share_one_closed_disclosure_above_browse_cards():
     html = render(
         "tv.html",
         cards=[
-            show(in_plex_episodes=38),
+            show(
+                in_plex_episodes=38,
+                plex_observed_at="2026-11-14T20:00:00Z",
+                season_coverage_known=True,
+                plex_season_coverage=[
+                    {"season_number": 1, "in_plex": 24, "released_total": 25},
+                    {"season_number": 2, "in_plex": 14, "released_total": 16},
+                ],
+            ),
             show(tmdb_id=654, in_plex_episodes=0, watched_episodes=0),
+            show(
+                tmdb_id=987,
+                title="Previously matched",
+                in_plex_episodes=0,
+                plex_snapshot_current=False,
+                plex_observed_at="2026-11-12T20:00:00Z",
+            ),
         ],
         query="",
         view="all",
     )
-    before, details = html.split('id="tv-library-details"', 1)
-    assert "tv-card-inventory" not in before
-    assert "38 episodes indexed" not in before and "Season coverage unknown" not in before
-    assert "38 episodes indexed" in details and "Season coverage unknown" in details
-    assert "Library availability details" in details
-    assert 'class="tv-tools" open' not in html
+    details, cards = html.split('<div class="tv-grid catalog-poster-grid">', 1)
+    assert 'class="tv-library-tools" id="tv-library-tools">' in details
+    assert "Library tools" in details and "Sync collection from Plex" in details
+    assert "38 episodes indexed" in details and "38/41 released episodes in Plex" in details
+    assert '<time datetime="2026-11-14T20:00:00Z"' in details
+    assert "Index unconfirmed" in details and "Season coverage unknown" in details
+    assert "38 episodes indexed" not in cards and "Season coverage unknown" not in cards
+    assert 'href="/plus/tv/654"' not in details
     assert html.count('class="tv-library-inventory"') == 1
-    assert "Library presence does not verify media bytes or playback." in details
-    assert 'href="/plus/tv/321"' in before and 'href="/plus/tv/654"' in before
+    assert "Open a show to check playback." in details
+    assert 'href="/plus/tv/321"' in cards and 'href="/plus/tv/654"' in cards
+    forms = Forms()
+    forms.feed(html)
+    sync = [form for form in forms.forms if form.get("action") == "/plus/tv/sync"]
+    assert len(sync) == 1 and sync[0]["method"] == "post"
+    assert sync[0]["inputs"] == {"csrf_token": "fixture-csrf", "offset": "0"}
     empty = render(
         "tv.html", cards=[show(in_plex_episodes=0, watched_episodes=0)], query="", view="all"
     )
-    assert 'id="tv-library-details"' not in empty and "Not watched" not in empty
+    assert "No Plex matches recorded for shows on this page." in empty
+    assert 'class="tv-library-inventory"' not in empty and "Not watched" not in empty
 
 
 def test_detail_does_not_count_specials_as_a_fifth_regular_season():

@@ -6,7 +6,7 @@
 <section class="movie-detail-hero catalog-detail-hero" aria-labelledby="catalog-title">
   <picture class="detail-backdrop"><img src="/plus/media/{{ card.anilist_id }}/banner" alt="" data-poster></picture>
   <div class="movie-poster"><img src="{{ card.poster_url }}" alt="" width="300" height="450" fetchpriority="high" data-poster></div>
-  <div class="movie-detail-copy"><a class="detail-back-link" href="/plus/search?kind=anime"><span aria-hidden="true">←</span>&nbsp; Search anime</a><h1 id="catalog-title">{{ card.title }}</h1><div class="detail-meta">{% if card.year %}<span>{{ card.year }}</span>{% endif %}{% if card.format %}<span>{{ card.format | replace('_',' ') | title }}</span>{% endif %}{% if card.episode_total %}<span>{{ card.episode_total }} episodes</span>{% endif %}{% if card.status %}<span>{{ card.status | replace('_',' ') | title }}</span>{% endif %}</div>
+  <div class="movie-detail-copy"><a class="detail-back-link" href="/plus/search?kind=anime" data-nav-back><span aria-hidden="true">←</span>&nbsp; Search anime</a><h1 id="catalog-title">{{ card.title }}</h1><div class="detail-meta">{% if card.year %}<span>{{ card.year }}</span>{% endif %}{% if card.format %}<span>{{ card.format | replace('_',' ') | title }}</span>{% endif %}{% if card.episode_total %}<span>{{ card.episode_total }} episodes</span>{% endif %}{% if card.status %}<span>{{ card.status | replace('_',' ') | title }}</span>{% endif %}</div>
   {% if card.genres %}<ul class="genre-chips" aria-label="Genres">{% for genre in card.genres %}<li data-genre="{{ genre | lower }}">{{ genre }}</li>{% endfor %}</ul>{% endif %}
   {% if card.description %}<p class="movie-overview">{{ card.description }}</p>{% endif %}
   <div class="catalog-personal-state" role="group" aria-label="Your library and viewing history">
@@ -31,5 +31,5 @@
   {% if card.studio %}<p class="catalog-studio">Studio · {{ card.studio }}</p>{% endif %}
   </div>
 </section>
-{% else %}<section class="utility-panel" role="alert"><h1>Title unavailable</h1><p>{{ search_error or 'The catalog could not load this title. Try again in a moment.' }}</p><a class="button button-secondary" href="/plus/search?kind=anime">Back to search</a></section>{% endif %}
+{% else %}<section class="utility-panel" role="alert"><h1>Title unavailable</h1><p>{{ search_error or 'The catalog could not load this title. Try again in a moment.' }}</p><a class="button button-secondary" href="/plus/search?kind=anime" data-nav-back>Back to search</a></section>{% endif %}
 {% endblock %}

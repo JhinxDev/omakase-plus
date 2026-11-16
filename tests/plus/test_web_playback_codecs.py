@@ -27,12 +27,21 @@ def hvcc(*, constraints=b"\x90\0\0\0\0\0", profile=2, compatibility=0x20000000):
 
 def init_segment(config=None, *, entry=b"hev1", duplicate=False, tracks=1, color=b""):
     config = hvcc() if config is None else config
-    child = box(b"hvcC", config)
+    child = box(b"avcC" if entry in {b"avc1", b"avc3"} else b"hvcC", config)
     visual = box(entry, bytes(78) + child * (2 if duplicate else 1) + color)
     stsd = box(b"stsd", bytes(4) + (1).to_bytes(4, "big") + visual)
     hdlr = box(b"hdlr", bytes(8) + b"vide" + bytes(12))
     trak = box(b"trak", box(b"mdia", hdlr + box(b"minf", box(b"stbl", stsd))))
     return box(b"ftyp", b"iso5\0\0\0\1iso5") + box(b"moov", trak * tracks)
+
+
+@pytest.mark.parametrize(("entry", "codec"), [(b"avc1", "avc1.640028"), (b"avc3", "avc3.640028")])
+def test_hls_avc_codec_comes_from_owned_initialization(tmp_path, entry, codec):
+    name = "init.mp4"
+    (tmp_path / name).write_bytes(init_segment(bytes.fromhex("01640028FFE100"), entry=entry))
+    assert codecs.hls_init_metadata(tmp_path, name).codecs == codec
+    (tmp_path / name).write_bytes(init_segment(bytes.fromhex("00640028FFE100"), entry=entry))
+    assert codecs.hls_init_metadata(tmp_path, name).codecs is None
 
 
 @pytest.fixture

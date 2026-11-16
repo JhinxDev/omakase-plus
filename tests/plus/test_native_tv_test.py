@@ -1,12 +1,13 @@
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import secrets
 import shutil
 import sqlite3
 import subprocess
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -53,12 +54,20 @@ LIBRARY_API = API + "/library"
 
 
 @pytest.fixture
-def system(monkeypatch):
+def system(monkeypatch, tmp_path):
     monkeypatch.setenv("OMAKASE_PLUS_PRIVATE", "true")
     monkeypatch.setenv("OMAKASE_PLUS_WEB_PLAYER_ENABLED", "true")
     monkeypatch.setenv("OMAKASE_NATIVE_TV_TEST", "1")
     monkeypatch.setenv("OMAKASE_NATIVE_TV_ORIGIN", ORIGIN)
-    db = sqlite3.connect(":memory:", check_same_thread=False)
+    database_path = tmp_path / "native-test.sqlite"
+
+    def runtime_db():
+        db = sqlite3.connect(database_path, check_same_thread=False)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
+        return closing(db)
+
+    db = sqlite3.connect(database_path, check_same_thread=False)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
     run_migrations(db)
@@ -81,6 +90,8 @@ def system(monkeypatch):
         transcode=None,
         debrid=None,
         fixture_credential=secrets.token_hex(12),
+        runtime_db=runtime_db,
+        independent_database=False,
         part_bytes=None,
         streams=(
             PlexStream("1", "video", "h264", "", False, False, False, 0),
@@ -161,7 +172,7 @@ def system(monkeypatch):
             remote_anime=remote_guard,
             transport=httpx.MockTransport(upstream),
             clock=lambda: options.now,
-            hls_database=lambda: nullcontext(db),
+            hls_database=lambda: runtime_db() if options.independent_database else nullcontext(db),
         ),
         prefix="/plus",
     )
@@ -751,6 +762,188 @@ def test_library_link_scopes_catalog_and_media_to_the_browser_owner(system, monk
     resume = f"{LIBRARY_API}/media/{playback['media_id']}/resume"
     assert native.post(resume, json={"seq": 1, "position_seconds": 10}).status_code == 401
     assert db.execute("SELECT count(*) FROM web_playback_resumes").fetchone()[0] == 0
+
+
+def test_native_feature_uses_the_latest_played_title_for_the_active_profile(system):
+    _, db, _, _ = system
+    scope = personal_scope(db, 1)
+    for imdb_id, tmdb, title in (
+        ("tt0000001", 1, "A library pick"),
+        ("tt0000002", 2, "B recently started"),
+    ):
+        db.execute(
+            """INSERT INTO movie_catalog(user_id,imdb_id,tmdb_id,title,backdrop_url,updated_at)
+               VALUES(1,?,?,?,'https://image.tmdb.org/t/p/w780/test.jpg','fixture')""",
+            (imdb_id, tmdb, title),
+        )
+        db.execute(
+            """INSERT INTO movie_requests(user_id,imdb_id,code,detail,created_at,updated_at)
+               VALUES(1,?,'requested','fixture','fixture','fixture')""",
+            (imdb_id,),
+        )
+    for actor, library, imdb_id, position, stamp in (
+        (1, scope.library_id, "tt0000002", 30.0, 20.0),
+        (1, scope.library_id, "tt0000001", 0.0, 30.0),
+        (2, personal_scope(db, 2).library_id, "tt0000001", 90.0, 40.0),
+    ):
+        db.execute(
+            """INSERT INTO web_playback_resumes(
+                   target_key,user_id,library_id,domain,canonical_id,season_number,
+                   episode_number,media_version,duration_seconds,position_seconds,updated_at
+               ) VALUES (?,?,?,'movie',?,0,0,?,1200,?,?)""",
+            (str(stamp), actor, library, imdb_id, "f" * 64, position, stamp),
+        )
+    db.commit()
+    catalog = native_tv_library.collection(db, scope, "movie", 0)
+    assert catalog["featured"]["id"] == "tt0000002"
+    assert catalog["featured_recent"] is True
+
+
+def test_anime_feature_matches_resume_by_anilist_id_and_season(system, monkeypatch):
+    _, db, _, _ = system
+    scope = personal_scope(db, 1)
+    cards = [
+        {
+            "id": monitor,
+            "anilist_id": 100,
+            "title": title,
+            "format": "TV",
+            "season_number": season,
+            "play_url": f"/plus/watch/{monitor}/1",
+            "play_episode": 1,
+            "lifecycle": "waiting",
+            "lifecycle_label": "Ready",
+            "progress_percent": 0,
+        }
+        for monitor, season, title in ((41, 1, "Season one"), (42, 2, "Season two"))
+    ]
+    monkeypatch.setattr(native_tv_library, "_anime", lambda *_args, **_options: cards)
+    db.execute(
+        """INSERT INTO web_playback_resumes(
+               target_key,user_id,library_id,domain,canonical_id,season_number,
+               episode_number,media_version,duration_seconds,position_seconds,updated_at
+           ) VALUES ('anime-played',1,?,'anime','100',2,1,?,1200,114,50)""",
+        (scope.library_id, "e" * 64),
+    )
+    db.commit()
+    catalog = native_tv_library.collection(db, scope, "anime", 0)
+    assert catalog["featured"]["id"] == "42"
+    assert catalog["featured"]["featured_path"] == "/plus/watch/42/1"
+    assert catalog["featured"]["progress"] == 114 / 1200
+    assert catalog["featured_recent"] is True
+    for row in catalog["items"] + [catalog["featured"]]:
+        assert not any(key.startswith("_") for key in row)
+
+
+def test_native_watchlist_is_scoped_to_the_paired_viewer(system, monkeypatch):
+    native, db, _, _, _ = _anime_pass(system, monkeypatch)
+    db.executemany(
+        """INSERT INTO anilist_plannings(user_id, anilist_id, title, status)
+           VALUES(?,?,?,'PLANNING')""",
+        [(1, 456, "Personal saved pick"), (2, 789, "Private peer pick")],
+    )
+    db.commit()
+    response = native.get(LIBRARY_API + "/watchlist")
+    assert response.status_code == 200
+    assert "no-store" in response.headers["cache-control"]
+    assert response.json()["items"] == [
+        {
+            "id": "456",
+            "title": "Personal saved pick",
+            "note": "Saved to Watchlist",
+            "summary": "",
+            "watchlist_artwork": True,
+        }
+    ]
+    assert native.get(LIBRARY_API + "/watchlist/789/poster").status_code == 404
+
+
+def test_native_for_you_and_request_share_the_paired_viewer(system, monkeypatch):
+    from omakase.plus import for_you
+
+    native, _, _, _, _ = _anime_pass(system, monkeypatch)
+    calls = []
+    saved = {
+        "kind": "tv",
+        "title_id": "42",
+        "title": "Recommended series",
+        "state": "requested",
+        "label": "Requested",
+        "detail": "Awaiting review.",
+        "can_check": False,
+    }
+
+    async def recommendations(db, viewer_id, category):
+        calls.append((viewer_id, category))
+        return {
+            "rows": [
+                {
+                    "key": "series",
+                    "title": "Recommended",
+                    "cards": [
+                        {
+                            "kind": "tv",
+                            "id": "42",
+                            "title": "Recommended series",
+                            "can_request": True,
+                            "internal_url": "https://private.invalid",
+                        }
+                    ],
+                }
+            ],
+            "requests": [saved] if len(calls) > 1 else [],
+        }
+
+    async def submit_request(db, viewer_id, kind, item):
+        calls.append((viewer_id, kind, item))
+        return saved
+
+    async def search(db, viewer_id, query, category):
+        assert query == "missing title"
+        return {
+            **await recommendations(db, viewer_id, category),
+            "warnings": [
+                {
+                    "kind": "movie",
+                    "label": "Movies",
+                    "detail": "Try again in a moment.",
+                    "internal_url": "https://private.invalid",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(for_you, "search", search)
+    monkeypatch.setattr(for_you, "recommendations", recommendations)
+    monkeypatch.setattr(for_you, "submit_request", submit_request)
+    response = native.get(LIBRARY_API + "/for-you", params={"category": "tv"})
+    assert response.status_code == 200
+    assert response.json()["rows"][0]["cards"][0]["id"] == "42"
+    assert "private.invalid" not in response.text
+    # The paired viewer sees the shared request projection, which now also carries
+    # the stage timeline. An empty list is correct here: this row has no stages yet.
+    projected = saved | {"stages": []}
+    assert (
+        native.post(LIBRARY_API + "/for-you/request", json={"kind": "tv", "title_id": "42"}).json()
+        == projected
+    )
+    assert native.get(LIBRARY_API + "/for-you", params={"category": "tv"}).json()["requests"] == [
+        projected
+    ]
+    assert (
+        native.post(
+            LIBRARY_API + "/for-you/request", json={"kind": "tv", "title_id": "42", "user_id": 2}
+        ).status_code
+        == 422
+    )
+    search_results = native.get(LIBRARY_API + "/catalog-search", params={"q": "missing title"})
+    assert search_results.status_code == 200
+    assert search_results.headers["cache-control"] == "private, no-store"
+    assert search_results.json()["category"] == "all"
+    assert search_results.json()["rows"][0]["cards"][0]["can_request"] is True
+    assert search_results.json()["warnings"][0]["kind"] == "movie"
+    assert "private.invalid" not in search_results.text
+    assert native.get(LIBRARY_API + "/catalog-search", params={"q": "x" * 121}).status_code == 422
+    assert calls == [(1, "tv"), (1, "tv", "42"), (1, "tv"), (1, "all")]
 
 
 def test_personal_movie_catalog_keeps_removed_history_without_offering_play(system):
@@ -2371,3 +2564,486 @@ def test_tv_hls_keeps_hevc_and_surround_through_the_authenticated_route(
         assert surround_packets == first_audio_packet_hashes(sample)
         assert native.post(f"{LIBRARY_API}/media/{grant['media_id']}/close").status_code == 200
         assert native.get(path + "/index.m3u8").status_code == 404
+
+
+def test_movie_and_tv_completion_results_expose_outbox_id(system):
+    """The resume endpoint reads outbox_id from the completion result.
+
+    The movie and television helpers used to return a bool, so the 85 percent
+    checkpoint raised AttributeError before history was durable.
+    """
+    _app, db, _sessions, _options = system
+    from omakase.plus.native_tv_test import _credit_movie_completion, _credit_tv_completion
+
+    db.execute(
+        "INSERT INTO movie_catalog(user_id,imdb_id,tmdb_id,title,updated_at) "
+        "VALUES(1,'tt0000002',102,'Second fixture movie','2026-01-01T00:00:00Z')"
+    )
+    db.execute(
+        "INSERT INTO tv_catalog(user_id,tmdb_id,metadata_json,updated_at) "
+        "VALUES(1,203,"
+        "'"
+        '{"title":"Second fixture show","in_collection":1}'
+        "'"
+        ","
+        "'"
+        "2026-01-01T00:00:00Z"
+        "'"
+        ")"
+    )
+    movie = SimpleNamespace(
+        flow_movie=True,
+        user_id=1,
+        domain="movie",
+        canonical_id="tt0000002",
+        season_number=0,
+        episode_number=0,
+        duration_seconds=1800,
+    )
+    tv = SimpleNamespace(
+        flow_tv=True,
+        user_id=1,
+        domain="tv",
+        canonical_id="203",
+        season_number=1,
+        episode_number=2,
+        duration_seconds=1800,
+    )
+    movie_credit = _credit_movie_completion(db, movie, "2026-01-01T00:00:00Z")
+    tv_credit = _credit_tv_completion(db, tv, "2026-01-01T00:00:00Z")
+    assert movie_credit is not None and movie_credit.outbox_id is None
+    assert tv_credit is not None and tv_credit.outbox_id is None
+
+
+def test_movie_completion_joins_the_callers_transaction(system):
+    """The history write must live inside the resume transaction.
+
+    Before the audit repair the completion ran after the source transaction
+    closed, so a request teardown rolled the history back while the credited flag
+    stayed set. A rollback must now discard it and a commit must keep it.
+    """
+    _app, db, _sessions, _options = system
+    from omakase.plus.native_tv_test import _credit_native_projection
+
+    db.execute(
+        "INSERT INTO movie_catalog(user_id,imdb_id,tmdb_id,title,updated_at) "
+        "VALUES(1,'tt0000003',103,'Transaction fixture','2026-01-01T00:00:00Z')"
+    )
+    db.commit()
+    movie = SimpleNamespace(
+        flow_movie=True,
+        user_id=1,
+        domain="movie",
+        canonical_id="tt0000003",
+        season_number=0,
+        episode_number=0,
+        duration_seconds=1800,
+    )
+    grant = SimpleNamespace(target=movie, anime_monitor_id=None)
+
+    db.execute("BEGIN IMMEDIATE")
+    credited = _credit_native_projection(db, grant, position=1700, observed_at=1000.0)
+    assert credited is not None and credited.outbox_id is None
+    db.rollback()
+    count = db.execute(
+        "SELECT count(*) FROM movie_history WHERE user_id=1 AND imdb_id='tt0000003'"
+    ).fetchone()[0]
+    assert count == 0, "a rolled back request must not keep the completion"
+
+    db.execute("BEGIN IMMEDIATE")
+    assert _credit_native_projection(db, grant, position=1700, observed_at=1000.0) is not None
+    db.commit()
+    count = db.execute(
+        "SELECT count(*) FROM movie_history WHERE user_id=1 AND imdb_id='tt0000003'"
+    ).fetchone()[0]
+    assert count == 1
+
+
+# --- anime completion credit durability -----------------------------------
+#
+# The audit reproduced a completion that was saved and then lost: the anime
+# ingest failed after the resume transaction committed, the endpoint answered
+# 200, and the client's exact retry returned early without retrying the credit.
+# These checks pin the durable intent and the retry that replaces that path.
+
+
+def _anime_pass(system, monkeypatch):
+    app, db, sessions, options = system
+    monkeypatch.setenv("OMAKASE_NATIVE_TV_LIBRARY", "1")
+    monkeypatch.setenv("OMAKASE_PLUS_REVIEW_MODE", "true")
+    owner, csrf = browser(app, sessions[1])
+    native = TestClient(app, base_url=ORIGIN)
+    pairing = native.post(LIBRARY_API + "/device").json()
+    owner.post(
+        DEVICES_PAGE,
+        data={"csrf_token": csrf, "action": "approve", "device_code": pairing["user_code"]},
+    )
+    native.headers["Authorization"] = "Bearer " + pairing["device_token"]
+    playback = native.post(LIBRARY_API + "/play", json={"watch_path": "/plus/watch/1/1"})
+    assert playback.status_code == 200, playback.text
+    media = playback.json()
+    return native, db, options, media, f"{LIBRARY_API}/media/{media['media_id']}/resume"
+
+
+def test_failed_anime_credit_is_recorded_and_retried_on_the_exact_retry(
+    system, monkeypatch, caplog
+):
+    native, db, options, media, resume_url = _anime_pass(system, monkeypatch)
+    assert native.post(resume_url, json={"seq": 1, "position_seconds": 700}).status_code == 200
+
+    from omakase.plus.watch import service as watch_service
+
+    real_ingest = watch_service.ingest_watch_event
+    failures = []
+
+    def failing_ingest(*args, **kwargs):
+        if not failures:
+            failures.append(True)
+            raise RuntimeError("synthetic-credit-credential")
+        return real_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(watch_service, "ingest_watch_event", failing_ingest)
+    options.now += 1
+    first = native.post(resume_url, json={"seq": 2, "position_seconds": 1740})
+    assert first.status_code == 200, first.text
+    assert "stage=ingest code=failed intent=" in caplog.text
+    assert "synthetic-credit-credential" not in caplog.text
+    # The checkpoint committed and the credit did not. The intent is the proof
+    # that a completion is still owed, so the 200 is not a silent loss.
+    assert db.execute("SELECT count(*) FROM watch_events").fetchone()[0] == 0
+    intent = db.execute("SELECT status,attempts FROM native_watch_credits").fetchone()
+    assert intent is not None
+    assert (intent["status"], intent["attempts"]) == ("pending", 1)
+
+    # The client sends the identical checkpoint again, which is the path that used
+    # to return early forever. It must retry the credit instead.
+    retry = native.post(resume_url, json={"seq": 2, "position_seconds": 1740})
+    assert retry.status_code == 200, retry.text
+    assert db.execute("SELECT count(*) FROM watch_events").fetchone()[0] == 1
+    settled = db.execute("SELECT status FROM native_watch_credits").fetchone()
+    assert settled["status"] == "credited"
+    assert db.execute("SELECT count(*) FROM watch_entries").fetchone()[0] == 1
+
+
+def test_anime_credit_survives_a_failed_close_and_is_not_duplicated(system, monkeypatch):
+    native, db, options, media, resume_url = _anime_pass(system, monkeypatch)
+    assert native.post(resume_url, json={"seq": 1, "position_seconds": 700}).status_code == 200
+
+    from omakase.plus.watch import service as watch_service
+
+    real_ingest = watch_service.ingest_watch_event
+
+    def failing_ingest(*args, **kwargs):
+        raise watch_service.WatchServiceError("tracker unavailable")
+
+    monkeypatch.setattr(watch_service, "ingest_watch_event", failing_ingest)
+    options.now += 1
+    assert native.post(resume_url, json={"seq": 2, "position_seconds": 1740}).status_code == 200
+    assert db.execute("SELECT count(*) FROM watch_events").fetchone()[0] == 0
+
+    # Closing the player is another natural retry boundary. Once the tracker is
+    # reachable again the credit lands exactly once.
+    monkeypatch.setattr(watch_service, "ingest_watch_event", real_ingest)
+    closed = native.post(f"{LIBRARY_API}/media/{media['media_id']}/close")
+    assert closed.status_code == 200, closed.text
+    assert db.execute("SELECT count(*) FROM watch_events").fetchone()[0] == 1
+
+    # A repeated close has no pass left and must not double-credit.
+    native.post(f"{LIBRARY_API}/media/{media['media_id']}/close")
+    assert db.execute("SELECT count(*) FROM watch_events").fetchone()[0] == 1
+    credited = db.execute(
+        "SELECT count(*) FROM native_watch_credits WHERE status='credited'"
+    ).fetchone()[0]
+    assert credited == 1
+
+
+def test_a_movie_target_never_creates_a_durable_intent(system):
+    """The anime repath must not add a second write path for movie or TV history."""
+    app, db, sessions, options = system
+    from omakase.plus import native_watch_credit
+
+    target = SimpleNamespace(
+        user_id=1,
+        domain="movie",
+        canonical_id="tt0000001",
+        season_number=0,
+        episode_number=0,
+        duration_seconds=1800,
+    )
+    grant = SimpleNamespace(target=target, anime_monitor_id=None, watch_credited=False)
+    fraction = native_watch_credit.completion_fraction(target.duration_seconds, 1700)
+    assert fraction is not None
+    assert (
+        native_watch_credit.record(
+            db, grant, fraction=fraction, observed_at="2026-01-01T00:00:00Z", now=1
+        )
+        is None
+    )
+    assert db.execute("SELECT count(*) FROM native_watch_credits").fetchone()[0] == 0
+
+
+def test_direct_named_pass_refreshes_after_request_db_closes_and_next_stays_direct(
+    system,
+    monkeypatch,
+):
+    from omakase.plus.debrid_anime import DebridTitleSource
+    from omakase.plus.debrid_library import CloudSource, account_binding
+    from omakase.plus.debrid_stream import DebridStreams
+
+    native, db, options, _, _ = _anime_pass(system, monkeypatch)
+    app = native.app
+    options.independent_database = True
+
+    def request_db():
+        with options.runtime_db() as connection:
+            yield connection
+
+    app.dependency_overrides[get_db] = request_db
+    monkeypatch.setattr(native_tv_test, "playback_provider", lambda *_: "realdebrid")
+    monkeypatch.setattr(native_tv_test, "account_token", lambda *_: options.fixture_credential)
+    monkeypatch.setattr(native_tv_test, "revalidate_anime", lambda *_: None)
+    monkeypatch.setattr(
+        native_tv_test,
+        "next_watch_path",
+        lambda db, source, **_: "/plus/watch/1/2" if source.episode_number == 1 else None,
+    )
+
+    async def unexpected_preparation(*args, **kwargs):
+        pytest.fail("Direct playback cannot prepare HLS")
+
+    monkeypatch.setattr(DebridStreams, "prepare", unexpected_preparation)
+    resolutions = []
+    changed = False
+
+    async def resolve(connection, scope, monitor, episode, library):
+        assert monitor == 1
+        assert connection.execute("SELECT 1").fetchone()[0] == 1
+        if resolutions:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+                resolutions[-1].execute("SELECT 1")
+        resolutions.append(connection)
+        cloud = CloudSource(
+            f"Fixture {episode}.mkv",
+            str(episode) * 64,
+            ("e" if changed else "a") * 64,
+            1800,
+            account_binding(options.fixture_credential),
+            "",
+            "",
+            f"https://download.real-debrid.com/{len(resolutions)}",
+            100,
+        )
+        return DebridTitleSource(scope, "anime", "100", 1, episode, cloud, "b" * 64, ()), "Fixture"
+
+    monkeypatch.setattr(native_tv_test, "resolve_debrid_anime", resolve)
+    reads = []
+
+    def original_file(request):
+        reads.append(request.url.path)
+        if request.url.path in {"/1", "/2"} and (request.url.path == "/1" or changed):
+            return httpx.Response(403)
+        assert request.headers["range"] == "bytes=0-3"
+        return httpx.Response(
+            206, stream=httpx.ByteStream(b"test"), headers={"content-range": "bytes 0-3/100"}
+        )
+
+    options.debrid = original_file
+    play = native.post(
+        LIBRARY_API + "/play", json={"watch_path": "/plus/watch/1/1", "engine": "direct"}
+    )
+    assert play.status_code == 200, play.text
+    first = play.json()
+    assert first["media_format"] == "direct"
+    response = native.get(first["media_url"], headers={"Range": "bytes=0-3"})
+    assert (response.status_code, response.content) == (206, b"test")
+    assert reads == ["/1", "/2"]
+
+    changed = True
+    response = native.get(first["media_url"], headers={"Range": "bytes=0-3"})
+    assert response.status_code == 409
+    assert reads == ["/1", "/2", "/2"]
+    changed = False
+
+    next_item = native.post(f"{LIBRARY_API}/media/{first['media_id']}/next")
+    assert next_item.status_code == 200, next_item.text
+    assert next_item.json()["media_format"] == "direct"
+    assert next_item.json()["identity"]["episode_number"] == 2
+
+
+def test_anime_credit_recovers_after_twelve_failures_and_playing_another_episode(
+    system, monkeypatch
+):
+    native, db, options, media, resume_url = _anime_pass(system, monkeypatch)
+    from omakase.plus.watch import service as watch_service
+
+    real_ingest = watch_service.ingest_watch_event
+    failures = []
+
+    def failing_ingest(*args, **kwargs):
+        failures.append(True)
+        raise watch_service.WatchServiceError("temporarily unavailable")
+
+    monkeypatch.setattr(watch_service, "ingest_watch_event", failing_ingest)
+    checkpoint = {"seq": 1, "position_seconds": 1740}
+    assert native.post(resume_url, json=checkpoint).status_code == 200
+    for attempt in range(2, 12):
+        db.execute("UPDATE native_watch_credits SET updated_at=0")
+        db.commit()
+        assert native.post(resume_url, json=checkpoint).status_code == 200
+        assert len(failures) == attempt
+    db.execute("UPDATE native_watch_credits SET updated_at=0")
+    db.commit()
+    assert native.post(f"{LIBRARY_API}/media/{media['media_id']}/close").status_code == 200
+    assert len(failures) == 12
+
+    # While backed off, a different playback sees no ingest calls.
+    assert (
+        native.post(LIBRARY_API + "/play", json={"watch_path": "/plus/watch/1/2"}).status_code
+        == 200
+    )
+    assert len(failures) == 12
+    db.execute("UPDATE native_watch_credits SET updated_at=0")
+    db.commit()
+    monkeypatch.setattr(watch_service, "ingest_watch_event", real_ingest)
+    for _ in range(2):
+        assert (
+            native.post(LIBRARY_API + "/play", json={"watch_path": "/plus/watch/1/2"}).status_code
+            == 200
+        )
+    assert db.execute("SELECT count(*) FROM watch_events").fetchone()[0] == 1
+    intent = db.execute("SELECT status,attempts FROM native_watch_credits").fetchone()
+    assert (intent["status"], intent["attempts"]) == ("credited", 13)
+
+
+PROVIDER_SHAPED_URL = (
+    "https://media.example.test/live/SYNTHETIC_TOKEN_1/master.m3u8"
+    "?token=SYNTHETIC_TOKEN_2&expires=1700000000"
+)
+
+
+def test_playback_diagnostic_validation_keeps_only_allowlisted_fields(caplog):
+    payload = {
+        "schema": "playback_diagnostic_v1",
+        "engine": "avplayer",
+        "trigger": "error",
+        "media_id": "a" * 32,
+        "item_status": "failed",
+        "item_error": {"domain": "AVFoundationErrorDomain", "code": -11800},
+        "time_control": "waiting",
+        "waiting_reason": "AVPlayerWaitingToMinimizeStallsReason",
+        "current_time": 42.5,
+        "rate": 1.0,
+        "loaded_ranges": [{"start": 40, "duration": 5}],
+        "seekable_ranges": [{"start": 0, "duration": 100}],
+        "events": [{"status_code": -1009}, {"bytes_transferred": 12345, "media_requests": 7}],
+        # Neither may survive: the old free-form message and a provider URI.
+        "message": PROVIDER_SHAPED_URL,
+        "request_uri": PROVIDER_SHAPED_URL,
+    }
+    fields = native_tv_test.playback_diagnostic_fields(payload)
+    assert fields == {
+        "schema": "playback_diagnostic_v1",
+        "engine": "avplayer",
+        "trigger": "error",
+        "media_id": "a" * 32,
+        "item_status": "failed",
+        "item_error": {"domain": "AVFoundationErrorDomain", "code": -11800},
+        "time_control": "waiting",
+        "waiting_reason": "AVPlayerWaitingToMinimizeStallsReason",
+        "current_time": 42.5,
+        "rate": 1.0,
+        "loaded_ranges": [{"start": 40.0, "duration": 5.0}],
+        "seekable_ranges": [{"start": 0.0, "duration": 100.0}],
+        "events": [{"status_code": -1009}, {"bytes_transferred": 12345, "media_requests": 7}],
+    }
+    formatted = native_tv_test._format_playback_diagnostic(fields)
+    assert "media.example.test" not in formatted
+    assert "SYNTHETIC_TOKEN" not in formatted
+    assert "item_error=AVFoundationErrorDomain/-11800" in formatted
+    assert "current_time=42.500" in formatted
+
+
+def test_playback_diagnostic_validation_rejects_free_text_and_urls():
+    base = {"schema": "playback_diagnostic_v1", "engine": "avplayer", "trigger": "state"}
+    # The old free-form body is refused outright, not redacted and logged.
+    assert native_tv_test.playback_diagnostic_fields({"message": PROVIDER_SHAPED_URL}) is None
+    assert native_tv_test.playback_diagnostic_fields({**base, "engine": "http://x.test"}) is None
+    assert native_tv_test.playback_diagnostic_fields({**base, "trigger": "message"}) is None
+    # Unhashable or non-string enum values must be refused, not raise. A bad
+    # optional field is dropped while the rest of the shape is still accepted.
+    for key in ("engine", "trigger"):
+        assert native_tv_test.playback_diagnostic_fields({**base, key: ["x"]}) is None
+        assert native_tv_test.playback_diagnostic_fields({**base, key: {"x": 1}}) is None
+    for key in ("item_status", "time_control"):
+        assert native_tv_test.playback_diagnostic_fields({**base, key: ["x"]}) == base
+        assert native_tv_test.playback_diagnostic_fields({**base, key: {"x": 1}}) == base
+    fields = native_tv_test.playback_diagnostic_fields(
+        {
+            **base,
+            "waiting_reason": f"waiting for {PROVIDER_SHAPED_URL}",
+            "item_error": {"domain": f"{PROVIDER_SHAPED_URL}", "code": 1},
+            "current_time": "NaN",
+            "rate": True,
+            "loaded_ranges": [{"start": 0, "duration": 0}, {"start": "x", "duration": 1}],
+            "events": [{"status_code": "1/2"}, {"bytes_transferred": 1.5}],
+        }
+    )
+    assert fields == base
+    # Numbers and ranges are bounded rather than trusted.
+    fields = native_tv_test.playback_diagnostic_fields(
+        {
+            **base,
+            "current_time": -1,
+            "rate": 1e9,
+            "seekable_ranges": [{"start": 0, "duration": 10**12}],
+        }
+    )
+    assert fields == base
+
+
+def test_playback_diagnostic_route_logs_only_the_validated_shape(system, monkeypatch, caplog):
+    app, _, sessions, _ = system
+    monkeypatch.setenv("OMAKASE_NATIVE_TV_LIBRARY", "1")
+    owner, csrf = browser(app, sessions[1])
+    device = TestClient(app, base_url=ORIGIN)
+    issued = owner.post(LIBRARY_PAGE, data={"csrf_token": csrf, "action": "issue"})
+    link = re.search(r"https://testserver#library-([A-F0-9]{20})", issued.text)[1]
+    paired = device.post(LIBRARY_API + "/redeem", json={"code": link})
+    device.headers["Authorization"] = "Bearer " + paired.json()["token"]
+
+    caplog.set_level(logging.WARNING)
+    accepted = device.post(
+        LIBRARY_API + "/diagnostic",
+        json={
+            "schema": "playback_diagnostic_v1",
+            "engine": "avplayer",
+            "trigger": "error",
+            "item_status": "failed",
+            "item_error": {"domain": "AVFoundationErrorDomain", "code": -11800},
+            "time_control": "waiting",
+            "waiting_reason": "AVPlayerWaitingToMinimizeStallsReason",
+            "current_time": 42.5,
+            "rate": 0.0,
+            "loaded_ranges": [{"start": 40, "duration": 5}],
+            "seekable_ranges": [{"start": 0, "duration": 100}],
+            "events": [{"status_code": -1009}, {"bytes_transferred": 12345, "media_requests": 7}],
+            "message": PROVIDER_SHAPED_URL,
+            "request_uri": PROVIDER_SHAPED_URL,
+        },
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json() == {"ok": True}
+
+    rejected = device.post(
+        LIBRARY_API + "/diagnostic",
+        json={"message": f"playback failed for {PROVIDER_SHAPED_URL}"},
+    )
+    assert rejected.status_code == 400
+    assert rejected.json() == {"ok": False}
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "media.example.test" not in logged
+    assert "SYNTHETIC_TOKEN" not in logged
+    assert "rejected payload shape" in logged
+    assert "engine=avplayer trigger=error" in logged
+    assert "item_error=AVFoundationErrorDomain/-11800" in logged

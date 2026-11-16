@@ -334,7 +334,7 @@ class TVService(MovieService):
             "seasons": sorted(seasons, key=lambda s: s["season_number"]),
         }
 
-    async def collection_page(self, user_id, *, view="all", offset=0, query=""):
+    async def collection_page(self, user_id, *, view="all", offset=0, query="", cloud_ids=None):
         self._owner(user_id)
         if view not in {"all", "watching", "completed", "available"}:
             raise TVError("Invalid TV collection view.")
@@ -342,7 +342,10 @@ class TVService(MovieService):
         page_size = 100
         where = "c.user_id=? AND json_extract(c.metadata_json,'$.in_collection')=1"
         values = [user_id]
-        if view == "available":
+        if view == "available" and cloud_ids is not None:
+            where += " AND c.tmdb_id IN (SELECT value FROM json_each(?))"
+            values.append(json.dumps(sorted(cloud_ids)))
+        elif view == "available":
             if not self.connections.enabled:
                 raise TVError(
                     "Connect your library in Settings to check which shows are available."
@@ -754,7 +757,7 @@ class TVService(MovieService):
             )
             for s, e, episode, watched in parsed:
                 self.db.execute(
-                    "INSERT INTO tv_episodes(user_id,tmdb_id,season_number,episode_number,metadata_json,watched,watch_source,plex_present,updated_at) VALUES(?,?,?,?,?,?,'plex',1,?) ON CONFLICT(user_id,tmdb_id,season_number,episode_number) DO UPDATE SET plex_present=1,watched=CASE WHEN watch_source='manual' THEN watched ELSE excluded.watched END,watch_source=CASE WHEN watch_source='manual' THEN watch_source ELSE 'plex' END,updated_at=excluded.updated_at",
+                    "INSERT INTO tv_episodes(user_id,tmdb_id,season_number,episode_number,metadata_json,watched,watch_source,plex_present,updated_at) VALUES(?,?,?,?,?,?,'plex',1,?) ON CONFLICT(user_id,tmdb_id,season_number,episode_number) DO UPDATE SET plex_present=1,watched=CASE WHEN watch_source='manual' THEN watched ELSE excluded.watched END,watch_source=CASE WHEN watch_source='manual' THEN watch_source ELSE 'plex' END,updated_at=CASE WHEN watch_source!='manual' AND watched!=excluded.watched THEN excluded.updated_at ELSE updated_at END",
                     (user_id, tmdb_id, s, e, json.dumps(episode), int(watched), now),
                 )
             scope = self._plex_scope()
