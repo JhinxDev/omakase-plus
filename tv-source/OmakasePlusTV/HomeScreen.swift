@@ -493,40 +493,36 @@ struct TVRequestsScreen: View {
     }
 
     private func detail(_ item: LiveTitleRequest) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text(item.title).font(.title.bold()).accessibilityAddTraits(.isHeader)
-                Text(item.label).font(.title3.bold()).foregroundStyle(Color.tvAccent)
-                if !item.detail.isEmpty { Text(item.detail) }
-                if let reason = item.reasonText, !reason.isEmpty, reason != item.detail {
-                    Text(reason).foregroundStyle(Color.tvMuted)
-                }
-                if let checked = formattedDate(item.lastCheckedAt) {
-                    Text("Last checked \(checked)").foregroundStyle(Color.tvMuted)
-                }
-                ForEach(item.stages ?? []) { stage in
-                    Label {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(stage.label)
-                            if let date = formattedDate(stage.occurredAt) {
-                                Text(date).font(.caption).foregroundStyle(Color.tvMuted)
-                            }
-                        }
-                    } icon: {
-                        Image(systemName: stage.occurredAt == nil ? "circle" : "checkmark.circle")
-                            .foregroundStyle(Color.tvAccent)
-                    }
-                }
-                if item.canCheck == true {
-                    button("Check status", key: "requests-check") { Task { await check(item) } }
-                        .disabled(loading)
-                }
-                if let next = item.nextAction, let reason = next.reason, !reason.isEmpty {
-                    Text(reason).foregroundStyle(Color.tvMuted)
-                }
+        VStack(alignment: .leading, spacing: 18) {
+            Text(item.title).font(.title.bold()).accessibilityAddTraits(.isHeader)
+            Text(item.label).font(.title3.bold()).foregroundStyle(Color.tvAccent)
+            if !explanation(item).isEmpty {
+                Text(explanation(item))
+                    .foregroundStyle(Color.tvMuted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            if let checked = formattedDate(item.lastCheckedAt) {
+                Text("Last checked \(checked)").foregroundStyle(Color.tvMuted)
+            }
+            if item.canCheck == true {
+                button("Check status", key: "requests-check") { Task { await check(item) } }
+                    .disabled(loading)
+            }
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// One sentence of plain meaning, and only one.
+    ///
+    /// The web request page owns the stage timeline, the last-search snapshot and the
+    /// per-candidate reasons, so the television does not repeat them as a scrolling list.
+    /// It shows the state, the single most useful sentence and one action.
+    private func explanation(_ item: LiveTitleRequest) -> String {
+        if let reason = item.reasonText, !reason.isEmpty, reason != item.detail {
+            return reason
+        }
+        return item.detail
     }
 
     private func formattedDate(_ value: String?) -> String? {
