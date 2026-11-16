@@ -12,9 +12,24 @@ Your progress, ratings and connections stay on your server.
 [Documentation](https://omakase-plus.jhinx.dev/docs) ·
 [Latest release](https://github.com/JhinxDev/omakase-plus/releases/latest)
 
-![Omakase Plus Home with sidebar navigation, featured artwork and Continue Watching](docs/images/omakase-plus-home-c298f7d6a9c7.webp)
+![Omakase Plus Home with sidebar navigation, featured artwork and Continue Watching](docs/images/omakase-plus-home-ui4-37fb6d5956e3.webp)
 
-*Preview of the redesigned Omakase Plus Home on a self-hosted installation. See the [artwork notices](THIRD-PARTY-NOTICES.md).*
+*Single-window capture from the demo app with a sample account and watch history. See the [artwork notices](THIRD-PARTY-NOTICES.md).*
+
+## Releases
+
+**[0.4.12](https://github.com/JhinxDev/omakase-plus/releases/tag/v0.4.12)** is the
+latest numbered source release. It adds Apple TV watch tracking for movies and
+TV episodes and improves seeking on matched Real-Debrid HEVC files. Large HEVC
+TV files can use the native Apple TV HLS path. Back up your app data before
+upgrading. See the [changelog](CHANGELOG.md) for earlier releases.
+
+The [November 15 web build](https://github.com/JhinxDev/omakase-plus/tree/web-26619cc3cd85)
+is a separate source snapshot with a browser player that fits beneath the header,
+fullscreen controls that stay visible, and clearer playback errors. That snapshot
+also includes opt-in request search from the
+[preceding web build](https://github.com/JhinxDev/omakase-plus/tree/web-abb4641eaa58).
+For the setup below, use the numbered release.
 
 ## What you can do
 
@@ -52,7 +67,7 @@ directory, UID/GID and master encryption key. An
 [agent-assisted setup](docs/setup-with-an-agent.md) is also available.
 
 ```sh
-git clone https://github.com/JhinxDev/omakase-plus.git
+git clone --branch v0.4.12 --single-branch https://github.com/JhinxDev/omakase-plus.git
 cd omakase-plus
 cp .env.local.example .env.local
 cp .env.local.secrets.example .env.local.secrets
