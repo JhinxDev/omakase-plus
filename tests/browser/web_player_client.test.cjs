@@ -558,3 +558,31 @@ test('episode clock displays exact elapsed seconds and supports longer films', (
   assert.equal(playbackTime(3661), '1:01:01');
   assert.equal(playbackTime(Infinity), '0:00');
 });
+
+test('a failed start shows the reason the server gave, not a connection guess', () => {
+  const { failureMessage } = require('../../src/omakase/plus/static/web-player.js');
+  // The cloud start endpoint answers 404 with this sentence when Real-Debrid has no file.
+  assert.equal(
+    failureMessage({ status: 404, detail: 'No matching Real-Debrid file for this title.' }),
+    'No matching Real-Debrid file for this title.');
+  assert.equal(
+    failureMessage({ status: 404, detail: 'Title unavailable in your personal library' }),
+    'Title unavailable in your personal library');
+  // A curated code still wins over the server sentence.
+  assert.equal(
+    failureMessage({ status: 504, code: 'stream_start_timeout', detail: 'Real-Debrid took too long to open this file' }),
+    'The media server took too long to open this title.');
+  // Server internals are never shown for a 5xx, and the generic line stays the last resort.
+  assert.equal(
+    failureMessage({ status: 500, detail: 'Traceback (most recent call last)' }),
+    'The player could not load this stream. Check your connection and try again.');
+  assert.equal(
+    failureMessage({ status: 415 }),
+    'This version is unavailable in the web player.');
+  assert.equal(
+    failureMessage({ status: 401, detail: 'Authentication required' }, { blocked: true }),
+    'Your session or library access changed. Reload the player to check access again.');
+  assert.equal(
+    failureMessage({ status: 409, detail: 'Progress could not be saved' }, { saving: true }),
+    'Progress could not be saved. Reload to continue with your last confirmed save.');
+});

@@ -692,7 +692,7 @@
     }
     return { QualityMenu, AudioMenu, SubtitlesMenu, StreamInfoMenu };
   }
-  if (typeof module !== 'undefined' && module.exports) module.exports = { normalizeUnknownTrackLanguage, trackLanguage, episodePresentation, relativeSeekTarget, playbackTime, settingsMenuTypes, playerControlsConfiguration, qualityChoices, streamInfo, waitForSeek, SmoothTimeline, validatedSkipSegments, activeSkipSegment, EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
+  if (typeof module !== 'undefined' && module.exports) module.exports = { failureMessage, normalizeUnknownTrackLanguage, trackLanguage, episodePresentation, relativeSeekTarget, playbackTime, settingsMenuTypes, playerControlsConfiguration, qualityChoices, streamInfo, waitForSeek, SmoothTimeline, validatedSkipSegments, activeSkipSegment, EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
   if (typeof document === 'undefined') return;
   const root = document.querySelector('[data-web-player]');
   if (!root) return;
@@ -714,6 +714,9 @@
       if (video.paused || video.ended || root.contains(document.activeElement) && document.activeElement !== video) return;
       if (container.querySelector(':is(.shaka-overflow-menu, .shaka-settings-menu):not(.shaka-hidden), .web-player-timeline :active')) return;
       if (root.querySelector('.web-player-quiet-back:hover, .shaka-bottom-controls:hover, .web-player-timeline:hover, .web-player-skip:hover')) return;
+      // The transport stays on screen in fullscreen. Hiding it left a viewer with no
+      // visible controls and no way to tell that a pointer move brings them back.
+      if (document.fullscreenElement) return;
       container.setAttribute('data-cinema-idle', '');
     }, 3000);
   }
@@ -809,6 +812,7 @@
         error.status = response.status;
         const body = await response.json().catch(() => null);
         error.code = body?.code || (body?.detail === 'publication_read_conflict' ? body.detail : null);
+        error.detail = typeof body?.detail === 'string' ? body.detail : null;
         error.source = body?.source;
         throw error;
       }
@@ -821,6 +825,36 @@
     loading.hidden = !label;
     loading.classList.toggle('is-opening', opening);
     if (label) find('loading-label').textContent = label;
+  }
+  // What the viewer is told when playback does not start. A curated sentence for codes the
+  // player understands, then the server's own sentence when it gave one, and only then the
+  // generic line. "Check your connection" must never replace a known reason such as
+  // "No matching Real-Debrid file for this title."
+  function failureMessage(error, { blocked = false, saving = false } = {}) {
+    const descriptions = {
+      unsupported_browser: 'This browser cannot decode the selected video track.',
+      unsupported_browser_audio: 'This browser cannot decode the selected audio track.',
+      unsupported_codec: 'This browser cannot decode this video or audio format.',
+      unsupported_source: 'This source format is unavailable in the web player.',
+      styled_subtitles_unsupported: 'This browser cannot display the styled subtitles on this version.',
+      stream_start_timeout: 'The media server took too long to open this title.',
+      stream_start_failed: 'The media server could not start the stream.',
+      saved_position_unavailable: 'The stream did not reach your saved position. Try again in a moment.',
+      stream_worker_unavailable: 'The streaming worker is temporarily unavailable.',
+      stream_cache_unavailable: 'The server could not open its streaming cache.',
+      stream_capacity: 'This copy is too large to prepare here. You can open it in Plex from Playback options.',
+      compatible_stream_unavailable: 'The media server could not open this copy in the player. Try again or open it in Plex.',
+      publication_read_conflict: 'The library was updating while this title opened.',
+    };
+    if (blocked) return 'Your session or library access changed. Reload the player to check access again.';
+    if (saving) return 'Progress could not be saved. Reload to continue with your last confirmed save.';
+    if (descriptions[error?.code]) return descriptions[error.code];
+    if (error?.status === 415) return 'This version is unavailable in the web player.';
+    if (error?.status === 503) return 'The server could not prepare this title.';
+    if (typeof error?.detail === 'string' && error.detail && error.status >= 400 && error.status < 500) {
+      return error.detail;
+    }
+    return 'The player could not load this stream. Check your connection and try again.';
   }
   function showError(error, saving = false) {
     const controlsHadFocus = container.contains(document.activeElement);
@@ -848,27 +882,7 @@
     window.clearInterval(periodic);
     const errorPanel = find('error');
     errorPanel.hidden = false;
-    const descriptions = {
-      unsupported_browser: 'This browser cannot decode the selected video track.',
-      unsupported_browser_audio: 'This browser cannot decode the selected audio track.',
-      unsupported_codec: 'This browser cannot decode this video or audio format.',
-      unsupported_source: 'This source format is unavailable in the web player.',
-      styled_subtitles_unsupported: 'This browser cannot display the styled subtitles on this version.',
-      stream_start_timeout: 'The media server took too long to open this title.',
-      stream_start_failed: 'The media server could not start the stream.',
-      saved_position_unavailable: 'The stream did not reach your saved position. Try again in a moment.',
-      stream_worker_unavailable: 'The streaming worker is temporarily unavailable.',
-      stream_cache_unavailable: 'The server could not open its streaming cache.',
-      stream_capacity: 'This copy is too large to prepare here. You can open it in Plex from Playback options.',
-      compatible_stream_unavailable: 'The media server could not open this copy in the player. Try again or open it in Plex.',
-      publication_read_conflict: 'The library was updating while this title opened.',
-    };
-    find('error-text').textContent = blocked
-      ? 'Your session or library access changed. Reload the player to check access again.'
-      : saving ? 'Progress could not be saved. Reload to continue with your last confirmed save.'
-        : descriptions[error.code] || (error.status === 415 ? 'This version is unavailable in the web player.'
-          : error.status === 503 ? 'The server could not prepare this title.'
-          : 'The player could not load this stream. Check your connection and try again.');
+    find('error-text').textContent = failureMessage(error, { blocked, saving });
     if (safeLink(find('plex'), error.source?.plex_url)) find('fallback').hidden = true;
     status.textContent = 'Playback paused.';
     reload.hidden = !(blocked || saving);
@@ -1721,4 +1735,22 @@
     document.addEventListener('prerenderingchange', startWhenVisible);
     startWhenVisible();
   }
+})();
+
+// The desktop stage is sized to the picture, so it needs to know how much room the page
+// leaves above it. Measured from the player section itself, which sits under the shell
+// header, so the transport and the subtitles stay inside the picture without scrolling.
+(function fitPlayerStage() {
+  'use strict';
+  if (typeof document === 'undefined' || typeof window === 'undefined') return;
+  const apply = () => {
+    const stage = document.querySelector('[data-player-container]');
+    if (!stage || document.fullscreenElement) return;
+    const section = stage.closest('.web-player') || stage;
+    const top = Math.max(0, Math.round(section.getBoundingClientRect().top + window.scrollY));
+    stage.style.setProperty('--player-top', top + 'px');
+  };
+  apply();
+  window.addEventListener('resize', apply, { passive: true });
+  window.addEventListener('orientationchange', apply, { passive: true });
 })();

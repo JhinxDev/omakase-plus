@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 
 from omakase.plus.movies_store import require_user
+
+# A synopsis often ends with a provenance line of its own: "(Source: Crunchyroll)".
+# That is not a second paragraph, so it must not be hidden behind a "Read synopsis"
+# disclosure that reveals nothing when opened.
+_ATTRIBUTION = re.compile(r"^\(?\s*(?:source|credit|via)\s*[:：]", re.IGNORECASE)
 
 
 def cached_synopsis(db, anilist_id: int) -> dict:
@@ -22,10 +28,14 @@ def cached_synopsis(db, anilist_id: int) -> dict:
         remaining = "\n".join(part for part in (rest, remaining) if part)
     else:
         preview = first
+    lines = [line.strip() for line in remaining.splitlines() if line.strip()]
+    credits = [line.strip("() ") for line in lines if _ATTRIBUTION.match(line)]
+    body = [line for line in lines if not _ATTRIBUTION.match(line)]
     return {
         "description": text,
         "description_preview": preview,
-        "description_more": remaining,
+        "description_more": "\n".join(body),
+        "description_credit": " · ".join(credits),
         "description_source": "AniList" if text else "",
     }
 

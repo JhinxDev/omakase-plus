@@ -295,11 +295,28 @@ body.product-body .web-player input[data-player-timeline]:focus { outline: none;
 @media (min-width: 850px) and (min-height: 600px) {
   .web-player { position: relative; max-width: none; }
 
+  /* The stage is the picture, not the window. A 100dvh stage started below the shell
+     header, so the transport sat exactly one header height below the fold (measured:
+     controls bottom 868 in an 800px viewport) and a 16:9 picture inside a taller box
+     carried 96px of black above and below it. Sizing the stage to the largest 16:9 box
+     that fits the space under the header puts the transport and the subtitles inside the
+     picture and needs no scrolling. --player-top is measured from the page in
+     web-player.js and falls back to the known shell header height. */
   .web-player-stage:not(:fullscreen) {
     --player-controls-band: 0px;
-    height: 100dvh; min-height: 0; padding: 0; border: 0; border-radius: 0; background: #000;
+    --player-top: 68px;
+    --player-fit-height: calc(100dvh - var(--player-top) - 16px);
+    width: 100%;
+    max-width: calc(var(--player-fit-height) * 16 / 9);
+    height: auto;
+    max-height: var(--player-fit-height);
+    aspect-ratio: 16 / 9;
+    margin-inline: auto;
+    min-height: 0; padding: 0; border: 0; border-radius: 0; background: #000;
   }
-  .web-player-stage:not(:fullscreen) video { height: 100%; aspect-ratio: auto; }
+  .web-player-stage:not(:fullscreen) video {
+    display: block; width: 100%; height: 100%; aspect-ratio: 16 / 9; object-fit: contain;
+  }
   .web-player-stage:not(:fullscreen) .web-player-skip { bottom: calc(var(--player-row-height) + 60px); }
   .web-player-stage[data-cinema-idle] :is(.shaka-bottom-controls, .web-player-timeline,
                                         .web-player-skip, .web-player-quiet-back) {

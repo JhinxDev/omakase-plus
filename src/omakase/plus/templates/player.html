@@ -56,7 +56,7 @@
       {% if episodic %}<a class="web-player-series" href="{{ overview_url }}">{{ title }}</a>{% endif %}
       <h2 id="episode-heading" data-player-episode-heading>{{ media_title }}{% if episodic and initial_episode_name %} · {{ initial_episode_name }}{% endif %}</h2>
       {% if episodic %}<p class="web-player-synopsis" data-player-episode-synopsis{% if not initial_episode_summary %} hidden{% endif %}>{{ initial_episode_summary }}</p>{% endif %}
-      {% if description_preview %}<div data-player-series-synopsis{% if episodic and initial_episode_summary %} hidden{% endif %}>{% if episodic %}<h3 class="web-player-description-label">About the series</h3>{% endif %}<p class="web-player-synopsis">{{ description_preview }}</p>{% if description_more %}<details class="web-player-more"><summary>Read synopsis</summary><p>{{ description_more }}</p></details>{% endif %}</div>{% endif %}
+      {% if description_preview %}<div data-player-series-synopsis{% if episodic and initial_episode_summary %} hidden{% endif %}>{% if episodic %}<h3 class="web-player-description-label">About the series</h3>{% endif %}<p class="web-player-synopsis">{{ description_preview }}</p>{% if description_credit %}<p class="web-player-synopsis-credit">{{ description_credit }}</p>{% endif %}{% if description_more %}<details class="web-player-more"><summary>Read synopsis</summary><p>{{ description_more }}</p></details>{% endif %}</div>{% endif %}
       <details class="web-player-tools"><summary>Playback options & credits</summary>
 
         <p class="web-player-save" role="status" data-player-save></p>
