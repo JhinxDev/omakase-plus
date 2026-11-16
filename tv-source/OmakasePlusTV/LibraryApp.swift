@@ -45,28 +45,33 @@ struct TVActionStyle: ButtonStyle {
 
         var body: some View {
             let focused = focusOverride ?? isFocused
+            // Owner review A-01/A-04: focus is a contour plus a modest lift, never a filled
+            // plate. The previous treatment filled the control with Color.tvFocus (a light
+            // lavender), which read as a large white block over the label and artwork.
             label
                 .font(.callout.weight(.semibold))
-                .foregroundStyle(focused ? Color.tvOnFocus : selected ? Color.tvFocus : Color.tvText)
+                .foregroundStyle(focused ? Color.tvFocus : selected ? Color.tvFocus : Color.tvText)
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
                 .padding(.horizontal, compact ? 18 : 30)
                 .frame(minHeight: 68)
                 .background {
                     RoundedRectangle(cornerRadius: 10)
-                        .fill(focused ? Color.tvFocus : selected ? Color.tvAccent.opacity(0.18) : Color.tvRaised)
+                        .fill(selected ? Color.tvAccent.opacity(0.18) : Color.tvRaised)
                         .overlay {
                             RoundedRectangle(cornerRadius: 10)
-                                .fill((focused ? Color.tvOnFocus : tint)
-                                    .opacity(isPressed ? 0.15 : focused ? 0 : 0.08))
+                                .fill(tint.opacity(isPressed ? 0.16 : 0.08))
                         }
                 }
                 .overlay {
                     RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(focused ? Color.tvAccent : selected ? Color.tvAccent.opacity(0.6) : Color.tvKeyline,
-                                      lineWidth: focused ? 3 : 2)
+                        .strokeBorder(focused ? Color.tvFocus
+                                              : selected ? Color.tvAccent.opacity(0.6)
+                                              : Color.tvKeyline,
+                                      lineWidth: focused ? 4 : 2)
                 }
-                .scaleEffect(focused && !reduceMotion ? 1.045 : 1)
+                .shadow(color: focused ? .black.opacity(0.45) : .clear, radius: 10, y: 6)
+                .scaleEffect(focused && !reduceMotion ? 1.03 : 1)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: focused)
         }
     }
@@ -465,7 +470,7 @@ struct TitleScreen: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .overlay {
-            if preparingDirectPlayback || launch != nil || showingPlayer {
+            if !showingPlayer && (preparingDirectPlayback || launch != nil) {
                 TVPlaybackLoading(message: needsReload ? "Loading updated video…" : "Starting playback…")
             }
         }

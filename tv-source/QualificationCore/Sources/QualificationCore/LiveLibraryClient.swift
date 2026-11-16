@@ -3,7 +3,7 @@ import Foundation
 import FoundationNetworking
 #endif
 
-public enum LiveLibraryKind: String, CaseIterable, Identifiable, Sendable {
+public enum LiveLibraryKind: String, CaseIterable, Decodable, Identifiable, Sendable {
     case anime, movie, tv, cloud
     public var id: String { rawValue }
 
@@ -34,6 +34,29 @@ public struct LiveLibraryEntry: Decodable, Identifiable, Sendable {
     public let durationSeconds: Int?
     public let isFolder: Bool?
     public let watchlistArtwork: Bool?
+
+    public init(
+        homeTitleID: String, title: String, note: String, watchPath: String?,
+        artworkID: String? = nil, posterURL: URL? = nil, backdropURL: URL? = nil,
+        progress: Double? = nil
+    ) {
+        id = homeTitleID
+        self.title = title
+        self.note = note
+        self.watchPath = watchPath
+        self.artworkID = artworkID
+        self.posterURL = posterURL
+        self.backdropURL = backdropURL
+        self.progress = progress
+        summary = nil
+        featuredPath = nil
+        featuredEpisode = nil
+        watched = nil
+        episodeArtwork = nil
+        durationSeconds = nil
+        isFolder = nil
+        watchlistArtwork = nil
+    }
 
     public var episodeDisplayTitle: String {
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -108,12 +131,48 @@ public struct LiveTitleRequest: Decodable, Identifiable, Sendable {
     public let label: String
     public let detail: String
     public let canCheck: Bool?
+    public let lastCheckedAt: String?
+    public let nextAction: Action?
+
+    public struct Action: Decodable, Sendable {
+        public let kind: String
+        public let label: String
+        public let enabled: Bool
+        public let reason: String?
+    }
+    public let reasonText: String?
+    public let stages: [Stage]?
+
+    public struct Stage: Decodable, Identifiable, Sendable {
+        public let id: String
+        public let label: String
+        public let state: String
+        public let occurredAt: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id = "stage", label, state, occurredAt = "occurred_at"
+        }
+    }
 
     public var id: String { kind + ":" + titleID }
 
     enum CodingKeys: String, CodingKey {
         case kind, titleID = "title_id", title, state, label, detail, canCheck = "can_check"
+        case lastCheckedAt = "last_checked_at", nextAction = "next_action", reasonText = "reason_text"
+        case stages
     }
+}
+
+public struct LiveRequestsPage: Decodable, Sendable {
+    public struct Category: Decodable, Identifiable, Sendable {
+        public let key: String
+        public let title: String
+        public let requests: [LiveTitleRequest]
+
+        public var id: String { key }
+    }
+
+    public let categories: [Category]
 }
 
 public struct LiveRecommendation: Decodable, Identifiable, Sendable {
@@ -378,12 +437,58 @@ public struct LiveLibraryClient: Sendable {
 
     public func requestTitle(_ card: LiveRecommendation, check: Bool = false) async throws -> LiveTitleRequest {
         guard check || card.canRequest else { throw FixtureConnectionError.requestRejected }
-        let body = try JSONEncoder().encode(["kind": card.kind, "title_id": card.id])
+        return try await requestTitle(kind: card.kind, titleID: card.id, check: check)
+    }
+
+    public func checkRequest(_ request: LiveTitleRequest) async throws -> LiveTitleRequest {
+        guard request.canCheck == true else { throw FixtureConnectionError.requestRejected }
+        return try await requestTitle(kind: request.kind, titleID: request.titleID, check: true)
+    }
+
+    private func requestTitle(kind: String, titleID: String, check: Bool) async throws -> LiveTitleRequest {
+        let body = try JSONEncoder().encode(["kind": kind, "title_id": titleID])
         let path = check ? "for-you/request/check" : "for-you/request"
-        let data = try await send(Self.endpoint(origin, path), method: "POST", body: body, timeout: 45)
+        let data = try await send(Self.endpoint(origin, path), method: "POST", body: body, maxBytes: 16_384,
+                                  timeout: 45)
         let result = try JSONDecoder().decode(LiveTitleRequest.self, from: data)
-        guard result.id == card.key else { throw FixtureConnectionError.invalidResponse }
+        guard result.id == kind + ":" + titleID else { throw FixtureConnectionError.invalidResponse }
         return result
+    }
+
+    public func requests() async throws -> LiveRequestsPage {
+        let data = try await send(scoped(Self.endpoint(origin, "requests")), maxBytes: 1_048_576,
+                                  timeout: 35)
+        let page = try JSONDecoder().decode(LiveRequestsPage.self, from: data)
+        guard page.categories.map(\.id) == ["active", "attention", "history"],
+              page.categories.flatMap(\.requests).count <= 150
+        else { throw FixtureConnectionError.invalidResponse }
+        return page
+    }
+
+    public func homeProjection<Projection: Decodable>(as type: Projection.Type) async throws -> Projection {
+        let data = try await send(scoped(Self.endpoint(origin, "home")), maxBytes: 524_288, timeout: 20)
+        return try JSONDecoder().decode(type, from: data)
+    }
+
+    public func editHome(action: String, target: String = "") async throws {
+        let body = try JSONEncoder().encode(["action": action, "target": target])
+        _ = try await send(scoped(Self.endpoint(origin, "home/layout")), method: "POST", body: body,
+                           maxBytes: 16_384, timeout: 12)
+    }
+
+    public func homeArtwork(_ path: String) async throws -> Data? {
+        if path.range(of: #"^artwork/[1-9][0-9]{0,17}/(banner|poster)$"#,
+                      options: .regularExpression) != nil {
+            return try await send(scoped(Self.endpoint(origin, path)), maxBytes: 6 * 1024 * 1024, timeout: 12)
+        }
+        if path.range(of: #"^watchlist/[1-9][0-9]{0,9}/poster$"#, options: .regularExpression) != nil {
+            return try await send(scoped(Self.endpoint(origin, path)), maxBytes: 4 * 1024 * 1024, timeout: 12)
+        }
+        guard let url = URL(string: path), url.scheme == "https", url.host == "image.tmdb.org",
+              url.port == nil, url.user == nil, url.password == nil, url.query == nil,
+              url.fragment == nil, url.path.hasPrefix("/t/p/") else { return nil }
+        return try await Self.load(URLRequest(url: url, timeoutInterval: 12),
+                                   session: session, maxBytes: 6 * 1024 * 1024)
     }
 
     public func recommendationArtwork(_ card: LiveRecommendation) async throws -> Data? {
@@ -527,10 +632,21 @@ public struct LiveLibraryClient: Sendable {
         }
         let url = Self.endpoint(origin, "media/\(pass.mediaID)/access")
         do {
-            struct Receipt: Decodable { let allowed: Bool }
+            struct Receipt: Decodable {
+                let allowed: Bool
+                let stream: String?
+                let recover: String?
+            }
             let data = try await send(url, timeout: 5)
-            guard try JSONDecoder().decode(Receipt.self, from: data).allowed else {
+            let receipt = try JSONDecoder().decode(Receipt.self, from: data)
+            guard receipt.allowed else {
                 throw FixtureConnectionError.invalidResponse
+            }
+            // The pass is still authorized, but the bounded media plan it was
+            // opened on was reclaimed while the viewer was paused. That is a
+            // different outcome from revocation or a replaced copy.
+            if receipt.recover == "reopen" || receipt.stream == "expired" {
+                return .planExpired
             }
             return nil
         } catch FixtureConnectionError.unauthorized {
@@ -675,8 +791,13 @@ public struct LiveLibraryClient: Sendable {
 }
 
 public enum LivePlaybackAccessLoss: Equatable, Sendable {
+    /// The device link or profile was revoked. Playback cannot continue.
     case profile
+    /// The copy is gone. A different copy needs an explicit reload.
     case media
+    /// The pass is still authorized but the media plan it played was reclaimed
+    /// while paused. The stream can be reopened once at the saved position.
+    case planExpired
 }
 
 /// Serialize writes for one playback pass and coalesce AVPlayer's pending samples.

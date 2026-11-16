@@ -80,6 +80,15 @@ final class PlaybackRefreshTests: XCTestCase {
     }
 
     @MainActor
+    func testReclaimedPlanIsReportedSeparatelyFromRevocation() async throws {
+        // A paused viewer keeps an authorized pass after the server reclaims the
+        // bounded timeline. That is recoverable, and it is not a revocation.
+        let (client, pass) = try playback(host: "expired", accessCheck: true)
+        let loss = try await client.playbackAccessLoss(for: pass)
+        XCTAssertEqual(loss, .planExpired)
+    }
+
+    @MainActor
     func testTemporaryAccessCheckFailureDoesNotReportRevocation() async throws {
         let (client, pass) = try playback(host: "busy", accessCheck: true)
         do {
@@ -172,9 +181,14 @@ private final class RefreshFixtureProtocol: URLProtocol {
                 case "allowed": 200
                 case "unlinked": 401
                 case "removed": 404
+                case "expired": 200
                 default: 503
                 }
-                body = status == 200 ? Data(#"{"allowed":true}"#.utf8) : Data()
+                body = switch host {
+                case "expired": Data(#"{"allowed":true,"stream":"expired","recover":"reopen"}"#.utf8)
+                case "allowed": Data(#"{"allowed":true,"stream":"live"}"#.utf8)
+                default: Data()
+                }
             default:
                 throw FixtureConnectionError.invalidResponse
             }

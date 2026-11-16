@@ -13,6 +13,12 @@ struct LiveLibraryScreen: View {
     @Binding var returnSeries: LiveLibraryEntry?
     @Binding var topShelfDestination: TVTopShelfDestination?
     @State private var catalogPresentation: CatalogPresentation?
+    @State private var homeOpen = true
+    @State private var homeSupported = true
+    @State private var homeRefresh = UUID()
+    @State private var requestsOpen = false
+
+    private var showingHome: Bool { homeOpen && homeSupported && client.selectedLibrary == nil }
 
     @Binding var kind: LiveLibraryKind
     @State private var title: LiveLibraryEntry?
@@ -44,7 +50,6 @@ struct LiveLibraryScreen: View {
     @State private var libraryPickerOpen = false
     @State private var libraryOptions: [LiveLibraryOption] = []
     @State private var libraryOptionsFailed = false
-    @State private var confirmsDisconnect = false
     @Namespace private var libraryFocusScope
     @Environment(\.resetFocus) private var resetFocus
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -56,13 +61,12 @@ struct LiveLibraryScreen: View {
     @AppStorage("omakase.tv.audio-language") private var audioLanguage = "auto"
     @AppStorage("omakase.tv.subtitle-language") private var subtitleLanguage = "en"
     @FocusState private var focus: String?
-    @FocusState private var settingsFocus: SettingsAction?
     @FocusState private var libraryFocus: String?
     @FocusState private var searchFieldFocused: Bool
 
-    private enum SettingsAction: Hashable {
-        case done, disconnect, cancel, confirmDisconnect, audio, subtitle
-    }
+    // Owner review A-02: the Settings screen owns its own focus state inside the
+    // presentation. A @FocusState declared here, in the presenting view, cannot drive
+    // controls that live in a fullScreenCover, so directional input never walked the rows.
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -73,7 +77,15 @@ struct LiveLibraryScreen: View {
                     .padding(.horizontal, 88).padding(.vertical, 12)
                     .accessibilityIdentifier("library.error")
             }
-            if !expired {
+            if !expired && showingHome {
+                HomeScreen(client: client, focus: $focus, refreshID: homeRefresh,
+                           onSelect: openHomeCard, browse: { changeCategory(kind) },
+                           unavailable: {
+                               homeSupported = false
+                               changeCategory(kind)
+                           }, expired: linkExpired)
+                    .disabled(busy || detailsEntry != nil)
+            } else if !expired {
                 GeometryReader { viewport in
                     ScrollViewReader { scroll in
                         ScrollView {
@@ -149,7 +161,7 @@ struct LiveLibraryScreen: View {
         }
         .background(Color.tvBackground.ignoresSafeArea())
         .overlay {
-            if openingVideo {
+            if isPresented && openingVideo {
                 TVPlaybackLoading()
             }
         }
@@ -164,10 +176,10 @@ struct LiveLibraryScreen: View {
         }
         .foregroundStyle(Color.tvText)
         .focusScope(libraryFocusScope)
-        .defaultFocus($focus, returnFocus ?? kind.id)
+        .defaultFocus($focus, returnFocus ?? (showingHome ? "home-entry" : kind.id))
         .task {
             async let options = try? client.libraries()
-            await load(0)
+            if !showingHome { await load(0) }
             libraryOptions = await options ?? []
         }
         .onChange(of: isPresented) { _, visible in
@@ -178,6 +190,21 @@ struct LiveLibraryScreen: View {
                     return
                 }
                 let origin = returnFocus
+                if showingHome {
+                    if let origin { focus = origin }
+                    homeRefresh = UUID()
+                    return
+                }
+                if let origin, origin == kind.id {
+                    // A Top Shelf link has no in-app source card to restore.
+                    // Restore its category before background catalog work.
+                    await Task.yield()
+                    guard !expired, isPresented, returnFocus == origin, topShelfDestination == nil else { return }
+                    resetFocus(in: libraryFocusScope)
+                    focus = origin
+                    await refresh(preservingContents: true)
+                    return
+                }
                 await refresh(preservingContents: true)
                 guard !expired, let origin, returnFocus == origin, topShelfDestination == nil else { return }
                 focus = nil
@@ -205,16 +232,19 @@ struct LiveLibraryScreen: View {
             back()
         }
         .fullScreenCover(isPresented: $settingsOpen, onDismiss: {
-            confirmsDisconnect = false
             focus = "device-settings"
         }) { deviceSettings }
         .fullScreenCover(item: $catalogPresentation, onDismiss: {
-            focus = catalogSearchQuery == nil ? "for-you" : "search"
+            focus = showingHome && returnFocus?.hasPrefix("home-card-") == true
+                ? returnFocus : (catalogSearchQuery == nil ? "for-you" : "search")
             catalogSearchQuery = nil
         }) { presentation in
             TVForYouScreen(client: client.selecting(nil), query: presentation.query) {
                 catalogPresentation = nil
             }
+        }
+        .fullScreenCover(isPresented: $requestsOpen, onDismiss: { focus = "requests" }) {
+            TVRequestsScreen(client: client.selecting(nil)) { requestsOpen = false }
         }
         .sheet(isPresented: $libraryPickerOpen) { libraryPicker }
         .sheet(isPresented: $searchOpen, onDismiss: {
@@ -237,19 +267,31 @@ struct LiveLibraryScreen: View {
                 TVBrandMark(size: 43)
                 .fixedSize(horizontal: true, vertical: false)
                 .padding(.trailing, 12)
+                if homeSupported && client.selectedLibrary == nil {
+                    control("Home", key: "home", compact: true, selected: showingHome,
+                            action: goHome)
+                        .accessibilityAddTraits(showingHome ? .isSelected : [])
+                        .disabled(expired || busy)
+                }
                 ForEach(LiveLibraryKind.allCases.filter { $0 != .cloud }) { tab in
-                    let selected = tab == kind
+                    let selected = !showingHome && tab == kind
                     control(tab.label, key: tab.id, compact: true, selected: selected) {
                         changeCategory(tab)
                     }
                     .accessibilityAddTraits(selected ? .isSelected : [])
-                    .disabled(expired || busy)
+                    // A passive refresh must not disable a Top Shelf return target.
+                    .disabled(expired || (busy && returnFocus != tab.id))
                 }
                 control("For You", key: "for-you", icon: "sparkles", compact: true) {
                     catalogSearchQuery = nil
                     catalogPresentation = CatalogPresentation(query: nil)
                 }
                 .disabled(expired || busy)
+                if client.selectedLibrary == nil {
+                    control("Requests", key: "requests", compact: true) { requestsOpen = true }
+                        .accessibilityIdentifier("library.requests")
+                        .disabled(expired || busy)
+                }
                 Spacer(minLength: 12)
                 if libraryOptions.count > 1 || client.selectedLibrary != nil {
                     control("Libraries",
@@ -277,7 +319,11 @@ struct LiveLibraryScreen: View {
                 }
                 .disabled(busy)
                 Button {
-                    Task { await refresh() }
+                    if showingHome {
+                        homeRefresh = UUID()
+                    } else {
+                        Task { await refresh() }
+                    }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 25, weight: .semibold))
@@ -412,94 +458,16 @@ struct LiveLibraryScreen: View {
     }
 
     private var deviceSettings: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            HStack(spacing: 16) {
-                TVBrandMark(size: 32)
-                Text("Omakase Plus").font(.headline).foregroundStyle(Color.tvAccent)
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Omakase Plus")
-            Text(confirmsDisconnect ? "Disconnect this profile?" : "This Apple TV")
-                .font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
-            Text(confirmsDisconnect
-                 ? "Link this profile again to watch its library on this TV."
-                 : "Manage this profile’s connection in Devices on the web.")
-                .foregroundStyle(Color.tvMuted)
-            if !confirmsDisconnect {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Sources are managed on the web", systemImage: "link.badge.plus")
-                        .font(.headline)
-                        .foregroundStyle(Color.tvAccent)
-                    Text("Open Omakase Plus in a browser, then Settings → Connections to review Real-Debrid and Plex. Cloud files live there instead of a TV tab.")
-                        .foregroundStyle(Color.tvMuted)
-                }
-                .frame(maxWidth: 980, alignment: .leading)
-            }
-            if let error { Text(error).foregroundStyle(Color.tvWarning) }
-            Text("Playback")
-                .font(.headline).foregroundStyle(Color.tvAccent)
-                .accessibilityAddTraits(.isHeader)
-            Button {
-                subtitlesAlways.toggle()
-            } label: {
-                Label(
-                    subtitlesAlways ? "Subtitles: Always on" : "Subtitles: Only when chosen",
-                    systemImage: subtitlesAlways ? "captions.bubble.fill" : "captions.bubble"
-                )
-            }
-            .buttonStyle(TVActionStyle(compact: true, selected: subtitlesAlways))
-            .focusEffectDisabled()
-            .accessibilityIdentifier("device.settings.subtitles")
-            .accessibilityValue(subtitlesAlways ? "On" : "Off")
-            .accessibilityHint("Turns subtitles on automatically for every video that includes text subtitles")
-            Text("About")
-                .font(.headline).foregroundStyle(Color.tvAccent)
-                .accessibilityAddTraits(.isHeader)
-            Text(versionLabel)
-                .font(.callout.monospacedDigit())
-                .foregroundStyle(Color.tvMuted)
-                .accessibilityIdentifier("device.settings.version")
-            HStack(spacing: 24) {
-                if confirmsDisconnect {
-                    settingsButton("Cancel", key: .cancel) { confirmsDisconnect = false }
-                    settingsButton(busy ? "Disconnecting…" : "Disconnect", key: .confirmDisconnect,
-                                   role: .destructive) {
-                        Task { await unlink() }
-                    }
-                } else {
-                    settingsButton("Done", key: .done) { settingsOpen = false }
-                    settingsButton("Disconnect this profile", key: .disconnect, role: .destructive) {
-                        confirmsDisconnect = true
-                    }
-                }
-            }
-            .disabled(busy)
-        }
-        .padding(70)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.tvBackground.ignoresSafeArea())
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("device.settings.screen")
-        .defaultFocus($settingsFocus, confirmsDisconnect ? .cancel : .done)
-        .onChange(of: confirmsDisconnect) { _, confirming in
-            settingsFocus = confirming ? .cancel : .done
-        }
-        .onExitCommand {
-            guard !busy else { return }
-            if confirmsDisconnect {
-                confirmsDisconnect = false
-            } else {
-                settingsOpen = false
-            }
-        }
-    }
-
-    private func settingsButton(_ title: String, key: SettingsAction, role: ButtonRole? = nil,
-                                action: @escaping () -> Void) -> some View {
-        Button(title, role: role, action: action)
-            .buttonStyle(TVActionStyle(tint: role == .destructive ? .red : .tvText))
-            .focusEffectDisabled()
-            .focused($settingsFocus, equals: key)
+        // The screen owns its own focus state and one focus section so Up/Down walks the
+        // settings rows. See the A-02 note on the focus-state declarations above.
+        TVDeviceSettingsScreen(
+            subtitlesAlways: $subtitlesAlways,
+            versionLabel: versionLabel,
+            busy: busy,
+            error: error,
+            onDone: { settingsOpen = false },
+            onDisconnect: { Task { await unlink() } }
+        )
     }
 
     private func shelves(minimumCatalogHeight: CGFloat) -> some View {
@@ -710,7 +678,7 @@ struct LiveLibraryScreen: View {
 
     private func isNavigationFocus(_ key: String) -> Bool {
         LiveLibraryKind.allCases.contains { $0.id == key } ||
-            ["libraries", "search", "viewer-profiles", "device-settings"].contains(key)
+            ["home", "for-you", "requests", "libraries", "search", "viewer-profiles", "device-settings"].contains(key)
     }
 
     private func control(_ label: String, key: String, icon: String? = nil, accent: Bool = false,
@@ -894,6 +862,7 @@ struct LiveLibraryScreen: View {
         searchOpen = false
         returnFocus = nil
         catalogReturnFocus = nil
+        homeOpen = false
         title = nil
         episodes = nil
         query = term
@@ -904,7 +873,34 @@ struct LiveLibraryScreen: View {
         }
     }
 
+    private func goHome() {
+        guard !showingHome else { return }
+        returnFocus = nil
+        catalogReturnFocus = nil
+        title = nil
+        episodes = nil
+        error = nil
+        focus = "home-entry"
+        homeOpen = true
+    }
+
+    private func openHomeCard(_ card: HomeCard, key: String) {
+        guard !busy else { return }
+        returnFocus = key
+        if card.entry.watchPath != nil {
+            kind = card.domain
+            Task { await open(card.entry, origin: key, resumeImmediately: true) }
+        } else if card.id.hasPrefix("watchlist-") {
+            catalogSearchQuery = card.title
+            catalogPresentation = CatalogPresentation(query: card.title)
+        } else {
+            openDetails(card.entry, key: key)
+        }
+    }
+
     private func changeCategory(_ tab: LiveLibraryKind) {
+        guard !busy else { return }
+        homeOpen = false
         returnFocus = nil
         catalogReturnFocus = nil
         title = nil
@@ -985,6 +981,7 @@ struct LiveLibraryScreen: View {
     private func followTopShelf() async {
         guard isPresented, !expired, !busy, let destination = topShelfDestination else { return }
         topShelfDestination = nil
+        homeOpen = false
         catalogPresentation = nil
         catalogSearchQuery = nil
         searchOpen = false
@@ -1003,6 +1000,10 @@ struct LiveLibraryScreen: View {
         returnFocus = destination.kind.id
         let entry = destination.entry
         if destination.action == .resume, entry.featuredPath != nil || entry.watchPath != nil {
+            // Establish the focus anchor before playback takes over the screen.
+            focus = destination.kind.id
+            await Task.yield()
+            guard isPresented, !expired, kind == destination.kind, returnFocus == destination.kind.id else { return }
             await open(entry, origin: destination.kind.id, featured: entry.featuredPath != nil,
                        resumeImmediately: true)
         } else {
@@ -1014,7 +1015,7 @@ struct LiveLibraryScreen: View {
     private func adoptReturnSeries() {
         guard let entry = returnSeries else { return }
         returnSeries = nil
-        guard isPresented, !expired, title?.id != entry.id else { return }
+        guard isPresented, !expired, !showingHome, title?.id != entry.id else { return }
         show(entry, origin: returnFocus ?? focus ?? kind.id)
     }
 
@@ -1107,8 +1108,7 @@ struct LiveLibraryScreen: View {
             return
         } catch {
             self.error = "Couldn’t disconnect this TV. Try again or remove it from Devices in Omakase Plus."
-            if settingsOpen { settingsFocus = .cancel }
-            else { focus = "device-settings" }
+            if !settingsOpen { focus = "device-settings" }
         }
     }
 
@@ -1119,6 +1119,182 @@ struct LiveLibraryScreen: View {
         episodes = nil
         error = "This TV’s connection expired. Link it again to continue."
         focus = "device-settings"
+    }
+}
+
+// MARK: - Device settings (A-02)
+
+/// Owner review A-02: "when you open settings I cannot move between different options in
+/// the settings". The old screen was a plain VStack inside a fullScreenCover whose
+/// @FocusState lived in the presenting view, so directional input could not walk the rows.
+/// This screen owns its focus state and its own focus section, and every option is one
+/// full-width row, so Up/Down moves between the settings options and Left/Right still
+/// reaches the confirm buttons.
+@MainActor
+private struct TVDeviceSettingsScreen: View {
+    @Binding var subtitlesAlways: Bool
+    let versionLabel: String
+    let busy: Bool
+    let error: String?
+    let onDone: () -> Void
+    let onDisconnect: () -> Void
+
+    @State private var confirmingDisconnect = false
+    @FocusState private var row: Row?
+
+    private enum Row: Hashable {
+        case subtitles, done, disconnect, cancel, confirmDisconnect
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 16) {
+                    TVBrandMark(size: 32)
+                    Text("Omakase Plus").font(.headline).foregroundStyle(Color.tvAccent)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Omakase Plus")
+
+                Text(confirmingDisconnect ? "Disconnect this profile?" : "This Apple TV")
+                    .font(.largeTitle.bold())
+                    .accessibilityAddTraits(.isHeader)
+                Text(confirmingDisconnect
+                     ? "Link this profile again to watch its library on this TV."
+                     : "Manage this profile’s connection in Devices on the web.")
+                    .foregroundStyle(Color.tvMuted)
+                    .padding(.bottom, 8)
+
+                if !confirmingDisconnect {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Sources are managed on the web", systemImage: "link.badge.plus")
+                            .font(.headline)
+                            .foregroundStyle(Color.tvAccent)
+                        Text("Open Omakase Plus in a browser, then Settings → Connections to review Real-Debrid and Plex. Cloud files live there instead of a TV tab.")
+                            .foregroundStyle(Color.tvMuted)
+                    }
+                    .frame(maxWidth: 980, alignment: .leading)
+                    .padding(.bottom, 8)
+                }
+
+                if let error {
+                    Label(error, systemImage: "exclamationmark.circle")
+                        .font(.callout)
+                        .foregroundStyle(Color.tvWarning)
+                        .accessibilityIdentifier("device.settings.error")
+                }
+
+                sectionHeader("Playback")
+                optionRow(.subtitles,
+                          title: subtitlesAlways ? "Subtitles: Always on" : "Subtitles: Only when chosen",
+                          detail: subtitlesAlways ? "On" : "Off",
+                          systemImage: subtitlesAlways ? "captions.bubble.fill" : "captions.bubble",
+                          selected: subtitlesAlways,
+                          identifier: "device.settings.subtitles",
+                          hint: "Turns subtitles on automatically for every video that includes text subtitles") {
+                    subtitlesAlways.toggle()
+                }
+
+                sectionHeader("About")
+                HStack(spacing: 18) {
+                    Text("Version").font(.callout.weight(.semibold))
+                    Spacer(minLength: 24)
+                    Text(versionLabel)
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(Color.tvMuted)
+                }
+                .padding(.horizontal, 30)
+                .frame(maxWidth: .infinity, minHeight: 68)
+                .background(Color.tvSurface, in: .rect(cornerRadius: 10))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(Color.tvKeyline, lineWidth: 2)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("device.settings.version")
+
+                sectionHeader("Connection")
+                if confirmingDisconnect {
+                    optionRow(.cancel, title: "Cancel", systemImage: "chevron.backward",
+                              disabled: busy, identifier: "device.settings.cancel") {
+                        confirmingDisconnect = false
+                    }
+                    optionRow(.confirmDisconnect,
+                              title: busy ? "Disconnecting…" : "Disconnect this profile",
+                              systemImage: "person.crop.circle.badge.xmark",
+                              destructive: true, disabled: busy,
+                              identifier: "device.settings.confirmDisconnect") {
+                        onDisconnect()
+                    }
+                } else {
+                    optionRow(.disconnect, title: "Disconnect this profile",
+                              systemImage: "person.crop.circle.badge.xmark",
+                              destructive: true, disabled: busy,
+                              identifier: "device.settings.disconnect") {
+                        confirmingDisconnect = true
+                    }
+                    optionRow(.done, title: "Done", detail: nil, systemImage: "checkmark",
+                              prominent: true, disabled: busy,
+                              identifier: "device.settings.done") {
+                        onDone()
+                    }
+                }
+            }
+            .padding(.horizontal, 90)
+            .padding(.vertical, 56)
+            .frame(maxWidth: 1180, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(Color.tvBackground.ignoresSafeArea())
+        .focusSection()
+        .accessibilityIdentifier("device.settings.screen")
+        .onAppear { row = confirmingDisconnect ? .cancel : .subtitles }
+        .onChange(of: confirmingDisconnect) { _, confirming in
+            row = confirming ? .cancel : .done
+        }
+        .onExitCommand {
+            guard !busy else { return }
+            if confirmingDisconnect { confirmingDisconnect = false } else { onDone() }
+        }
+    }
+
+    private func sectionHeader(_ text: String) -> some View {
+        Text(text)
+            .font(.headline)
+            .foregroundStyle(Color.tvAccent)
+            .padding(.top, 14)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private func optionRow(_ key: Row, title: String, detail: String? = nil,
+                           systemImage: String? = nil, selected: Bool = false,
+                           destructive: Bool = false, prominent: Bool = false,
+                           disabled: Bool = false, identifier: String = "",
+                           hint: String = "",
+                           action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 18) {
+                if let systemImage {
+                    Image(systemName: systemImage).font(.callout.weight(.semibold))
+                }
+                Text(title).font(.callout.weight(.semibold))
+                Spacer(minLength: 24)
+                if let detail {
+                    Text(detail)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(Color.tvMuted)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(TVActionStyle(focused: row == key,
+                                   tint: destructive ? .red : prominent ? .tvAccent : .tvText,
+                                   compact: true, selected: selected))
+        .focusEffectDisabled()
+        .focused($row, equals: key)
+        .disabled(disabled)
+        .accessibilityIdentifier(identifier)
+        .accessibilityHint(hint)
     }
 }
 

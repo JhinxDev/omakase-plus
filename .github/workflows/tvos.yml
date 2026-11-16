@@ -9,15 +9,31 @@ permissions:
 jobs:
   unsigned-ipa:
     runs-on: macos-15
-    timeout-minutes: 25
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
       - name: Test, build and package tvOS
-        run: bash scripts/build-tvos.sh "$RUNNER_TEMP/omakase-tvos"
+        # The tvOS SDK is macOS-only. Resolve the newest installed Xcode instead of
+        # pinning a path that may not exist on this runner image, and log the exact
+        # toolchain so the build receipt names it.
+        env:
+          OMAKASE_PREFERRED_XCODE: /Applications/Xcode_26.3.app/Contents/Developer
+        run: |
+          set -euo pipefail
+          if [[ -d "$OMAKASE_PREFERRED_XCODE" ]]; then
+            DEVELOPER_DIR="$OMAKASE_PREFERRED_XCODE"
+          else
+            newest=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1)
+            [[ -n "$newest" ]] || { echo "No Xcode found on this runner." >&2; exit 1; }
+            DEVELOPER_DIR="$newest/Contents/Developer"
+          fi
+          export DEVELOPER_DIR
+          echo "DEVELOPER_DIR=$DEVELOPER_DIR"
+          xcodebuild -version
+          xcrun --sdk appletvos --show-sdk-version
+          bash scripts/build-tvos.sh "$RUNNER_TEMP/omakase-tvos"
       - name: Upload unsigned IPA and receipt
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -26,4 +42,3 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
-

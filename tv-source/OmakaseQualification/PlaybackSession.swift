@@ -34,6 +34,13 @@ final class PlaybackSession: ObservableObject {
     /// True while an item is installed on either engine. Replaces "player != nil"
     /// as the presentation signal, because the VLC path has no AVPlayer.
     @Published private(set) var isPresenting = false
+    /// Milliseconds from item install to the first playing frame.
+    ///
+    /// The server times the open, the grant and the first media GET that returned
+    /// bytes. Only the client can time the wait after that: readiness, the seeded
+    /// seek and the first decoded frame. Recorded per item and cleared on install.
+    @Published private(set) var clientPlayingMilliseconds: Int?
+    private var installedAt: ContinuousClock.Instant?
     @Published var canPlayNext = false
     @Published private(set) var directTracks: [EngineTrack] = []
     @Published private(set) var isDirectPlaybackRequested = false
@@ -167,6 +174,7 @@ final class PlaybackSession: ObservableObject {
     }
 
     func beginLive(_ pass: LiveTestPass, resumePosition: Double?,
+                   startPaused: Bool = false,
                    onCheckpoint: ((Double) -> Void)? = nil) -> Bool {
         if pass.isDirect {
             guard beginDirect(pass, resumePosition: resumePosition) else { return false }
@@ -175,7 +183,8 @@ final class PlaybackSession: ObservableObject {
         }
         guard begin(url: pass.mediaURL(forResumeAt: resumePosition), resumePosition: resumePosition,
                     identity: pass.card.identity.resumeIdentity, cookies: pass.mediaCookies,
-                    expectedDuration: pass.isGrowingHLS ? pass.duration : nil, card: pass.card)
+                    expectedDuration: pass.isGrowingHLS ? pass.duration : nil, card: pass.card,
+                    startPaused: startPaused)
         else { return false }
         liveCheckpoint = onCheckpoint
         return true
@@ -183,7 +192,7 @@ final class PlaybackSession: ObservableObject {
 
     private func begin(url: URL, resumePosition: Double?, identity: ResumeIdentity?,
                        cookies: [HTTPCookie] = [], expectedDuration: Double? = nil,
-                       card: LibraryCard? = nil) -> Bool {
+                       card: LibraryCard? = nil, startPaused: Bool = false) -> Bool {
         stop()
         clearFailure()
         do {
@@ -199,7 +208,7 @@ final class PlaybackSession: ObservableObject {
         let engine = AVPlayerEngine(player: player, item: item)
         install(engine: engine, avPlayer: player, resumePosition: resumePosition, identity: identity,
                 cookies: cookies, expectedDuration: expectedDuration,
-                carried: itemCarriedSelections)
+                carried: itemCarriedSelections, startPaused: startPaused)
         itemCarriedSelections = []
         if let resumePosition, resumePosition.isFinite, resumePosition > 0,
            url.pathExtension.lowercased() == "m3u8" {
@@ -245,7 +254,9 @@ final class PlaybackSession: ObservableObject {
         return true
     }
 
-    func replaceLive(with pass: LiveTestPass, onCheckpoint: ((Double) -> Void)? = nil) async throws {
+    func replaceLive(with pass: LiveTestPass, resumePosition: Double? = nil,
+                     keepPaused: Bool = false,
+                     onCheckpoint: ((Double) -> Void)? = nil) async throws {
         guard Date() < pass.expiresAt else { throw NextEpisodeError.unavailable }
         if pass.isDirect || directEngine != nil {
             // A series normally keeps one transport. Replacing across engines is
@@ -253,9 +264,13 @@ final class PlaybackSession: ObservableObject {
             guard pass.isDirect, directEngine != nil else { throw NextEpisodeError.unavailable }
             try await replaceDirect(pass)
         } else {
-            try await replace(url: pass.mediaURL, identity: pass.card.identity.resumeIdentity,
+            // `resumePosition` is nil for an episode transition, and set only when
+            // a reclaimed media plan is reopened at the viewer's saved position.
+            try await replace(url: pass.mediaURL(forResumeAt: resumePosition),
+                              identity: pass.card.identity.resumeIdentity,
                               cookies: pass.mediaCookies,
-                              expectedDuration: pass.isGrowingHLS ? pass.duration : nil, card: pass.card)
+                              expectedDuration: pass.isGrowingHLS ? pass.duration : nil, card: pass.card,
+                              resumePosition: resumePosition, keepPaused: keepPaused)
         }
         liveCheckpoint = onCheckpoint
     }
@@ -265,11 +280,22 @@ final class PlaybackSession: ObservableObject {
     }
 
     private func replace(url: URL, identity: ResumeIdentity, cookies: [HTTPCookie] = [],
-                         expectedDuration: Double? = nil, card: LibraryCard) async throws {
+                         expectedDuration: Double? = nil, card: LibraryCard,
+                         resumePosition: Double? = nil,
+                         keepPaused: Bool = false) async throws {
         try Task.checkCancellation()
         guard let previousItem = (engine as? AVPlayerEngine)?.item else { throw CancellationError() }
         let currentToken = sessionToken
+        let wasPaused = isPausedByViewer
         let item = makeItem(url: url, cookies: cookies, card: card)
+        if let resumePosition, resumePosition.isFinite, resumePosition > 0,
+           url.pathExtension.lowercased() == "m3u8" {
+            // Seed the saved position before the item is attached to any player.
+            // Attaching first let AVFoundation begin from zero and the seeded seek
+            // arrived too late to change where the item actually opened.
+            item.seek(to: CMTime(seconds: resumePosition, preferredTimescale: 600),
+                      toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: nil)
+        }
         let successor = AVPlayer()
         successor.allowsExternalPlayback = false
         successor.replaceCurrentItem(with: item)
@@ -299,11 +325,15 @@ final class PlaybackSession: ObservableObject {
         // Deliberate: the successor replaces the current item only after the
         // lifecycle has accepted it. A backgrounded app installs the item but the
         // readiness completion cannot start playing it.
+        let pauseOnInstall = keepPaused || (!wasPaused && isPausedByViewer)
         detachCurrentPlayback()
         clearFailure()
         let successorEngine = AVPlayerEngine(player: successor, item: item)
-        install(engine: successorEngine, avPlayer: successor, resumePosition: nil, identity: identity,
-                cookies: cookies, expectedDuration: expectedDuration, carried: carried)
+        // keepPaused is carried as install-time intent, not as an engine pause after
+        // the fact: a readiness or seek completion would otherwise start playback.
+        install(engine: successorEngine, avPlayer: successor, resumePosition: resumePosition,
+                identity: identity, cookies: cookies, expectedDuration: expectedDuration,
+                carried: carried, startPaused: pauseOnInstall)
         installed = true
     }
 
@@ -384,7 +414,8 @@ final class PlaybackSession: ObservableObject {
 
     func install(engine: any PlayerEngine, avPlayer: AVPlayer?, resumePosition: Double?,
                  identity: ResumeIdentity?, cookies: [HTTPCookie], expectedDuration: Double?,
-                 carried: Set<AVMediaCharacteristic>, requiresPlayToOpen: Bool = false) {
+                 carried: Set<AVMediaCharacteristic>, requiresPlayToOpen: Bool = false,
+                 startPaused: Bool = false) {
         self.identity = identity
         itemCarriedSelections = carried
         self.expectedDuration = expectedDuration
@@ -397,10 +428,17 @@ final class PlaybackSession: ObservableObject {
         canCheckpoint = false
         lastSave = 0
         status = "Loading"
+        clientPlayingMilliseconds = nil
+        installedAt = .now
         directEngine = engine as? VLCPlayerEngine
         mediaCookies = cookies
         generation = UUID()
         intentToken = lifecycle.beginOpening()
+        if startPaused {
+            // Declare the viewer's pause before readiness can complete, so neither a
+            // readiness nor a seek completion may start playing on its own.
+            lifecycle.markPausedByUser()
+        }
         tracks.beginItem(intentToken)
         self.engine = engine
         player = avPlayer
@@ -464,6 +502,15 @@ final class PlaybackSession: ObservableObject {
 
     private func applyEngineState(_ state: PlayerState, token: SessionToken) {
         guard isCurrent(token), let engine, engine.state == state else { return }
+        // AVKit drives the AVPlayer transport directly. A depleted HLS item can
+        // wait for data instead of reaching .playing when the viewer presses Play.
+        if (state == .playing || state == .buffering),
+           let player, player.timeControlStatus != .paused,
+           isPausedByViewer, !lifecycle.isBackgrounded, !reachedEnd,
+           onResumeRequested?() == true {
+            engine.pause()
+            return
+        }
         switch state {
         case .playing:
             // AVKit can drive AVPlayer directly. Read its current transport
@@ -482,6 +529,7 @@ final class PlaybackSession: ObservableObject {
             started = true
             lifecycle.markPlaying()
             status = "Playing"
+            recordClientPlaying()
         case .paused:
             guard started, !reachedEnd else { return }
             cancelPlaybackWait()
@@ -540,6 +588,14 @@ final class PlaybackSession: ObservableObject {
         if engine.state == .playing {
             applyEngineState(.playing, token: token)
         }
+    }
+
+    /// Records the client's own install-to-playing time once per item.
+    private func recordClientPlaying() {
+        guard clientPlayingMilliseconds == nil, let installedAt else { return }
+        let elapsed = ContinuousClock.now - installedAt
+        clientPlayingMilliseconds = Int(elapsed.components.seconds) * 1000
+            + Int(elapsed.components.attoseconds / 1_000_000_000_000_000)
     }
 
     private func startReadyItem(token: SessionToken) {
@@ -807,6 +863,19 @@ final class PlaybackSession: ObservableObject {
         scenePhaseChanged(.background)
     }
 
+    /// True when the viewer paused and has not resumed since.
+    ///
+    /// Read before a reclaimed media plan is reopened, so the recovery keeps the
+    /// viewer's intent instead of starting playback on its own.
+    var isPausedByViewer: Bool { lifecycle.intent == .pausedByUser }
+
+    /// Takes over a viewer's Play request before the engine is asked to play.
+    ///
+    /// Returns true when the request was handled elsewhere, for example a media
+    /// plan that has to be reopened at the saved position first. The presentation
+    /// stays on screen while that happens.
+    var onResumeRequested: (() -> Bool)?
+
     /// Play/pause from a remote command. Honours the lifecycle intent.
     func togglePlayPause() {
         guard let engine, isPresenting, !lifecycle.isBackgrounded, !reachedEnd else { return }
@@ -817,6 +886,7 @@ final class PlaybackSession: ObservableObject {
             status = "Paused"
             engine.pause()
         } else {
+            if onResumeRequested?() == true { return }
             lifecycle.markPlaying()
             if started {
                 engine.play()

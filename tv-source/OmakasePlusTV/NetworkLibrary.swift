@@ -199,6 +199,18 @@ struct LiveTestScreen: View {
     @State private var resumeImmediately = false
     @State private var resumeWriter: LiveResumeWriter?
     @State private var reloadMediaID: String?
+    /// One automatic reopen per pass when the server reclaims an idle plan.
+    @State private var planRecovery = PlanExpiryRecovery()
+    /// A paused viewer's reclaimed plan, held until Play asks for it.
+    @State private var pendingPlanRecovery: PendingPlanRecovery?
+    @State private var recoveryTask: Task<Void, Never>?
+    @State private var recoveryInFlight = false
+
+    /// One deferred reopen: which pass expired and where the viewer actually was.
+    private struct PendingPlanRecovery: Equatable {
+        let mediaID: String
+        let position: Double
+    }
     @State private var autoRetriedOpening = false
     @State private var closingPass = false
     @State private var library: LiveLibraryClient?
@@ -424,6 +436,8 @@ struct LiveTestScreen: View {
         }
         .task(id: activePlaybackMediaID) {
             if let pass, let library, activePlaybackMediaID == pass.mediaID {
+                // A paused viewer's expired plan is reopened by Play, not by the poll.
+                player.onResumeRequested = { takePendingPlanRecovery() }
                 await monitorPlaybackAccess(pass, client: library)
             }
         }
@@ -761,9 +775,13 @@ struct LiveTestScreen: View {
     }
 
     private func playbackAccessLost(_ loss: LivePlaybackAccessLoss) {
-        player.stopForLostAccess()
         switch loss {
+        case .planExpired:
+            // Read the viewer's pause intent before anything else: the pass is
+            // still authorized, so this stream can be reopened without dismissing.
+            expiredPlan(keepPaused: player.isPausedByViewer)
         case .profile:
+            player.stopForLostAccess()
             pass = nil
             passSeries = nil
             passEpisode = nil
@@ -774,8 +792,137 @@ struct LiveTestScreen: View {
             disconnect()
             profileError = "This profile is no longer linked. Link it again to keep watching."
         case .media:
+            player.stopForLostAccess()
             error = "This video is no longer available for playback. Try again to check access."
         }
+    }
+
+    /// Reopen once when the server reclaimed an idle media plan.
+    ///
+    /// The decision lives in the portable core so it is covered by `swift test`.
+    /// Idle reclamation stays in place. What the client adds is one reopen at the
+    /// last position this device actually checkpointed, with the same intent.
+    ///
+    /// The presentation is deliberately kept: this path never calls
+    /// `stopForLostAccess` before replacing, because that stops the engine and can
+    /// close the player the replacement is about to use. Only a terminal outcome
+    /// ends the presentation.
+    private func expiredPlan(keepPaused: Bool) {
+        guard let current = pass, let library else { return }
+        switch planRecovery.action(mediaID: current.mediaID,
+                                   lastReliablePosition: savedPosition(current),
+                                   keepPaused: keepPaused) {
+        case .report(let message):
+            // Second expiry for this pass: do not reopen it again automatically.
+            pendingPlanRecovery = nil
+            player.stopForLostAccess()
+            error = message
+        case .reopen(let position, let pause):
+            error = nil
+            if pause {
+                // The one allowed reopen waits for Play. Until then nothing opens,
+                // so a long pause costs no provider work and the viewer stays put.
+                pendingPlanRecovery = PendingPlanRecovery(mediaID: current.mediaID,
+                                                          position: position)
+            } else {
+                startPlanRecovery(current, library: library, at: position, keepPaused: false)
+            }
+        }
+    }
+
+    /// Called from the player's Play command before the engine is asked to play.
+    ///
+    /// Returns true when a pending recovery took the request over, so the dead item
+    /// is not resumed.
+    private func takePendingPlanRecovery() -> Bool {
+        guard let pending = pendingPlanRecovery, let current = pass, let library,
+              pending.mediaID == current.mediaID else {
+            pendingPlanRecovery = nil
+            return false
+        }
+        pendingPlanRecovery = nil
+        startPlanRecovery(current, library: library, at: pending.position, keepPaused: false)
+        return true
+    }
+
+    private func startPlanRecovery(_ current: LiveTestPass, library: LiveLibraryClient,
+                                   at position: Double, keepPaused: Bool) {
+        guard !recoveryInFlight else { return }
+        recoveryInFlight = true
+        let version = libraryVersion
+        recoveryTask?.cancel()
+        recoveryTask = Task { @MainActor in
+            await recoverPlan(current, library: library, version: version,
+                              at: position, keepPaused: keepPaused)
+            recoveryInFlight = false
+        }
+    }
+
+    private func recoverPlan(_ current: LiveTestPass, library: LiveLibraryClient,
+                             version: UUID, at position: Double, keepPaused: Bool) async {
+        let mediaID = current.mediaID
+
+        // Every await below is guarded by this. A newer title, a profile switch, a
+        // dismissed player or a backgrounded app refuses the late reply.
+        func stillCurrent() -> Bool {
+            !Task.isCancelled && libraryVersion == version && scenePhase != .background
+                && self.library != nil && pass?.mediaID == mediaID
+        }
+
+        let replacement: LiveTestPass
+        do {
+            replacement = try await library.refreshPlayback(current)
+        } catch LiveLibraryError.copyChanged {
+            guard stillCurrent() else { return }
+            // A different copy is its own outcome: the viewer reloads it explicitly.
+            reloadMediaID = mediaID
+            self.error = "A new copy is available. Reload it to continue."
+            return
+        } catch FixtureConnectionError.unauthorized {
+            // True revocation is separate from plan expiry, and only a current
+            // playback may tear the profile down.
+            guard stillCurrent() else { return }
+            playbackAccessLost(.profile)
+            return
+        } catch {
+            guard stillCurrent() else { return }
+            // Keep the position so the viewer's next Play is a deterministic retry.
+            pendingPlanRecovery = PendingPlanRecovery(mediaID: mediaID, position: position)
+            self.error = PlanExpiryRecovery.failedMessage
+            return
+        }
+
+        guard stillCurrent() else {
+            // Superseded after acquisition: give the grant back rather than leak it.
+            await library.release(replacement)
+            return
+        }
+
+        let writer = makeResumeWriter(for: replacement, client: library)
+        do {
+            try await player.replaceLive(with: replacement, resumePosition: position,
+                                         keepPaused: keepPaused,
+                                         onCheckpoint: writer.map { $0.offer })
+        } catch {
+            await library.release(replacement)
+            if stillCurrent() {
+                pendingPlanRecovery = PendingPlanRecovery(mediaID: mediaID, position: position)
+                self.error = PlanExpiryRecovery.failedMessage
+            }
+            return
+        }
+
+        guard stillCurrent() else {
+            await library.release(replacement)
+            return
+        }
+        pass = replacement
+        resumeWriter = writer
+        reloadMediaID = nil
+        pendingPlanRecovery = nil
+        self.error = nil
+        player.canPlayNext = replacement.nextWatchPath != nil
+        Task { await library.release(current) }
     }
 
     private func startPlayback(_ current: LiveTestPass, resume: Bool) async -> Bool {
@@ -835,6 +982,12 @@ struct LiveTestScreen: View {
         let returnSeries = closing.card.episodeTitle == nil ? nil : passSeries
         closingPass = true
         player.stop()
+        // A recovery still in flight must not install into a closed presentation.
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        recoveryInFlight = false
+        pendingPlanRecovery = nil
+        player.onResumeRequested = nil
         let writer = resumeWriter
         let client = library
         // Leave the pre-play page first. The resume flush is a network call and
