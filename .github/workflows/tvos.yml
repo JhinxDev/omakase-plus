@@ -2,6 +2,15 @@ name: Unsigned tvOS build
 
 on:
   workflow_dispatch:
+  # workflow_dispatch only resolves once a workflow exists on the default branch, so a
+  # manual dispatch cannot start the first build of an app-source branch. The push
+  # trigger keeps the build reachable from a branch and is scoped to what the tvOS
+  # build actually consumes.
+  push:
+    paths:
+      - 'tv-source/**'
+      - 'scripts/build-tvos.sh'
+      - '.github/workflows/tvos.yml'
 
 permissions:
   contents: read
