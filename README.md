@@ -15,11 +15,27 @@ with one app, then connect only the services you use.
 Run your own authenticated instance and connect only the services you need.
 There is no hosted signup or bundled media.
 
-![Omakase Plus with a sample account and viewing records](docs/images/omakase-plus-home-ui3-60c29a860351.webp)
+![Omakase Plus Home with sidebar navigation, featured artwork and Continue Watching](docs/images/omakase-plus-home-ui4-37fb6d5956e3.webp)
 
-*Actual interface; sample account, ratings, progress and availability. External
-actions are disabled in the [local showcase](docs/showcase.md). Artwork and vendor
-branding retain their owners' rights; see [third-party notices](THIRD-PARTY-NOTICES.md).*
+*Single-window capture from the demo app with a sample account, ratings, progress
+and availability. External actions are disabled in the
+[local showcase](docs/showcase.md). Artwork and vendor branding retain their
+owners' rights; see [third-party notices](THIRD-PARTY-NOTICES.md).*
+
+## Releases
+
+**[0.4.12](https://github.com/JhinxDev/omakase-plus/releases/tag/v0.4.12)** is the
+latest numbered source release. It adds Apple TV watch tracking for movies and
+TV episodes and improves seeking on matched Real-Debrid HEVC files. Large HEVC
+TV files can use the native Apple TV HLS path. Back up your app data before
+upgrading. See the [changelog](CHANGELOG.md) for earlier releases.
+
+The [November 15 web build](https://github.com/JhinxDev/omakase-plus/tree/web-26619cc3cd85)
+is a separate source snapshot with a browser player that fits beneath the header,
+fullscreen controls that stay visible, and clearer playback errors. That snapshot
+also includes opt-in request search from the
+[preceding web build](https://github.com/JhinxDev/omakase-plus/tree/web-abb4641eaa58).
+For the setup below, use the numbered release.
 
 ## What works
 
@@ -58,7 +74,7 @@ Want Claude Code or Codex to handle host setup? [Copy one setup prompt](docs/set
 Clone the repository:
 
 ```sh
-git clone https://github.com/JhinxDev/omakase-plus.git
+git clone --branch v0.4.12 --single-branch https://github.com/JhinxDev/omakase-plus.git
 cd omakase-plus
 cp .env.local.example .env.local
 cp .env.local.secrets.example .env.local.secrets

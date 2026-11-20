@@ -19,6 +19,11 @@ identifier; it does not replace the public release version.
   segments generated from the direct file. Far-forward seeks work instead of
   erroring; a far segment takes about eight seconds to prepare at 720p.
 
+### Fixed
+
+- Large HEVC TV files can use the native Apple TV HLS path and avoid the Plex
+  CPU transcode path.
+
 ## 0.4.11 - 2026-11-12
 
 ### Fixed
