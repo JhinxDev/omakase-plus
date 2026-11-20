@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 FRAME_GAP_LIMIT = 2.0
@@ -54,8 +53,16 @@ def frames(path: Path) -> list[float]:
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "error", "-select_streams", "v:0",
-                "-show_entries", "frame=pts_time", "-of", "csv=p=0", str(path),
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "frame=pts_time",
+                "-of",
+                "csv=p=0",
+                str(path),
             ],
             capture_output=True,
             text=True,
@@ -98,11 +105,33 @@ def main(source: str, start: str, workdir: str = "", gop: float = 6.0) -> int:
     try:
         run = subprocess.run(
             [
-                "ffmpeg", "-v", "error", "-y", "-ss", str(start_at), "-i", str(source_path),
-                "-map", "0:v:0", "-c", "copy", "-tag:v", "hvc1",
-                "-f", "hls", "-hls_time", "6", "-hls_playlist_type", "vod",
-                "-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", str(init),
-                "-hls_segment_filename", str(base / "seg%04d.m4s"), str(base / "index.m3u8"),
+                "ffmpeg",
+                "-v",
+                "error",
+                "-y",
+                "-ss",
+                str(start_at),
+                "-i",
+                str(source_path),
+                "-map",
+                "0:v:0",
+                "-c",
+                "copy",
+                "-tag:v",
+                "hvc1",
+                "-f",
+                "hls",
+                "-hls_time",
+                "6",
+                "-hls_playlist_type",
+                "vod",
+                "-hls_segment_type",
+                "fmp4",
+                "-hls_fmp4_init_filename",
+                str(init),
+                "-hls_segment_filename",
+                str(base / "seg%04d.m4s"),
+                str(base / "index.m3u8"),
             ],
             capture_output=True,
             text=True,

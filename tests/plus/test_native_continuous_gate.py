@@ -73,7 +73,6 @@ def _bounded_run(cmd, *, timeout: float = PROCESS_TIMEOUT_SECONDS, **kwargs):
         ) from expired
 
 
-
 def _run(*args) -> None:
     result = _bounded_run(args, capture_output=True)
     assert result.returncode == 0, result.stderr.decode("utf-8", "ignore")[-800:]
@@ -206,9 +205,7 @@ def _make(tmp_path, provider, *, name="plan"):
     native_hls._DIRECT = re.compile(r"https?://[^\s]{1,3000}")
     timeline = asyncio.run(build_timeline(provider.url, DURATION))
     assert timeline is not None
-    plan = NativePlan(
-        key=name, url=timeline.url, duration=timeline.duration, root=tmp_path / name
-    )
+    plan = NativePlan(key=name, url=timeline.url, duration=timeline.duration, root=tmp_path / name)
     plan.root.mkdir(parents=True, exist_ok=True)
     plan.timeline = timeline
     plan.ready.set()
@@ -220,9 +217,7 @@ def _make(tmp_path, provider, *, name="plan"):
 
 def _joined(tmp_path, name, init_path, media_paths):
     path = tmp_path / name
-    path.write_bytes(
-        b"".join(part.read_bytes() for part in [init_path, *media_paths])
-    )
+    path.write_bytes(b"".join(part.read_bytes() for part in [init_path, *media_paths]))
     return path
 
 
@@ -403,9 +398,24 @@ def test_dense_keyframes_share_one_playlist_window(tmp_path):
 
 def _picture_hashes(path):
     decoded = _bounded_run(
-        ["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:v:0",
-         "-fps_mode", "passthrough", "-f", "framemd5", "-"],
-        capture_output=True, text=True, timeout=25, check=True,
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(path),
+            "-map",
+            "0:v:0",
+            "-fps_mode",
+            "passthrough",
+            "-f",
+            "framemd5",
+            "-",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=25,
+        check=True,
     )
     assert not decoded.stderr
     return [
@@ -524,8 +534,19 @@ def test_subtitles_come_from_one_bounded_window_read(tmp_path, hevc_provider):
 def test_webvtt_timestamp_map_matches_served_media_after_a_backward_seek(tmp_path, hevc_fixture):
     shifted = tmp_path / "shifted.mkv"
     _run(
-        "ffmpeg", "-v", "error", "-copyts", "-i", str(hevc_fixture), "-map", "0",
-        "-c", "copy", "-output_ts_offset", "0.250", str(shifted),
+        "ffmpeg",
+        "-v",
+        "error",
+        "-copyts",
+        "-i",
+        str(hevc_fixture),
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-output_ts_offset",
+        "0.250",
+        str(shifted),
     )
     provider = _Provider(shifted.read_bytes())
     try:
@@ -544,7 +565,8 @@ def test_webvtt_timestamp_map_matches_served_media_after_a_backward_seek(tmp_pat
                 caption = plan.subtitle_segment_path(0, 1).read_text(encoding="utf-8")
                 match = re.search(
                     r"^X-TIMESTAMP-MAP=LOCAL:00:00:00[.]000,MPEGTS:(\d+)$",
-                    caption, re.MULTILINE,
+                    caption,
+                    re.MULTILINE,
                 )
                 assert match, caption
                 mapped_start = int(match[1]) / 90_000
@@ -585,11 +607,23 @@ def test_webvtt_timestamp_map_matches_served_media_after_a_backward_seek(tmp_pat
 def _packet_clock(path: Path, stream: str) -> dict[str, float]:
     result = _bounded_run(
         [
-            "ffprobe", "-v", "error", "-select_streams", stream, "-show_packets",
-            "-show_data_hash", "sha256", "-show_entries", "packet=pts_time,data_hash",
-            "-of", "json", str(path),
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            stream,
+            "-show_packets",
+            "-show_data_hash",
+            "sha256",
+            "-show_entries",
+            "packet=pts_time,data_hash",
+            "-of",
+            "json",
+            str(path),
         ],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     return {
         row["data_hash"]: float(row["pts_time"])
@@ -600,8 +634,18 @@ def _packet_clock(path: Path, stream: str) -> dict[str, float]:
 
 def _source_packet_times(path: Path, stream: str) -> list[float]:
     result = _bounded_run(
-        ["ffprobe", "-v", "error", "-select_streams", stream, "-show_entries",
-         "packet=pts_time", "-of", "csv=p=0", str(path)],
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            stream,
+            "-show_entries",
+            "packet=pts_time",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
         capture_output=True,
         text=True,
     )
@@ -676,6 +720,7 @@ def test_the_timestamp_contract_matches_the_source(server_run):
     values = [offset for _number, offset in offsets]
     assert max(values) - min(values) <= frame, offsets
 
+
 def test_the_timestamp_contract_survives_a_seek(tmp_path, hevc_provider):
     """After restarts, the pair the player is served still maps to the cue.
 
@@ -727,10 +772,7 @@ def _served_presentation(init: bytes, segment: bytes) -> float:
     """
     timescale = native_hls.media_timescale(init)
     assert timescale
-    return (
-        native_hls.earliest_presentation(segment) / timescale
-        + native_hls.edit_shift(init)
-    )
+    return native_hls.earliest_presentation(segment) / timescale + native_hls.edit_shift(init)
 
 
 def _init_identity(init: bytes) -> dict:
@@ -913,8 +955,10 @@ def test_a_seek_restarts_the_session_at_the_containing_cue(tmp_path, hevc_provid
             start, end = timeline.segments[3]
             path = _window_join(
                 tmp_path,
-                {"init": (plan.root / "init.mp4").read_bytes(),
-                 "video": plan.video_segment_path(3).read_bytes()},
+                {
+                    "init": (plan.root / "init.mp4").read_bytes(),
+                    "video": plan.video_segment_path(3).read_bytes(),
+                },
                 "seek3.mp4",
             )
             times = _frames(path)
@@ -1046,8 +1090,18 @@ def test_audio_pipe_keeps_draining_before_video_clock(tmp_path):
     plan = NativePlan("pipe", "https://mock.invalid/source", 12, tmp_path)
     audio = native_hls.NativeAudio(0, "aac", number=2)
     plan.timeline = native_hls.NativeTimeline(
-        plan.url, 12, 0, ((0, 6), (6, 12)), (0, 100), 200, b"", b"", b"", "hevc",
-        video_number=1, audios=(audio,),
+        plan.url,
+        12,
+        0,
+        ((0, 6), (6, 12)),
+        (0, 100),
+        200,
+        b"",
+        b"",
+        b"",
+        "hevc",
+        video_number=1,
+        audios=(audio,),
     )
     session = native_hls._ContinuousSession(streams, plan, 0)
     session.feed_first = {1: 0, 2: 60}
@@ -1129,7 +1183,16 @@ def test_audio_clock_buffer_is_shared_and_released_on_cancel(tmp_path, monkeypat
     plan = NativePlan("pipe", "https://mock.invalid/source", 12, tmp_path)
     audios = (native_hls.NativeAudio(0, "aac"), native_hls.NativeAudio(1, "aac"))
     plan.timeline = native_hls.NativeTimeline(
-        plan.url, 12, 0, ((0, 6), (6, 12)), (0, 100), 200, b"", b"", b"", "hevc",
+        plan.url,
+        12,
+        0,
+        ((0, 6), (6, 12)),
+        (0, 100),
+        200,
+        b"",
+        b"",
+        b"",
+        "hevc",
         audios=audios,
     )
     session = native_hls._ContinuousSession(streams, plan, 0)
@@ -1181,8 +1244,9 @@ def test_overlapping_subtitle_requests_share_only_the_finished_window(tmp_path, 
         producing = asyncio.Event()
         release = asyncio.Event()
 
-        async def produce(plan, number, _args, _video_part, _audio_parts, subtitles,
-                          *, subtitles_only=False):
+        async def produce(
+            plan, number, _args, _video_part, _audio_parts, subtitles, *, subtitles_only=False
+        ):
             nonlocal requests
             assert subtitles_only
             requests += 1
@@ -1292,7 +1356,9 @@ def test_a_cue_is_still_served_after_a_restart(tmp_path, hevc_provider):
             local = plan.subtitle_segment_path(0, 0).read_text(encoding="utf-8")
             assert "Hevc line" in local, local
             start = timeline.segments[0][0]
-            stamp = next(line for line in local.splitlines() if "-->" in line).split("-->")[0].strip()
+            stamp = (
+                next(line for line in local.splitlines() if "-->" in line).split("-->")[0].strip()
+            )
             parts = stamp.split(":")
             at = float(parts[2]) + int(parts[1]) * 60 + int(parts[0]) * 3600
             assert abs((timeline.origin + start + at) - 2.0) < 0.06, (at, start)

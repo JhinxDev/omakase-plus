@@ -352,7 +352,7 @@ def test_season_picker_is_one_app_owned_listbox_that_names_the_season_it_shows()
     assert "<span data-listbox-text>Season 2 · 10 episodes</span>" in picker
     assert 'aria-expanded="false"' in picker and " hidden" in picker
     # The behaviour is one shared component, so the page has to ship it.
-    assert '/plus/static/listbox.js?v=test' in html
+    assert "/plus/static/listbox.js?v=test" in html
     assert "watch-status.js" not in html
 
 

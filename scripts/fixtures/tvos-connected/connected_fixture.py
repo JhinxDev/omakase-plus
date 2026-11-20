@@ -719,7 +719,11 @@ class Handler(BaseHTTPRequestHandler):
         return self.json_reply(
             200,
             {
-                "banner": {"title": HLS_TITLE, "media_detail": "Synthetic Home", "artwork": artwork},
+                "banner": {
+                    "title": HLS_TITLE,
+                    "media_detail": "Synthetic Home",
+                    "artwork": artwork,
+                },
                 "rows": [
                     {
                         "id": "continue-movies",

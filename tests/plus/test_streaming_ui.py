@@ -412,7 +412,7 @@ def test_account_menu_contains_only_settings_and_sign_out(client):
     menu = re.search(
         r'<div class="account-popover">(.*?)</div>\s*</details>', html, re.DOTALL
     ).group(1)
-    assert 'mobile-project-links' in menu
+    assert "mobile-project-links" in menu
     assert re.findall(r'href="(/plus/[^"]*)"', menu) == ["/plus/settings"]
     assert 'action="/plus/logout"' in menu
 

@@ -105,9 +105,7 @@ def bounded_external_processes(monkeypatch):
             try:
                 return super().communicate(input=input, timeout=deadline)
             except subprocess.TimeoutExpired as expired:
-                raise _BoundedWaitTimeout(
-                    expired, self.args, deadline, "communicate"
-                ) from expired
+                raise _BoundedWaitTimeout(expired, self.args, deadline, "communicate") from expired
 
     monkeypatch.setattr(subprocess, "run", guarded(real_run))
     monkeypatch.setattr(subprocess, "check_output", guarded(real_check_output))

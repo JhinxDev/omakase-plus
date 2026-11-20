@@ -2022,7 +2022,9 @@ def create_native_tv_test_router(
                     artwork.update(landscape=None, poster=f"watchlist/{key}/poster")
                     continue
                 if re.fullmatch(r"[1-9][0-9]{0,17}", key) and anime_artwork_id(db, scope, key):
-                    artwork.update(landscape=f"artwork/{key}/banner", poster=f"artwork/{key}/poster")
+                    artwork.update(
+                        landscape=f"artwork/{key}/banner", poster=f"artwork/{key}/poster"
+                    )
                     continue
             for style in ("landscape", "poster"):
                 artwork[style] = translate(artwork[style], style)

@@ -426,4 +426,6 @@ def test_missing_anime_is_never_ready_zero():
     assert "Missing 27 episodes" in html
     assert "Ready 0/27" not in html
     # Status follows the linked title and progress rather than occupying the poster.
-    assert html.index("Missing 27 episodes</span>") > html.index('title="Example anime">Example anime</h2>')
+    assert html.index("Missing 27 episodes</span>") > html.index(
+        'title="Example anime">Example anime</h2>'
+    )

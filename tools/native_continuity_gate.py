@@ -44,8 +44,16 @@ def presentation_times(path: Path) -> list[float]:
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "error", "-select_streams", "v:0",
-                "-show_entries", "frame=pts_time", "-of", "csv=p=0", str(path),
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "frame=pts_time",
+                "-of",
+                "csv=p=0",
+                str(path),
             ],
             capture_output=True,
             text=True,
@@ -65,8 +73,16 @@ def frame_hashes(path: Path) -> list[str]:
     try:
         result = subprocess.run(
             [
-                "ffmpeg", "-v", "error", "-i", str(path), "-map", "0:v:0",
-                "-f", "framemd5", "-",
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                str(path),
+                "-map",
+                "0:v:0",
+                "-f",
+                "framemd5",
+                "-",
             ],
             capture_output=True,
             text=True,

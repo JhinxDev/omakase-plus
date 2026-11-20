@@ -73,7 +73,9 @@ def produced_pass(tmp_path, monkeypatch):
     monkeypatch.setattr(native_hls, "_DIRECT", re.compile(r"https?://[^\s]{1,3000}"))
     timeline = asyncio.run(build_timeline(provider.url, DURATION))
     assert timeline is not None and len(timeline.segments) >= 4
-    plan = NativePlan(key="served", url=timeline.url, duration=timeline.duration, root=folder / "plan")
+    plan = NativePlan(
+        key="served", url=timeline.url, duration=timeline.duration, root=folder / "plan"
+    )
     plan.root.mkdir(parents=True, exist_ok=True)
     plan.timeline = timeline
     plan.ready.set()
@@ -97,7 +99,9 @@ def produced_pass(tmp_path, monkeypatch):
                 await asyncio.wait_for(streams.ensure(plan, number, 90), 240)
                 served[f"v{number:05d}.m4s"] = plan.video_segment_path(number).read_bytes()
                 for audio in timeline.audios:
-                    served[audio.segment(number)] = plan.audio_segment_path(audio, number).read_bytes()
+                    served[audio.segment(number)] = plan.audio_segment_path(
+                        audio, number
+                    ).read_bytes()
             served["init.mp4"] = (plan.root / "init.mp4").read_bytes()
             for audio in timeline.audios:
                 served[audio.init] = (plan.root / audio.init).read_bytes()
@@ -138,9 +142,7 @@ def test_the_served_playlist_is_the_media_it_names(produced_pass):
         '#EXT-X-MAP:URI="init.mp4"'
     ]
     durations = [
-        float(line[len("#EXTINF:") :].rstrip(","))
-        for line in lines
-        if line.startswith("#EXTINF:")
+        float(line[len("#EXTINF:") :].rstrip(",")) for line in lines if line.startswith("#EXTINF:")
     ]
     uris = [line for line in lines if not line.startswith("#")]
     assert len(durations) == len(uris) == len(timeline.segments)
@@ -179,9 +181,7 @@ def test_the_served_playlist_is_the_media_it_names(produced_pass):
     for uri in audio_uris:
         assert uri in served and served[uri], uri
     joined_audio = produced_pass["folder"] / "served-audio.mp4"
-    joined_audio.write_bytes(
-        served["init-a0.mp4"] + b"".join(served[uri] for uri in audio_uris)
-    )
+    joined_audio.write_bytes(served["init-a0.mp4"] + b"".join(served[uri] for uri in audio_uris))
     audio_times = _ffprobe_times(joined_audio, "a:0")
     assert audio_times and all(
         later > earlier for earlier, later in zip(audio_times, audio_times[1:])
@@ -195,10 +195,16 @@ def test_the_served_playlist_is_the_media_it_names(produced_pass):
 @pytest.mark.parametrize("session_start", [0, 16], ids=["evicted", "before-start"])
 def test_backward_scrub_opens_only_the_last_distinct_window(tmp_path, monkeypatch, session_start):
     timeline = native_hls.NativeTimeline(
-        "https://mock.invalid/episode", 180, 0,
+        "https://mock.invalid/episode",
+        180,
+        0,
         tuple((6 * number, 6 * (number + 1)) for number in range(30)),
         tuple(100 * number for number in range(30)),
-        3100, b"", b"", b"", "hevc",
+        3100,
+        b"",
+        b"",
+        b"",
+        "hevc",
         audios=(native_hls.NativeAudio(0, "aac"),),
     )
     plan = NativePlan("scrub", timeline.url, timeline.duration, tmp_path)
@@ -252,12 +258,18 @@ def test_backward_scrub_opens_only_the_last_distinct_window(tmp_path, monkeypatc
         # renditions follow the same target. A late duplicate of window 13
         # and an already cached earlier read must not move the pending target.
         requests = (
-            (0.000, 14, "audio"), (0.010, 14, "video"),
-            (0.225, 13, "video"), (0.301, 13, "audio"),
-            (0.494, 12, "video"), (0.503, 12, "audio"),
-            (0.552, 13, "video"), (0.580, 15, "video"),
-            (0.636, 11, "audio"), (0.638, 11, "video"),
-            (0.799, 10, "video"), (0.801, 10, "audio"),
+            (0.000, 14, "audio"),
+            (0.010, 14, "video"),
+            (0.225, 13, "video"),
+            (0.301, 13, "audio"),
+            (0.494, 12, "video"),
+            (0.503, 12, "audio"),
+            (0.552, 13, "video"),
+            (0.580, 15, "video"),
+            (0.636, 11, "audio"),
+            (0.638, 11, "video"),
+            (0.799, 10, "video"),
+            (0.801, 10, "audio"),
         )
         outcomes = await asyncio.gather(*(request(*args) for args in requests))
         assert opened == [10] and plan.session.start == 10
@@ -303,9 +315,7 @@ def test_a_stale_request_cannot_restart_the_chosen_position(produced_pass):
             forward = await request(last)
             backward = await request(1)
             before = len(restarts)
-            stale = await asyncio.gather(
-                *[request(last) for _ in range(5)], return_exceptions=True
-            )
+            stale = await asyncio.gather(*[request(last) for _ in range(5)], return_exceptions=True)
             restarted = len(restarts) - before
             current = await request(1)
             return forward, backward, stale, restarted, current

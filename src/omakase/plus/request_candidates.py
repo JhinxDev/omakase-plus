@@ -21,8 +21,8 @@ from __future__ import annotations
 import os
 import re
 import time
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Iterable, Sequence
 
 SEARCH_ENV = "OMAKASE_REQUEST_SEARCH"
 ACQUIRE_ENV = "OMAKASE_REQUEST_ACQUIRE"
@@ -46,13 +46,54 @@ _SEPARATORS = re.compile(r"[^a-z0-9]+")
 _YEAR = re.compile(r"\b(19\d{2}|20\d{2})\b")
 _SEASON_EPISODE = re.compile(r"\bs(\d{1,2})[ ._-]?e(\d{1,3})\b", re.IGNORECASE)
 _EPISODE_ONLY = re.compile(r"\b(?:e|ep)[ ._-]?(\d{1,3})\b", re.IGNORECASE)
-_NOISE = frozenset({
-    "1080p", "2160p", "720p", "480p", "x264", "x265", "h264", "h265", "hevc", "av1",
-    "aac", "ac3", "dts", "flac", "opus", "10bit", "8bit", "web", "webrip", "webdl",
-    "bluray", "bdrip", "remux", "hdr", "dv", "proper", "repack", "multi", "dual",
-    "subs", "sub", "dub", "uncensored", "unc", "batch", "complete", "amzn", "cr",
-    "nf", "hulu", "hidive", "vk", "mkv", "mp4",
-})
+_NOISE = frozenset(
+    {
+        "1080p",
+        "2160p",
+        "720p",
+        "480p",
+        "x264",
+        "x265",
+        "h264",
+        "h265",
+        "hevc",
+        "av1",
+        "aac",
+        "ac3",
+        "dts",
+        "flac",
+        "opus",
+        "10bit",
+        "8bit",
+        "web",
+        "webrip",
+        "webdl",
+        "bluray",
+        "bdrip",
+        "remux",
+        "hdr",
+        "dv",
+        "proper",
+        "repack",
+        "multi",
+        "dual",
+        "subs",
+        "sub",
+        "dub",
+        "uncensored",
+        "unc",
+        "batch",
+        "complete",
+        "amzn",
+        "cr",
+        "nf",
+        "hulu",
+        "hidive",
+        "vk",
+        "mkv",
+        "mp4",
+    }
+)
 
 
 def search_enabled() -> bool:
@@ -126,7 +167,12 @@ def judge(candidate: object, request: JudgeRequest) -> Verdict:
 
     if request.year:
         years = {int(match) for match in _YEAR.findall(title)}
-        if years and request.year not in years and request.year - 1 not in years and request.year + 1 not in years:
+        if (
+            years
+            and request.year not in years
+            and request.year - 1 not in years
+            and request.year + 1 not in years
+        ):
             return Verdict(False, "year_mismatch", "")
 
     if request.episode_expected:
@@ -185,7 +231,9 @@ def describe(summary: dict[str, object]) -> str:
     )
 
 
-def record(db, user_id: int, kind: str, title_id: str, verdicts: Iterable[tuple[object, Verdict]]) -> int:
+def record(
+    db, user_id: int, kind: str, title_id: str, verdicts: Iterable[tuple[object, Verdict]]
+) -> int:
     """Replace this request's candidate snapshot with the current search result.
 
     A snapshot, not a log: the page states what the last search found. Rejections are only
@@ -245,9 +293,7 @@ def page_block(db, user_id: int, kind: str, title_id: str) -> dict[str, object]:
     rows = snapshot(db, user_id, kind, title_id)
     failed = [row for row in rows if str(row["reason_code"]) == ERROR_CODE]
     rows = [row for row in rows if str(row["reason_code"]) != ERROR_CODE]
-    verdicts = [
-        Verdict(bool(row["accepted"]), str(row["reason_code"]), "") for row in rows
-    ]
+    verdicts = [Verdict(bool(row["accepted"]), str(row["reason_code"]), "") for row in rows]
     summary = summarize(verdicts)
     candidates = [
         {
@@ -360,4 +406,3 @@ async def refresh(
 
     record(db, user_id, kind, title_id, [(item, judge(item, request)) for item in candidates])
     return page_block(db, user_id, kind, title_id)
-

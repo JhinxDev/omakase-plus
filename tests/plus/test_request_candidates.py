@@ -49,11 +49,17 @@ def movie(**overrides):
 
 
 def test_each_rejection_carries_one_plain_reason():
-    assert rc.judge(Candidate("Chouchou 2003 1080p", magnet="", torrent_url=""), movie()).code == "no_download"
+    assert (
+        rc.judge(Candidate("Chouchou 2003 1080p", magnet="", torrent_url=""), movie()).code
+        == "no_download"
+    )
     assert rc.judge(Candidate("Chouchou 2003 1080p", seeders=0), movie()).code == "no_seeders"
     assert rc.judge(Candidate("Some Other Film 2003 1080p"), movie()).code == "title_mismatch"
     assert rc.judge(Candidate("Chouchou 1998 1080p"), movie()).code == "year_mismatch"
-    verdict = rc.judge(Candidate("Chouchou 2003 1080p", size_bytes=40 * 1024**3), rc.JudgeRequest(title="Chouchou", year=2003, maximum_bytes=8 * 1024**3))
+    verdict = rc.judge(
+        Candidate("Chouchou 2003 1080p", size_bytes=40 * 1024**3),
+        rc.JudgeRequest(title="Chouchou", year=2003, maximum_bytes=8 * 1024**3),
+    )
     assert verdict.code == "too_large"
     for verdict in (
         rc.judge(Candidate("Chouchou 2003", seeders=0), movie()),
@@ -102,7 +108,9 @@ def test_describe_never_overstates():
     assert "found no candidate" in rc.describe(rc.summarize([]))
     none_usable = rc.describe(rc.summarize([rc.Verdict(False, "no_seeders", "")]))
     assert "none of them could be used" in none_usable
-    usable = rc.describe(rc.summarize([rc.Verdict(True, "accepted", ""), rc.Verdict(False, "no_seeders", "")]))
+    usable = rc.describe(
+        rc.summarize([rc.Verdict(True, "accepted", ""), rc.Verdict(False, "no_seeders", "")])
+    )
     assert "2 candidates; 1 could be used" in usable
 
 
@@ -119,10 +127,16 @@ def test_page_block_says_the_search_is_off_rather_than_implying_a_result(monkeyp
 
 def test_page_block_reports_the_recorded_snapshot(monkeypatch, db):
     monkeypatch.setenv(rc.SEARCH_ENV, "1")
-    rc.record(db, 1, "movie", "tt0000001", [
-        (Candidate("Chouchou 2003 1080p"), rc.Verdict(True, "accepted", "")),
-        (Candidate("Chouchou 2003 CAM", seeders=0), rc.Verdict(False, "no_seeders", "")),
-    ])
+    rc.record(
+        db,
+        1,
+        "movie",
+        "tt0000001",
+        [
+            (Candidate("Chouchou 2003 1080p"), rc.Verdict(True, "accepted", "")),
+            (Candidate("Chouchou 2003 CAM", seeders=0), rc.Verdict(False, "no_seeders", "")),
+        ],
+    )
     block = rc.page_block(db, 1, "movie", "tt0000001")
     assert block["enabled"] is True
     assert block["summary"]["found"] == 2 and block["summary"]["accepted"] == 1
@@ -131,8 +145,20 @@ def test_page_block_reports_the_recorded_snapshot(monkeypatch, db):
 
 
 def test_record_replaces_the_previous_snapshot_instead_of_appending(monkeypatch, db):
-    rc.record(db, 1, "movie", "tt0000002", [(Candidate("Old release 2003"), rc.Verdict(False, "title_mismatch", ""))])
-    rc.record(db, 1, "movie", "tt0000002", [(Candidate("Chouchou 2003"), rc.Verdict(True, "accepted", ""))])
+    rc.record(
+        db,
+        1,
+        "movie",
+        "tt0000002",
+        [(Candidate("Old release 2003"), rc.Verdict(False, "title_mismatch", ""))],
+    )
+    rc.record(
+        db,
+        1,
+        "movie",
+        "tt0000002",
+        [(Candidate("Chouchou 2003"), rc.Verdict(True, "accepted", ""))],
+    )
     rows = rc.snapshot(db, 1, "movie", "tt0000002")
     assert len(rows) == 1 and bool(rows[0]["accepted"]) is True
 
@@ -169,11 +195,15 @@ class BrokenSource:
 
 def test_refresh_searches_judges_and_records(monkeypatch, db):
     monkeypatch.setenv(rc.SEARCH_ENV, "1")
-    source = FakeSource([
-        Candidate("Chouchou 2003 1080p"),
-        Candidate("Chouchou 2003 CAM", seeders=0),
-    ])
-    block = __import__("asyncio").run(rc.refresh(db, 1, "movie", "tt0000003", movie(), catalogs=[source]))
+    source = FakeSource(
+        [
+            Candidate("Chouchou 2003 1080p"),
+            Candidate("Chouchou 2003 CAM", seeders=0),
+        ]
+    )
+    block = __import__("asyncio").run(
+        rc.refresh(db, 1, "movie", "tt0000003", movie(), catalogs=[source])
+    )
     assert source.calls == 1
     assert block["enabled"] is True
     assert block["summary"]["found"] == 2 and block["summary"]["accepted"] == 1

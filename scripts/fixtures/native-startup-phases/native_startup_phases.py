@@ -140,8 +140,9 @@ def scan(lines) -> list[Pass]:
     return found
 
 
-def summarize(passes: list[Pass], *, require_complete: bool,
-              max_first_media_ms: int | None) -> dict:
+def summarize(
+    passes: list[Pass], *, require_complete: bool, max_first_media_ms: int | None
+) -> dict:
     failures = []
     # Only the last pass per media id counts: a re-open writes a new line and the
     # older one is superseded, so it must not decide the gate.
@@ -191,16 +192,26 @@ _GOOD = (
 
 _SELFTEST_CASES = [
     ("good-line-is-complete", _GOOD, True),
-    ("missing-first-media-is-incomplete",
-     "native phases media=0123456789abcdef0123456789abcdef resolve=31ms plan=12ms", False),
-    ("unknown-key-is-rejected",
-     "native phases media=0123456789abcdef0123456789abcdef " + " ".join(
-         f"{name}=1ms" for name in PHASES) + " invented=5ms", False),
-    ("malformed-token-is-rejected",
-     "native phases media=0123456789abcdef0123456789abcdef " + " ".join(
-         f"{name}=1ms" for name in PHASES) + " opening=abc", False),
-    ("empty-tail-is-rejected",
-     "native phases media=0123456789abcdef0123456789abcdef", False),
+    (
+        "missing-first-media-is-incomplete",
+        "native phases media=0123456789abcdef0123456789abcdef resolve=31ms plan=12ms",
+        False,
+    ),
+    (
+        "unknown-key-is-rejected",
+        "native phases media=0123456789abcdef0123456789abcdef "
+        + " ".join(f"{name}=1ms" for name in PHASES)
+        + " invented=5ms",
+        False,
+    ),
+    (
+        "malformed-token-is-rejected",
+        "native phases media=0123456789abcdef0123456789abcdef "
+        + " ".join(f"{name}=1ms" for name in PHASES)
+        + " opening=abc",
+        False,
+    ),
+    ("empty-tail-is-rejected", "native phases media=0123456789abcdef0123456789abcdef", False),
 ]
 
 
@@ -222,10 +233,10 @@ def self_test() -> int:
             continue
         print(f"ok   {name}")
     # A superseded pass must not fail the gate: only the latest opens one.
-    older = parse_line(
-        "native phases media=ffffffffffffffffffffffffffffffff resolve=1ms")
-    newer = parse_line(_GOOD.replace("0123456789abcdef0123456789abcdef",
-                                     "ffffffffffffffffffffffffffffffff"))
+    older = parse_line("native phases media=ffffffffffffffffffffffffffffffff resolve=1ms")
+    newer = parse_line(
+        _GOOD.replace("0123456789abcdef0123456789abcdef", "ffffffffffffffffffffffffffffffff")
+    )
     report = summarize([older, newer], require_complete=True, max_first_media_ms=None)
     if not report["ok"]:
         print(f"FAIL superseded-pass: {report['failures']}")
@@ -233,8 +244,7 @@ def self_test() -> int:
     else:
         print("ok   superseded-pass-does-not-fail-the-gate")
     # A budget gate must actually fire.
-    budget = summarize([parse_line(_GOOD)], require_complete=True,
-                       max_first_media_ms=1000)
+    budget = summarize([parse_line(_GOOD)], require_complete=True, max_first_media_ms=1000)
     if budget["ok"]:
         print("FAIL budget-gate: a 1597ms first_media passed a 1000ms budget")
         failures += 1
@@ -246,22 +256,29 @@ def self_test() -> int:
         failures += 1
     else:
         print("ok   non-hex-media-id-rejected")
-    print(f"self-test: {len(_SELFTEST_CASES) + 4 - failures}/"
-          f"{len(_SELFTEST_CASES) + 4} checks passed")
+    print(
+        f"self-test: {len(_SELFTEST_CASES) + 4 - failures}/{len(_SELFTEST_CASES) + 4} checks passed"
+    )
     return 0 if failures == 0 else 1
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--log", action="append", default=[],
-                        help="log file to scan; repeatable")
+    parser.add_argument("--log", action="append", default=[], help="log file to scan; repeatable")
     parser.add_argument("--json", help="write the report here instead of stdout")
-    parser.add_argument("--require-complete", action="store_true",
-                        help="fail unless every media pass recorded all phases")
-    parser.add_argument("--max-first-media-ms", type=int,
-                        help="fail when first_media exceeds this budget")
-    parser.add_argument("--self-test", action="store_true",
-                        help="verify the parser against known-good and known-bad shapes")
+    parser.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="fail unless every media pass recorded all phases",
+    )
+    parser.add_argument(
+        "--max-first-media-ms", type=int, help="fail when first_media exceeds this budget"
+    )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="verify the parser against known-good and known-bad shapes",
+    )
     args = parser.parse_args(argv)
 
     if args.self_test:
@@ -271,7 +288,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.log:
         for path in args.log:
             try:
-                with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                with open(path, encoding="utf-8", errors="replace") as handle:
                     lines.extend(handle)
             except OSError as error:
                 print(f"cannot read {path}: {error}", file=sys.stderr)
@@ -279,8 +296,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         lines = sys.stdin.readlines()
 
-    report = summarize(scan(lines), require_complete=args.require_complete,
-                       max_first_media_ms=args.max_first_media_ms)
+    report = summarize(
+        scan(lines),
+        require_complete=args.require_complete,
+        max_first_media_ms=args.max_first_media_ms,
+    )
     rendered = json.dumps(report, indent=2, sort_keys=False)
     if args.json:
         with open(args.json, "w", encoding="utf-8") as handle:

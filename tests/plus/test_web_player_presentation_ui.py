@@ -52,8 +52,13 @@ def test_player_page_is_picture_and_controls_only():
     assert "Create Apple TV link" not in html
     # The transport still carries the eight controls the owner asked to keep, each with
     # an accessible name and no visible word label.
-    for control in ("data-player-timeline", "web-player-skip", "data-player-clock",
-                    "data-player-next", "data-player-ass-select"):
+    for control in (
+        "data-player-timeline",
+        "web-player-skip",
+        "data-player-clock",
+        "data-player-next",
+        "data-player-ass-select",
+    ):
         assert control in html
     assert "[data-next-label]" not in html or "Next episode</span>" in html
 
@@ -86,7 +91,9 @@ def test_apple_tv_link_leaves_the_player():
     assert 'name="library_id"' not in html
     assert "Create Apple TV link" in html
     # Nothing renders when the device feature is off or the title has no playable copy.
-    assert render_watch_macro(native_tv_test_enabled=False, watch_path="/plus/watch/1/7").strip() == ""
+    assert (
+        render_watch_macro(native_tv_test_enabled=False, watch_path="/plus/watch/1/7").strip() == ""
+    )
     assert render_watch_macro(native_tv_test_enabled=True, watch_path="").strip() == ""
 
 
