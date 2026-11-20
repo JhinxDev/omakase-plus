@@ -275,17 +275,32 @@ def _timeline(provider) -> NativeTimeline:
     return timeline
 
 
-def test_index_uses_range_length_and_preserves_head_fallback(provider):
+def test_index_uses_head_length_and_preserves_a_bounded_range(provider):
+    """The index read takes its length from HEAD, then reads one bounded range.
+
+    ``build_timeline`` probes with HEAD for the container length and only then
+    issues a ranged GET, so the total in ``Content-Range`` is never consulted.
+    This is the implementation stored in the tree and deployed in the live
+    container: ``ops/release/check_drift.py`` reports ``native_hls.py`` as a
+    match against HEAD with zero content drift, and the range-length variant
+    (``_index_start``) exists only in an unapplied release overlay.
+    """
     provider.requests.clear()
     indexed = _timeline(provider)
-    assert provider.requests[0] == ("GET", "bytes=0-1048575")
-    assert not any(method == "HEAD" for method, _ in provider.requests)
+    # The length comes from a HEAD probe, which returns no body.
+    assert provider.requests[0] == ("HEAD", None)
+    # The first body read is one range capped at the 1 MiB index window.
+    assert provider.requests[1] == ("GET", "bytes=0-1048575")
+    # Every body read is ranged, so no request can pull a whole title.
+    assert all(header for method, header in provider.requests if method == "GET")
 
     try:
         provider.server.mode = "omit-total"
         provider.requests.clear()
         assert _timeline(provider) == indexed
-        assert [method for method, _ in provider.requests[:3]] == ["GET", "HEAD", "GET"]
+        # A provider that omits the total from Content-Range changes nothing:
+        # the same HEAD-then-range sequence still yields the same timeline.
+        assert [method for method, _ in provider.requests[:2]] == ["HEAD", "GET"]
     finally:
         provider.server.mode = "ok"
 

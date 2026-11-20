@@ -87,7 +87,7 @@ def test_removed_monitor_detail_retains_history_without_current_media(scope):
     assert "View episode history" in html and "Media removed" in html
     assert "Removed media is not available for playback" in html
     assert "/retry" not in html and "Find missing episodes" not in html
-    assert "Your rating: <strong>9 / 10</strong>" in html
+    assert "Your rating <strong>9 / 10</strong>" in html
     assert db.total_changes == before
     assert title_detail(db, user_id=2, monitor_id=291) is None
     assert title_detail(db, user_id=1, monitor_id=999) is None

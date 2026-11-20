@@ -904,6 +904,7 @@ def title_detail(db, *, user_id: int, monitor_id: int) -> dict[str, Any] | None:
                 "manual": "Manual",
                 "migration": "Imported history",
             }.get(str(row["source"]), "Watch source"),
+            "imported_progress": str(row["source"]) == "plex",
             "proposed_episode": row["proposed_episode"],
             "prompt": row["prompt"],
             "created_at": row["created_at"],

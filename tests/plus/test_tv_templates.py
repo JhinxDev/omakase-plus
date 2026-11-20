@@ -1,5 +1,6 @@
 """Actual TV templates keep catalog, viewing history and Plex presence separate."""
 
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -88,7 +89,7 @@ def test_collection_exact_identity_and_honest_catalog_state():
     assert 'href="/plus/tv/321"' in html
     assert "1 episode watched" in html
     assert "Not watched" not in html
-    assert "Availability unknown" in html
+    assert "Availability unconfirmed" in html and 'data-status-tone="neutral"' in html
     assert "Ready" not in html
     assert "Sync collection from Plex" in html
 
@@ -107,13 +108,22 @@ def test_tv_search_disclosure_has_progressive_native_form_and_preserves_query():
 
 
 def test_detail_separates_history_inventory_and_no_playback_claim():
+    # Inventory wording ("N episodes indexed", "Season coverage unknown") belongs to the
+    # collection surfaces, where test_legacy_raw_inventory_never_claims_a_season_count and
+    # test_collection_inventory_and_sync_share_one_closed_disclosure_above_browse_cards pin
+    # it. This detail surface states watched history and Plex availability, and makes no
+    # claim it cannot support: no playback claim, no inventory count, no air date it lacks.
     html = render("tv_detail.html", card=show(), selected_season=1)
     assert "1 episode watched" in html
-    assert "1 episode indexed" in html
-    assert "Season coverage unknown" in html
+    assert "Watch status &amp; rating" in html
+    assert "Plex availability" in html
+    assert "Matched in Plex. Playback has not been verified." in html
+    assert "Check in Plex" in html
     assert "episode confirmed" not in html
-    assert "In Plex" in html
-    assert "Air date unknown" in html
+    assert "1 episode indexed" not in html
+    assert "Season coverage unknown" not in html
+    assert "In Plex" not in html
+    assert "Air date unknown" not in html
     assert "Ready" not in html
     assert "Open in Plex" not in html
     parser = Forms()
@@ -157,11 +167,39 @@ def test_partial_plex_season_offers_explicit_full_listing():
     assert "Not watched" in html
 
 
+def test_complete_season_listing_does_not_invite_a_reload():
+    # Negative case for the partial-listing notice: once the catalog listing is loaded the
+    # page keeps quiet about it, so the invitation stays a signal that what is shown may be
+    # partial rather than boilerplate every season carries.
+    season = {
+        "season_number": 1,
+        "name": "Season 1",
+        "released": True,
+        "episodes_loaded": True,
+        "episodes": [
+            {
+                "episode_number": 1,
+                "title": "Arrival",
+                "watched": False,
+                "in_plex": True,
+                "available": None,
+                "released": True,
+            }
+        ],
+    }
+    html = render("tv_detail.html", card=show(seasons=[season]), selected_season=1)
+    assert "Arrival" in html
+    assert "Load full season listing" not in html
+    assert "Showing cached episode details" not in html
+    assert "Showing episodes observed in Plex" not in html
+
+
 def test_future_episode_shows_air_date_and_disabled_watched_action():
     card = show()
     card["seasons"][0]["episodes"][1]["air_date"] = "2099-01-01"
     html = render("tv_detail.html", card=card, selected_season=1)
-    assert "Not yet aired" in html
+    assert "Upcoming" in html
+    assert "Not yet aired" not in html
     assert 'disabled title="Air date is not confirmed as released"' in html
 
 
@@ -256,3 +294,84 @@ def test_cached_catalog_subset_does_not_claim_a_complete_show_or_plex_observatio
     assert "1 cached season" in html
     assert "Showing cached episode details" in html
     assert "Showing episodes observed in Plex" not in html
+
+
+def two_seasons():
+    return show(
+        seasons=[
+            {
+                "season_number": 1,
+                "name": "Season 1",
+                "episode_count": 8,
+                "released": True,
+                "episodes": [],
+            },
+            {
+                "season_number": 2,
+                "name": "Season 2",
+                "episode_count": 10,
+                "released": True,
+                "episodes": [],
+            },
+        ]
+    )
+
+
+def active_picker_form(html, tmdb_id=321):
+    """The season picker exactly as a scripting browser accounts for it.
+
+    A browser with scripting enabled parses <noscript> content as inert text and never
+    renders it, so removing those blocks leaves the markup the live control actually
+    contributes to the page and to the submitted request.
+    """
+    active = re.sub(r"<noscript>.*?</noscript>", "", html, flags=re.DOTALL)
+    match = re.search(
+        r'<form class="tv-season-picker product-form"[^>]*'
+        rf'action="/plus/tv/{tmdb_id}#tv-seasons"[^>]*>.*?</form>',
+        active,
+        flags=re.DOTALL,
+    )
+    assert match is not None, "the season picker form is missing from the active markup"
+    return match.group(0)
+
+
+def test_season_picker_is_one_app_owned_listbox_that_names_the_season_it_shows():
+    # Owner report: MobLand season 2 episodes looked missing. The episodes were already
+    # served; the old control did nothing until a second "View season" button was pressed.
+    # Owner decision #6: one app-owned listbox, styled by the app, updates the episodes.
+    html = render("tv_detail.html", card=two_seasons(), selected_season=2)
+    picker = active_picker_form(html)
+    assert "<select" not in picker
+    assert 'name="season"' not in picker
+    assert 'type="submit"' not in picker
+    assert 'data-listbox-navigate="/plus/tv/321?season={value}#tv-seasons"' in picker
+    assert re.findall(r'<li role="option"[^>]*data-value="(\d+)"', picker) == ["1", "2"]
+    assert re.findall(
+        r'<li role="option"[^>]*aria-selected="true"[^>]*>(.*?)</li>', picker, re.DOTALL
+    ) == ["Season 2 · 10 episodes"]
+    assert "<span data-listbox-text>Season 2 · 10 episodes</span>" in picker
+    assert 'aria-expanded="false"' in picker and " hidden" in picker
+    # The behaviour is one shared component, so the page has to ship it.
+    assert '/plus/static/listbox.js?v=test' in html
+    assert "watch-status.js" not in html
+
+
+def test_season_picker_keeps_a_native_fallback_for_a_browser_without_scripting():
+    # listbox.js is what turns the markup into a live control, so the same season choice
+    # must still be possible, and still submit exactly one "season" value, without it.
+    html = render("tv_detail.html", card=two_seasons(), selected_season=2)
+    fallback = next(
+        (
+            block
+            for block in re.findall(r"<noscript>(.*?)</noscript>", html, flags=re.DOTALL)
+            if 'name="season"' in block
+        ),
+        None,
+    )
+    assert fallback is not None, "the season picker has no scripting-free fallback"
+    assert '<select name="season">' in fallback
+    assert '<option value="2" selected>' in fallback
+    assert 'type="submit">View season</button>' in fallback
+    # No scripting browser renders the fallback, so the request can never carry two
+    # "season" values: one from the listbox and one from the native select.
+    assert html.count('name="season"') == 1

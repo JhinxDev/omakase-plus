@@ -192,6 +192,10 @@ def test_all_tables_exist(_fresh_db):
         # Durable anime completion intent: written inside the resume transaction
         # so a completion can never be committed without a retryable credit claim.
         "native_watch_credits",
+        # Request candidates for household title requests, declared by
+        # migrations/060-request-candidates.sql and read/written by
+        # omakase.plus.request_candidates from movies_routes.
+        "request_candidates",
     }
     assert tables == expected, (
         f"Mismatch — missing: {expected - tables}, extra: {tables - expected}"

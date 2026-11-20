@@ -60,7 +60,8 @@
     </a>
     {% if anime and anime.episode_total %}
     <progress max="100" value="{{ anime.progress_percent }}" class="om-card-progress" aria-label="{{ card.title }}: {{ anime.progress_episodes }} of {{ anime.episode_total }} episodes watched"></progress>
-    {% elif card.progress.percent is not none %}
+    {% elif not anime and card.progress.percent is not none %}
+    {# An anime card without an episode total has no series percentage to show: card.progress.percent is the playhead position, so it must never be labelled as watched episodes. #}
     <progress max="100" value="{{ card.progress.percent }}" class="om-card-progress" aria-label="{{ card.title }}: {{ card.progress.percent }}% watched"></progress>
     {% endif %}
   </div>

@@ -407,8 +407,13 @@ def test_settings_sections_are_independent_pages(client, section, field, absent)
 def test_account_menu_contains_only_settings_and_sign_out(client):
     _signup(client)
     html = client.get("/plus/home").text
-    menu = re.search(r'<div class="account-popover">(.*?)</div>', html, re.DOTALL).group(1)
-    assert re.findall(r'<a href="([^"]+)"', menu) == ["/plus/settings"]
+    # The popover ends where the logout form ends; the only non-account links inside it
+    # are the mobile-only project credit nav, so scope the check to in-app destinations.
+    menu = re.search(
+        r'<div class="account-popover">(.*?)</div>\s*</details>', html, re.DOTALL
+    ).group(1)
+    assert 'mobile-project-links' in menu
+    assert re.findall(r'href="(/plus/[^"]*)"', menu) == ["/plus/settings"]
     assert 'action="/plus/logout"' in menu
 
 
@@ -442,7 +447,7 @@ def test_add_get_folds_into_discover_while_post_contract_stays_reachable(client)
     assert redirect.status_code == 302
     assert redirect.headers["location"] == "/plus/discover?mode=add"
     assert discover.status_code == 200
-    assert 'aria-current="page">Find a specific anime</a>' in discover.text
+    assert 'aria-current="page">Find anime</a>' in discover.text
     assert 'action="/plus/add/preview"' in discover.text
     assert 'name="csrf_token"' in discover.text
 
@@ -456,10 +461,11 @@ def test_title_page_leads_with_artwork_progress_and_separates_technical_details(
     assert 'class="title-view-hero streaming-title-hero series-hero"' in html
     assert '<h1 id="series-title">Solo Leveling</h1>' in html
     assert 'data-series-backdrop="/plus/media/151807/poster"' in html
-    assert '<span class="om-card-context">Watched <b>4/12</b></span>' in html
+    assert '<span class="watched-count">Watched <b>4/12</b></span>' in html
     assert 'aria-label="Solo Leveling: 4 of 12 episodes watched"' in html
     assert '<progress max="100" value="33"' in html
-    assert "Media availability &amp; playback" in html
+    assert '<details class="title-technical-details" id="media-availability">' in html
+    assert "<summary>Title options</summary>" in html
 
 
 def test_activity_defaults_to_visual_viewing_history_and_keeps_system_work_separate(client):
@@ -487,7 +493,7 @@ def test_activity_defaults_to_visual_viewing_history_and_keeps_system_work_separ
     assert '<span class="history-kind">E4</span>' in card.group(1)
     assert "Progress saved" in card.group(1)
     assert '<time datetime="2026-08-27T12:00:00Z"' in card.group(1)
-    assert 'Observed' in card.group(1)
+    assert '<span class="history-date">Logged ' in card.group(1)
     assert "Added manually" in card.group(1)
     assert "Library activity log" not in html
     assert 'class="activity-table"' not in html
@@ -520,10 +526,15 @@ def test_title_exposes_episode_availability_without_confusing_watched_with_ready
     assert episodes.group(1).count("Not yet verified") == 12
     assert episodes.group(1).count(">Watched</span>") == 4
     assert episodes.group(1).count(">Up next</span>") == 1
-    assert html.index('id="episode-heading"') < html.index(
-        '<details class="title-technical-details"'
+    # Availability stays outside the collapsed technical panel: by the time the episode
+    # section begins, every <details> the page opened has been closed again.
+    episode_section = html.index('class="viewer-episodes"')
+    assert html.count("<details", 0, episode_section) == html.count(
+        "</details>", 0, episode_section
     )
-    assert "not individual episode playback" in html
+    # Availability means files matched the inventory, not that playback is confirmed:
+    # every episode above is labelled "Not yet verified".
+    assert "Verified episodes were matched to the available file inventory." in html
     assert 'href="#episode-heading"' in html
     assert 'id="watch-tracking"' in html
 
@@ -557,11 +568,28 @@ def test_title_exposes_missing_episode_search_and_removal_in_library_actions(cli
 
     html = client.get(f"/plus/library/{monitor_id}").text
 
-    technical_start = html.index('<details class="title-technical-details"')
-    assert html.index(f'action="/plus/library/{monitor_id}/retry"') < technical_start
-    assert "Find missing episodes" in html
+    def open_disclosures(offset):
+        """How many disclosures are still open at this point in the document."""
+        depth = 0
+        for tag in re.finditer(r"<details\b|</details>", html[:offset]):
+            depth += 1 if tag.group(0) == "<details" else -1
+        return depth
+
+    # The panel has its own repair form on the same endpoint, so match the episode search
+    # by its own class rather than by the action: the first /retry in the document is
+    # "Retry now", a playback repair control that belongs inside Title options.
+    repair_start = html.index(f'action="/plus/library/{monitor_id}/retry"')
+    search_start = html.index('class="episode-recheck"')
+    removal_start = html.index(f'href="/plus/library/{monitor_id}/remove"')
+    # Negative case: the probe must separate a control that is inside the panel from
+    # controls that belong on the page, or the two assertions below prove nothing.
+    assert open_disclosures(repair_start) == 1
+    # Removal and the missing episode search are page actions: neither may hide behind a
+    # disclosure the owner has to open first.
+    assert open_disclosures(removal_start) == 0
+    assert open_disclosures(search_start) == 0
     assert "Library actions" in html
-    assert html.index(f'href="/plus/library/{monitor_id}/remove"') < technical_start
+    assert "Find missing episodes" in html
 
 
 def test_missing_poster_returns_quiet_same_origin_placeholder(client):
@@ -631,7 +659,11 @@ def test_completion_offers_score_and_cleanup_without_deleting_media(client, monk
     assert "Review media removal" in response.text
     sync_status = '<p class="title-progress-source" role="status">Queued for AniList.'
     assert response.text.index('id="watch-tracking"') < response.text.index(sync_status)
-    assert response.text.index(sync_status) > response.text.index('class="viewer-episodes"')
+    # The queue notice belongs to the watch-progress disclosure: that panel has to be
+    # closed before the episode grid starts, so the grid is never nested inside it.
+    episodes = response.text.index('class="viewer-episodes"')
+    assert response.text.index(sync_status) < episodes
+    assert response.text.index("</details>", response.text.index(sync_status)) < episodes
     with _connect(client) as db:
         row = db.execute(
             "SELECT action,score_ten FROM tracker_sync_outbox ORDER BY id DESC LIMIT 1"
@@ -715,7 +747,7 @@ def test_native_completion_queues_plex_only_or_honors_keep_exception(client, mon
         data["keep_completed_in_plex"] = "1"
     response = client.post(f"/plus/library/{monitor_id}/watch/complete", data=data)
     assert response.status_code == 200
-    assert "Your rating:" in response.text and "8 / 10" in response.text
+    assert "Your rating <strong>8 / 10</strong>" in response.text
     with _connect(client) as db:
         assert (
             db.execute(

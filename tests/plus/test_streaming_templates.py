@@ -266,9 +266,9 @@ def test_ready_unstarted_title_keeps_full_title_without_empty_watched_progress()
 
     assert f'<h2 class="catalog-card-title" title="{title["title"]}">{title["title"]}</h2>' in html
     assert "Available <b>24/24</b>" in html
-    progress = html.split('<div class="media-progress media-progress-compact">', 1)[1].split(
-        "</div>", 1
-    )[0]
+    blocks = html.split('<div class="media-progress">', 1)
+    assert len(blocks) == 2, "library.html no longer renders a media-progress block"
+    progress = blocks[1].split("</div>", 1)[0]
     assert "Not started" in progress
     assert "<progress" not in progress
     assert "Watched" not in progress
@@ -296,7 +296,8 @@ def test_title_keeps_watch_and_confirmation_security_and_optional_synopsis_escap
     assert "Fantasy" in html and "Adventure" in html
     assert "&lt;script&gt;unsafe()&lt;/script&gt;" in html
     assert "/plus/library/7/remove" in html
-    assert "not individual episode playback" in html
+    assert "Verified episodes were matched to the available file inventory." in html
+    assert "Not yet verified" in html
 
 
 def test_completed_title_preserves_reopen_and_separate_media_removal():

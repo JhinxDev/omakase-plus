@@ -648,31 +648,51 @@ body.product-body:is(.page-search, .page-requests, .page-activity) .stream-secti
    <select> popup is drawn by the browser or the OS with no author styling, which is why
    the open menu did not match the app's type or palette and why its value clipped. The
    list lives inside the panel, scrolls, and never floats across the hero artwork. */
-.watch-status-field { position: relative; display: grid; gap: .35rem; min-width: 0; }
-.watch-status-label { color: var(--om-text-muted, #b8c0d1); font-size: .8125rem; font-weight: 550; }
-.watch-status-trigger {
+/* One trigger/surface pair for every app-owned listbox: the watch status control (W-05)
+   and the TV season picker (owner decision #6) only differ in their label text and width. */
+.watch-status-field,
+.season-picker-field { position: relative; display: grid; gap: .35rem; min-width: 0; }
+.watch-status-label,
+.season-picker-label { color: var(--om-text-muted, #b8c0d1); font-size: .8125rem; font-weight: 550; }
+.watch-status-trigger,
+.season-picker-trigger {
   display: flex; align-items: center; justify-content: space-between; gap: .5rem;
   box-sizing: border-box; width: 100%; min-height: 44px; padding: 10px 12px;
   border: 1px solid #4b4c65; border-radius: 8px; background: #1c2232;
   color: #f0edf8; font: inherit; text-align: start; cursor: pointer;
 }
-.watch-status-trigger:hover { border-color: #c8b5f1; }
-.watch-status-trigger[aria-expanded="true"] { border-color: var(--stream-accent, #c3b1ff); }
-.watch-status-trigger:focus-visible { outline: 3px solid var(--stream-accent, #c3b1ff); outline-offset: 2px; }
-.watch-status-trigger [data-watch-status-text] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.watch-status-trigger svg { flex: none; opacity: .8; }
-.watch-status-list {
+.watch-status-trigger:hover,
+.season-picker-trigger:hover { border-color: #c8b5f1; }
+.watch-status-trigger[aria-expanded="true"],
+.season-picker-trigger[aria-expanded="true"] { border-color: var(--stream-accent, #c3b1ff); }
+.watch-status-trigger:focus-visible,
+.season-picker-trigger:focus-visible { outline: 3px solid var(--stream-accent, #c3b1ff); outline-offset: 2px; }
+.watch-status-trigger [data-listbox-text],
+.season-picker-trigger [data-listbox-text] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.watch-status-trigger svg,
+.season-picker-trigger svg { flex: none; opacity: .8; }
+
+/* The open list is shared: .watch-status-list is the watch status control and
+   .app-listbox-list is the same panel for any other app-owned listbox (the TV season
+   picker, owner decision #6). Both are fed by the one listbox.js. */
+.watch-status-list,
+.app-listbox-list {
   position: absolute; z-index: 20; inset-block-start: calc(100% + 6px); inset-inline: 0;
   box-sizing: border-box; max-height: min(18rem, 50vh); margin: 0; padding: 6px;
   overflow-y: auto; border: 1px solid #3b4358; border-radius: 10px;
   background: #171e2d; box-shadow: 0 12px 28px #02040a99; list-style: none;
   font: 500 .875rem/1.4 var(--sans, Inter, sans-serif);
 }
-.watch-status-list[hidden] { display: none; }
-.watch-status-list [role="option"] { padding: 8px 10px; border-radius: 6px; color: #f0edf8; cursor: pointer; }
-.watch-status-list [role="option"].is-active { background: #2a3350; }
-.watch-status-list [role="option"][aria-selected="true"] { color: var(--stream-accent, #c3b1ff); }
-.watch-status-list [role="option"][aria-selected="true"]::after { content: "✓"; float: inline-end; }
+.watch-status-list[hidden],
+.app-listbox-list[hidden] { display: none; }
+.watch-status-list [role="option"],
+.app-listbox-list [role="option"] { padding: 8px 10px; border-radius: 6px; color: #f0edf8; cursor: pointer; }
+.watch-status-list [role="option"].is-active,
+.app-listbox-list [role="option"].is-active { background: #2a3350; }
+.watch-status-list [role="option"][aria-selected="true"],
+.app-listbox-list [role="option"][aria-selected="true"] { color: var(--stream-accent, #c3b1ff); }
+.watch-status-list [role="option"][aria-selected="true"]::after,
+.app-listbox-list [role="option"][aria-selected="true"]::after { content: "✓"; float: inline-end; }
 
 /* ---------------------------------------------------------------- states --- */
 

@@ -259,7 +259,7 @@ _STATIC_ASSETS = {
     "inter-variable.woff2": "font/woff2",
     "requests.css": "text/css",
     "requests.js": "application/javascript",
-    "watch-status.js": "application/javascript",
+    "listbox.js": "application/javascript",
     "dashboard.js": "application/javascript",
     "shaka-player-5.3.3.js": "application/javascript",
     "debrid-library.css": "text/css",

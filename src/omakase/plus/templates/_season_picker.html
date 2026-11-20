@@ -1,0 +1,37 @@
+{# Owner decision #6: the TV season picker is the app's own listbox, matching the watch
+   status control, instead of a native <select> plus a separate "View season" button.
+   Choosing a season navigates straight to that season on this page and lands on the
+   episode list, so one action updates the episodes and the reader does not have to press a
+   second control. The old control did nothing until "View season" was pressed, which is
+   why newly available episodes looked missing (owner report: MobLand season 2).
+
+   Without JavaScript the same choice is still possible: listbox.js is what turns this into
+   a live control, so the <noscript> branch below renders the previous native <select> and
+   submit button. Browsers with scripting enabled treat <noscript> content as inert text,
+   so the fallback never adds a second "season" parameter to the request. #}
+{% macro season_picker(card, chosen) %}
+<form class="tv-season-picker product-form" method="get" action="/plus/tv/{{ card.tmdb_id }}#tv-seasons">
+  <div class="season-picker-field" data-listbox
+       data-value="{{ chosen }}"
+       data-listbox-navigate="/plus/tv/{{ card.tmdb_id }}?season={value}#tv-seasons">
+    <span class="season-picker-label" id="tv-season-label">Season</span>
+    <button type="button" class="season-picker-trigger" id="tv-season-trigger"
+            data-listbox-trigger
+            aria-haspopup="listbox" aria-expanded="false"
+            aria-labelledby="tv-season-label tv-season-trigger"
+            aria-controls="tv-season-list">
+      <span data-listbox-text>{% for season in card.seasons if chosen == season.season_number %}{{ season.name or 'Season ' ~ season.season_number }}{% if season.episode_count %} · {{ season.episode_count }} episodes{% endif %}{% endfor %}</span>
+      <svg aria-hidden="true" focusable="false" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg>
+    </button>
+    <ul class="app-listbox-list" id="tv-season-list" role="listbox"
+        aria-labelledby="tv-season-label" data-listbox-list hidden>
+      {% for season in card.seasons %}
+      <li role="option" id="tv-season-option-{{ loop.index }}" data-value="{{ season.season_number }}"
+          aria-selected="{{ 'true' if chosen == season.season_number else 'false' }}"
+          tabindex="-1">{{ season.name or 'Season ' ~ season.season_number }}{% if season.episode_count %} · {{ season.episode_count }} episodes{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  <noscript><label><span>Season</span><select name="season">{% for season in card.seasons %}<option value="{{ season.season_number }}" {% if chosen == season.season_number %}selected{% endif %}>{{ season.name or 'Season ' ~ season.season_number }}{% if season.episode_count %} · {{ season.episode_count }} episodes{% endif %}</option>{% endfor %}</select></label><button class="button button-secondary" type="submit">View season</button></noscript>
+</form>
+{% endmacro %}

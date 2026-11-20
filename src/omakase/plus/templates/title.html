@@ -58,7 +58,7 @@
   <h2 id="confirmation-heading">Confirm recent watching</h2>
   {% for confirmation in title.pending_confirmations %}
   <article class="confirmation-card">
-    <div><strong>{{ confirmation.prompt }}</strong><p>{% if cloud_playback and confirmation.source == 'plex' %}Imported watch progress.{% else %}Observed by {{ confirmation.source_label }}.{% endif %} Confirm to save it.</p></div>
+    <div><strong>{{ confirmation.prompt }}</strong><p>{% if cloud_playback and confirmation.imported_progress %}Imported watch progress.{% else %}Observed by {{ confirmation.source_label }}.{% endif %} Confirm to save it.</p></div>
     <div class="confirmation-actions">
       <form method="post" action="/plus/library/{{ title.id }}/watch/confirm/{{ confirmation.id }}/accept">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -179,17 +179,24 @@
       <p class="episode-help">Saved in Omakase. If you have connected AniList, Omakase attempts to sync completion and your optional score. {% if not cloud_playback and remove_completed_from_plex and title.watch_status != 'completed' %}This season or movie will be removed from Plex unless you choose to keep it. Your history, rating and source media stay saved.{% else %}This does not delete media.{% endif %}</p>
     </form>
   </div>
-  </details></div>
+  </details>
+{# Library actions stay beside the watch controls in the hero. They must not move into
+   the Title options disclosure below: removal and restore would then be reachable only
+   after opening a collapsed panel. #}
+{% if not cloud_playback %}
+  <div class="title-library-actions" role="group" aria-label="Library actions">{{ watchlist_action() }}</div>
+{% endif %}
+</div>
     </div>
     </div>
 {% if not cloud_playback %}
 <details class="title-technical-details" id="media-availability">
   <summary>Title options</summary>
-    <div class="title-library-actions" role="group" aria-label="Library actions">{{ watchlist_action() }}</div>
 
 <section class="title-status-board state-border-{{ title.state }}">
   <div>
     <h2>Library evidence</h2>
+    {% if title.required and title.format != 'MOVIE' %}<p class="title-media-summary"><span>{{ title.usable }} / {{ title.required }} episodes verified</span></p>{% endif %}
   </div>
   <dl>
     {% if not cloud_playback %}<div><dt>In Plex</dt><dd>{{ title.plex_visible }}</dd></div>{% endif %}

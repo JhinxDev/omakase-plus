@@ -110,7 +110,7 @@
   </div>
   {% if item.source_detail or item.watched_at or item.recorded_at %}
   <div class="history-provenance">
-    {% if not compact and item.source_detail and (show_plex or item.source_detail != 'From Plex') %}<span class="history-origin" data-source="{{ 'plex' if item.source_detail == 'From Plex' else 'apple-tv' if item.source_detail == 'From Apple TV' else 'other' }}">{{ item.source_detail }}</span>{% endif %}
+    {% if not compact and item.source_detail and (show_plex or item.source_detail != 'From Plex') %}<span class="history-origin" data-source="{{ item.source_kind | default('other', true) }}">{{ item.source_detail }}</span>{% endif %}
     {% set precise_watch_time = item.watched_at and item.watch_time_known %}
     {% set stamp = item.watched_at if precise_watch_time else item.recorded_at %}
     {% if stamp %}<span class="history-date">{{ 'Watched' if precise_watch_time else 'Logged' }} <time datetime="{{ stamp }}" data-local-datetime="{{ stamp }}" {% if compact %}data-local-datetime-day{% else %}data-local-datetime-compact{% endif %}>{{ stamp }} UTC</time></span>{% endif %}

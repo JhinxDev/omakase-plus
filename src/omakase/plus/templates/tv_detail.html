@@ -2,6 +2,7 @@
 {% from "_media_components.html" import playback_link %}
 {% from "_series_components.html" import episode_frame %}
 {% from "_device_components.html" import apple_tv_link %}
+{% from "_season_picker.html" import season_picker %}
 {% from "_watch_status.html" import watch_status_field %}
 {% block title %}{{ card.title }} · TV Shows · Omakase{% endblock %}
 {% block extra_head %}<link rel="stylesheet" href="/plus/static/series-detail.css?v={{ asset_version }}">{% endblock %}
@@ -39,9 +40,10 @@
 {% set regular_seasons = card.seasons | rejectattr('season_number', 'equalto', 0) | list %}
 {% set default_season = regular_seasons[0] if regular_seasons else card.seasons[0] %}
 {% set chosen = selected_season | int if selected_season is defined and selected_season is not none else default_season.season_number %}
-<form class="tv-season-picker product-form" method="get" action="/plus/tv/{{ card.tmdb_id }}#tv-seasons"><label><span>Season</span><select name="season">{% for season in card.seasons %}<option value="{{ season.season_number }}" {% if chosen == season.season_number %}selected{% endif %}>{{ season.name or 'Season ' ~ season.season_number }}{% if season.episode_count %} · {{ season.episode_count }} episodes{% endif %}</option>{% endfor %}</select></label><button class="button button-secondary" type="submit">View season</button></form>
+{{ season_picker(card, chosen) }}
 {% for season in card.seasons %}{% if chosen == season.season_number %}
 <div class="tv-season-heading"><h3>{{ season.name or 'Season ' ~ season.season_number }}</h3>{% if season.air_date %}<span>{% if season.released %}First aired{% else %}Expected{% endif %} <time datetime="{{ season.air_date }}">{{ season.air_date }}</time></span>{% endif %}</div>
+{% if season.episodes and not season.episodes_loaded %}<div class="tv-season-empty"><p>{% if card.plex_snapshot_current and (season.episodes | rejectattr('in_plex') | list | length) == 0 %}Showing episodes observed in Plex.{% else %}Showing cached episode details.{% endif %} Load the season to see its full catalog listing.</p><form method="post" action="/plus/tv/{{ card.tmdb_id }}/season/{{ season.season_number }}" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit" data-busy-label="Loading episodes…">Load full season listing</button></form></div>{% endif %}
 {% if season.episodes %}<ol class="series-episode-grid" aria-label="{{ season.name or 'Season ' ~ season.season_number }} episodes">
   {% for episode in season.episodes %}
   {% set number = episode.episode_number %}

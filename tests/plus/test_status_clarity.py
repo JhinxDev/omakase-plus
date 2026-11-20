@@ -31,14 +31,14 @@ def test_completed_movie_renders_current_rating_separately(rating, label):
     assert ">Completed</span>" in html
     assert label in html
     assert "Added manually" in html
-    assert 'Observed <time datetime="2026-10-27T18:00:00Z"' in html
+    assert 'Logged <time datetime="2026-10-27T18:00:00Z"' in html
     assert "Watched <time" not in html
     assert "Marked watched" not in html
 
 
 def test_only_a_known_watch_timestamp_is_labelled_watched():
     observed = history_card(watched_at="2026-10-20T10:00:00Z")
-    assert "Observed <time" in observed
+    assert 'Logged <time datetime="2026-10-27T18:00:00Z"' in observed
     assert "Watched <time" not in observed
     watched = history_card(watched_at="2026-10-20T10:00:00Z", watch_time_known=True)
     assert 'Watched <time datetime="2026-10-20T10:00:00Z"' in watched

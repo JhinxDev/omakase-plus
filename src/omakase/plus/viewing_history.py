@@ -25,6 +25,9 @@ _PLEX_SEASON_ACTIVITY = re.compile(
     r"plex:snapshot:[1-9][0-9]{0,31}:s(?P<season>[0-9]+):e(?P<episode>[0-9]+):"
     r"(?P<stamp>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)"
 )
+# Token the history card colours its origin badge with. The card renders the
+# token, so no template compares a provider id to decide the colour.
+_ORIGIN_KINDS = {"From Plex": "plex", "From Apple TV": "apple-tv"}
 
 
 def _stamp(value):
@@ -387,6 +390,8 @@ def viewing_history(
         reverse=True,
     )
     items = items[:_MAX_RECENT]
+    for item in items:
+        item["source_kind"] = _ORIGIN_KINDS.get(item.get("source_detail"), "other")
     start = (page - 1) * limit
     return {
         "items": items[start : start + limit],
