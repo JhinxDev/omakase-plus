@@ -1,0 +1,231 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		000000000000000000000020 /* QualificationApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000010; };
+		000000000000000000000021 /* PlaybackSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000011; };
+		000000000000000000000080 /* AVPlayerEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000077; };
+		000000000000000000000082 /* VLCPlayerEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000078; };
+		000000000000000000000022 /* NativePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000012; };
+		000000000000000000000023 /* Resources in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000013; };
+		000000000000000000000025 /* QualificationCore in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000041; };
+		000000000000000000000026 /* PlaybackSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000016; };
+		000000000000000000000050 /* LibraryApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000055; };
+		000000000000000000000051 /* PlaybackSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000011; };
+		000000000000000000000081 /* AVPlayerEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000077; };
+		000000000000000000000083 /* VLCPlayerEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000078; };
+		000000000000000000000052 /* NativePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000012; };
+		000000000000000000000053 /* baseline.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000056; };
+		000000000000000000000054 /* QualificationCore in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000041; };
+		000000000000000000000060 /* NetworkLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000061; };
+		000000000000000000000071 /* LiveLibraryScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000070; };
+		000000000000000000000073 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000072; };
+		000000000000000000000075 /* TVProfiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000074; };
+		000000000000000000000062 /* track-check.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000063; };
+		000000000000000000000076 /* track-check.mp4 in Test Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000063; };
+		000000000000000000000064 /* RemoteFocusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000065; };
+		0000000000000000000000A5 /* ConnectedQualification.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000A6; };
+		0000000000000000000000A7 /* HomeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000000A8; };
+		000000000000000000000085 /* TVVLCKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000084; };
+		000000000000000000000086 /* TVVLCKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000084; };
+		000000000000000000000087 /* TVVLCKit.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000084; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy,); }; };
+		000000000000000000000088 /* TVVLCKit.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000084; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy,); }; };
+		00000000000000000000008B /* QualificationCore in Test Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000041; };
+		000000000000000000000090 /* TVTopShelfLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000095; };
+		000000000000000000000091 /* TVTopShelfShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000096; };
+		000000000000000000000092 /* TVTopShelfShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000096; };
+		000000000000000000000093 /* ContentProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000097; };
+		000000000000000000000094 /* OmakaseTopShelf.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 000000000000000000000098; settings = {ATTRIBUTES = (RemoveHeadersOnCopy,); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		000000000000000000000030 = {isa = PBXContainerItemProxy; containerPortal = 000000000000000000000001; proxyType = 1; remoteGlobalIDString = 000000000000000000000004; remoteInfo = OmakaseQualification; };
+		000000000000000000000068 = {isa = PBXContainerItemProxy; containerPortal = 000000000000000000000001; proxyType = 1; remoteGlobalIDString = 000000000000000000000058; remoteInfo = OmakasePlusTV; };
+		00000000000000000000009A = {isa = PBXContainerItemProxy; containerPortal = 000000000000000000000001; proxyType = 1; remoteGlobalIDString = 00000000000000000000009B; remoteInfo = OmakaseTopShelf; };
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		000000000000000000000010 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QualificationApp.swift; sourceTree = "<group>"; };
+		000000000000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackSession.swift; sourceTree = "<group>"; };
+		000000000000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePlayer.swift; sourceTree = "<group>"; };
+		000000000000000000000077 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVPlayerEngine.swift; sourceTree = "<group>"; };
+		000000000000000000000078 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VLCPlayerEngine.swift; sourceTree = "<group>"; };
+		000000000000000000000013 = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources; sourceTree = "<group>"; };
+		000000000000000000000015 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OmakaseQualification.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000016 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmakaseQualificationTests/PlaybackSessionTests.swift; sourceTree = "<group>"; };
+		000000000000000000000017 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OmakaseQualificationTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000055 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmakasePlusTV/LibraryApp.swift; sourceTree = "<group>"; };
+		000000000000000000000056 = {isa = PBXFileReference; lastKnownFileType = video.mp4; path = OmakaseQualification/Resources/baseline.mp4; sourceTree = "<group>"; };
+		000000000000000000000057 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OmakasePlusTV.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000061 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmakasePlusTV/NetworkLibrary.swift; sourceTree = "<group>"; };
+		000000000000000000000070 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmakasePlusTV/LiveLibraryScreen.swift; sourceTree = "<group>"; };
+		000000000000000000000072 = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = OmakasePlusTV/Assets.xcassets; sourceTree = "<group>"; };
+		000000000000000000000074 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmakasePlusTV/TVProfiles.swift; sourceTree = "<group>"; };
+		000000000000000000000063 = {isa = PBXFileReference; lastKnownFileType = video.mp4; path = OmakaseQualification/Resources/track-check.mp4; sourceTree = "<group>"; };
+		000000000000000000000065 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmakasePlusTVUITests/RemoteFocusTests.swift; sourceTree = "<group>"; };
+		0000000000000000000000A6 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmakasePlusTVUITests/ConnectedQualification.swift; sourceTree = "<group>"; };
+		0000000000000000000000A8 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmakasePlusTV/HomeScreen.swift; sourceTree = "<group>"; };
+		000000000000000000000066 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OmakasePlusTVUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000084 /* TVVLCKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Vendor/TVVLCKit.xcframework; sourceTree = SOURCE_ROOT; };
+		000000000000000000000095 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmakasePlusTV/TVTopShelfLibrary.swift; sourceTree = "<group>"; };
+		000000000000000000000096 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVTopShelfShared.swift; sourceTree = "<group>"; };
+		000000000000000000000097 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentProvider.swift; sourceTree = "<group>"; };
+		000000000000000000000098 = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OmakaseTopShelf.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		00000000000000000000009C = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		00000000000000000000009D = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AppGroup.entitlements; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		00000000000000000000000C = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000025,000000000000000000000085,); runOnlyForDeploymentPostprocessing = 0; };
+		000000000000000000000037 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (00000000000000000000008B,); runOnlyForDeploymentPostprocessing = 0; };
+		00000000000000000000005A = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000054,000000000000000000000086,); runOnlyForDeploymentPostprocessing = 0; };
+		00000000000000000000006B = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		000000000000000000000002 = {isa = PBXGroup; children = (000000000000000000000014,000000000000000000000055,000000000000000000000061,000000000000000000000070,000000000000000000000074,000000000000000000000072,000000000000000000000056,000000000000000000000063,000000000000000000000016,000000000000000000000065,0000000000000000000000A6,0000000000000000000000A8,000000000000000000000084,000000000000000000000095,00000000000000000000009E,000000000000000000000003,); sourceTree = "<group>"; };
+		000000000000000000000003 = {isa = PBXGroup; children = (000000000000000000000015,000000000000000000000017,000000000000000000000057,000000000000000000000066,000000000000000000000098,); name = Products; sourceTree = "<group>"; };
+		000000000000000000000014 = {isa = PBXGroup; children = (000000000000000000000010,000000000000000000000011,000000000000000000000012,000000000000000000000077,000000000000000000000078,000000000000000000000013,); path = OmakaseQualification; sourceTree = "<group>"; };
+		00000000000000000000009E = {isa = PBXGroup; children = (000000000000000000000096,000000000000000000000097,00000000000000000000009C,00000000000000000000009D,); path = OmakaseTopShelf; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		000000000000000000000004 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000000000008;
+			buildPhases = (00000000000000000000000B,00000000000000000000000C,00000000000000000000000D,000000000000000000000089,);
+			buildRules = (); dependencies = ();
+			name = OmakaseQualification;
+			packageProductDependencies = (000000000000000000000041,);
+			productName = OmakaseQualification;
+			productReference = 000000000000000000000015;
+			productType = "com.apple.product-type.application";
+		};
+		000000000000000000000032 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000000000033;
+			buildPhases = (000000000000000000000036,000000000000000000000037,000000000000000000000038,);
+			buildRules = (); dependencies = (000000000000000000000031,);
+			name = OmakaseQualificationTests;
+			packageProductDependencies = (000000000000000000000041,);
+			productName = OmakaseQualificationTests;
+			productReference = 000000000000000000000017;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		000000000000000000000058 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 00000000000000000000005C;
+			buildPhases = (000000000000000000000059,00000000000000000000005A,00000000000000000000005B,00000000000000000000008A,00000000000000000000009F,);
+			buildRules = (); dependencies = (0000000000000000000000A0,);
+			name = OmakasePlusTV;
+			packageProductDependencies = (000000000000000000000041,);
+			productName = OmakasePlusTV;
+			productReference = 000000000000000000000057;
+			productType = "com.apple.product-type.application";
+		};
+		000000000000000000000067 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 00000000000000000000006D;
+			buildPhases = (00000000000000000000006A,00000000000000000000006B,00000000000000000000006C,);
+			buildRules = (); dependencies = (000000000000000000000069,);
+			name = OmakasePlusTVUITests;
+			productName = OmakasePlusTVUITests;
+			productReference = 000000000000000000000066;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		00000000000000000000009B = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0000000000000000000000A1;
+			buildPhases = (0000000000000000000000A2,);
+			buildRules = (); dependencies = ();
+			name = OmakaseTopShelf;
+			productName = OmakaseTopShelf;
+			productReference = 000000000000000000000098;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		000000000000000000000001 = {
+			isa = PBXProject;
+			attributes = {BuildIndependentTargetsInParallel = YES; LastUpgradeCheck = 1600; TargetAttributes = {000000000000000000000058 = {CreatedOnToolsVersion = 16.0; SystemCapabilities = {com.apple.ApplicationGroups.iOS = {enabled = 1; }; }; }; 00000000000000000000009B = {CreatedOnToolsVersion = 16.0; SystemCapabilities = {com.apple.ApplicationGroups.iOS = {enabled = 1; }; }; }; 000000000000000000000004 = {CreatedOnToolsVersion = 16.0; }; 000000000000000000000032 = {CreatedOnToolsVersion = 16.0; TestTargetID = 000000000000000000000004; }; 000000000000000000000067 = {CreatedOnToolsVersion = 16.0; TestTargetID = 000000000000000000000058; }; }; };
+			buildConfigurationList = 000000000000000000000005;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (en,Base,);
+			mainGroup = 000000000000000000000002;
+			packageReferences = (000000000000000000000040,);
+			productRefGroup = 000000000000000000000003;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (000000000000000000000004,000000000000000000000032,000000000000000000000058,000000000000000000000067,00000000000000000000009B,);
+		};
+/* End PBXProject section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		00000000000000000000000D = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = SampleMedia; dstSubfolderSpec = 7; files = (000000000000000000000023,); runOnlyForDeploymentPostprocessing = 0; };
+		000000000000000000000089 /* Embed Frameworks */ = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 10; files = (000000000000000000000087,); name = "Embed Frameworks"; runOnlyForDeploymentPostprocessing = 0; };
+		00000000000000000000008A /* Embed Frameworks */ = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 10; files = (000000000000000000000088,); name = "Embed Frameworks"; runOnlyForDeploymentPostprocessing = 0; };
+		00000000000000000000009F /* Embed App Extensions */ = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (000000000000000000000094,); name = "Embed App Extensions"; runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXResourcesBuildPhase section */
+		000000000000000000000038 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000076,); runOnlyForDeploymentPostprocessing = 0; };
+		00000000000000000000005B = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000053,000000000000000000000062,000000000000000000000073,); runOnlyForDeploymentPostprocessing = 0; };
+		00000000000000000000006C = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		00000000000000000000000B = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000020,000000000000000000000021,000000000000000000000080,000000000000000000000022,000000000000000000000082,); runOnlyForDeploymentPostprocessing = 0; };
+		000000000000000000000036 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000026,); runOnlyForDeploymentPostprocessing = 0; };
+		000000000000000000000059 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000050,000000000000000000000051,000000000000000000000081,000000000000000000000052,000000000000000000000083,000000000000000000000060,000000000000000000000071,000000000000000000000075,000000000000000000000090,000000000000000000000091,0000000000000000000000A7,); runOnlyForDeploymentPostprocessing = 0; };
+		00000000000000000000006A = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000064,0000000000000000000000A5,); runOnlyForDeploymentPostprocessing = 0; };
+		0000000000000000000000A2 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000092,000000000000000000000093,); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		000000000000000000000031 = {isa = PBXTargetDependency; target = 000000000000000000000004; targetProxy = 000000000000000000000030; };
+		000000000000000000000069 = {isa = PBXTargetDependency; target = 000000000000000000000058; targetProxy = 000000000000000000000068; };
+		0000000000000000000000A0 = {isa = PBXTargetDependency; target = 00000000000000000000009B; targetProxy = 00000000000000000000009A; };
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		000000000000000000000006 = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; COPY_PHASE_STRIP = NO; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; ENABLE_USER_SCRIPT_SANDBOXING = YES; GCC_OPTIMIZATION_LEVEL = 0; ONLY_ACTIVE_ARCH = YES; SDKROOT = appletvos; OMAKASE_TV_MARKETING_VERSION = 0.6.11; OMAKASE_TV_BUILD_NUMBER = 44; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_VERSION = 5.0; TVOS_DEPLOYMENT_TARGET = 17.0; }; name = Debug; };
+		000000000000000000000007 = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; ENABLE_USER_SCRIPT_SANDBOXING = YES; SDKROOT = appletvos; OMAKASE_TV_MARKETING_VERSION = 0.6.11; OMAKASE_TV_BUILD_NUMBER = 44; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_VERSION = 5.0; TVOS_DEPLOYMENT_TARGET = 17.0; VALIDATE_PRODUCT = YES; }; name = Release; };
+		000000000000000000000009 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_FILE = OmakaseQualification/Info.plist; INFOPLIST_KEY_CFBundleDisplayName = "Omakase Qualification"; INFOPLIST_KEY_UILaunchScreen_Generation = YES; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.qualification; PRODUCT_NAME = "$(TARGET_NAME)"; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks"; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) OMAKASE_REQUIRE_TVVLCKIT"; SUPPORTED_PLATFORMS = "appletvos appletvsimulator"; TARGETED_DEVICE_FAMILY = 3; }; name = Debug; };
+		00000000000000000000000A = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_FILE = OmakaseQualification/Info.plist; INFOPLIST_KEY_CFBundleDisplayName = "Omakase Qualification"; INFOPLIST_KEY_UILaunchScreen_Generation = YES; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.qualification; PRODUCT_NAME = "$(TARGET_NAME)"; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks"; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) OMAKASE_REQUIRE_TVVLCKIT"; SUPPORTED_PLATFORMS = "appletvos appletvsimulator"; TARGETED_DEVICE_FAMILY = 3; }; name = Release; };
+		000000000000000000000034 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.qualification.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "appletvos appletvsimulator"; TARGETED_DEVICE_FAMILY = 3; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OmakaseQualification.app/OmakaseQualification"; }; name = Debug; };
+		000000000000000000000035 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.qualification.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "appletvos appletvsimulator"; TARGETED_DEVICE_FAMILY = 3; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OmakaseQualification.app/OmakaseQualification"; }; name = Release; };
+		00000000000000000000005D = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = "Omakase Plus"; INFOPLIST_FILE = OmakasePlusTV/Info.plist; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = OmakaseTopShelf/AppGroup.entitlements; CURRENT_PROJECT_VERSION = "$(OMAKASE_TV_BUILD_NUMBER)"; GENERATE_INFOPLIST_FILE = YES; "INFOPLIST_FILE[sdk=appletvsimulator*]" = OmakasePlusTV/SimulatorInfo.plist; INFOPLIST_KEY_CFBundleDisplayName = "Omakase Plus TV"; INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to your Omakase Plus server on your local network."; MARKETING_VERSION = "$(OMAKASE_TV_MARKETING_VERSION)"; OMAKASE_TOP_SHELF_APP_GROUP = group.dev.omakase.plus.fixture.top-shelf; PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.plus.fixture; PRODUCT_NAME = "$(TARGET_NAME)"; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks"; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) OMAKASE_REQUIRE_TVVLCKIT"; SUPPORTED_PLATFORMS = "appletvos appletvsimulator"; TARGETED_DEVICE_FAMILY = 3; }; name = Debug; };
+		00000000000000000000005E = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = "Omakase Plus"; INFOPLIST_FILE = OmakasePlusTV/Info.plist; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = OmakaseTopShelf/AppGroup.entitlements; CURRENT_PROJECT_VERSION = "$(OMAKASE_TV_BUILD_NUMBER)"; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = "Omakase Plus TV"; INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to your Omakase Plus server on your local network."; MARKETING_VERSION = "$(OMAKASE_TV_MARKETING_VERSION)"; OMAKASE_TOP_SHELF_APP_GROUP = group.dev.omakase.plus.tv.top-shelf; PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.plus.tv; PRODUCT_NAME = "$(TARGET_NAME)"; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks"; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) OMAKASE_REQUIRE_TVVLCKIT"; SUPPORTED_PLATFORMS = "appletvos appletvsimulator"; TARGETED_DEVICE_FAMILY = 3; }; name = Release; };
+		00000000000000000000006E = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.plus.fixture.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "appletvos appletvsimulator"; TARGETED_DEVICE_FAMILY = 3; TEST_TARGET_NAME = OmakasePlusTV; }; name = Debug; };
+		00000000000000000000006F = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.plus.fixture.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "appletvos appletvsimulator"; TARGETED_DEVICE_FAMILY = 3; TEST_TARGET_NAME = OmakasePlusTV; }; name = Release; };
+		0000000000000000000000A3 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_ENTITLEMENTS = OmakaseTopShelf/AppGroup.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = "$(OMAKASE_TV_BUILD_NUMBER)"; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_FILE = OmakaseTopShelf/Info.plist; INFOPLIST_KEY_CFBundleDisplayName = "Omakase Top Shelf"; MARKETING_VERSION = "$(OMAKASE_TV_MARKETING_VERSION)"; OMAKASE_TOP_SHELF_APP_GROUP = group.dev.omakase.plus.fixture.top-shelf; PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.plus.fixture.TopShelf; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SUPPORTED_PLATFORMS = "appletvos appletvsimulator"; TARGETED_DEVICE_FAMILY = 3; }; name = Debug; };
+		0000000000000000000000A4 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_ENTITLEMENTS = OmakaseTopShelf/AppGroup.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = "$(OMAKASE_TV_BUILD_NUMBER)"; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_FILE = OmakaseTopShelf/Info.plist; INFOPLIST_KEY_CFBundleDisplayName = "Omakase Top Shelf"; MARKETING_VERSION = "$(OMAKASE_TV_MARKETING_VERSION)"; OMAKASE_TOP_SHELF_APP_GROUP = group.dev.omakase.plus.tv.top-shelf; PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.plus.tv.TopShelf; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SUPPORTED_PLATFORMS = "appletvos appletvsimulator"; TARGETED_DEVICE_FAMILY = 3; }; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		000000000000000000000005 = {isa = XCConfigurationList; buildConfigurations = (000000000000000000000006,000000000000000000000007,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		000000000000000000000008 = {isa = XCConfigurationList; buildConfigurations = (000000000000000000000009,00000000000000000000000A,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		000000000000000000000033 = {isa = XCConfigurationList; buildConfigurations = (000000000000000000000034,000000000000000000000035,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		00000000000000000000005C = {isa = XCConfigurationList; buildConfigurations = (00000000000000000000005D,00000000000000000000005E,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		00000000000000000000006D = {isa = XCConfigurationList; buildConfigurations = (00000000000000000000006E,00000000000000000000006F,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		0000000000000000000000A1 = {isa = XCConfigurationList; buildConfigurations = (0000000000000000000000A3,0000000000000000000000A4,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		000000000000000000000040 = {isa = XCLocalSwiftPackageReference; relativePath = QualificationCore; };
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		000000000000000000000041 = {isa = XCSwiftPackageProductDependency; package = 000000000000000000000040; productName = QualificationCore; };
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 000000000000000000000001;
+}
+

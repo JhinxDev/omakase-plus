@@ -17,6 +17,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,9 @@ DOCKERFILE = REPO_ROOT / "Dockerfile"
 SUBTITLES_REQUIREMENTS = REPO_ROOT / "requirements-subtitles.txt"
 FIXTURES = Path(__file__).parent / "fixtures" / "release"
 GIT = shutil.which("git")
+# Every external process carries a finite deadline of its own, independent of the
+# suite-wide guard in tests/conftest.py.
+GIT_TIMEOUT_SECONDS = 120
 IMAGE_A = "sha256:" + "1" * 64
 IMAGE_B = "sha256:" + "2" * 64
 OLD_REVISION = "debrid-reliability-aaaaaaaaaaaa"
@@ -66,6 +70,7 @@ def _git(repo: Path, *args: str) -> str:
         check=True,
         capture_output=True,
         text=True,
+        timeout=GIT_TIMEOUT_SECONDS,
     )
     return result.stdout.strip()
 
@@ -87,6 +92,7 @@ def _commit(repo: Path, message: str) -> str:
         ],
         check=True,
         capture_output=True,
+        timeout=GIT_TIMEOUT_SECONDS,
         text=True,
     )
     return _git(repo, "rev-parse", "HEAD")
@@ -217,10 +223,51 @@ def test_drift_reports_each_status_and_sets_the_exit_code():
     assert check_drift.drift_exit_code(rows) == 1
     assert check_drift.summarize(rows) == {
         check_drift.STATUS_MATCH: 1,
+        check_drift.STATUS_LINE_ENDINGS: 0,
         check_drift.STATUS_CONTENT: 1,
         check_drift.STATUS_MISSING: 1,
         check_drift.STATUS_EXTRA: 1,
     }
+
+
+def test_drift_separates_line_endings_from_changed_content():
+    """A copy that differs only by carriage returns is drift, but named as such."""
+    expected = {"a.py": "1" * 64, "b.py": "2" * 64}
+    observed = {"a.py": "5" * 64, "b.py": "9" * 64}
+    # The CR-stripped digest is what the live reader measures alongside the raw one.
+    text = {"a.py": "1" * 64, "b.py": "9" * 64}
+
+    rows = check_drift.compare_files(expected, observed, text=text)
+    statuses = {row.path: row.status for row in rows}
+    assert statuses == {
+        "a.py": check_drift.STATUS_LINE_ENDINGS,
+        "b.py": check_drift.STATUS_CONTENT,
+    }
+    # The bytes still differ from the commit, so the container is still drifted.
+    assert check_drift.drift_exit_code(rows) == 1
+    counts = check_drift.summarize(rows)
+    assert counts[check_drift.STATUS_LINE_ENDINGS] == 1
+    assert counts[check_drift.STATUS_CONTENT] == 1
+    table = check_drift.format_table(rows)
+    assert "line-endings" in table and "b.py" in table
+    note = check_drift.line_ending_note(counts)
+    assert note is not None and "LINE ENDINGS" in note
+
+
+def test_drift_never_excuses_a_real_content_difference():
+    """Negative cases: without the second digest, and when bodies really differ."""
+    expected = {"a.py": "1" * 64}
+    observed = {"a.py": "5" * 64}
+
+    # No CR-stripped digest was measured, so a raw difference stays content.
+    plain = check_drift.compare_files(expected, observed)
+    assert [row.status for row in plain] == [check_drift.STATUS_CONTENT]
+    assert check_drift.line_ending_note(check_drift.summarize(plain)) is None
+
+    # A stripped digest that still differs is not a line-ending difference.
+    differing = check_drift.compare_files(expected, observed, text={"a.py": "7" * 64})
+    assert [row.status for row in differing] == [check_drift.STATUS_CONTENT]
+    assert check_drift.line_ending_note(check_drift.summarize(differing)) is None
 
 
 def test_drift_table_lists_only_drifted_files_by_default():
@@ -267,6 +314,55 @@ def test_check_drift_defaults_are_read_only_and_remote():
     assert args.commit == "HEAD"
     assert args.all is False
     assert args.json is False
+
+
+def test_drift_reader_ships_the_hash_pass_without_a_placeholder(monkeypatch):
+    """The program actually sent over ssh carries both digest maps, not __HASH_PASS__."""
+    payload = {
+        "image": IMAGE_A,
+        "label": NEW_REVISION,
+        "package": "/pkg",
+        "files": {"a.py": "1" * 64},
+        "text_files": {"a.py": "2" * 64},
+    }
+    sent: list[dict[str, object]] = []
+
+    def fake_run(args, **kwargs):
+        sent.append({"args": args, **kwargs})
+        return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(
+        check_drift,
+        "subprocess",
+        types.SimpleNamespace(run=fake_run, TimeoutExpired=subprocess.TimeoutExpired),
+    )
+    live = check_drift.read_live("omakase-ct", "omakase-plus", timeout=5)
+
+    program = sent[0]["input"].decode("utf-8")  # type: ignore[union-attr]
+    assert "__HASH_PASS__" not in program
+    assert "text_files" in program
+    # The digest pass is one python program, not a shell pipeline of coreutils.
+    assert "sha256sum" not in program
+    assert live["text_files"] == {"a.py": "2" * 64}
+
+
+def test_drift_timeout_reports_captured_output(monkeypatch):
+    """A timeout names the deadline and dumps what the read had produced."""
+
+    def fake_run(args, **kwargs):
+        raise subprocess.TimeoutExpired(args, 5, output=b"partial stdout", stderr=b"partial stderr")
+
+    monkeypatch.setattr(
+        check_drift,
+        "subprocess",
+        types.SimpleNamespace(run=fake_run, TimeoutExpired=subprocess.TimeoutExpired),
+    )
+    with pytest.raises(check_drift.DriftError) as caught:
+        check_drift.read_live("omakase-ct", "omakase-plus", timeout=5)
+
+    message = str(caught.value)
+    assert "timed out after 5s" in message
+    assert "partial stdout" in message and "partial stderr" in message
 
 
 # Cutover guards
