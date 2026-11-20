@@ -12,7 +12,9 @@
 {% set collection_extra = '&query=' ~ (query | urlencode) ~ '&state=' ~ state_filter ~ '&provider=' ~ provider_filter ~ '&content_type=' ~ content_type_filter %}
 {{ collection_tabs('/plus/library', lifecycle_filter, 'lifecycle', 'in_progress', collection_extra) }}
 {% call(slot) collection_search('/plus/library', 'anime', 'Filter your saved collection', 'Search your anime', query, 'query', 'Find a saved title', titles | length) %}
-{% if slot != 'fields' %}
+{% if slot == 'fields' %}
+  <datalist id="library-title-suggestions">{% for title in title_suggestions %}<option value="{{ title }}"></option>{% endfor %}</datalist>
+{% else %}
   {% set extra_active = lifecycle_filter in ['active','ready_to_start','waiting'] or content_type_filter != 'all' or state_filter != 'all' or provider_filter != 'all' %}
   <details class="watchlist-filter-details" {% if extra_active %}open{% endif %}>
   <summary>More filters{% if extra_active %} · active{% endif %}</summary>

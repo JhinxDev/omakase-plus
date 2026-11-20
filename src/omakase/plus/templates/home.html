@@ -53,5 +53,20 @@
 {% if watch_history %}
 <section class="home-row home-row--compact" aria-labelledby="recent-watching-heading"><header class="stream-section-heading home-row-heading"><div><h2 id="recent-watching-heading">Recently watched</h2></div><a href="/plus/activity?view=watch">View history</a></header><div class="media-rail history-shelf" role="group" aria-label="Recent viewing history">{% for item in watch_history %}<div>{{ history_card(item, show_plex=not cloud_playback, compact=true) }}</div>{% endfor %}</div></section>
 {% endif %}
+
+{% if recent_activity %}
+<section class="home-section recent-section" aria-labelledby="recent-heading">
+  <header class="stream-section-heading"><div><h2 id="recent-heading">Recent changes</h2></div><a href="/plus/activity?view=system">Full activity log</a></header>
+  <ol class="viewer-activity-list">
+    {% for event in recent_activity %}
+    <li><span class="event-dot event-{{ event.category }}" aria-hidden="true"></span><div class="home-event-copy">
+      <strong>{% if event.monitor_id %}<a href="/plus/library/{{ event.monitor_id }}">{{ event.title }}</a>{% else %}{{ event.title }}{% endif %}</strong>
+      <p class="home-event-outcome">{{ event.outcome }}</p>
+      {% if event.detail and event.detail != event.outcome %}<small>{{ event.detail }}</small>{% endif %}
+    </div><time data-local-datetime="{{ event.created_at }}" datetime="{{ event.created_at }}">{{ event.created_at }} UTC</time></li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}
 {% if shell %}{{ edit_home_dialog(shell.layout.rows, shell.addable, csrf_token) }}{% endif %}
 {% endblock %}

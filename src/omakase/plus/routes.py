@@ -1280,6 +1280,20 @@ async def library_page(
         )
     except ProductViewError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    title_suggestions = [
+        row["title"]
+        for row in db.execute(
+            """SELECT m.title FROM media_monitors m
+               WHERE m.user_id=? AND NOT EXISTS (
+                   SELECT 1 FROM library_items i JOIN personal_libraries p
+                   ON p.library_id=i.library_id WHERE p.user_id=m.user_id
+                   AND i.domain='anime' AND i.state='removed'
+                   AND i.canonical_id=CAST(m.anilist_id AS TEXT)
+                   AND i.season_number=COALESCE(m.season_number,0))
+               ORDER BY m.active DESC, m.title COLLATE NOCASE, m.id LIMIT 150""",
+            (user.id,),
+        )
+    ]
     return templates.TemplateResponse(
         request,
         "library.html",
@@ -1299,6 +1313,7 @@ async def library_page(
             "cloud_playback": playback_providers.select(db, user.id).cloud_route,
             "plex_library": latest_plex_library_summary(db),
             "query": query,
+            "title_suggestions": title_suggestions,
             "message": message,
         },
     )

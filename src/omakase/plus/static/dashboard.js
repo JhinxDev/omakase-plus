@@ -517,7 +517,7 @@
       const format = node.hasAttribute("data-local-datetime-day") ? day
         : node.hasAttribute("data-local-datetime-compact") ? compact : formatter;
       node.textContent = format.format(date);
-      node.title = `${formatter.format(date)} · ${date.toISOString().replace(".000Z", "Z")}`;
+      node.title = `${formatter.format(date)} · ${date.toISOString().replace(".000Z", "Z")} · shown in your local timezone`;
     });
   }
 

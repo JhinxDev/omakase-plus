@@ -2,7 +2,7 @@
 {% from "_watched_feedback.html" import watched_feedback %}
 {% block title %}For you · Omakase{% endblock %}
 {% block eyebrow %}{% endblock %}
-{% block page_title %}{% if discover_mode == 'add' %}Find anime{% else %}AI recommendations{% endif %}{% endblock %}
+{% block page_title %}{% if discover_mode == 'add' %}Add to your library{% else %}AI recommendations{% endif %}{% endblock %}
 {% block page_actions %}{% if discover_mode != 'add' and latest and latest.picks %}<a class="button button-primary" href="#recommendation-controls" data-open-details>New recommendations</a>{% endif %}{% endblock %}
 {% block content %}
 <nav class="hub-divisions discover-tool-tabs" aria-label="Discovery tools">
