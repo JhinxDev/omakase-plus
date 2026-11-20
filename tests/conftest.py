@@ -11,12 +11,44 @@ stuck helper cannot outlive the run that started it.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 
 import pytest
 
 DEFAULT_PROCESS_TIMEOUT_SECONDS = 180
 CHILD_REAP_TIMEOUT_SECONDS = 10
+
+
+@pytest.fixture(scope="session")
+def git_local_environment_names():
+    git = shutil.which("git")
+    if git is None:
+        return frozenset()
+    # Git documents this query for hooks that need to operate on another repository.
+    result = subprocess.run(
+        [git, "rev-parse", "--local-env-vars"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=DEFAULT_PROCESS_TIMEOUT_SECONDS,
+    )
+    return frozenset(result.stdout.splitlines())
+
+
+@pytest.fixture
+def isolated_git_environment(monkeypatch, git_local_environment_names):
+    """Point temporary Git repositories at their own files, not a parent hook's."""
+    # git -C <fixture> does not override repository selection injected by a hook.
+    # Keep ordinary global/system config and configured hooks enabled.
+    for name in tuple(os.environ):
+        if (
+            name in git_local_environment_names
+            or name == "GIT_NAMESPACE"
+            or name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+        ):
+            monkeypatch.delenv(name)
 
 
 def _tail(stream, limit: int = 800) -> str:

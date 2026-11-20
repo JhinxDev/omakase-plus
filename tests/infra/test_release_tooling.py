@@ -64,6 +64,11 @@ def _fixture(name: str) -> dict[str, object]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
+# Isolate Git writes to temporary fixture repos and the release-tool reads that
+# follow them, even when pytest is running inside a hook in a linked worktree.
+pytestmark = pytest.mark.usefixtures("isolated_git_environment")
+
+
 def _git(repo: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -104,10 +109,50 @@ def _repository(tmp_path: Path) -> Path:
     package.mkdir(parents=True)
     (package / "alpha.py").write_bytes(b"VALUE = 1\n")
     _git(repo, "init")
+    assert (repo / ".git").is_dir(), "fixture must initialize its own Git directory"
     return repo
 
 
 requires_git = pytest.mark.skipif(GIT is None, reason="git is required for tree tests")
+
+
+def test_git_hook_environment_cannot_redirect_fixture_writes(tmp_path):
+    canary = _repository(tmp_path / "canary")
+    initial = _commit(canary, "unrelated canary commit")
+    metadata = canary / ".git"
+    before = {name: (metadata / name).read_bytes() for name in ("HEAD", "config", "index")}
+    env = {
+        **os.environ,
+        "GIT_DIR": str(metadata),
+        "GIT_COMMON_DIR": str(metadata),
+        "GIT_WORK_TREE": str(canary),
+        "GIT_INDEX_FILE": str(metadata / "index"),
+        "GIT_OBJECT_DIRECTORY": str(metadata / "objects"),
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.bare",
+        "GIT_CONFIG_VALUE_0": "true",
+    }
+    # Exercise the actual autouse fixture in a fresh pytest process, so every
+    # mutating Git operation and release-tool read sees a hook-like environment.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            f"{Path(__file__).resolve()}::test_revision_is_stable_across_commits_and_changes_with_content",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=GIT_TIMEOUT_SECONDS,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout, result.stdout + result.stderr
+    assert _git(canary, "rev-parse", "HEAD") == initial
+    assert {name: (metadata / name).read_bytes() for name in before} == before
+    assert not _git(canary, "status", "--porcelain")
 
 
 # Manifest and revision derivation

@@ -4,10 +4,13 @@ import subprocess
 from pathlib import Path
 
 
-def test_gitignore_keeps_runtime_output_package_but_excludes_local_artifacts(tmp_path):
+def test_gitignore_keeps_runtime_output_package_but_excludes_local_artifacts(
+    tmp_path, isolated_git_environment
+):
     root = Path(__file__).resolve().parents[1]
     (tmp_path / ".gitignore").write_bytes((root / ".gitignore").read_bytes())
     subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+    assert (tmp_path / ".git").is_dir()
     for name, ignored in [
         ("src/omakase/output/__init__.py", False),
         ("src/omakase/output/terminal.py", False),

@@ -170,22 +170,9 @@ def test_changed_runtime_revision_fails_before_start(monkeypatch, tmp_path):
 
 
 def test_ui_work_does_not_take_subscription_worker_offline_but_worker_changes_do(
-    tmp_path, monkeypatch
+    tmp_path, isolated_git_environment
 ):
     """Use a real private fixture checkout; CSS editing must not affect the worker."""
-    # Git hooks export repository discovery variables. A fixture must never
-    # inherit the calling repository's index, ref or worktree.
-    for name in (
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-        "GIT_PREFIX",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_NAMESPACE",
-    ):
-        monkeypatch.delenv(name, raising=False)
     runtime = tmp_path / "src/omakase/plus/codex_worker.py"
     stylesheet = tmp_path / "src/omakase/plus/static/dashboard.css"
     stylesheet.parent.mkdir(parents=True)
@@ -203,6 +190,7 @@ def test_ui_work_does_not_take_subscription_worker_offline_but_worker_changes_do
         return result.stdout.strip()
 
     run_git("init", "-q")
+    assert (tmp_path / ".git").is_dir()
     run_git("add", "--", "src/omakase")
     run_git(
         "-c",
