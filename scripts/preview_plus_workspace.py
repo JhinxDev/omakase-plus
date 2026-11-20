@@ -1,4 +1,4 @@
-"""Loopback-only actual-template review. No application or provider imports."""
+"""Loopback-only actual-template review using synthetic data and no providers."""
 
 from __future__ import annotations
 
@@ -25,7 +25,56 @@ def template_environment():
     return Environment(loader=FileSystemLoader(TEMPLATES), autoescape=select_autoescape(["html"]))
 
 
-def fixture_context(page, query=None):
+def fixture_home(titles):
+    """Run the production Home projection over synthetic readiness records."""
+    import sqlite3
+    from contextlib import closing
+
+    from omakase.plus import home_shell, households
+    from omakase.plus.db import run_migrations
+
+    with closing(sqlite3.connect(":memory:")) as db:
+        db.row_factory = sqlite3.Row
+        run_migrations(db)
+        user_id = db.execute(
+            "INSERT INTO users(email,password_hash) VALUES('viewer@example.test', 'fixture')"
+        ).lastrowid
+        households.ensure_personal_library(db, user_id=user_id)
+        return home_shell.projection(db, user_id=user_id, anime_titles=titles)
+
+
+def fixture_home_titles():
+    names = (
+        "The Mapmaker's Garden",
+        "A Small Season of Rain",
+        "Luminous Harbor",
+        "The Clockmaker and the Tides",
+        "Letters from the Northern Observatory",
+        "Paper Constellations",
+        "The Island of Bells",
+        "Northbound Lanterns",
+    )
+    return [
+        dict(
+            id=i,
+            anilist_id=i,
+            title=name,
+            watch_status="watching",
+            progress_episodes=4,
+            progress_percent=100 / 3,
+            episode_total=12,
+            next_episode=5,
+            play_episode=5,
+            play_url=f"/plus/watch/anime/{i}?episode=5",
+            native_resume_at=f"2026-11-{20 - i:02d}T16:00:00Z",
+            episode_resume={"percent": 38, "minutes_left": 15},
+            last_source_label="Manual confirmation",
+        )
+        for i, name in enumerate(names, 1)
+    ]
+
+
+def fixture_context(page, query=None, *, home_titles=None):
     query = query or {}
     empty = query.get("fixture", [""])[0] == "empty"
     titles = (
@@ -388,6 +437,11 @@ def fixture_context(page, query=None):
                 and (state == "all" or item["state"] == state)
             ]
         context.update(synthetic_review=False, review_mode=True)
+    if page == "home" and (home_titles is not None or not context.get("home")):
+        selected_titles = (
+            [] if empty else fixture_home_titles() if home_titles is None else home_titles
+        )
+        context["home"] = fixture_home(selected_titles)
     return review_extensions(context, page, query)
 
 
@@ -753,11 +807,11 @@ def review_extensions(context, page, query):
     return context
 
 
-def render(page, query=None, environment=None):
+def render(page, query=None, environment=None, *, home_titles=None):
     return (
         (environment or template_environment())
         .get_template(page + ".html")
-        .render(**fixture_context(page, query))
+        .render(**fixture_context(page, query, home_titles=home_titles))
     )
 
 

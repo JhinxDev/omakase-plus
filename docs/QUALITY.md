@@ -115,12 +115,12 @@ Microsoft Edge at this revision:
 | --- | --- |
 | `check_collection_layout.cjs` | Collection layout and template composition, 21 checks |
 | `check_home_progress_layout.cjs` | Home progress semantics, aligned card footers and remote safe actions, 7 checks |
-| `check_hero_quality.cjs` | Home hero composition at seven scenarios: cover for landscape, contained portrait art that never draws above source pixels, transparent placeholder and no JavaScript |
+| `check_hero_quality.cjs` | Home hero composition in eight scenarios: landscape cover, contained portrait art at source scale, missing/broken artwork fallback, and no JavaScript |
 | `check_library_context.cjs` | Shared shell, synthetic scope data and native controls, 12 checks |
 | `check_search_result_edges.cjs` | Result edge scrolling at both ends with mixed lengths, 6 cases |
 | `check_title_details.cjs` | Title detail layout, playable states, keyboard and touch targets |
-| `check_web_consistency.cjs` | Shared style and spacing consistency, 4 checks |
-| `check_interface_scrollbars.cjs` | Native Windows scrollbars and footer at three viewports |
+| `check_web_consistency.cjs` | Shared styles, Home rail keyboard controls and player navigation across four responsive scenarios |
+| `check_interface_scrollbars.cjs` | Native Windows scrollbars and keyboard-accessible project links at three viewports |
 
 `check_hero_quality.cjs` asserts the shipped contract rather than a guess: non cover
 hero art uses `object-fit: contain` (see the `.page-home .cinema-hero-art` rules in

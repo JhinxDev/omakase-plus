@@ -19,15 +19,17 @@ env.globals['download_language_settings_enabled']=lambda:True
 common=dict(csrf_token='fixture',email='viewer@example.test',display_name='Viewer',asset_version='fixture',request=dict(url=dict(path='/plus/home')),households_enabled=True,household_navigation=dict(available=True,selected_id='personal',libraries=[dict(id='personal',name='Personal library',kind='personal'),dict(id='shared',name='Shared Home',kind='household')]))
 title=runpy.run_path('tests/plus/test_streaming_templates.py')['title_context']()
 title.update(play_url='/plus/watch/7/11?play=1',play_label='Resume',play_episode=11,pending_confirmations=[])
-rail=[dict(title,id=index,anilist_id=index) for index in range(7,14)]
+preview=runpy.run_path('scripts/preview_plus_workspace.py')
 stamp=datetime(2026,11,10,tzinfo=timezone.utc)
 device=dict(name='Living room',reference='fixture-device',temporary=False,shared=False,last_seen=stamp,network='192.0.2.xxx',expiry=stamp)
 household=dict(id='shared',name='Shared Home',role='owner',members_can_add=False,acquisition_requests=False)
 member=dict(label='Alex',role='member',member_id='member',joined_at='2026-11-01',can_request_titles=True,can_add_titles=False)
 def render(name,**context):return env.get_template(name).render(**common,**context)
-pages=dict(home=render('home.html',active_page='home',continue_watching=rail,ready_to_watch=[],confirmation_needed=[],new_episodes=[],attention=[],recent_activity=[],watch_history=[]),devices=render('native_tv_library.html',active_page='settings',devices=[device],device_owner='you',device_household=None,device_code='',is_household_owner=False,household_device_count=0),household=render('household.html',active_page='settings',household=household,members=[member],title_requests=[],invitations=[],shared_services=[]),title=render('title.html',active_page='library',title=title),player=render('player.html',active_page='watch',title='Synthetic playback study',episode_number=1,episode_name='Fixture episode name',episode_summary='',description_preview='',library_id='personal',overview_url='/plus/library/7',next_url='/plus/watch/7/2?play=1',previous_url='/plus/watch/7/0',season_number=1))
+pages=dict(home=preview['render']('home'),devices=render('native_tv_library.html',active_page='settings',devices=[device],device_owner='you',device_household=None,device_code='',is_household_owner=False,household_device_count=0),household=render('household.html',active_page='settings',household=household,members=[member],title_requests=[],invitations=[],shared_services=[]),title=render('title.html',active_page='library',title=title),player=render('player.html',active_page='watch',title='Synthetic playback study',episode_number=2,episode_name='Fixture episode name',episode_summary='',description_preview='',library_id='personal',overview_url='/plus/library/7',next_url='/plus/watch/7/3?play=1',previous_url='/plus/watch/7/1',season_number=1))
 search=env.get_template('_collection_search.html').module.collection_search('/plus/library','anime','Your library','Search anime',collapsible=True)
 pages['search']=pages['home'].replace('<section class="cinema-hero"',str(search)+'<section class="cinema-hero"',1)
+pages['player-end']=render('player.html',active_page='watch',title='Synthetic final episode',episode_number=2,library_id='personal',overview_url='/plus/library/7',next_url='',previous_url='/plus/watch/7/1',season_number=1)
+pages['home-short']=preview['render']('home',home_titles=preview['fixture_home_titles']()[:1])
 print(json.dumps(pages))`;
 const pages = JSON.parse(execFileSync(qaPython(), ['-X', 'utf8', '-c', fixture], {
   cwd: root, encoding: 'utf8', env: {...process.env, PYTHONDONTWRITEBYTECODE: '1'},
@@ -37,7 +39,8 @@ const files = ['templates/base.html', 'templates/home.html', 'templates/_setting
   'templates/_collection_search.html', 'templates/native_tv_library.html', 'templates/household.html',
   'templates/player.html', 'static/cinema.css', 'static/refinement.css', 'static/devices.css',
   'static/household.css', 'static/interface.css', 'static/series-detail.css', 'static/web-player.css',
-  'static/omakase-seal.svg'];
+  'static/omakase-seal.svg', 'static/product-shell.css', 'static/shelves.js',
+  'templates/_home_components.html', 'home_shell.py'];
 const receipt = {synthetic: true, sourceSha256: {}, scenarios: [], limitations: ['No live provider, playback or physical-device qualification.']};
 const sourceHash = file => crypto.createHash('sha256').update(fs.readFileSync(path.join(root, 'src/omakase/plus', file))).digest('hex');
 for (const file of files) receipt.sourceSha256[file] = sourceHash(file);
@@ -130,15 +133,33 @@ async function disclosure(page, selector) {
           assert.equal(await page.locator('.cinema-wordmark').count(), 0);
           evidence.ctas.home = await buttonState(page, '.cinema-actions .button-primary');
           if (scenario.width === 1440 && !scenario.textScale) {
-            const arrow = page.locator('.continue-section .shelf-arrow-next');
-            assert(await arrow.isEnabled());
+            const rail = page.locator('#rail-continue-anime');
+            const arrow = page.locator('button.shelf-arrow-next[aria-controls="rail-continue-anime"]');
+            const previous = page.locator('button.shelf-arrow-previous[aria-controls="rail-continue-anime"]');
+            await arrow.waitFor({state: 'visible', timeout: 4000});
+            assert(await arrow.isEnabled() && await previous.isDisabled(), 'Overflowing Home rail starts at its leading edge');
+            assert(await rail.evaluate(el => el.scrollWidth > el.clientWidth + 2), 'Home fixture must overflow');
+            await arrow.focus();
+            await page.keyboard.press('Enter');
+            await page.waitForFunction(() => document.querySelector('#rail-continue-anime')?.scrollLeft > 2);
+            await previous.click();
+            await page.waitForFunction(() => document.querySelector('#rail-continue-anime')?.scrollLeft <= 2);
             const style = await arrow.evaluate(element => {
               const css = getComputedStyle(element);
               return {fill: css.backgroundColor, border: css.borderColor, width: element.getBoundingClientRect().width};
             });
             assert(Number(style.fill.match(/[\d.]+/g)[3]) >= .85);
             assert(style.width >= 44);
-            evidence.shelfArrow = style;
+            // A rail with no overflow must not present an active next button.
+            const shortPage = await context.newPage();
+            await shortPage.goto('http://consistency.test/home-short', {waitUntil: 'networkidle'});
+            const shortRail = shortPage.locator('#rail-continue-anime');
+            assert.equal(await shortRail.locator('.om-card').count(), 1, 'Non-overflowing fixture renders exactly one real card');
+            assert(await shortRail.evaluate(el => el.scrollWidth <= el.clientWidth + 2));
+            const shortArrow = shortPage.locator('button.shelf-arrow-next[aria-controls="rail-continue-anime"]');
+            assert(await shortArrow.isDisabled() && !await shortArrow.isVisible(), 'Non-overflowing rail hides Next');
+            await shortPage.close();
+            evidence.shelfArrow = {...style, keyboard: true, noOverflowHidesControls: true};
           }
         }
         if (surface === 'devices') {
@@ -157,7 +178,30 @@ async function disclosure(page, selector) {
           });
           evidence.ctas.player = await buttonState(page, '[data-player-reload]');
           evidence.disclosures.playback = await disclosure(page, '.web-player-tools > summary');
-          evidence.disclosures.navigation = await disclosure(page, '.web-player-episode-navigation > summary');
+          const episodes = page.getByRole('navigation', {name: 'Episode navigation'});
+          const links = [
+            ['Next episode', '/plus/watch/7/3?play=1'],
+            ['Previous episode', '/plus/watch/7/1'],
+            ['All episodes', '/plus/library/7'],
+          ];
+          for (const [name, href] of links) {
+            const link = episodes.getByRole('link', {name, exact: true});
+            assert(await link.isVisible(), `${name} remains visible in the episode sidebar`);
+            assert.equal(await link.getAttribute('href'), href);
+            await page.keyboard.press('Tab');
+            await link.focus();
+            assert(await link.evaluate(el => el.matches(':focus-visible')));
+          }
+          evidence.episodeLinks = links.map(([name]) => name);
+          if (scenario.width === 1440 && !scenario.textScale) {
+            const finalEpisode = await context.newPage();
+            await finalEpisode.goto('http://consistency.test/player-end', {waitUntil: 'networkidle'});
+            const finalNav = finalEpisode.getByRole('navigation', {name: 'Episode navigation'});
+            assert(await finalNav.getByRole('link', {name: 'All episodes', exact: true}).isVisible());
+            assert.equal(await finalNav.getByRole('link', {name: 'Next episode', exact: true}).count(), 0);
+            await finalEpisode.close();
+            evidence.finalEpisodeHasNoNextLink = true;
+          }
         }
         if (surface === 'search') evidence.disclosures.search = await disclosure(page, '.collection-search-disclosure > summary');
         if (scenario.width === 1440 && ['devices', 'household'].includes(surface)) {
@@ -192,9 +236,26 @@ async function disclosure(page, selector) {
       await context.close();
     }
     for (const evidence of receipt.scenarios) {
+      // The Home banner deliberately uses a transparent border on its pill
+      // buttons; elsewhere the common iris border is part of the base style.
+      const sharedColors = ({normal, hover}) => ({
+        normal: {background: normal.background, foreground: normal.foreground},
+        hover: {background: hover.background, foreground: hover.foreground},
+      });
       for (const [name, state] of Object.entries(evidence.ctas)) {
-        assert.deepEqual(state, evidence.ctas.home, `${name} primary states match Home`);
+        assert.deepEqual(sharedColors(state), sharedColors(evidence.ctas.home), `${name} primary colors match Home`);
+        // Player controls deliberately use a lighter, wider-offset outline
+        // against the separate playback surface.
+        const focus = name === 'player'
+          ? {color: 'rgb(210, 194, 255)', width: '2px', offset: '4px', visible: true}
+          : evidence.ctas.home.focus;
+        assert.deepEqual(state.focus, focus, `${name} primary keyboard focus`);
+        const border = name === 'home' ? 'rgba(0, 0, 0, 0)' : evidence.ctas.devices.normal.border;
+        assert.equal(state.normal.border, border, `${name} primary border`);
+        assert.equal(state.hover.border, border, `${name} primary hover border`);
       }
+      assert.deepEqual(evidence.ctas.home.focus, {color: 'rgb(195, 177, 255)', width: '2px', offset: '2px', visible: true}, 'Shared keyboard focus stays visible');
+      assert.notEqual(evidence.ctas.devices.normal.border, 'rgba(0, 0, 0, 0)', 'Regular primary buttons retain their border');
     }
     for (const file of files) assert.equal(sourceHash(file), receipt.sourceSha256[file], `Source changed during browser verification: ${file}`);
     fs.writeFileSync(path.join(output, 'receipt.json'), JSON.stringify({...receipt, status: 'passed'}, null, 2));

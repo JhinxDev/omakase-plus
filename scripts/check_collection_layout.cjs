@@ -20,14 +20,24 @@ tv=runpy.run_path('tests/plus/test_tv_templates.py')
 from omakase.plus.movie_presentation import present_movie
 titles=['Code Geass: Akito the Exiled - The Wyvern Arrives','Code Geass: Akito the Exiled - The Wyvern Divided','BLEACH: Thousand-Year Blood War - The Calamity','A Very Long Four Line Title That Must Stay Inside Its Own Reserved Heading Block Even On A Narrow Phone Screen']
 context=suite['library_context']()
-context['titles']=[{**suite['title_context'](),'id':i+1,'title':t,'required':27,'usable':0,'plex_visible':0,'release_qualities':['1080p']} for i,t in enumerate(titles)]
-movies=[present_movie({'imdb_id':f'tt{i+1:07d}','title':t,'year':1982,'state':'ready','plex_present':True,'resolution':'1080p','history':{'status':'completed','status_source':'manual','rating':8},'artwork_url':''}) for i,t in enumerate(['1408','The Thing',*titles])]
+context['titles']=[{**suite['title_context'](),'id':i+1,'title':t,'year':2026,'required':27,'usable':0,'plex_visible':0,'release_qualities':['1080p']} for i,t in enumerate(titles)]
+movies=[present_movie({'imdb_id':f'tt{i+1:07d}','title':t,'year':1982,'state':'ready','plex_present':True,'resolution':'1080p','history':{'status':'completed','status_source':'manual','rating':8},'artwork_url':''}) for i,t in enumerate(['1408','The Thing',*titles])]+[present_movie({'imdb_id':'tt0000099','title':'Without viewing history','year':2026,'state':'ready','plex_present':True,'resolution':'1080p','artwork_url':''})]
 shows=[tv['show'](tmdb_id=i+1,title=t,in_plex_episodes=38) for i,t in enumerate(['True Detective','A Series',*titles])]
 print(json.dumps({'library':suite['render']('library.html',**context),'movies':suite['render']('movies.html',cards=movies,query='',view='all'),'tv':tv['render']('tv.html',cards=shows,query='',view='all')}))`;
 const html = JSON.parse(execFileSync(qaPython(), ['-c',fixture], {cwd:root,encoding:'utf8',env:{...process.env,PYTHONIOENCODING:'utf-8'}}));
+function assertTitleLayout(card) {
+ // The shared catalog grid reserves two lines and clips long titles uniformly.
+ assert.equal(card.clip,'hidden',`${card.title}: title must clip`);
+ assert.equal(card.clamp,'2',`${card.title}: clamps after two lines`);
+ assert(Math.abs(card.lines-2)<.1,`${card.title}: reserves two title lines`);
+}
+function assertSearchControls(controls,kind) {
+ assert(controls.length>=2,`${kind}: search input and button rendered`);
+ assert(controls.every(h=>h>=47.5),`${kind}: shared 48px controls ${JSON.stringify(controls)}`);
+}
 const staticRoot = path.join(root,'src/omakase/plus/static');
 const evidence={sourceSha256:{},checks:[]};
-for(const name of ['cinema.css','streaming.css','tv.css']) evidence.sourceSha256[name]=crypto.createHash('sha256').update(fs.readFileSync(path.join(staticRoot,name))).digest('hex');
+for(const name of ['cinema.css','streaming.css','tv.css','status-clarity.css','product-shell.css']) evidence.sourceSha256[name]=crypto.createHash('sha256').update(fs.readFileSync(path.join(staticRoot,name))).digest('hex');
 (async()=>{
  const browser=await chromium.launch(qaBrowser());
  try {
@@ -51,9 +61,11 @@ for(const name of ['cinema.css','streaming.css','tv.css']) evidence.sourceSha256
     if(scenario.textScale)await page.addStyleTag({content:'html{font-size:200%}'});
     const searchDisclosure=page.locator('.collection-search-disclosure');
     let folded;
+    assert.equal(await searchDisclosure.count(),kind==='library'?0:1,`${kind}: expected search disclosure`);
     if(await searchDisclosure.count()) {
      assert.equal(await searchDisclosure.evaluate(node=>node.open),false,'secondary search is folded without JavaScript');
      folded=await page.evaluate(()=>({titles:[...document.querySelectorAll('.movie-card h2,.tv-card h3')].slice(0,2).map(node=>node.getBoundingClientRect().toJSON()),dock:document.querySelector('.mobile-primary-nav').getBoundingClientRect().top}));
+     assert.equal(folded.titles.length,2,'first poster row is present');
      if(scenario.width===390&&!scenario.textScale) assert(folded.titles.every(box=>box.bottom<folded.dock),'first full poster row and titles fit above the phone dock');
      await page.screenshot({path:path.join(output,`${kind}-${scenario.width}${suffix}-folded.png`)});
      const summary=searchDisclosure.locator(':scope > summary');
@@ -66,33 +78,35 @@ for(const name of ['cinema.css','streaming.css','tv.css']) evidence.sourceSha256
      assert.equal(await page.getByText('No viewing record',{exact:true}).count(),0);
      assert.equal(await page.locator('.collection-card-quality').count(),0);
      const alignment=await page.locator('.movie-card-status > .collection-card-availability:only-child').evaluateAll(nodes=>nodes.map(node=>({left:node.getBoundingClientRect().left,parent:node.parentElement.getBoundingClientRect().left})));
+     assert.equal(alignment.length,1,'a fixture without viewing history exercises the sole availability line');
      assert(alignment.every(value=>Math.abs(value.left-value.parent)<=1),'a sole availability line aligns with its title');
     }
     if(kind==='tv') {
      assert.equal(await page.locator('.tv-card details').count(),0);
-     const inventory=page.locator('#tv-library-details');
-     if(await inventory.count()) {
-      assert.equal(await inventory.evaluate(node=>node.open),false);
-      const before=await page.locator('.tv-card').first().boundingBox();
-      const summary=inventory.locator('summary');
-      await summary.focus(); await summary.press('Enter');
-      assert.equal(await inventory.evaluate(node=>node.open),true);
-      assert(await inventory.getByText('Season coverage unknown.',{exact:true}).first().isVisible());
-      const after=await page.locator('.tv-card').first().boundingBox();
-      assert.equal(after.width,before.width,'inventory disclosure preserves card width');
-      assert.equal(after.height,before.height,'inventory disclosure does not stretch browse cards');
-      await summary.press('Space');
-      assert.equal(await inventory.evaluate(node=>node.open),false);
-     }
+     const inventory=page.locator('#tv-library-tools');
+     assert.equal(await inventory.count(),1,'TV uses one shared Library tools disclosure');
+     assert.equal(await inventory.evaluate(node=>node.open),false);
+     const before=await page.locator('.tv-card').first().boundingBox();
+     const summary=inventory.locator('summary');
+     await summary.focus(); await summary.press('Enter');
+     assert.equal(await inventory.evaluate(node=>node.open),true);
+     assert(await inventory.getByText('Season coverage unknown',{exact:true}).first().isVisible());
+     const after=await page.locator('.tv-card').first().boundingBox();
+     assert.equal(after.width,before.width,'inventory disclosure preserves card width');
+     assert.equal(after.height,before.height,'inventory disclosure does not stretch browse cards');
+     await summary.press('Space');
+     assert.equal(await inventory.evaluate(node=>node.open),false);
     }
     const facts=await page.evaluate(()=>{
      const shell=document.querySelector('.collection-search');const style=getComputedStyle(shell);const rect=shell.getBoundingClientRect();
      const controls=[...shell.querySelectorAll('input:not([type=hidden]),select,button')].filter(n=>n.getClientRects().length).map(n=>n.getBoundingClientRect().height);
-     const cards=[...document.querySelectorAll('.watchlist-card,.movie-card,.tv-card')].map(node=>{
-      const heading=node.querySelector('h2,h3');const meta=node.querySelector('.card-meta-line,.movie-meta,.tv-card-meta');const h=heading.getBoundingClientRect();const m=meta.getBoundingClientRect();const s=getComputedStyle(heading);
+     const cards=[...document.querySelectorAll('.catalog-poster-grid .catalog-card')].map(node=>{
+      const heading=node.querySelector('.catalog-card-title');const meta=node.querySelector('.catalog-card-meta');
       const link=node.querySelector('a');
-      const availability=node.querySelector('.collection-card-availability');const progress=node.querySelector('.collection-card-progress,.tv-card-facts .media-progress-meta > span:not(.collection-card-availability)');
-      return {title:heading.textContent,headingBottom:h.bottom,nextTop:m.top,clip:s.overflow,lines:h.height/parseFloat(s.lineHeight),name:link.getAttribute('aria-label'),availability:availability?.getBoundingClientRect().toJSON(),progress:progress?.getBoundingClientRect().toJSON(),box:node.getBoundingClientRect().toJSON()};
+      if(!heading||!meta||!link) throw new Error('Collection fixture card is missing its heading, metadata, or title link');
+      const h=heading.getBoundingClientRect();const m=meta.getBoundingClientRect();const s=getComputedStyle(heading);
+      const availability=node.querySelector('.collection-card-availability');const progress=node.querySelector('.collection-card-progress');
+      return {title:heading.textContent,headingBottom:h.bottom,nextTop:m.top,clip:s.overflow,clamp:s.webkitLineClamp,lines:h.height/parseFloat(s.lineHeight),name:link.getAttribute('aria-label'),availability:availability?.getBoundingClientRect().toJSON(),progress:progress?.getBoundingClientRect().toJSON(),box:node.getBoundingClientRect().toJSON()};
      });
      const metrics=[...document.querySelectorAll('.watchlist-coverage .coverage-triptych>div')].map(cell=>{
       const label=cell.querySelector('span');const value=cell.querySelector('strong');const range=document.createRange();range.selectNodeContents(label);
@@ -105,8 +119,32 @@ for(const name of ['cinema.css','streaming.css','tv.css']) evidence.sourceSha256
      assert(metric.ink.bottom<=metric.value.top+1,`expanded ${metric.label} label stays above its count`);
     }
     assert(facts.overflow<=1,`${kind} ${scenario.width}: horizontal overflow ${facts.overflow}`);
-    assert(facts.controls.every(h=>h>=47.5),`${kind}: shared 48px controls ${JSON.stringify(facts.controls)}`);
-    for(const card of facts.cards){assert(card.nextTop>=card.headingBottom-1,`${kind}: title/status overlap ${card.title}`);assert.equal(card.clip,'hidden');if(kind==='library')assert(Math.abs(card.lines-3)<.1,'anime title retains reserved lines');else {assert(card.lines<=3.1,'browse title clips after three natural lines');assert(card.nextTop-card.headingBottom<=8,'metadata stays within 8px of its title');if(card.progress&&card.availability)assert(card.availability.top>=card.progress.bottom-1,'availability follows viewing history without a cramped split');}assert(card.name.includes(card.title),'full accessible title');}
+    assertSearchControls(facts.controls,kind);
+    assert.equal(facts.cards.length,{library:4,movies:7,tv:6}[kind],`${kind}: all fixture cards rendered`);
+    if(kind!=='library')assert.equal(facts.cards.filter(card=>card.progress).length,6,`${kind}: all six fixture histories render separately from availability`);
+    for(const card of facts.cards){
+     assert(card.nextTop>=card.headingBottom-1,`${kind}: title/status overlap ${card.title}`);
+     assertTitleLayout(card);
+     if(kind!=='library') {
+      assert(card.nextTop-card.headingBottom<=8,'metadata stays within 8px of its title');
+      assert(card.availability,'browse card shows a separate availability line');
+      if(card.progress)assert(card.availability.top>=card.progress.bottom-1,'availability follows viewing history without a cramped split');
+     }
+     assert(card.name?.includes(card.title),'full accessible title');
+    }
+    if(kind==='library'&&scenario.width===390&&!suffix){
+     const style=await page.addStyleTag({content:`
+      .catalog-card-title { overflow: visible !important; }
+      .collection-search-controls .button { min-block-size: 44px !important; }
+     `});
+     try {
+      const clip=await page.locator('.catalog-card-title').last().evaluate(node=>getComputedStyle(node).overflow);
+      assert.throws(()=>assertTitleLayout({...facts.cards.at(-1),clip}),/title must clip/);
+      const {height}=await page.locator('.collection-search-controls .button').boundingBox();
+      assert.throws(()=>assertSearchControls([facts.controls[0],height],kind),/shared 48px controls/);
+      evidence.negativeCases=['broken title clipping rejected','undersized search button rejected'];
+     } finally {await style.evaluate(node=>node.remove());}
+    }
     for(const a of facts.cards)for(const b of facts.cards){if(a===b)continue;const x=Math.min(a.box.right,b.box.right)-Math.max(a.box.left,b.box.left);const y=Math.min(a.box.bottom,b.box.bottom)-Math.max(a.box.top,b.box.top);assert(x<=1||y<=1,'expanded cards do not collide');}
     const query=page.locator('.collection-search-query input');
     await query.focus();await query.press('Tab');

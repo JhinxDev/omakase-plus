@@ -152,7 +152,7 @@ Home uses a 64–72vh cinematic stage, a genuine wide image, long text-protectio
 
 ## Shared components
 
-Anime, Movies and TV share CollectionSearch: the same surface, keyline, corner, spacing and 48px controls. Scope is explicit; collection filtering differs from catalog discovery. Anime collection cards reserve three title lines with clipping and a full accessible name. Movie and TV browse titles use up to three natural lines, followed within 8px by their year. Viewing history and availability occupy separate full-width rows, avoiding narrow phone status columns. Never overlap text or call zero available episodes ready.
+Anime, Movies and TV share CollectionSearch: the same surface, keyline, corner, spacing and 48px controls. Scope is explicit; collection filtering differs from catalog discovery. Anime, Movie and TV collection cards reserve two lines for the title, clip longer text and keep the full accessible name. The year, when available, follows closely below the title. Viewing history and availability occupy separate full-width rows, avoiding narrow phone status columns. Never overlap text or call zero available episodes ready.
 
 Movie and TV collection search lives in a native Search & filters disclosure.
 It works without JavaScript and opens automatically for an active query or the

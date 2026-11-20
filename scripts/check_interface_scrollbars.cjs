@@ -1,4 +1,4 @@
-/* Native Windows Edge scrollbars and footer; no provider or account requests. */
+/* Native Windows Edge scrollbars and project links; no provider or account requests. */
 const { qaRuntime, qaPython } = require('./qa-environment.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -17,8 +17,10 @@ const output = process.env.OMAKASE_INTERFACE_QA_OUTPUT || path.join(root, '.qa-a
 fs.mkdirSync(output, { recursive: true });
 const html = execFileSync(qaPython(), ['-c', "import runpy; f=runpy.run_path('tests/plus/test_global_search_ui.py'); print(f['render_search'](kind='anime',query=''))"], { cwd: root, encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
 const source = {};
-for (const name of ['interface.css', 'search.js']) source[name] = crypto.createHash('sha256').update(fs.readFileSync(path.join(root, 'src/omakase/plus/static', name))).digest('hex');
-const receipt = { source, checks: [], writes: [], errors: [], engine: 'Windows Edge, headless; only --hide-scrollbars default removed', limitations: ['Intercepted title fixtures; emulated narrow viewports and forced colors, not physical device acceptance. Footer destinations separately verified public.'] };
+for (const file of ['static/interface.css', 'static/search.js', 'static/product-shell.css', 'static/dashboard.js', 'templates/base.html']) {
+  source[file] = crypto.createHash('sha256').update(fs.readFileSync(path.join(root, 'src/omakase/plus', file))).digest('hex');
+}
+const receipt = { source, checks: [], writes: [], errors: [], engine: 'Windows Edge, headless; only --hide-scrollbars default removed', limitations: ['Intercepted title fixtures; emulated narrow viewports and forced colors, not physical device acceptance. Project destinations are checked without visiting public URLs.'] };
 (async () => {
   const browser = await chromium.launch({ channel: 'msedge', headless: true, ignoreDefaultArgs: ['--hide-scrollbars'] });
   try {
@@ -55,17 +57,41 @@ const receipt = { source, checks: [], writes: [], errors: [], engine: 'Windows E
       assert.equal(await list.evaluate(el => getComputedStyle(el, '::-webkit-scrollbar-button').display), 'none');
       await page.screenshot({ path: path.join(output, `forced-colors-${width}.png`) });
       await page.emulateMedia({ forcedColors: 'none' }); await input.press('Escape');
-      const footer = page.locator('.product-footer'); await footer.scrollIntoViewIfNeeded();
-      const bounds = await footer.evaluate(el => ({ left: el.querySelector('.footer-identity > span').getBoundingClientRect().left, right: Math.max(...[...el.querySelectorAll('a')].map(link => link.getBoundingClientRect().right)), gutter: parseFloat(getComputedStyle(el).paddingLeft), pageOverflow: document.documentElement.scrollWidth > innerWidth + 1 }));
-      assert(bounds.left >= 16 && bounds.right <= width - 16 && !bounds.pageOverflow);
-      assert(Math.abs(bounds.left - bounds.gutter) <= 1, 'Footer text uses the shared page gutter');
-      for (const [name, href] of [['Documentation', 'https://omakase-plus.jhinx.dev/docs'], ['GitHub', 'https://github.com/JhinxDev/omakase-plus'], ['Made by Jhinx Dev', 'https://jhinx.dev']]) {
-        const link = footer.getByRole('link', { name }); assert.equal(await link.getAttribute('href'), href); assert.equal(await link.getAttribute('target'), '_blank');
-        assert((await link.getAttribute('rel')).includes('noopener')); assert((await link.boundingBox()).height >= 44);
-        await link.focus(); assert(await link.evaluate(el => el.matches(':focus-visible')));
+      assert.equal(await list.isVisible(), false, 'Escape must hide search suggestions');
+      const desktop = width === 1440;
+      const accountToggle = page.locator('[data-account-menu] > summary');
+      const project = page.locator(desktop ? '.app-sidebar-project' : '.mobile-project-links');
+      const otherProject = page.locator(desktop ? '.mobile-project-links' : '.app-sidebar-project');
+      assert.equal(await otherProject.isVisible(), false, 'Only the viewport-appropriate Project links should be visible');
+      if (!desktop) {
+        assert.equal(await project.isVisible(), false, 'Closed account menu hides mobile project links');
+        await accountToggle.press('Enter');
       }
-      await page.screenshot({ path: path.join(output, `footer-${width}.png`) });
-      receipt.checks.push({ width, native, wheel: true, keyboard: true, forcedColors: true, footer: bounds, publicLinks: true });
+      await project.waitFor({ state: 'visible', timeout: 4000 });
+      assert.equal(await project.getAttribute('aria-label'), 'Project links');
+      const links = [];
+      for (const [name, href] of [['Documentation', 'https://omakase-plus.jhinx.dev/docs'], ['GitHub', 'https://github.com/JhinxDev/omakase-plus'], ['Made by Jhinx Dev', 'https://jhinx.dev']]) {
+        const link = project.getByRole('link', { name, exact: true });
+        assert.equal(await link.getAttribute('href'), href);
+        assert.equal(await link.getAttribute('target'), '_blank');
+        const rel = (await link.getAttribute('rel')).split(/\s+/);
+        assert(rel.includes('noopener') && rel.includes('noreferrer'));
+        await link.focus();
+        assert(await link.evaluate(el => el === document.activeElement && el.matches(':focus-visible')), name + ' must have keyboard focus');
+        const bounds = await link.boundingBox();
+        assert(bounds && bounds.height >= 44 && bounds.width >= 44, name + ' has a 44px target');
+        assert(bounds.x >= 0 && bounds.x + bounds.width <= width + 1, name + ' fits in the viewport');
+        links.push({ name, bounds });
+      }
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Project links must not overflow the page');
+      await page.screenshot({ path: path.join(output, `project-links-${width}.png`) });
+      if (!desktop) {
+        await page.keyboard.press('Escape');
+        assert.equal(await project.isVisible(), false, 'Escape closes the mobile project links');
+        assert(await accountToggle.evaluate(el => el === document.activeElement), 'Escape restores focus to account toggle');
+      }
+      receipt.checks.push({ width, native, wheel: true, keyboard: true, forcedColors: true,
+        publicLinks: { placement: desktop ? 'sidebar' : 'account menu', links, escapeRestoresFocus: !desktop } });
     }
     assert.deepEqual(receipt.errors, []); assert.deepEqual(receipt.writes, []);
     receipt.status = 'PASS';

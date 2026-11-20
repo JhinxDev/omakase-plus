@@ -7,17 +7,27 @@ const {execFileSync} = require('node:child_process');
 const runtime = qaRuntime();
 const {chromium} = require(require.resolve('playwright', {paths:[runtime]}));
 const root = path.resolve(__dirname, '..');
-const html = execFileSync(qaPython(), ['-c', "from scripts.preview_plus_workspace import render; print(render('home'))"], {cwd:root, encoding:'utf8', env:{...process.env,PYTHONIOENCODING:'utf-8'}});
+const html = execFileSync(qaPython(), ['-c', "from scripts.preview_plus_workspace import fixture_home_titles, render; print(render('home', home_titles=fixture_home_titles()[:1]))"], {cwd:root, encoding:'utf8', env:{...process.env,PYTHONIOENCODING:'utf-8'}});
 const staticRoot = path.join(root,'src/omakase/plus/static');
 const svg = (width,height,transparent=false) => `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${transparent?'':`<rect width="100%" height="100%" fill="#467898"/>`}</svg>`;
 const results=[];
+function verifyArtwork(proof, name) {
+ if(proof.state==='cover') {
+  assert.equal(proof.fit,'cover',name);
+  return;
+ }
+ assert.equal(proof.fit,'contain',name);
+ assert(proof.drawn<=1.0001,name+' must not draw above source pixels');
+ if(proof.state==='contained')assert(proof.box[0]<=proof.natural[0]&&proof.box[1]<=proof.natural[1],name+' must not enlarge source');
+}
 (async()=>{
  const browser=await chromium.launch(qaBrowser());
  try {
   for(const scenario of [
    {name:'wide-landscape',width:1440,art:[2560,1440],state:'cover'},
    {name:'large-desktop-landscape',width:2560,art:[2560,1440],state:'cover'},
-   {name:'low-resolution-banner',width:1440,art:[900,300],state:'contained'},
+   {name:'low-resolution-banner',width:1440,art:[120,50],state:'contained'},
+   {name:'failed-banner-with-poster',width:1440,failedBanner:true,state:'contained'},
    {name:'portrait-banner',width:1440,art:[480,720],state:'contained'},
    {name:'transparent-placeholder',width:1440,art:[2,3],transparent:true,state:'unavailable'},
    // hero-quality.js keeps a landscape source on the cover path at every width
@@ -25,7 +35,7 @@ const results=[];
    // is a portrait source, so this scenario carries poster artwork and expects the
    // contained state rather than asking a 2560x1440 banner to become contained.
    {name:'mobile-poster',width:390,art:[480,720],state:'contained',dpr:2},
-   {name:'no-javascript',width:1440,art:[900,300],noJS:true},
+   {name:'no-javascript',width:1440,art:[120,50],noJS:true},
   ]) {
    const context=await browser.newContext({viewport:{width:scenario.width,height:900},deviceScaleFactor:scenario.dpr||1,javaScriptEnabled:!scenario.noJS,reducedMotion:'reduce'});
    const page=await context.newPage();
@@ -40,15 +50,16 @@ const results=[];
     }
     if(url.pathname.match(/\/(banner|poster)$/)) {
      seen.push(url.pathname);
+     if(scenario.failedBanner&&url.pathname.endsWith('/banner'))return route.fulfill({status:404,body:''});
      const size=url.pathname.endsWith('/banner')?scenario.art:scenario.transparent?[2,3]:[480,720];
      return route.fulfill({contentType:'image/svg+xml',body:svg(...size,scenario.transparent)});
     }
     return route.fulfill({status:404,body:''});
    });
    await page.goto('http://hero.test/plus/home',{waitUntil:'networkidle'});
-   const picture=page.locator('picture[data-hero-quality]');
+   const picture=page.locator('[data-home-banner] picture[data-hero-quality]');
    if(scenario.state)await picture.waitFor({state:'visible'});
-   if(scenario.state)await page.waitForFunction(state=>document.querySelector('picture[data-hero-quality]').dataset.heroState===state,scenario.state);
+   if(scenario.state)await page.waitForFunction(state=>document.querySelector('[data-home-banner] picture[data-hero-quality]').dataset.heroState===state,scenario.state);
    const proof=await picture.evaluate(node=>{
     const image=node.querySelector('img');const style=getComputedStyle(image);const bounds=image.getBoundingClientRect();
     const drawn=image.naturalWidth&&image.naturalHeight?(style.objectFit==='cover'?Math.max(bounds.width/image.naturalWidth,bounds.height/image.naturalHeight):Math.min(bounds.width/image.naturalWidth,bounds.height/image.naturalHeight)):0;
@@ -61,17 +72,20 @@ const results=[];
    // the natural size) are what keep the source pixels from being enlarged. Assert
    // the shipped value and the drawn scale, so a later switch to a stretching fit
    // still fails here even though contain itself is intentional.
-   if(proof.state!=='cover')assert.equal(proof.fit,'contain',scenario.name);
-   if(proof.state!=='cover')assert(proof.drawn<=1.0001,scenario.name+' must not draw above source pixels');
-   if(proof.state==='contained')assert(proof.box[0]<=proof.natural[0]&&proof.box[1]<=proof.natural[1],scenario.name+' must not enlarge source');
+   verifyArtwork(proof,scenario.name);
    if(scenario.transparent)assert.equal(proof.visibility,'hidden');
    assert.equal(await page.locator('#featured-title').isVisible(),true);
    assert.deepEqual(errors,[]);
    const heroPoster=await picture.getAttribute('data-hero-poster');
-   assert(seen.filter(value=>value===heroPoster).length<=1,'poster fallback must load at most once');
+   const posterLoads=seen.filter(value=>value===heroPoster).length;
+   assert(posterLoads<=1,'poster fallback must load at most once');
+   if(scenario.failedBanner) {
+    assert.equal(posterLoads,1,'failed banner requests exactly one poster');
+    assert.deepEqual(proof.natural,[480,720],'the fallback shows the poster pixels');
+   }
    if(scenario.name==='low-resolution-banner') {
     await page.setViewportSize({width:390,height:844});
-    await page.waitForFunction(()=>document.querySelector('picture[data-hero-quality]').dataset.heroState==='contained');
+    await page.waitForFunction(()=>document.querySelector('[data-home-banner] picture[data-hero-quality]').dataset.heroState==='contained');
     const narrow=await picture.locator('img').evaluate(image=>{
      const style=getComputedStyle(image),bounds=image.getBoundingClientRect();
      const drawn=Math.min(bounds.width/image.naturalWidth,bounds.height/image.naturalHeight);
@@ -82,6 +96,11 @@ const results=[];
     // at --hero-native-width, so a 900 px banner is not stretched at 390 px.
     assert.equal(narrow.fit,'contain','low-resolution-banner narrow fit');
     assert(narrow.drawn<=1.0001,'low-resolution-banner narrow must not draw above source pixels');
+    // Recreate a stretching regression and confirm the exact check rejects it.
+    const override=await page.addStyleTag({content:'[data-home-banner] picture[data-hero-quality] img{object-fit:fill!important}'});
+    const regressedFit=await picture.locator('img').evaluate(image=>getComputedStyle(image).objectFit);
+    assert.throws(()=>verifyArtwork({...narrow,state:'contained',fit:regressedFit},'stretching regression'),/contain/);
+    await override.evaluate(style=>style.remove());
    }
    results.push({name:scenario.name,...proof,errors});
    await context.close();
