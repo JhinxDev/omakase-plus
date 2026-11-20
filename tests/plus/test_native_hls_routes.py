@@ -7,6 +7,7 @@ from that one pass with its own authorization.
 """
 
 import asyncio
+import time
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -52,7 +53,11 @@ def native_plan(tmp_path, monkeypatch):
 
     def fake_start(self, key, url, duration, *, subtitle_key="", warm=None):
         starts.append((key, url, duration, subtitle_key))
-        plan = native_hls.NativePlan(key, url, duration, tmp_path / key, subtitle_key, warm=warm)
+        # The router injects a clock into this registry. Its idle sweep must
+        # compare against the same time base, not the host's uptime.
+        plan = native_hls.NativePlan(
+            key, url, duration, tmp_path / key, subtitle_key, warm=warm, touched=self.clock()
+        )
         plan.root.mkdir(parents=True, exist_ok=True)
         plan.timeline = timeline
         plan.continuous = getattr(self, "test_continuous", False)
@@ -116,6 +121,9 @@ def _open_native(system, monkeypatch, engine="native"):
 
 
 def test_native_engine_returns_a_fixed_vod_pass(system, monkeypatch, native_plan):
+    # Exercise an injected time that would immediately expire a plan stamped
+    # with the real host clock, irrespective of the runner's uptime.
+    system[3].now = time.monotonic() + 86_400
     native, opened = _open_native(system, monkeypatch)
     assert opened.status_code == 200, opened.text
     data = opened.json()

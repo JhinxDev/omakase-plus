@@ -116,7 +116,7 @@ def _continuous_remux(source: Path, out: Path) -> Path:
             "error",
             "-y",
             "-i",
-            str(source),
+            str(source.resolve()),
             "-map",
             "0:v:0",
             "-map",
@@ -134,17 +134,23 @@ def _continuous_remux(source: Path, out: Path) -> Path:
             "-hls_segment_type",
             "fmp4",
             "-hls_fmp4_init_filename",
-            str(init),
+            init.name,
             "-hls_segment_filename",
-            str(out / "seg%04d.m4s"),
-            str(out / "index.m3u8"),
+            "seg%04d.m4s",
+            "index.m3u8",
         ],
+        # FFmpeg resolves the fMP4 init name relative to the playlist. Keep
+        # all output arguments local to this directory on every platform.
+        cwd=out,
         capture_output=True,
         text=True,
     )
     assert run.returncode == 0, run.stderr[-400:]
-    assert init.exists()
-    return out / "index.m3u8"
+    playlist = out / "index.m3u8"
+    assert init.is_file() and init.stat().st_size > 0
+    assert '#EXT-X-MAP:URI="init.mp4"' in playlist.read_text(encoding="utf-8")
+    assert list(out.glob("seg*.m4s")), "continuous remux produced no media segments"
+    return playlist
 
 
 def test_continuous_remux_preserves_every_source_frame(tmp_path):
