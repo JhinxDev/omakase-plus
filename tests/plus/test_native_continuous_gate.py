@@ -48,13 +48,39 @@ from tests.plus.test_native_hls import (
 FFMPEG = native_hls  # the module is exercised through its own ffmpeg calls
 SEGMENT_SECONDS = 6.006
 
+# Every external process in this file runs under a finite deadline. A test that
+# waits forever reports nothing and hides the defect it exists to catch, so a
+# timeout fails loudly with the command, the deadline, and whatever the child
+# managed to write before it was killed.
+PROCESS_TIMEOUT_SECONDS = 120
+
+
+def _tail(stream, limit: int = 800) -> str:
+    if stream is None:
+        return "<none>"
+    text = stream.decode("utf-8", "ignore") if isinstance(stream, bytes) else str(stream)
+    return text[-limit:] or "<empty>"
+
+
+def _bounded_run(cmd, *, timeout: float = PROCESS_TIMEOUT_SECONDS, **kwargs):
+    try:
+        return subprocess.run(cmd, timeout=timeout, **kwargs)
+    except subprocess.TimeoutExpired as expired:
+        raise AssertionError(
+            f"external process exceeded its {timeout:g}s deadline: {cmd!r}\n"
+            f"captured stdout: {_tail(expired.stdout)}\n"
+            f"captured stderr: {_tail(expired.stderr)}"
+        ) from expired
+
+
+
 def _run(*args) -> None:
-    result = subprocess.run(args, capture_output=True)
+    result = _bounded_run(args, capture_output=True)
     assert result.returncode == 0, result.stderr.decode("utf-8", "ignore")[-800:]
 
 
 def _frames(path: Path, stream: str = "v:0") -> list[float]:
-    result = subprocess.run(
+    result = _bounded_run(
         [
             "ffprobe",
             "-v",
@@ -70,6 +96,10 @@ def _frames(path: Path, stream: str = "v:0") -> list[float]:
         capture_output=True,
         text=True,
     )
+    # Without this check a failed probe returned an empty list, which the caller
+    # then reported as a missing or shortened sequence: a probe failure must
+    # never be able to masquerade as a continuity defect.
+    assert result.returncode == 0, f"ffprobe failed for {path}: {_tail(result.stderr)}"
     return sorted(
         float(row.strip().rstrip(",")) for row in result.stdout.strip().splitlines() if row.strip()
     )
@@ -80,7 +110,7 @@ def _continuous_remux(source: Path, out: Path) -> Path:
     for item in out.iterdir():
         item.unlink()
     init = out / "init.mp4"
-    run = subprocess.run(
+    run = _bounded_run(
         [
             "ffmpeg",
             "-v",
@@ -321,7 +351,7 @@ def test_the_server_session_preserves_the_source_frame_sequence(server_run):
         for src, got in zip(source_times, output_times, strict=True)
     )
     assert worst <= frame * 1.01, f"a frame was displaced by {worst:.3f}s"
-    result = subprocess.run(
+    result = _bounded_run(
         ["ffmpeg", "-v", "error", "-i", str(joined), "-f", "null", "-"],
         capture_output=True,
         text=True,
@@ -372,7 +402,7 @@ def test_dense_keyframes_share_one_playlist_window(tmp_path):
 
 
 def _picture_hashes(path):
-    decoded = subprocess.run(
+    decoded = _bounded_run(
         ["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:v:0",
          "-fps_mode", "passthrough", "-f", "framemd5", "-"],
         capture_output=True, text=True, timeout=25, check=True,
@@ -553,7 +583,7 @@ def test_webvtt_timestamp_map_matches_served_media_after_a_backward_seek(tmp_pat
 
 
 def _packet_clock(path: Path, stream: str) -> dict[str, float]:
-    result = subprocess.run(
+    result = _bounded_run(
         [
             "ffprobe", "-v", "error", "-select_streams", stream, "-show_packets",
             "-show_data_hash", "sha256", "-show_entries", "packet=pts_time,data_hash",
@@ -569,7 +599,7 @@ def _packet_clock(path: Path, stream: str) -> dict[str, float]:
 
 
 def _source_packet_times(path: Path, stream: str) -> list[float]:
-    result = subprocess.run(
+    result = _bounded_run(
         ["ffprobe", "-v", "error", "-select_streams", stream, "-show_entries",
          "packet=pts_time", "-of", "csv=p=0", str(path)],
         capture_output=True,

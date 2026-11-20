@@ -19,6 +19,20 @@ ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = Path(__file__).resolve().parent
 SITE_PACKAGES = "/usr/local/lib/python3.12/site-packages"
 
+# Generation resolves one accepted commit and reads three blobs from it, all local
+# plumbing against a repository on this machine: seconds of work. The deadline is
+# generous for a cold cache or a large object store but finite, so a wedged git
+# process fails with an explanation instead of hanging the regeneration silently.
+GIT_TIMEOUT_SECONDS = 120
+
+
+def _tail(stream, limit: int = 800) -> str:
+    """Whatever a killed child captured, for the one message that explains it."""
+    if stream is None:
+        return "<none>"
+    text = stream.decode("utf-8", "replace") if isinstance(stream, bytes) else str(stream)
+    return text[-limit:].strip() or "<empty>"
+
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
@@ -70,18 +84,40 @@ def overlay(relative, original):
 def generate(*, check=False, base=BASE):
     if base != BASE:
         raise ValueError("Recovery requires the exact accepted base commit")
-    actual = (
-        subprocess.check_output(["git", "rev-parse", "--verify", BASE + "^{commit}"], cwd=ROOT)
-        .decode()
-        .strip()
-    )
+    try:
+        actual = (
+            subprocess.check_output(
+                ["git", "rev-parse", "--verify", BASE + "^{commit}"],
+                cwd=ROOT,
+                timeout=GIT_TIMEOUT_SECONDS,
+            )
+            .decode()
+            .strip()
+        )
+    except subprocess.TimeoutExpired as expired:
+        raise ValueError(
+            f"git rev-parse exceeded its {expired.timeout:g}s deadline resolving {BASE}"
+            f"\ncaptured stdout: {_tail(expired.stdout)}"
+            f"\ncaptured stderr: {_tail(expired.stderr)}"
+        ) from expired
     if actual != BASE:
         raise ValueError("Accepted base identity mismatch")
     outputs = {}
     records = []
     for relative in FILES:
         source_path = "src/omakase/plus/" + relative
-        original = subprocess.check_output(["git", "show", BASE + ":" + source_path], cwd=ROOT)
+        try:
+            original = subprocess.check_output(
+                ["git", "show", BASE + ":" + source_path],
+                cwd=ROOT,
+                timeout=GIT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as expired:
+            raise ValueError(
+                f"git show exceeded its {expired.timeout:g}s deadline reading {source_path}"
+                f"\ncaptured stdout: {_tail(expired.stdout)}"
+                f"\ncaptured stderr: {_tail(expired.stderr)}"
+            ) from expired
         patched = overlay(relative, original)
         destination = "overlay/omakase/plus/" + relative
         patch_path = "patches/" + relative.replace("/", "-") + ".patch"

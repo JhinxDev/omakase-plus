@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections.abc import Callable
+from itertools import count
 from pathlib import Path
 from unittest.mock import patch
 
@@ -114,12 +116,25 @@ def test_provider_waits_for_owned_queue_result_and_preserves_terminal_state(tmp_
         db.close()
 
 
+def _deadline_already_passed(step: float = 10_000.0) -> Callable[[], float]:
+    """A clock whose every reading is a full step ahead of the one before it.
+
+    The provider sets its deadline from one reading and tests it with the next, so a
+    fixed list of readings stops being valid the moment anything else in the call path
+    reads the clock: the database layer reads it while opening the connection. Jumping
+    a large step per reading makes the deadline already passed on the first test,
+    whatever the number and order of readers turns out to be.
+    """
+    readings = count(step, step)
+    return lambda: float(next(readings))
+
+
 def test_provider_timeout_cancels_queue_and_erases_prompt(tmp_path):
     db = _user_queue(tmp_path)
     try:
         with (
             request_context(1, str(tmp_path)),
-            patch("omakase.llm.codex.time.monotonic", side_effect=[0, 1000]),
+            patch("omakase.llm.codex.time.monotonic", side_effect=_deadline_already_passed()),
         ):
             with pytest.raises(CodexJobError, match="deadline"):
                 CodexLLM("", "gpt-6-astra").generate("private candidate prompt")

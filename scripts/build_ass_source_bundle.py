@@ -26,6 +26,19 @@ PROVENANCE = ROOT / "THIRD-PARTY/jassub-2.5.23"
 ASSETS = ROOT / "src/omakase/plus/static/ass"
 PROJECTS = ("jassub", "brotli", "freetype", "fribidi", "harfbuzz", "libass")
 
+# esbuild bundles one ASS worker per copy, which is seconds of work; the deadline is
+# generous for a loaded machine but finite, so a stalled bundler fails instead of
+# hanging a release build with no explanation.
+ESBUILD_TIMEOUT_SECONDS = 300
+
+
+def _tail(stream, limit: int = 400) -> str:
+    """Whatever a killed child captured, for the one message that explains it."""
+    if stream is None:
+        return "<none>"
+    text = stream.decode("utf-8", "replace") if isinstance(stream, bytes) else str(stream)
+    return text[-limit:].strip() or "<empty>"
+
 
 def sha256(data):
     return hashlib.sha256(data).hexdigest()
@@ -165,21 +178,32 @@ def relink(bundle_root, native_tree, output):
             (entry, "jassub.js"),
             (package / "dist/worker/worker.js", "worker.js"),
         ):
-            subprocess.run(
-                [
-                    str(executable),
-                    str(original),
-                    "--bundle",
-                    "--format=esm",
-                    "--platform=browser",
-                    "--target=es2022",
-                    "--legal-comments=inline",
-                    "--banner:js=" + RIGHTS_BANNER + (guard if target == "worker.js" else ""),
-                    "--outfile=" + str(output / target),
-                ],
-                cwd=work,
-                check=True,
-            )
+            try:
+                subprocess.run(
+                    [
+                        str(executable),
+                        str(original),
+                        "--bundle",
+                        "--format=esm",
+                        "--platform=browser",
+                        "--target=es2022",
+                        "--legal-comments=inline",
+                        "--banner:js=" + RIGHTS_BANNER + (guard if target == "worker.js" else ""),
+                        "--outfile=" + str(output / target),
+                    ],
+                    cwd=work,
+                    check=True,
+                    timeout=ESBUILD_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired as expired:
+                # The command is named by its executable and target: expired.cmd
+                # carries the whole rights banner, which explains nothing here.
+                raise ValueError(
+                    f"esbuild exceeded its {expired.timeout:g}s deadline bundling {target}: "
+                    f"{executable}\n"
+                    f"captured stdout: {_tail(expired.stdout)}\n"
+                    f"captured stderr: {_tail(expired.stderr)}"
+                ) from expired
         for name in ("jassub-worker.wasm", "jassub-worker-modern.wasm"):
             shutil.copyfile(package / "dist/wasm" / name, output / name)
         shutil.copyfile(package / "dist/default.woff2", output / "default.woff2")

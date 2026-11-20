@@ -53,19 +53,41 @@ TEMPLATE_RE = re.compile(
 )
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
+# Apply downloads a template and then runs the guest bootstrap through ``pct exec``,
+# which installs the stack inside the new container against a package mirror. That
+# is minutes of work on a fresh mirror, so the deadline is generous but finite: a
+# wedged helper fails with an explanation instead of hanging the apply silently.
+PROVISION_TIMEOUT_SECONDS = 1800
+
 
 class BootstrapError(RuntimeError):
     """Configuration, preflight, or apply failure."""
 
 
+def _tail(stream: bytes | str | None, limit: int = 800) -> str:
+    """Whatever a killed child captured, for the one message that explains it."""
+    if stream is None:
+        return "<none>"
+    text = stream.decode("utf-8", "replace") if isinstance(stream, bytes) else str(stream)
+    return text[-limit:].strip() or "<empty>"
+
+
 def run(*args: str, check: bool = True, input_text: str | None = None) -> str:
-    completed = subprocess.run(
-        args,
-        check=False,
-        input=input_text,
-        text=True,
-        capture_output=True,
-    )
+    try:
+        completed = subprocess.run(
+            args,
+            check=False,
+            input=input_text,
+            text=True,
+            capture_output=True,
+            timeout=PROVISION_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as expired:
+        raise BootstrapError(
+            f"{' '.join(args[:2])} exceeded its {expired.timeout:g}s deadline"
+            f"\ncaptured stdout: {_tail(expired.stdout)}"
+            f"\ncaptured stderr: {_tail(expired.stderr)}"
+        ) from expired
     if check and completed.returncode:
         detail = completed.stderr.strip() or completed.stdout.strip() or "command failed"
         raise BootstrapError(f"{args[0]} failed: {detail[:300]}")
