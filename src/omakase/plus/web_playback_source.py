@@ -127,6 +127,8 @@ class ResolvedAnimeSource:
     frame_rate: float | None = None
     episode_name: str = field(default="", repr=False, compare=False)
     episode_summary: str = field(default="", repr=False, compare=False)
+    width: int | None = None
+    height: int | None = None
 
     @property
     def canonical_id(self):
@@ -551,6 +553,13 @@ def _resolved_part(
         frame_rate = float(video_stream.get("frameRate", "0")) if video_stream is not None else 0
     except ValueError:
         frame_rate = 0
+
+    def pixels(key):
+        value = media.get(key, "")
+        return (
+            int(value) if re.fullmatch(r"[1-9][0-9]{0,4}", value) and int(value) <= 16384 else None
+        )
+
     return ResolvedAnimeSource(
         scope.viewer_id,
         scope.library_id,
@@ -582,6 +591,8 @@ def _resolved_part(
         frame_rate=frame_rate if 0 < frame_rate <= 240 else None,
         episode_name=_episode_text(video, "title", 120) if episode_number else "",
         episode_summary=_episode_text(video, "summary", 650) if episode_number else "",
+        width=pixels("width"),
+        height=pixels("height"),
     )
 
 

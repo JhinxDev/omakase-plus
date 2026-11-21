@@ -62,7 +62,13 @@ from omakase.plus.debrid_library import (
 )
 from omakase.plus.debrid_stream import DebridMedia, DebridStreams, subtitle_cache_key
 from omakase.plus.deps import get_db
-from omakase.plus.direct_stream import DirectError, DirectStream, RefreshedOrigin, open_direct
+from omakase.plus.direct_stream import (
+    DirectError,
+    DirectStream,
+    RefreshedOrigin,
+    container_of,
+    open_direct,
+)
 from omakase.plus.direct_stream import source_for as direct_source_for
 from omakase.plus.history_artwork import (
     EpisodeArtworkUnavailable,
@@ -444,6 +450,45 @@ def _playback_languages(grant, streams=None):
         for name, tracks in (("audio_languages", audio), ("subtitle_languages", subtitles))
         if (names := labels(tracks))
     }
+
+
+def _media_information(source, *, direct=None, timeline=None):
+    """Use playback's existing file and stream evidence without issuing a new probe."""
+    original = getattr(source, "cloud", source)
+    if direct is not None:
+        container = direct.source.container
+        size = direct.source.size
+    else:
+        container = getattr(original, "container", "") or container_of(
+            getattr(original, "title", "")
+        )
+        size = getattr(original, "size", None) or getattr(original, "part_size", None)
+    video = getattr(timeline, "video_codec", None) or getattr(original, "video_codec", None)
+    audio = [track.codec for track in getattr(timeline, "audios", ())]
+    if not audio:
+        audio = [getattr(original, "audio_codec", None)]
+
+    def codec(value):
+        return (
+            value
+            if isinstance(value, str) and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,39}", value)
+            else None
+        )
+
+    info = {}
+    for key, value in (("container", container), ("video_codec", video)):
+        if safe := codec(value):
+            info[key] = safe
+    if tracks := list(dict.fromkeys(safe for value in audio if (safe := codec(value))))[:4]:
+        info["audio_codecs"] = tracks
+    dims = tuple(
+        getattr(timeline, key, None) or getattr(original, key, None) for key in ("width", "height")
+    )
+    if all(type(value) is int and 0 < value <= 16384 for value in dims):
+        info["width"], info["height"] = dims
+    if type(size) is int and 0 < size <= 10**13:
+        info["file_bytes"] = size
+    return info
 
 
 # --- Apple TV playback diagnostic shape -------------------------------------
@@ -1471,6 +1516,10 @@ def create_native_tv_test_router(
             for key in ("episode_name", "episode_summary")
             if target.episode_number and (value := getattr(grant.source, key, ""))
         }
+        native_plan = cloud_streams.native.peek(grant.native_key) if grant.native_key else None
+        media_info = _media_information(
+            grant.source, direct=grant.direct, timeline=getattr(native_plan, "timeline", None)
+        )
         response = JSONResponse(
             {
                 "title": grant.title,
@@ -1503,6 +1552,7 @@ def create_native_tv_test_router(
                 **({"access_check": True} if grant.library_key is not None else {}),
                 **episode_metadata,
                 **_playback_languages(grant, cloud_streams),
+                **({"media_info": media_info} if media_info else {}),
                 **(
                     {
                         "resume_sync": True,
@@ -2553,6 +2603,9 @@ def create_native_tv_test_router(
             for previous_id, grant in tuple(passes.items()):
                 if grant.library_key == key and grant.native_key:
                     drop_pass(previous_id)
+        media_info = _media_information(
+            source, direct=direct, timeline=getattr(native, "timeline", None)
+        )
         return JSONResponse(
             {
                 "title": source.title,
@@ -2575,6 +2628,7 @@ def create_native_tv_test_router(
                 "duration_seconds": source.duration,
                 "position_seconds": 0,
                 "access_check": True,
+                **({"media_info": media_info} if media_info else {}),
                 "identity": {
                     "library_id": scope.library_id,
                     "domain": "cloud",

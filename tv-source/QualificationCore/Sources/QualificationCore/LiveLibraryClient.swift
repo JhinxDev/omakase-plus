@@ -707,10 +707,11 @@ public struct LiveLibraryClient: Sendable {
     @MainActor
     public func resumeWriter(
         for pass: LiveTestPass,
+        onSaved: @escaping (Double) -> Void = { _ in },
         onAccessLost: @escaping (LivePlaybackAccessLoss) -> Void = { _ in }
     ) -> LiveResumeWriter? {
         guard pass.supportsResumeSync else { return nil }
-        return LiveResumeWriter(onAccessLost: onAccessLost) { seq, position in
+        return LiveResumeWriter(onAccessLost: onAccessLost, onSaved: onSaved) { seq, position in
             struct Sample: Encodable { let seq: Int; let position_seconds: Double }
             struct Receipt: Decodable { let saved_at: Double }
             let body = try JSONEncoder().encode(Sample(seq: seq, position_seconds: min(position, pass.duration)))
@@ -857,6 +858,7 @@ public final class LiveResumeWriter {
     }
 
     private let onAccessLost: (LivePlaybackAccessLoss) -> Void
+    private let onSaved: (Double) -> Void
     private let save: (Int, Double) async throws -> Void
     private var task: Task<Void, Never>?
     private var pending: Double?
@@ -866,8 +868,10 @@ public final class LiveResumeWriter {
     public private(set) var localPosition: Double?
 
     init(onAccessLost: @escaping (LivePlaybackAccessLoss) -> Void = { _ in },
+         onSaved: @escaping (Double) -> Void = { _ in },
          save: @escaping (Int, Double) async throws -> Void) {
         self.onAccessLost = onAccessLost
+        self.onSaved = onSaved
         self.save = save
     }
 
@@ -900,6 +904,7 @@ public final class LiveResumeWriter {
         unsaved = nil
         do {
             try await saveWithRetry(checkpoint.sequence, checkpoint.position)
+            onSaved(checkpoint.position)
         } catch LiveLibraryError.resumeSuperseded {
             superseded = true
             pending = nil

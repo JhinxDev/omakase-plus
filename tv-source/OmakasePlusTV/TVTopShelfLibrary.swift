@@ -35,7 +35,7 @@ enum TVTopShelfLibrary {
 
     private static var refreshGeneration = 0
     private static let maximumAge: TimeInterval = 6 * 60 * 60
-    private static let perKindLimit = 2
+    private static let resumeLimit = 6
 
     static func request(for link: TVTopShelfLink) -> Request? {
         guard let snapshot = TVTopShelfStore.shared()?.snapshot(), let card = snapshot.card(for: link)
@@ -56,36 +56,32 @@ enum TVTopShelfLibrary {
         guard client.selectedLibrary == nil, scope(for: profile) == request.scope,
               profile.expiresAt > Date(), let kind = LiveLibraryKind(rawValue: request.card.kind),
               kind != .cloud else { return nil }
-        let entries: [LiveLibraryEntry]
+        let entries: [Candidate]
         switch request.card.action {
         case .resume:
-            entries = try await client.page(kind: kind, title: nil, offset: 0).continueWatching ?? []
+            entries = try await resumeCandidates(client: client).filter { $0.kind == kind }
         case .details:
-            entries = try await client.watchlist()
+            entries = try await savedCandidates(client: client)
         }
-        let match = entries.first { entry in
-            let candidate = Candidate(entry: entry, kind: kind, action: request.card.action)
-            return target(for: candidate) == request.card.match
-        }
+        let match = entries.first { target(for: $0) == request.card.match }
         return match.map { TVTopShelfDestination(id: request.id, kind: kind,
-                                                 action: request.card.action, entry: $0) }
+                                                 action: request.card.action, entry: $0.entry) }
     }
 
     static func refresh(client: LiveLibraryClient, profile: LiveSavedProfile,
+                        fetchArtwork: Bool = true,
                         stillSelected: () -> Bool) async {
         guard let store = TVTopShelfStore.shared(), let scope = scope(for: profile),
               client.selectedLibrary == nil, profile.expiresAt > Date() else { return }
         refreshGeneration += 1
         let generation = refreshGeneration
         do {
-            async let anime = resumeCandidates(kind: .anime, client: client)
-            async let movies = resumeCandidates(kind: .movie, client: client)
-            async let tv = resumeCandidates(kind: .tv, client: client)
+            async let resumes = resumeCandidates(client: client)
             async let saved = savedCandidates(client: client)
-            let (animeRows, movieRows, tvRows, savedRows) = try await (anime, movies, tv, saved)
+            let (resumeRows, savedRows) = try await (resumes, saved)
             try Task.checkCancellation()
             guard refreshGeneration == generation, stillSelected() else { return }
-            let candidates = animeRows + movieRows + tvRows + savedRows
+            let candidates = Array(resumeRows.prefix(resumeLimit)) + savedRows
             let previous = store.snapshot()
             var tiles: [(TVTopShelfCard, Candidate)] = []
             var fallbackImages: [UUID: Data] = [:]
@@ -108,6 +104,7 @@ enum TVTopShelfLibrary {
                 expiresAt: min(Date().addingTimeInterval(maximumAge), profile.expiresAt), cards: tiles.map(\.0))
             try store.publish(snapshot, artwork: fallbackImages)
             TVTopShelfContentProvider.topShelfContentDidChange()
+            guard fetchArtwork else { return }
 
             var images: [UUID: Data] = [:]
             // Keep at most four artwork requests in flight. The local shelf is already usable.
@@ -117,7 +114,7 @@ enum TVTopShelfLibrary {
                 let fetched = await withTaskGroup(of: (UUID, Data?).self) { tasks in
                     for (card, candidate) in tiles[start..<end] {
                         tasks.addTask {
-                            let data = try? await client.artwork(candidate.entry, banner: card.action == .resume)
+                            let data = try? await client.artwork(candidate.entry, banner: false)
                             return (card.id, data)
                         }
                     }
@@ -140,21 +137,23 @@ enum TVTopShelfLibrary {
         }
     }
 
-    private static func resumeCandidates(kind: LiveLibraryKind, client: LiveLibraryClient) async throws -> [Candidate] {
-        do {
-            let page = try await client.page(kind: kind, title: nil, offset: 0)
-            let entries = (page.continueWatching ?? []).lazy.filter { ($0.featuredPath ?? $0.watchPath) != nil }
-            return entries.prefix(perKindLimit).map { Candidate(entry: $0, kind: kind, action: .resume) }
-        } catch FixtureConnectionError.unauthorized {
-            throw FixtureConnectionError.unauthorized
-        } catch {
-            return []
+    private static func resumeCandidates(client: LiveLibraryClient) async throws -> [Candidate] {
+        let home = try await client.homeProjection(as: HomeProjection.self)
+        let continueRows: Set<String> = ["continue-anime", "continue-movies", "continue-tv"]
+        let cards = home.rows.filter { continueRows.contains($0.id) }.flatMap(\.cards)
+        let order = TVTopShelfRecency()
+        return cards.compactMap { card -> (String, Date, Candidate)? in
+            let entry = card.entry
+            guard entry.watchPath != nil, card.domain != .cloud else { return nil }
+            return (card.id, order.date(card.lastWatchAt), Candidate(entry: entry, kind: card.domain, action: .resume))
         }
+        .sorted { ($0.1, $0.0) > ($1.1, $1.0) }
+        .map { $0.2 }
     }
 
     private static func savedCandidates(client: LiveLibraryClient) async throws -> [Candidate] {
         do {
-            return try await client.watchlist().prefix(8).map { Candidate(entry: $0, kind: .anime, action: .details) }
+            return try await client.watchlist().prefix(4).map { Candidate(entry: $0, kind: .anime, action: .details) }
         } catch FixtureConnectionError.unauthorized {
             throw FixtureConnectionError.unauthorized
         } catch {
@@ -189,7 +188,7 @@ enum TVTopShelfLibrary {
     }
 
     private static func renderedArtwork(_ data: Data?, card: TVTopShelfCard) -> Data? {
-        let size = card.action == .resume ? CGSize(width: 800, height: 450) : CGSize(width: 404, height: 606)
+        let size = card.action == .resume ? CGSize(width: 480, height: 480) : CGSize(width: 404, height: 606)
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = true

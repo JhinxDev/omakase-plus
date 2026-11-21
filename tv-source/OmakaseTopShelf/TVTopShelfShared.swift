@@ -1,5 +1,19 @@
 import Foundation
 
+struct TVTopShelfRecency {
+    private let withFraction = ISO8601DateFormatter()
+    private let standard = ISO8601DateFormatter()
+
+    init() {
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    }
+
+    func date(_ value: String?) -> Date {
+        guard let value else { return .distantPast }
+        return withFraction.date(from: value) ?? standard.date(from: value) ?? .distantPast
+    }
+}
+
 enum TVTopShelfActionKind: String, CaseIterable, Codable, Sendable {
     case resume, details
 

@@ -11,6 +11,8 @@ extension Color {
     static let tvMuted = Color(omakaseHex: 0xBDC4D1)
     static let tvAccent = Color(omakaseHex: 0xC3B1FF)
     static let tvFocus = Color(omakaseHex: 0xD2C2FF)
+    static let tvFocusBorder = Color(omakaseHex: 0xAF8DF6)
+    static let tvFocusSurface = Color(omakaseHex: 0x2A2140)
     static let tvOnFocus = Color(omakaseHex: 0x171124)
     static let tvWarning = Color(omakaseHex: 0xE9B565)
 
@@ -54,7 +56,7 @@ struct TVActionStyle: ButtonStyle {
                 .frame(minHeight: 68)
                 .background {
                     RoundedRectangle(cornerRadius: 10)
-                        .fill(selected ? Color.tvAccent.opacity(0.18) : Color.tvRaised)
+                        .fill(focused ? Color.tvFocusSurface : selected ? Color.tvAccent.opacity(0.18) : Color.tvRaised)
                         .overlay {
                             RoundedRectangle(cornerRadius: 10)
                                 .fill(tint.opacity(isPressed ? 0.15 : 0.08))
@@ -62,8 +64,8 @@ struct TVActionStyle: ButtonStyle {
                 }
                 .overlay {
                     RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(focused ? Color.tvFocus : selected ? Color.tvAccent.opacity(0.6) : Color.tvKeyline,
-                                      lineWidth: focused ? 4 : 2)
+                        .strokeBorder(focused ? Color.tvFocusBorder : selected ? Color.tvAccent.opacity(0.6) : Color.tvKeyline,
+                                      lineWidth: focused ? 3 : 2)
                 }
                 .scaleEffect(focused && !reduceMotion ? 1.03 : 1)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: focused)
@@ -425,6 +427,7 @@ struct TitleScreen: View {
     var runtimeSeconds: Int? = nil
     var audioLanguages: [String] = []
     var subtitleLanguages: [String] = []
+    var mediaInformation: LiveMediaInformation? = nil
     var resumeImmediately = false
     let startPlayback: (Bool) async -> Bool
     let back: () -> Void
@@ -516,7 +519,8 @@ struct TitleScreen: View {
                 focus = .play
             }
         }) {
-            PlayerScreen(session: session, showsDiagnostics: false, playNext: playNext) {
+            PlayerScreen(session: session, showsDiagnostics: false, playNext: playNext,
+                         mediaInformation: mediaInformation) {
                 dismissedByPlayer = true
                 showingPlayer = false
             }
