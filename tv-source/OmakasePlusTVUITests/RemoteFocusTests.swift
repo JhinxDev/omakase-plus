@@ -6,6 +6,16 @@ import UIKit
 final class RemoteFocusRenderingTests: XCTestCase {
     private struct Stop: Error {}
 
+    private struct FixturePlayback: Decodable {
+        let freshPassesOpened: Int
+        let checkpointSeq: Int
+
+        enum CodingKeys: String, CodingKey {
+            case freshPassesOpened = "fresh_passes_opened"
+            case checkpointSeq = "checkpoint_seq"
+        }
+    }
+
     @MainActor
     private func launchHome() throws -> XCUIApplication {
         continueAfterFailure = false
@@ -42,37 +52,51 @@ final class RemoteFocusRenderingTests: XCTestCase {
         let card = app.buttons["home-card-continue-movies-qa-movie"]
         try reach(card, in: app)
         try checkBackplate(card, in: app, name: "02-continue-watching", card: true)
-        let before = try await fixturePasses()
+        let before = try await fixturePlayback().freshPassesOpened
         XCUIRemote.shared.press(.select)
-        // Read the same synthetic companion used by ConnectedQualification, so
-        // an inert Select gesture or a loading/error surface cannot count as play.
-        var started = false
-        for _ in 0..<20 {
-            if try await fixturePasses() > before { started = true; break }
-            try await Task.sleep(for: .seconds(1))
-        }
-        XCTAssertTrue(started, "Select must open one authenticated playback pass")
-        // AVKit may consume one Menu press to dismiss its transport controls.
-        for _ in 0..<2 {
-            if card.exists && card.hasFocus { break }
-            XCUIRemote.shared.press(.menu)
-            try await Task.sleep(for: .seconds(1))
-        }
-        let returned = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == true AND hasFocus == true"), object: card)
-        XCTAssertEqual(XCTWaiter.wait(for: [returned], timeout: 10), .completed,
-                       "Menu must restore the exact selected Home card")
+        try await waitForPlayback(after: before)
+        try await returnFromPlayer(to: card, in: app)
         try checkBackplate(card, in: app, name: "03-returned-card", card: true)
     }
 
-    private func fixturePasses() async throws -> Int {
+    private func fixturePlayback() async throws -> FixturePlayback {
         let url = try XCTUnwrap(URL(string: "https://127.0.0.1:8854/qa/state"))
         var request = URLRequest(url: url)
         request.timeoutInterval = 8
         let (data, response) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
-        let state = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        return try XCTUnwrap(state["fresh_passes_opened"] as? Int)
+        return try JSONDecoder().decode(FixturePlayback.self, from: data)
+    }
+
+    @MainActor
+    private func waitForPlayback(after previousPasses: Int) async throws {
+        // Creating the pass precedes presenting AVKit. The fixture resets the
+        // checkpoint sequence when it opens a new pass.
+        for _ in 0..<20 {
+            let proof = try await fixturePlayback()
+            if proof.freshPassesOpened == previousPasses + 1 && proof.checkpointSeq > 0 { return }
+            try await Task.sleep(for: .seconds(1))
+        }
+        XCTFail("Select must open one authenticated playback pass and reach its first checkpoint")
+        throw Stop()
+    }
+
+    @MainActor
+    private func returnFromPlayer(to card: XCUIElement, in app: XCUIApplication) async throws {
+        let ready = NSPredicate(format: "exists == true AND enabled == true")
+        // AVKit may consume one Menu press to hide its transport. Give each
+        // transition time to finish before deciding whether to press again.
+        for _ in 0..<2 {
+            if card.exists && card.isEnabled { break }
+            XCUIRemote.shared.press(.menu)
+            let redisplayed = XCTNSPredicateExpectation(predicate: ready, object: card)
+            if await XCTWaiter.fulfillment(of: [redisplayed], timeout: 2.5) == .completed { break }
+        }
+        let focused = NSPredicate(format: "exists == true AND enabled == true AND hasFocus == true")
+        let restored = XCTNSPredicateExpectation(predicate: focused, object: card)
+        let result = await XCTWaiter.fulfillment(of: [restored], timeout: 10)
+        XCTAssertEqual(result, .completed,
+                       "Menu must restore the enabled card that opened playback.\n\(app.debugDescription)")
     }
 
     @MainActor
@@ -84,12 +108,12 @@ final class RemoteFocusRenderingTests: XCTestCase {
         XCUIRemote.shared.press(.select)
         let card = app.buttons["continue-tt0000002"]
         try reach(card, in: app)
-        let before = try await fixturePasses()
+        let before = try await fixturePlayback().freshPassesOpened
         XCUIRemote.shared.press(.select, forDuration: 0.9)
         let close = app.buttons.matching(NSPredicate(format: "label == %@", "Close")).firstMatch
         XCTAssertTrue(close.waitForExistence(timeout: 10), "Long select must open library details")
         try await Task.sleep(for: .seconds(1))
-        let afterLongSelect = try await fixturePasses()
+        let afterLongSelect = try await fixturePlayback().freshPassesOpened
         XCTAssertEqual(afterLongSelect, before, "Long select must never also invoke short-select playback")
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "04-library-long-select-details"; shot.lifetime = .keepAlways; add(shot)
@@ -98,20 +122,8 @@ final class RemoteFocusRenderingTests: XCTestCase {
             predicate: NSPredicate(format: "exists == true AND hasFocus == true"), object: card)
         XCTAssertEqual(XCTWaiter.wait(for: [returned], timeout: 8), .completed)
         XCUIRemote.shared.press(.select)
-        var started = false
-        for _ in 0..<20 {
-            if try await fixturePasses() > before { started = true; break }
-            try await Task.sleep(for: .seconds(1))
-        }
-        XCTAssertTrue(started, "Short select after closing details must still play")
-        for _ in 0..<2 {
-            if card.exists && card.hasFocus { break }
-            XCUIRemote.shared.press(.menu)
-            try await Task.sleep(for: .seconds(1))
-        }
-        let returnedAfterPlay = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == true AND hasFocus == true"), object: card)
-        XCTAssertEqual(XCTWaiter.wait(for: [returnedAfterPlay], timeout: 10), .completed)
+        try await waitForPlayback(after: before)
+        try await returnFromPlayer(to: card, in: app)
     }
 
     @MainActor
