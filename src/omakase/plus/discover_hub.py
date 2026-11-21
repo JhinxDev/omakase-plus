@@ -388,7 +388,7 @@ def _screen_signature(db, user_id):
     )
 
 
-async def _screen_shelves(db, user_id, signature):
+async def _screen_shelves(db, user_id, signature, kind):
     svc = MovieService(db, movie_connections(db, user_id))
 
     async def movies():
@@ -492,43 +492,52 @@ async def _screen_shelves(db, user_id, signature):
             )
         return sorted(cards, key=lambda card: card["affinity"], reverse=True)[:_CARD_LIMIT]
 
-    movies_row, tv_row = await asyncio.gather(movies(), television())
-    return [
-        row
-        for row in (
-            _shelf("movies", "Movies for You", movies_row),
-            _shelf("tv", "TV Shows for You", tv_row),
-        )
-        if row["cards"]
-    ]
+    if kind == "movies":
+        cards = await movies()
+        heading = "Movies for You"
+    else:
+        cards = await television()
+        heading = "TV Shows for You"
+    return [_shelf(kind, heading, cards)] if cards else []
 
 
-async def screen_shelves(db, user_id):
+async def screen_shelves(db, user_id, *, kind="screen"):
     signature = _screen_signature(db, user_id)
-    cached = _screen_rows.get(user_id)
+    if kind == "screen":
+        movies, tv = await asyncio.gather(
+            _cached_screen_shelf(db, user_id, signature, "movies"),
+            _cached_screen_shelf(db, user_id, signature, "tv"),
+        )
+        return movies + tv
+    return await _cached_screen_shelf(db, user_id, signature, kind)
+
+
+async def _cached_screen_shelf(db, user_id, signature, kind):
+    key = (user_id, kind)
+    cached = _screen_rows.get(key)
     now = time.monotonic()
     if cached and cached[0] > now and cached[1] == signature:
         return cached[2]
-    if user_id in _screen_tasks:
-        return await asyncio.shield(_screen_tasks[user_id])
+    if key in _screen_tasks:
+        return await asyncio.shield(_screen_tasks[key])
     if len(_screen_tasks) >= 4:
         return cached[2] if cached else []
     # The route owns its DB connection until this task completes.
-    task = asyncio.create_task(_screen_shelves(db, user_id, signature))
-    _screen_tasks[user_id] = task
+    task = asyncio.create_task(_screen_shelves(db, user_id, signature, kind))
+    _screen_tasks[key] = task
     try:
         rows = await task
     finally:
-        _screen_tasks.pop(user_id, None)
-    _screen_rows[user_id] = (now + (600 if rows else 60), signature, rows)
-    _screen_rows.move_to_end(user_id)
+        _screen_tasks.pop(key, None)
+    _screen_rows[key] = (now + (600 if rows else 60), signature, rows)
+    _screen_rows.move_to_end(key)
     if len(_screen_rows) > 64:
         _screen_rows.popitem(last=False)
     return rows
 
 
 def television_artwork(user_id, media_id):
-    cached = _screen_rows.get(user_id)
+    cached = _screen_rows.get((user_id, "tv"))
     if not cached:
         return None
     return next(

@@ -196,11 +196,18 @@ class MovieHistoryService:
         return store.upsert_movie(self.db, user_id, metadata, now=_iso(self.movies._clock()))
 
     async def save(
-        self, user_id: int, *, imdb_id: str, tmdb_id: int, status: Any = UNSET, rating: Any = UNSET
+        self,
+        user_id: int,
+        *,
+        imdb_id: str,
+        tmdb_id: int,
+        status: Any = UNSET,
+        rating: Any = UNSET,
+        comment: str | None = None,
     ) -> dict[str, Any]:
         self._guard(user_id)
         imdb_id, tmdb_id = _imdb(imdb_id), _positive(tmdb_id)
-        if status is UNSET and rating is UNSET:
+        if status is UNSET and rating is UNSET and comment is None:
             raise MovieError("invalid_input")
         if status is not UNSET and status not in WATCH_STATUSES:
             raise MovieError("invalid_input")
@@ -218,6 +225,10 @@ class MovieHistoryService:
                 self._change(user_id, imdb_id, "status", status, "manual", "manual")
             if rating is not UNSET:
                 self._change(user_id, imdb_id, "rating", rating, "manual", "manual")
+            if comment is not None:
+                from omakase.plus import title_reviews
+
+                title_reviews.save(self.db, user_id, "movie", imdb_id, comment=comment)
             result = self.get(user_id, imdb_id)
             record_movie_cleanup_intent(
                 self.db,

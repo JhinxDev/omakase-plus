@@ -86,8 +86,8 @@ def test_real_tracking_route_marks_disconnected_states_neutral(semantic_client):
     )
     response = client.get("/plus/settings/tracking")
     assert response.status_code == 200
-    assert "privacy-stamp semantic-state--disconnected" in response.text
-    assert response.text.count('class="state-tag semantic-state--disconnected">Disconnected') == 2
+    assert 'class="state-tag semantic-state--disconnected">Disconnected' in response.text
+    assert 'class="state-tag semantic-state--disconnected">Not configured' in response.text
     assert "semantic-state--connected" not in response.text
     assert 'name="csrf_token"' in response.text
 
@@ -99,9 +99,9 @@ def test_tracking_fragment_uses_explicit_connection_variants(connected):
         apple_tv_integration=SimpleNamespace(enabled=connected, key_id="fixture-key"),
         apple_tv_watch_enabled=False,
     )
-    variant = "connected" if connected else "disconnected"
-    assert f"privacy-stamp semantic-state--{variant}" in rendered
-    assert rendered.count(f"semantic-state--{variant}") == 3
+    assert ('semantic-state--connected">AniList linked' in rendered) == connected
+    bridge = "Ingestion disabled" if connected else "Not configured"
+    assert f'semantic-state--disconnected">{bridge}' in rendered
     assert ('formaction="/plus/integrations/anilist/disconnect"' in rendered) == connected
 
 

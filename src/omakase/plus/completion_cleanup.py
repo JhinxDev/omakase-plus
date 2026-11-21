@@ -29,6 +29,22 @@ def set_completion_cleanup_preference(
     )
 
 
+def remove_from_realdebrid(db, *, user_id):
+    row = db.execute(
+        "SELECT enabled FROM completion_realdebrid_preferences WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
+    return bool(row and row[0])
+
+
+def set_realdebrid_cleanup_preference(db, *, user_id, enabled):
+    db.execute(
+        """INSERT INTO completion_realdebrid_preferences(user_id,enabled)
+           VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET enabled=excluded.enabled""",
+        (user_id, int(enabled)),
+    )
+
+
 def set_keep_completed_in_plex(
     db: sqlite3.Connection, *, user_id: int, monitor_id: int, keep: bool
 ) -> None:
@@ -54,7 +70,21 @@ def queue_completion_cleanup(
     ).fetchone()
     if monitor is None:
         raise TitleRemovalError("Media title not found")
-    if not get_completion_cleanup_preference(db, user_id=user_id):
+    from omakase.plus.debrid_library import account_binding, account_token
+    from omakase.plus.title_removal import title_removal_preview
+
+    plex = get_completion_cleanup_preference(db, user_id=user_id)
+    trusted_completion = db.execute(
+        """SELECT 1 FROM watch_entries WHERE user_id=? AND monitor_id=? AND status='completed'
+           AND last_source IN ('manual','web_player','apple_tv')""",
+        (user_id, monitor_id),
+    ).fetchone()
+    token = (
+        account_token(db, user_id)
+        if trusted_completion and remove_from_realdebrid(db, user_id=user_id)
+        else None
+    )
+    if not plex and not token:
         return {"status": "disabled"}
     if monitor["keep_completed_in_plex"]:
         return {"status": "kept", "detail": "Kept in Plex for this title"}
@@ -65,15 +95,31 @@ def queue_completion_cleanup(
         )
         return {"status": "deferred", "detail": "Waiting for active web playback to finish"}
     try:
+        remove_provider = bool(
+            token
+            and title_removal_preview(db, user_id=user_id, monitor_id=monitor_id)[
+                "eligible_provider_count"
+            ]
+        )
+        if not remove_provider and not plex:
+            return {
+                "status": "kept",
+                "detail": "No Omakase-owned Real-Debrid copy eligible for removal",
+            }
         result = request_title_removal(
             db,
             user_id=user_id,
             monitor_id=monitor_id,
             confirmation=str(monitor["title"]),
             requested_at=requested_at,
-            scope="plex_only",
+            scope="plex_and_provider" if remove_provider else "plex_only",
             commit=False,
         )
+        if remove_provider and not result["idempotent"]:
+            db.execute(
+                "INSERT INTO completion_realdebrid_removals VALUES(?,?)",
+                (result["id"], account_binding(token)),
+            )
     except TitleRemovalError as exc:
         detail = str(exc)[:500]
         db.execute(
@@ -89,7 +135,12 @@ def queue_completion_cleanup(
         )
         return {"status": "blocked", "detail": detail}
     db.execute("DELETE FROM completion_plex_cleanup_blocks WHERE monitor_id = ?", (monitor_id,))
-    return {**result, "detail": "Waiting for native Plex absence proof; source media retained"}
+    return {
+        **result,
+        "detail": "Waiting for library verification before Real-Debrid removal"
+        if remove_provider
+        else "Waiting for native Plex absence proof; source media retained",
+    }
 
 
 def retry_completion_cleanup(

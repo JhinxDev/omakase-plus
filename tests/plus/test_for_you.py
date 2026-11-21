@@ -100,15 +100,71 @@ def test_tv_request_is_personal_owner_review_and_never_an_acquisition(client, mo
 
         initial = run(for_you.submit_request(db, first, "tv", "123"))
         assert initial["state"] == "requested"
-        assert (
-            initial["detail"] == "Waiting for owner review. TV acquisition requires a manual step."
-        )
+        assert initial["detail"] == "Saved for review."
         assert run(for_you.submit_request(db, first, "tv", 123)) == initial
         assert for_you.request_status(db, another, "tv", 123) is None
         assert db.execute("SELECT count(*) FROM for_you_requests").fetchone()[0] == 1
         assert db.execute("SELECT count(*) FROM movie_requests").fetchone()[0] == 0
         assert db.execute("SELECT count(*) FROM media_monitors").fetchone()[0] == 0
     exact.assert_awaited_once_with(123)
+
+
+def test_tv_intake_submits_once_and_reads_provider_episode_progress(client, monkeypatch):
+    from omakase.plus.movies import MovieError
+
+    _signup_and_login(client)
+    user_id = _user_id(client)
+    monkeypatch.setenv("OMAKASE_TV_REQUEST_RIVEN", "1")
+    metadata = {
+        "title": "A TV show",
+        "tmdb_id": 123,
+        "imdb_id": "tt0000123",
+        "seasons": [
+            {"season_number": 1, "released": True, "episode_count": 2},
+            {"season_number": 2, "released": False, "episode_count": 1},
+        ],
+    }
+    provider_show = {
+        "tmdb_id": "123",
+        "imdb_id": "tt0000123",
+        "type": "Show",
+        "state": "PartiallyCompleted",
+        "seasons": [
+            {
+                "number": 1,
+                "episodes": [
+                    {"number": 1, "state": "Completed"},
+                    {"number": 2, "state": "Downloading"},
+                ],
+            },
+            {"number": 2, "episodes": [{"number": 1, "state": "Indexed"}]},
+        ],
+    }
+    check = AsyncMock(side_effect=[MovieError("invalid_input", http_status=404), provider_show])
+    add = AsyncMock(return_value=b'{"message":"Added 1 item(s) to the queue"}')
+    monkeypatch.setattr(for_you.TVService, "_metadata_tv", AsyncMock(return_value=metadata))
+    monkeypatch.setattr(for_you.TVService, "_json", check)
+    monkeypatch.setattr(for_you.TVService, "_bytes", add)
+    with _connect_client_db(client) as db:
+        initial = run(for_you.submit_request(db, user_id, "tv", 123))
+        assert initial["status_label"] == "Queued in Riven"
+        assert initial["tv_provider"]["seasons"] == [1]
+        assert run(for_you.submit_request(db, user_id, "tv", 123)) == initial
+        observation = run(for_you.refresh_request(db, user_id, "tv", 123))
+        assert observation["resolved"] is False
+        assert observation["tv_provider"]["snapshot"]["seasons"] == [
+            {
+                "season": 1,
+                "episodes": [
+                    {"episode": 1, "status": "Sent to the library"},
+                    {"episode": 2, "status": "Transferring"},
+                ],
+            }
+        ]
+        assert db.execute("SELECT count(*) FROM tv_provider_requests").fetchone()[0] == 1
+    add.assert_awaited_once_with(
+        "riven", "POST", "/api/v1/items/add", params={"imdb_ids": "tt0000123"}
+    )
 
 
 def test_movie_request_and_refresh_use_existing_pipeline_and_verification(client, monkeypatch):
@@ -261,7 +317,7 @@ def test_catalog_tv_search_and_request_reuse_exact_read_only_seerr(client, monke
 
         saved = run(for_you.submit_request(db, user_id, "tv", card["id"]))
         assert saved["state"] == "requested"
-        assert "Waiting for owner review" in saved["detail"]
+        assert saved["detail"] == "Saved for review."
         updated = run(for_you.search(db, user_id, "Catalog TV", "tv"))
         assert updated["rows"][0]["cards"][0]["request"] == saved
         assert updated["requests"] == [saved]

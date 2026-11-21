@@ -237,8 +237,8 @@ def test_saved_preference_rechecks_membership_and_owner_policy(web):
 def test_tv_truth_and_unauthenticated_access(web):
     c, _ = client(web)
     response = c.get("/plus/settings/languages?domain=tv")
-    assert "catalog and tracking only" in response.text
-    assert "automatic TV downloads" in response.text
+    assert "These preferences are saved for this TV title." in response.text
+    assert "Check the episode player for the available audio and subtitle tracks." in response.text
     guest = TestClient(web[0], base_url="https://testserver", follow_redirects=False)
     assert guest.get("/plus/settings/languages").status_code in (302, 303, 401, 403)
 

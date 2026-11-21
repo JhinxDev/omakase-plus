@@ -3,10 +3,10 @@
 {% from "_movie_components.html" import movie_card %}
 {% from "_media_components.html" import empty_state %}
 {% block title %}Movies · Omakase{% endblock %}
-{% block masthead %}<div class="product-masthead collection-masthead" role="region" aria-label="Page overview"><div><span class="page-kicker">Your cinema</span><h1>Your movies</h1><p class="page-intro">Your collection, requests and personal ratings in one place.</p></div><div class="masthead-actions"><a class="button button-secondary" href="/plus/discover?kind=movies">Explore movies</a></div></div>{% endblock %}
+{% block masthead %}<div class="product-masthead collection-masthead" role="region" aria-label="Page overview"><div><h1>Your movies</h1></div><div class="masthead-actions"><a class="button button-secondary" href="/plus/discover?kind=movies">Explore movies</a></div></div>{% endblock %}
 {% block content %}
 {{ collection_tabs('/plus/movies', view) }}
-{% call(slot) collection_search('/plus/movies', 'movies', 'Search the movie catalog' if view == 'all' else 'Filter this view', 'Find a movie', query, placeholder='Title, year or IMDb ID', count=cards | length, collapsible=true, expanded=view == 'requests') %}
+{% call(slot) collection_search('/plus/movies', 'movies', 'Search the movie catalog' if view == 'discover' else 'Filter this view', 'Find a movie', query, placeholder='Title, year or IMDb ID', count=cards | length, collapsible=true, expanded=view == 'requests') %}
   {% if slot == 'fields' %}<input type="hidden" name="view" value="{{ view }}">
   {% else %}<details class="watchlist-filter-details"{% if view == 'requests' %} open{% endif %}>
     <summary>More filters</summary><div class="collection-secondary-views"><a href="/plus/movies?view=requests"{% if view == 'requests' %} aria-current="page"{% endif %}>Requests</a></div>

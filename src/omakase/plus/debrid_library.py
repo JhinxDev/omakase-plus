@@ -10,6 +10,7 @@ import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import PurePosixPath
 
 import httpx
@@ -29,6 +30,8 @@ _MAX_ACCOUNT_ENTRIES = 10000
 _RESPONSE_BYTES = 2 * 1024 * 1024
 _TTL = 25
 _STALE = 900
+_MAX_CACHED_ACCOUNTS = 16
+_MAX_CATALOG_REFRESHES = 16
 
 # Compatibility re-exports: playback provider policy now lives in providers.playback.
 PLAYBACK_PROVIDERS = playback_providers.PLAYBACK_PROVIDERS
@@ -217,70 +220,64 @@ class DebridLibrary:
     async def inventory(self, token):
         binding = account_binding(token)
         async with self.lock:
-            cached = self.cache.get(binding)
-            if cached is not None and cached[0] > self.clock():
-                self.cache.move_to_end(binding)
-                return cached[1:]
-            # Opening a stream can add a download-history row. A browse that races
-            # that change restarts from a clean snapshot instead of failing.
-            failure = None
-            for attempt in range(3):
-                result = None
-                try:
-                    async with asyncio.timeout(12):
-                        result = await asyncio.gather(
-                            self._all(token, "torrents"),
-                            self._all(token, "downloads"),
-                            return_exceptions=True,
-                        )
-                except TimeoutError:
-                    failure = DebridLibraryError()
-                if result is not None:
-                    for entries in result:
-                        if isinstance(entries, BaseException):
-                            # A provider 5xx is exactly the transient hiccup the
-                            # stale fallback below exists for. Raising it here used
-                            # to bypass a usable last-good inventory and blank the
-                            # whole section for a few minutes. 401/403/429 still
-                            # propagate so access and rate-limit handling stay
-                            # owned by the caller.
-                            if getattr(entries, "status", None) not in {409, 502, 503, 504}:
-                                raise entries
-                            failure = entries
-                            break
-                    else:
-                        # Only a real two part inventory may be cached. A timeout
-                        # previously fell through with an empty tuple and cached a
-                        # one element entry, which then broke every caller that
-                        # unpacked it, long after the provider recovered.
-                        if len(result) != 2:
-                            failure = DebridLibraryError()
-                        else:
-                            failure = None
-                            result = tuple(result)
-                            self.cache[binding] = (self.clock() + _TTL, *result)
-                            self.cache.move_to_end(binding)
-                            if len(self.cache) > 16:
-                                self.cache.popitem(last=False)
-                            self.last_good[binding] = (self.clock(), *result)
-                            self.last_good.move_to_end(binding)
-                            if len(self.last_good) > 16:
-                                self.last_good.popitem(last=False)
-                            return result
-                if attempt < 2:
-                    await asyncio.sleep(0.25 * (attempt + 1))
-            # A recently read inventory is safer than blanking a section during a
-            # transient provider hiccup. Keep the fallback bounded.
-            if cached is not None and self.clock() - (cached[0] - _TTL) <= _STALE:
-                self.cache.move_to_end(binding)
-                return cached[1:]
-            last_good = self.last_good.get(binding)
-            if last_good is not None and self.clock() - last_good[0] <= _STALE:
-                self.last_good.move_to_end(binding)
-                return last_good[1:]
-            raise failure or DebridLibraryError(
-                "The account changed while loading. Refresh to try again.", 409
-            )
+            cached = self._cached_inventory(binding)
+            if cached is not None:
+                return cached
+            return await self._refresh_inventory(token, binding)
+
+    def _cached_inventory(self, binding):
+        cached = self.cache.get(binding)
+        if cached is not None and cached[0] > self.clock():
+            self.cache.move_to_end(binding)
+            return cached[1:]
+        return None
+
+    async def _refresh_inventory(self, token, binding):
+        # Opening a stream can change download history during pagination. Retry
+        # from a fresh snapshot before using a recently confirmed inventory.
+        failure = None
+        for attempt in range(3):
+            try:
+                async with asyncio.timeout(12):
+                    result = await asyncio.gather(
+                        self._all(token, "torrents"),
+                        self._all(token, "downloads"),
+                        return_exceptions=True,
+                    )
+            except TimeoutError:
+                failure = DebridLibraryError()
+            else:
+                failure = None
+                for entries in result:
+                    if isinstance(entries, BaseException):
+                        if getattr(entries, "status", None) not in {409, 502, 503, 504}:
+                            raise entries
+                        failure = entries
+                if failure is None:
+                    result = tuple(result)
+                    now = self.clock()
+                    self.cache[binding] = (now + _TTL, *result)
+                    self.cache.move_to_end(binding)
+                    if len(self.cache) > _MAX_CACHED_ACCOUNTS:
+                        self.cache.popitem(last=False)
+                    self.last_good[binding] = (now, *result)
+                    self.last_good.move_to_end(binding)
+                    if len(self.last_good) > _MAX_CACHED_ACCOUNTS:
+                        self.last_good.popitem(last=False)
+                    return result
+            if attempt < 2:
+                await asyncio.sleep(0.25 * (attempt + 1))
+        cached = self.cache.get(binding)
+        if cached is not None and self.clock() - (cached[0] - _TTL) <= _STALE:
+            self.cache.move_to_end(binding)
+            return cached[1:]
+        last_good = self.last_good.get(binding)
+        if last_good is not None and self.clock() - last_good[0] <= _STALE:
+            self.last_good.move_to_end(binding)
+            return last_good[1:]
+        raise failure or DebridLibraryError(
+            "The account changed while loading. Refresh to try again.", 409
+        )
 
     async def entries(self, token, *, query=""):
         torrents, downloads = await self.inventory(token)
@@ -520,3 +517,35 @@ class DebridLibrary:
             return value
         except DebridLibraryError as error:
             return error
+
+
+class _CatalogDebridLibrary(DebridLibrary):
+    """Share bounded inventory reads across catalog pages."""
+
+    def __init__(self, transport=None, clock=time.monotonic):
+        super().__init__(transport, clock)
+        self._refreshes = {}
+
+    async def inventory(self, token):
+        binding = account_binding(token)
+        cached = self._cached_inventory(binding)
+        if cached is not None:
+            return cached
+        key = (asyncio.get_running_loop(), binding)
+        task = self._refreshes.get(key)
+        if task is None:
+            if len(self._refreshes) >= _MAX_CATALOG_REFRESHES:
+                raise DebridLibraryError(status=503)
+            task = asyncio.create_task(self._refresh_inventory(token, binding))
+            self._refreshes[key] = task
+            task.add_done_callback(partial(self._finish_refresh, key))
+        # A page deadline or disconnected browser cannot cancel another waiter.
+        return await asyncio.shield(task)
+
+    def _finish_refresh(self, key, task):
+        del self._refreshes[key]
+        if not task.cancelled():
+            task.exception()
+
+
+catalog_library = _CatalogDebridLibrary()

@@ -69,7 +69,6 @@ body.product-body::before { display: none; }
 .navigation-loading { position: fixed; inset: 0 0 auto; z-index: 100; height: 3px; pointer-events: none; }
 .navigation-loading-track { position: absolute; inset: 0; overflow: hidden; background: #304266; }
 .navigation-loading-track::after { content: ""; position: absolute; width: 40%; inset: 0 auto 0 0; background: linear-gradient(90deg, #ab91ff, #9bdcec); animation: navigation-travel 1.35s ease-in-out infinite; }
-.navigation-loading-label { position: absolute; top: 78px; right: var(--stream-gutter); max-width: calc(100vw - 2rem); padding: .6rem .9rem; border: 1px solid #647197; border-radius: 8px; background: #1a2841; color: #eef1ff; font-size: .82rem; box-shadow: 0 8px 24px #00081a70; }
 .is-busy { display: inline-flex; gap: .6rem; align-items: center; }
 .is-busy::before { content: ""; flex: 0 0 auto; width: .85em; height: .85em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: action-turn .8s linear infinite; }
 .is-busy[aria-disabled=true] { cursor: progress; }

@@ -51,7 +51,7 @@ def native_plan(tmp_path, monkeypatch):
     timeline = NativeTimeline(**TIMELINE_ARGS)
     starts = []
 
-    def fake_start(self, key, url, duration, *, subtitle_key="", warm=None):
+    def fake_start(self, key, url, duration, *, subtitle_key="", warm=None, index_identity=None):
         starts.append((key, url, duration, subtitle_key))
         # The router injects a clock into this registry. Its idle sweep must
         # compare against the same time base, not the host's uptime.

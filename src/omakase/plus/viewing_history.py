@@ -27,7 +27,17 @@ _PLEX_SEASON_ACTIVITY = re.compile(
 )
 # Token the history card colours its origin badge with. The card renders the
 # token, so no template compares a provider id to decide the colour.
-_ORIGIN_KINDS = {"From Plex": "plex", "From Apple TV": "apple-tv"}
+_ORIGIN_KINDS = {"From Plex": "plex", "From Apple TV": "apple-tv", "From web player": "web"}
+
+
+def _catalog_origin(source, detail):
+    if source == "manual":
+        return "Manual", "Added manually"
+    if detail == "apple_tv":
+        return "Apple TV", "From Apple TV"
+    if detail == "web_player":
+        return "Web player", "From web player"
+    return "Plex", "From Plex"
 
 
 def _stamp(value):
@@ -199,8 +209,7 @@ def _movies(db, user_id):
         if recorded is None:
             continue
         watched = _stamp(row["last_viewed_at"]) if row["status_source"] == "plex" else None
-        detail = row["status_source_detail"] or ""
-        apple_tv = detail == "apple_tv"
+        origin, source_detail = _catalog_origin(row["status_source"], row["status_source_detail"])
         result.append(
             {
                 "id": f"movie-{imdb_id}",
@@ -218,12 +227,8 @@ def _movies(db, user_id):
                 "watched_at": watched,
                 "watch_time_known": bool(watched),
                 "recorded_at": recorded,
-                "source_label": "Apple TV"
-                if apple_tv
-                else ("Plex" if row["status_source"] == "plex" else "Manual"),
-                "source_detail": "From Apple TV"
-                if apple_tv
-                else ("From Plex" if row["status_source"] == "plex" else "Added manually"),
+                "source_label": origin,
+                "source_detail": source_detail,
                 "status_label": "Completed",
                 "rating": row["rating"],
                 "time_label": "Watched"
@@ -254,6 +259,7 @@ def _television(db, user_id):
         if not stamp:
             continue
         tmdb = row["tmdb_id"]
+        origin, source_detail = _catalog_origin(row["watch_source"], row["watch_source_detail"])
         result.append(
             {
                 "id": f"tv-{tmdb}-{row['season_number']}-{row['episode_number']}",
@@ -263,12 +269,8 @@ def _television(db, user_id):
                 "episode_title": _title(episode.get("title")),
                 "season_number": row["season_number"],
                 "status_label": "Watched",
-                "source_label": "Apple TV"
-                if (row["watch_source_detail"] or "") == "apple_tv"
-                else ("Manual" if row["watch_source"] == "manual" else "Plex"),
-                "source_detail": "From Apple TV"
-                if (row["watch_source_detail"] or "") == "apple_tv"
-                else ("Added manually" if row["watch_source"] == "manual" else "From Plex"),
+                "source_label": origin,
+                "source_detail": source_detail,
                 "rating": row["rating"],
                 "watched_at": None,
                 "watch_time_known": False,
@@ -292,6 +294,7 @@ def _television(db, user_id):
             continue
         metadata = json.loads(row["metadata_json"])
         tmdb = row["tmdb_id"]
+        origin, source_detail = _catalog_origin(row["status_source"], row["status_source_detail"])
         result.append(
             {
                 "id": f"tv-{tmdb}-completed",
@@ -304,12 +307,8 @@ def _television(db, user_id):
                 "watched_at": None,
                 "watch_time_known": False,
                 "recorded_at": stamp,
-                "source_label": "Apple TV"
-                if (row["status_source_detail"] or "") == "apple_tv"
-                else ("Manual" if row["status_source"] == "manual" else "Plex"),
-                "source_detail": "From Apple TV"
-                if (row["status_source_detail"] or "") == "apple_tv"
-                else ("Added manually" if row["status_source"] == "manual" else "From Plex"),
+                "source_label": origin,
+                "source_detail": source_detail,
                 "artwork_url": None,
                 "episode_artwork": True,
                 "series_artwork_url": f"/plus/tv/{tmdb}/artwork",

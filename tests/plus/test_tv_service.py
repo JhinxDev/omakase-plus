@@ -200,6 +200,23 @@ def test_episode_manual_wins_and_rating_does_not_set_progress(db):
     assert not run(svc.list(2))
 
 
+def test_private_reviews_keep_title_and_season_ratings_independent(db):
+    from omakase.plus import title_reviews
+
+    service_one = service(db, Native())
+    original = run(service_one.save_history(1, 42, rating=8.5, comment="Great ensemble."))
+    assert original["rating"] == 8.5
+    with db:
+        title_reviews.save(db, 1, "tv", 42, season=1, rating=9, comment="Strong finish.")
+    assert title_reviews.read(db, 1, "tv", 42) == {
+        0: {"rating": None, "comment": "Great ensemble."},
+        1: {"rating": 9, "comment": "Strong finish."},
+    }
+    assert title_reviews.read(db, 2, "tv", 42) == {}
+    assert run(service_one.detail(1, 42))["rating"] == 8.5
+    assert not title_reviews.completed_seasons(run(service_one.season(1, 42, 1)))
+
+
 @pytest.mark.parametrize("rating", [True, float("nan"), float("inf"), 0, 11, 8.2, "8"])
 def test_invalid_ratings(db, rating):
     svc = service(db, Native())
@@ -506,11 +523,9 @@ def test_collection_receipt_records_only_first_explicit_transition_in_owner_scop
     expected = {"tmdb_id": 42, "title": "TV Title", "added_at": "2026-10-27T00:00:00Z"}
     assert history(db, user_id=1) == {
         "tv_collection_additions": [{**expected, "source": "watch_status_save"}],
-        "tv_review_intents": [],
     }
     assert history(db, user_id=2) == {
         "tv_collection_additions": [{**expected, "source": "episode_watch_save"}],
-        "tv_review_intents": [],
     }
     assert not native.calls
     assert db.execute("SELECT COUNT(*) FROM for_you_requests").fetchone()[0] == 0

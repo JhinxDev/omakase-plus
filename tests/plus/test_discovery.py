@@ -79,7 +79,7 @@ def test_saved_watchlist_removal_requires_csrf_and_preserves_media_monitors(clie
         )
         db.commit()
     page = client.get("/plus/library")
-    assert "Saved pick" in page.text and "Saved for later" in page.text
+    assert "Saved pick" in page.text and "Watchlist" in page.text
     assert client.post("/plus/watchlist/42/remove", data={}).status_code == 403
     response = client.post(
         "/plus/watchlist/42/remove",

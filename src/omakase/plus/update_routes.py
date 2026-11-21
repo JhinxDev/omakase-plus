@@ -1,5 +1,7 @@
 """Authenticated private About & updates page; explicit CSRF POST checks only."""
 
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
@@ -36,6 +38,7 @@ def create_updates_router(templates, context_factory=None):
                 **context,
                 "csrf_token": csrf_token(request),
                 "installed_version": update_service.PRODUCT_VERSION,
+                "build_revision": os.getenv("OMAKASE_REVISION", "")[:64],
                 "updates": update_service.checker.status,
                 "checks_enabled": update_service.checks_enabled(),
                 "retry_after": retry_after,

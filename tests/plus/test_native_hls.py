@@ -1351,6 +1351,34 @@ def test_spool_stays_inside_its_budget_and_is_reclaimed(tmp_path, provider):
     assert streams.plans == {}
 
 
+def test_native_timeline_cache_rebinds_only_the_same_verified_copy(tmp_path, monkeypatch):
+    calls = []
+
+    async def timeline(url, duration):
+        calls.append(url)
+        return NativeTimeline(url, duration, 0, ((0, duration),), (0,), 10, b"", b"", b"", "h264")
+
+    monkeypatch.setattr(native_hls, "build_timeline", timeline)
+    monkeypatch.setattr(native_hls, "continuous_enabled", lambda: True)
+    streams = NativeStreams(tmp_path / "spool", free_bytes=lambda: 100 * 1024**3)
+
+    async def check():
+        first = "https://cdn.real-debrid.com/first"
+        renewed = "https://cdn.real-debrid.com/renewed"
+        a = streams.start("first", first, 60, index_identity=(1, "copy"))
+        assert (await streams.ready(a)).url == first
+        streams.close(a.key)
+        b = streams.start("renewed", renewed, 60, index_identity=(1, "copy"))
+        assert (await streams.ready(b)).url == renewed
+        assert calls == [first]
+        other = streams.start("other", renewed, 60, index_identity=(2, "copy"))
+        assert (await streams.ready(other)).url == renewed
+        assert calls == [first, renewed]
+        assert all(cached[1].url == "" for cached in streams.index_cache.values())
+
+    asyncio.run(check())
+
+
 def test_reserve_refusal_blocks_new_sessions(tmp_path, provider):
     timeline = _timeline(provider)
     streams = NativeStreams(

@@ -626,6 +626,10 @@ async def process_provider_removals(
             continue
         effective_completed_at = max(completed_at, str(removal["plex_removed_at"]))
         user_id = int(removal["user_id"])
+        automatic = db.execute(
+            "SELECT account_binding FROM completion_realdebrid_removals WHERE removal_id=?",
+            (removal["id"],),
+        ).fetchone()
         pending = db.execute(
             """SELECT * FROM media_title_removal_assets
                WHERE removal_id = ? AND outcome IN ('pending', 'failed')
@@ -636,7 +640,7 @@ async def process_provider_removals(
         if pending:
             try:
                 provider = providers.get(user_id)
-                if provider is None:
+                if provider is None and not automatic:
                     provider = provider_factory(user_id)
                     providers[user_id] = provider
             except Exception:
@@ -650,7 +654,7 @@ async def process_provider_removals(
                         (asset["id"],),
                     )
                     continue
-                if provider is None:
+                if provider is None and not automatic:
                     failed = True
                     db.execute(
                         """UPDATE media_title_removal_assets
@@ -660,6 +664,19 @@ async def process_provider_removals(
                     )
                     continue
                 try:
+                    if automatic:
+                        outcome = await _remove_completed_realdebrid_asset(
+                            db, removal, asset, automatic[0]
+                        )
+                        if outcome == "hold":
+                            failed = True
+                            continue
+                        db.execute(
+                            "UPDATE media_title_removal_assets SET outcome=?,detail=? WHERE id=?",
+                            (outcome, "Verified automatic completion cleanup", asset["id"]),
+                        )
+                        failed = failed or outcome == "failed"
+                        continue
                     item = await provider.get_item(str(asset["provider_asset_id"]))
                     deleted = item is None or await provider.delete_item(
                         str(asset["provider_asset_id"])
@@ -727,3 +744,59 @@ async def process_provider_removals(
         db.commit()
         processed += 1
     return processed
+
+
+async def _remove_completed_realdebrid_asset(db, removal, asset, binding):
+    """Recheck ownership, watch state, account, and media identity before deletion."""
+    from omakase.plus.btih import normalize_btih
+    from omakase.plus.completion_cleanup import has_active_playback_hold, remove_from_realdebrid
+    from omakase.plus.debrid_library import account_binding, account_token
+    from omakase.plus.realdebrid import RealDebridClient
+
+    user_id, monitor_id = removal["user_id"], removal["monitor_id"]
+    torrent_id = str(asset["provider_asset_id"])
+    stored = db.execute(
+        """SELECT a.torrent_hash FROM media_assets a JOIN media_monitors m ON m.id=a.monitor_id
+           WHERE a.id=? AND m.id=? AND m.user_id=? AND a.provider_asset_id=?
+             AND a.ownership='monitor_owned' AND a.provenance='omakase_created'
+             AND a.shared_reference_count=0
+             AND NOT EXISTS (
+                 SELECT 1 FROM media_assets other WHERE other.monitor_id<>a.monitor_id
+                   AND (other.provider_asset_id=a.provider_asset_id OR other.torrent_hash=a.torrent_hash)
+                   AND other.status NOT IN ('removed','failed')
+             )""",
+        (asset["asset_id"], monitor_id, user_id, torrent_id),
+    ).fetchone()
+    if not stored or not (digest := normalize_btih(stored[0])):
+        return "retained"
+
+    def authorized():
+        token = account_token(db, user_id)
+        completed = db.execute(
+            """SELECT 1 FROM watch_entries w JOIN media_monitors m ON m.id=w.monitor_id
+               WHERE w.user_id=? AND w.monitor_id=? AND w.status='completed'
+                 AND w.last_source IN ('manual','web_player','apple_tv')
+                 AND m.keep_completed_in_plex=0""",
+            (user_id, monitor_id),
+        ).fetchone()
+        return (
+            token
+            if completed
+            and remove_from_realdebrid(db, user_id=user_id)
+            and account_binding(token) == binding
+            else None
+        )
+
+    if not (token := authorized()):
+        return "retained"
+    if has_active_playback_hold(db, user_id=user_id, monitor_id=monitor_id):
+        return "hold"
+    client = RealDebridClient(token)
+    item = await client.get_torrent(torrent_id, require_definite_absence=True)
+    if item is None:
+        return "absent"
+    if item.id != torrent_id or normalize_btih(item.torrent_hash) != digest or not authorized():
+        return "retained"
+    if has_active_playback_hold(db, user_id=user_id, monitor_id=monitor_id):
+        return "hold"
+    return "deleted" if await client.delete_torrent(torrent_id, require_exact_id=True) else "failed"

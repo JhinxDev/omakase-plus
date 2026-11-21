@@ -192,6 +192,8 @@ def judge(candidate: object, request: JudgeRequest) -> Verdict:
             season, episode = int(season_hit.group(1)), int(season_hit.group(2))
             if season != int(request.season or 1) or episode != int(request.episode or 0):
                 return Verdict(False, "episode_mismatch", "")
+        elif request.kind == "tv":
+            return Verdict(False, "episode_mismatch", "")
         else:
             single = _EPISODE_ONLY.search(title)
             is_batch = bool(getattr(candidate, "is_batch", False))
@@ -462,7 +464,10 @@ async def _run_search(db, user_id, kind, title_id, request, catalogs, timeout, o
         catalogs = configured_catalogs(db, user_id, kind=kind).sources
 
     async def one(source):
-        return tuple(await source.search(request.title))
+        query = request.title
+        if request.kind == "tv" and request.episode_expected:
+            query += f" S{int(request.season or 1):02d}E{request.episode:02d}"
+        return tuple(await source.search(query))
 
     tasks = [asyncio.create_task(one(source)) for source in catalogs]
     if not tasks:

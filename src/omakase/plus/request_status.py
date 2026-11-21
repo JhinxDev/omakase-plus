@@ -860,11 +860,67 @@ def accepted_count(last_run):
 # ---------------------------------------------------------------------------
 
 
-def build_tv(*, tmdb_id, title, created_at, library_at=None, library_source=None):
-    """Project one manual TV request into the shared model."""
+def build_tv(
+    *,
+    tmdb_id,
+    title,
+    created_at,
+    library_at=None,
+    library_source=None,
+    provider=None,
+    can_check=False,
+):
+    """Project confirmed TV request evidence and selected-library availability."""
     created = normalize_time(created_at)
-    manual_note = "This TV request needs manual acquisition. No automatic request is sent for it."
-    if library_at is not None:
+    if provider is not None:
+        snapshot = provider.get("snapshot") or {}
+        label = (
+            snapshot.get("status")
+            or {
+                "accepted": "Queued in Riven",
+                "sending": "Sending to Riven",
+                "unconfirmed": "Submission unconfirmed",
+                "observed": "Received by Riven",
+            }[provider["submission"]]
+        )
+        checked = provider.get("checked_at")
+        ready = snapshot.get("ready", 0)
+        complete = bool(ready and ready == snapshot.get("expected"))
+        detail = "Riven accepted this request. Check status for episode progress."
+        if snapshot:
+            detail = "See the latest episode progress from Riven."
+        elif provider["submission"] == "unconfirmed":
+            detail = "Check Riven before sending this request again."
+        elif provider["submission"] == "sending":
+            detail = "Waiting for Riven to confirm receipt."
+        if ready:
+            article = "episode" if ready == 1 else "episodes"
+            detail = f"{ready} {article} confirmed in {snapshot['library_name']} at the last check."
+        if complete:
+            label = "Ready to watch"
+        pending_review = label in {"Needs attention", "No release found", "Submission unconfirmed"}
+        model = build(
+            kind="tv",
+            title_id=tmdb_id,
+            title=title,
+            state="in_library" if complete else "preparing",
+            label=label,
+            status_label=label,
+            detail=detail,
+            category="history" if complete else ("attention" if pending_review else "active"),
+            done={"saved": created, "received": checked, "library": checked if complete else None},
+            supported=("saved", "received", "library"),
+            last_checked_at=checked,
+            last_confirmed_at=provider.get("changed_at") or created,
+            can_check=can_check,
+            resolved=complete,
+            next_action=_next_action("check", "Check status") if can_check else None,
+            href=f"/plus/tv/{tmdb_id}",
+            detail_href=f"/plus/requests/tv/{tmdb_id}",
+        )
+        model["tv_provider"] = provider
+        return model
+    if library_at is not None and not can_check:
         done = {"saved": created, "library": normalize_time(library_at)}
         return build(
             kind="tv",
@@ -891,13 +947,16 @@ def build_tv(*, tmdb_id, title, created_at, library_at=None, library_source=None
         state="requested",
         label=LABELS["requested"],
         status_label=LABELS["requested"],
-        detail="Waiting for owner review. TV acquisition requires a manual step.",
+        detail="Saved for review."
+        if not can_check
+        else "This request is saved and waiting to be sent to Riven.",
         category="active",
         done={"saved": created},
         last_confirmed_at=created,
-        manual=True,
-        manual_note=manual_note,
-        can_check=False,
+        manual=not can_check,
+        can_check=can_check,
+        can_retry=can_check,
+        next_action=_next_action("retry", "Send to Riven") if can_check else None,
         href=f"/plus/tv/{tmdb_id}",
         detail_href=f"/plus/requests/tv/{tmdb_id}",
     )

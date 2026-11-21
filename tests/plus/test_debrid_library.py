@@ -6,7 +6,12 @@ import httpx
 import pytest
 from starlette.requests import Request
 
-from omakase.plus.debrid_library import CloudSource, DebridLibrary, DebridLibraryError
+from omakase.plus.debrid_library import (
+    CloudSource,
+    DebridLibrary,
+    DebridLibraryError,
+    _CatalogDebridLibrary,
+)
 from omakase.plus.debrid_stream import CloudPass, DebridMedia, DebridStreams, parse_playlist
 
 ORIGIN = "https://3.stream.real-debrid.com"
@@ -131,6 +136,67 @@ def test_catalog_refreshes_and_never_reuses_another_accounts_inventory():
         provider.new_item = True
         now += 26
         assert len(await library.entries("owner-token", query="NEW")) == 2
+
+    asyncio.run(run())
+
+
+def test_catalog_waiter_cancellation_preserves_the_shared_refresh():
+    async def run():
+        provider = Provider()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def gated(request):
+            if request.url.path.endswith("/torrents"):
+                started.set()
+                await release.wait()
+            return provider(request)
+
+        library = _CatalogDebridLibrary(httpx.MockTransport(gated))
+        first = asyncio.create_task(library.inventory("owner-token"))
+        await started.wait()
+        sibling = asyncio.create_task(library.inventory("owner-token"))
+        await asyncio.sleep(0)
+
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        release.set()
+        torrents, downloads = await sibling
+
+        assert set(torrents) == {"torrent1"}
+        assert set(downloads) == {"download1"}
+        assert len(provider.calls) == 2
+        assert await library.inventory("owner-token") == (torrents, downloads)
+        assert len(provider.calls) == 2
+
+    asyncio.run(run())
+
+
+def test_catalog_refreshes_another_account_while_one_is_waiting():
+    async def run():
+        provider = Provider()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def gated(request):
+            if request.headers["authorization"] == "Bearer owner-token":
+                started.set()
+                await release.wait()
+            return provider(request)
+
+        library = _CatalogDebridLibrary(httpx.MockTransport(gated))
+        slow = asyncio.create_task(library.inventory("owner-token"))
+        await started.wait()
+        try:
+            assert await asyncio.wait_for(library.inventory("different-token"), timeout=0.5) == (
+                {},
+                {},
+            )
+            assert not slow.done()
+        finally:
+            release.set()
+            await slow
 
     asyncio.run(run())
 

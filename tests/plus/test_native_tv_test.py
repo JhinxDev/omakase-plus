@@ -706,13 +706,10 @@ def test_library_link_scopes_catalog_and_media_to_the_browser_owner(system, monk
     assert response.headers["cache-control"] == "private, no-store"
     assert native.post(LIBRARY_API + "/redeem", json={"code": link}).status_code == 404
     native.headers["Authorization"] = "Bearer " + response.json()["token"]
-    for kind, title in (
-        ("anime", "Fixture episode"),
-        ("movie", "Owner movie"),
-        ("tv", "Owner series"),
-    ):
+    for kind in ("anime", "movie", "tv"):
         catalog = native.get(LIBRARY_API + "/catalog", params={"kind": kind})
-        assert [entry["title"] for entry in catalog.json()["items"]] == [title]
+        assert catalog.status_code == 200
+        assert catalog.json()["items"] == []
         assert "Other" not in catalog.text
     detail = native.get(LIBRARY_API + "/episodes", params={"kind": "tv", "title_id": "42"})
     episode = detail.json()["items"][0]
@@ -1702,7 +1699,7 @@ def test_tv_code_approval_is_single_use_and_browser_logout_revokes_device(system
     assert 2_591_990 <= grant.json()["expires_in"] <= 2_592_000
     stored = db.execute("SELECT token_digest,code_digest FROM native_tv_devices").fetchone()
     assert stored["token_digest"] != token and stored["code_digest"] is None
-    assert native.get(catalog_url + "&q=fixture").json()["items"][0]["title"] == "Fixture episode"
+    assert native.get(catalog_url + "&q=fixture").json()["items"] == []
     assert not native.get(catalog_url + "&q=missing").json()["items"]
     assert (
         other.post(LIBRARY_PAGE, data={"action": "revoke", "csrf_token": other_csrf}).status_code

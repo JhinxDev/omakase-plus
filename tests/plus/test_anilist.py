@@ -938,5 +938,5 @@ class TestRoutes:
         db.close()
 
         connected = client.get("/plus/settings/tracking")
-        assert "Connected" in connected.text
+        assert "AniList linked" in connected.text
         assert 'formaction="/plus/integrations/anilist/disconnect"' in connected.text

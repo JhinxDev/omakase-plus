@@ -89,7 +89,7 @@ def test_home_episode_link_and_overview_share_the_most_recent_title_without_writ
     assert "View episodes" in actions and "More info" in actions and "▶" not in actions
     assert (
         'class="button button-secondary app-library-updates" href="/plus/activity?view=system"'
-        in html
+        not in html
     )
     assert "What are you in the mood for?" not in html
     assert 'class="home-system-updates"' not in html

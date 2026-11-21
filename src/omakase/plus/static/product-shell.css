@@ -125,38 +125,75 @@ body.product-body {
 .project-links a:hover { color: var(--om-accent-strong); text-decoration: underline; }
 .project-links .project-github { justify-content: center; min-inline-size: 44px; border-radius: var(--om-radius-sm); }
 .project-links .project-github:hover { background: var(--om-surface-2); }
+.project-credit > span { white-space: nowrap; }
 .project-credit strong { color: var(--om-ink); font-weight: 600; }
 .mobile-project-links { display: none; }
+.activity-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .25rem 1.25rem;
+  margin-block: 0 1rem;
+  border-block-end: 1px solid var(--om-line-soft);
+}
+.activity-toolbar :is(.movie-tabs, .segmented-filter) { margin: 0; border: 0; }
+.activity-view .activity-media-heading { margin: .75rem 0; }
+.activity-view .activity-feed > ul { display: grid; gap: 0; }
+.activity-view .activity-feed > ul > li { margin: 0; padding-block: .6rem; border-radius: 0; }
+.activity-view .tracker-action-list > article { padding-block: .55rem; }
+.activity-view .tracker-activity .panel-heading { padding-block: .65rem; }
+.watchlist-compact { margin-block: .65rem 1rem; border-block-end: 1px solid var(--om-line-soft); }
+.watchlist-compact > summary { width: fit-content; min-height: 44px; padding-block: .65rem; cursor: pointer; color: var(--om-accent-strong); }
+.watchlist-compact > summary span { margin-inline-start: .35rem; font-size: .83rem; color: var(--om-muted); }
+.watchlist-compact ul { max-inline-size: 50rem; margin: 0 0 .5rem; padding: 0; list-style: none; }
+.watchlist-compact li, .watchlist-compact li > div { display: flex; align-items: center; flex-wrap: wrap; gap: .25rem .85rem; }
+.watchlist-compact li { justify-content: space-between; padding-block: .2rem; }
+.watchlist-compact .text-action { min-height: 44px; }
 
 .account-artwork-preference:not([hidden]) { display: flex; align-items: center; justify-content: space-between; gap: .75rem; cursor: pointer; }
-.account-popover .account-artwork-preference { min-block-size: 44px; padding: .6rem .75rem; border-radius: 9px; color: var(--stream-muted); font-size: .85rem; }
+.account-popover .account-artwork-preference { position: relative; min-block-size: 44px; padding: .6rem .75rem; border-radius: 9px; color: var(--stream-muted); font-size: .85rem; }
 .account-popover .account-artwork-preference:hover, .account-popover .account-artwork-preference:focus-within { background: rgba(255, 255, 255, .06); color: var(--stream-text); }
-.account-artwork-preference input {
-  appearance: none;
-  flex: none;
-  inline-size: 2rem;
-  block-size: 1.12rem;
+.account-popover .account-artwork-preference input {
+  position: absolute;
+  inset-inline-end: .75rem;
+  inline-size: 1px;
+  block-size: 1px;
+  min-inline-size: 0;
+  min-block-size: 0;
+  padding: 0;
   margin: 0;
+  clip-path: inset(50%);
+}
+.account-artwork-track {
+  position: relative;
+  box-sizing: border-box;
+  flex: none;
+  inline-size: 36px;
+  block-size: 20px;
   border: 1px solid var(--om-muted);
   border-radius: 999px;
   background: var(--om-surface-3);
-  cursor: pointer;
 }
-.account-artwork-preference input::before {
+.account-artwork-track::before {
   content: "";
-  display: block;
-  inline-size: .72rem;
-  block-size: .72rem;
-  margin: .13rem;
+  position: absolute;
+  inset-block-start: 3px;
+  inset-inline-start: 3px;
+  inline-size: 12px;
+  block-size: 12px;
   border-radius: 50%;
   background: var(--om-muted);
 }
-.account-artwork-preference input:checked { border-color: var(--om-accent); background: var(--om-accent); }
-.account-artwork-preference input:checked::before { translate: .88rem 0; background: var(--om-accent-ink); }
-.account-artwork-preference input:focus-visible { outline: 2px solid var(--om-accent-strong); outline-offset: 3px; }
+.account-artwork-preference input:checked + .account-artwork-track { border-color: var(--om-accent); background: var(--om-accent); }
+.account-artwork-preference input:checked + .account-artwork-track::before { inset-inline-start: 19px; background: var(--om-accent-ink); }
+.account-artwork-preference input:focus-visible + .account-artwork-track { outline: 2px solid var(--om-accent-strong); outline-offset: 3px; }
 @media (forced-colors: active) {
-  .account-artwork-preference input { appearance: auto; }
-  .account-artwork-preference input::before { content: none; }
+  .account-artwork-track { forced-color-adjust: none; border-color: ButtonText; background: Canvas; }
+  .account-artwork-track::before { background: ButtonText; }
+  .account-artwork-preference input:checked + .account-artwork-track { border-color: Highlight; background: Highlight; }
+  .account-artwork-preference input:checked + .account-artwork-track::before { background: HighlightText; }
+  .account-artwork-preference input:focus-visible + .account-artwork-track { outline-color: Highlight; }
 }
 
 html[data-dim-artwork] :is(
@@ -728,12 +765,17 @@ body.product-body:is(.page-search, .page-requests, .page-activity) .stream-secti
   .app-sidebar-brand span,
   .app-nav-item span:not(.app-nav-glyph) { display: none; }
   .app-nav-item { justify-content: center; padding: 0; }
+  .app-sidebar-project { display: none; }
+  .mobile-project-links {
+    display: block;
+    padding-block: var(--om-space-2);
+    border-block-start: 1px solid var(--om-line-soft);
+  }
 }
 
 @media (max-width: 860px) {
   .app-shell { grid-template-columns: minmax(0, 1fr); }
   .app-sidebar { display: none; }
-  .mobile-project-links { display: block; padding-block: var(--om-space-2); border-block-start: 1px solid var(--om-line-soft); }
   .app-topbar-brand { display: inline-flex; }
   .stream-header.app-topbar { min-block-size: 60px; padding-inline: var(--om-space-4); }
   .app-topbar .header-search { display: none; }
@@ -860,4 +902,30 @@ body.product-body:is(.page-search, .page-requests, .page-activity) .stream-secti
 
 @media (min-width: 861px) {
   .mobile-primary-nav { display: none; }
+}
+.review-comment {
+  flex: 1 1 14rem;
+  min-width: min(100%, 12rem);
+}
+
+.review-comment textarea {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  resize: vertical;
+}
+
+.review-comment small {
+  font-weight: 400;
+}
+
+.season-review {
+  margin: 0 0 1rem;
+}
+
+.season-review-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-block: 0.5rem 1rem;
 }

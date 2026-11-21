@@ -28,7 +28,7 @@
         <fieldset class="onboarding-options"><legend>Media preference</legend>
           <label><input type="radio" name="intent" value="explore" {% if onboarding_intent == 'explore' %}checked{% endif %}><span><strong>Explore first</strong><small>Decide on media and storage later.</small></span></label>
           <label><input type="radio" name="intent" value="local" {% if onboarding_intent == 'local' %}checked{% endif %}><span><strong>Local or NAS library</strong><small>Import files from storage already mounted on the Omakase server.</small></span></label>
-          <label><input type="radio" name="intent" value="cloud" {% if onboarding_intent == 'cloud' %}checked{% endif %}><span><strong>Cloud downloads</strong><small>Connect your own supported download service. Playback still uses Plex.</small></span></label>
+          <label><input type="radio" name="intent" value="cloud" {% if onboarding_intent == 'cloud' %}checked{% endif %}><span><strong>Cloud playback & downloads</strong><small>Connect Real-Debrid to play matched files directly in Omakase. Plex is optional.</small></span></label>
         </fieldset>
       </details>
       <div class="onboarding-actions"><button class="button button-primary" type="submit">Save & continue</button><a href="/plus/home">Skip for now</a></div>
@@ -36,9 +36,9 @@
     {% elif onboarding_step == 2 %}
     <h2 id="onboarding-heading">{{ onboarding_setup_path_label }}</h2>
     {% if onboarding_setup_path == 'standalone' %}
-    <div class="onboarding-note"><h3>You can continue now</h3><p>Search the public anime catalog with the app alone. Movie and TV catalog search needs a configured Seerr connection; Plex stays optional. Omakase does not play media itself, and standalone setup does not acquire movies, anime or TV automatically.</p><p>For a new app-only server, the repository includes <code>compose.standalone.yaml</code>: one Omakase container and persistent app data, with no required media mounts. Follow the <a href="https://omakase-plus.jhinx.dev/docs/quickstart" target="_blank" rel="noopener noreferrer">Quickstart guide</a> for preparation and startup commands.</p></div>
+    <div class="onboarding-note"><h3>You can continue now</h3><p>Search the public anime catalog with the app alone. Movie and TV catalog search needs a configured Seerr connection. To watch, connect a supported playback source such as Real-Debrid or Plex. Omakase includes a web player and an Apple TV app; available media is checked separately from catalog listings.</p><p>For a new app-only server, the repository includes <code>compose.standalone.yaml</code>: one Omakase container and persistent app data, with no required media mounts. Follow the <a href="https://omakase-plus.jhinx.dev/docs/quickstart" target="_blank" rel="noopener noreferrer">Quickstart guide</a> for preparation and startup commands.</p></div>
     {% elif onboarding_setup_path == 'existing' %}
-    <div class="onboarding-note"><h3>Use the services you already own</h3><p>Omakase is the discovery and orchestration app. Plex is a separate playback server; download services and movie automation are separate too. Save an address reachable from the Omakase server and your credentials in Settings, then test explicitly. Connecting does not install software or move media.</p></div>
+    <div class="onboarding-note"><h3>Use the services you already own</h3><p>Omakase combines discovery, viewing history and playback. Choose Real-Debrid for direct cloud playback, or connect an existing Plex library. Search and acquisition services are separate. Save the connections you need in Settings, then test them explicitly. Connecting does not install software or move media.</p></div>
     {% else %}
     <div class="onboarding-note"><h3>Optional Plex, with an operator in control</h3><p>Docker must already be installed on your server. Prepare app data and media directories, private configuration and the encryption key using <code>docs/local-storage-plex-setup.md</code> in the repository. Then review the configuration before starting the existing Plex profile:</p><pre><code>docker compose --env-file .env.local -f compose.local.yaml --profile plex config --quiet
 docker compose --env-file .env.local -f compose.local.yaml --profile plex up -d</code></pre><p>Open Plex on the Docker host at <code>http://127.0.0.1:32400/web</code>, sign in and claim your server yourself. Create your libraries, then connect and test Plex below. This guide installs nothing, claims no account and changes no host or NAS mounts.</p></div>
@@ -54,7 +54,7 @@ docker compose --env-file .env.local -f compose.local.yaml --profile plex up -d<
       <a href="/plus/settings/tracking"><strong>Anime tracking</strong><span>Connect AniList and choose how progress is synced</span></a>
       <a href="/plus/settings/connections"><strong>All connections</strong><span>Cloud downloads, movie automation, metadata and search</span></a>
     </div>
-    <details class="onboarding-details"><summary>Adding movies and recommendations</summary><p>Movie automation uses your tested Plex, Riven and Seerr connections. These are separate from working anime features. TMDB supplies movie metadata; Prowlarr expands configured release search. Anime recommendations use your selected AI connection; movie recommendations rank saved ratings and genres locally.</p></details>
+    <details class="onboarding-details"><summary>Adding movies and recommendations</summary><p>Seerr supplies movie and TV discovery, and Riven manages supported acquisition. Playback follows the source selected in Connections. TMDB supplies movie metadata; Prowlarr expands configured release search. Personalized AI menus use your selected AI connection; movie recommendations also use saved ratings and genres.</p></details>
     {% elif onboarding_step == 3 %}
     <h2 id="onboarding-heading">Review what is connected</h2>
     <p>These are saved connection results, not a new live check. A connected service does not by itself prove that a title is ready to play.</p>
@@ -67,7 +67,7 @@ docker compose --env-file .env.local -f compose.local.yaml --profile plex up -d<
     <p>You can continue while optional services need setup. For detailed diagnostics, visit <a href="/plus/health/overview">System health</a>.</p>
     {% else %}
     <h2 id="onboarding-heading">You are ready to explore</h2>
-    <p>Start with Home, search for a title, or open For you to shape your next watch. Playback uses a separate Plex server after acquisition or import and verification. Omakase does not include a native media player or automatic TV acquisition.</p>
+    <p>Start with Home, search for a title, or open For You to shape your next watch. Watch available media in the web player or linked Apple TV app using your selected playback source. A saved title or request does not by itself mean that playable episodes are available.</p>
     <div class="onboarding-note"><h3>Keep making it yours</h3><p>Settings holds your connections, tracking, download preferences and storage guidance. You can revisit this guide at any time without clearing your library or reconnecting services.</p></div>
     <form method="post" action="/plus/onboarding/finish"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><div class="onboarding-actions"><button type="submit" class="button button-primary">Finish & go Home</button><a href="/plus/onboarding?step=3">Back</a></div></form>
     {% endif %}

@@ -1,9 +1,9 @@
 /* Give the artwork a fixed stage so long synopses and forms can grow below it. */
 body.product-body .series-hero {
-  --series-art-height: clamp(320px, 41vw, 560px);
+  --series-art-height: clamp(320px, 36vw, 480px);
   display: block;
   margin: 0 0 2rem;
-  padding: clamp(1.25rem, 3.8vw, 3.5rem);
+  padding: clamp(1.25rem, 3vw, 2.5rem);
   border: 1px solid #353044;
   border-radius: 14px;
   background: #11131e;
@@ -29,9 +29,10 @@ body.product-body .series-hero::after {
   max-width: 20ch;
   margin: .25rem 0 .75rem;
   color: #f8f4ff;
-  font-size: clamp(2.25rem, 5vw, 4.75rem);
+  font-size: clamp(2rem, 4.2vw, 3.75rem);
+  font-weight: 750;
   line-height: 1.02;
-  letter-spacing: -.048em;
+  letter-spacing: -.035em;
   overflow-wrap: anywhere;
   text-wrap: balance;
 }
@@ -49,11 +50,12 @@ body.product-body .series-hero::after {
 .series-hero .series-hero-actions .button-primary:hover { background: #d9ccff; }
 .series-hero-details {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, .85fr);
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
   align-items: start;
-  gap: 1rem clamp(1.25rem, 5vw, 4rem);
-  margin-top: clamp(2rem, 6vw, 5.5rem);
+  gap: 1.5rem clamp(1.25rem, 3vw, 2.5rem);
+  margin-top: 1.75rem;
 }
+.series-hero-details > * { min-width: 0; }
 .series-hero-details :is(.title-synopsis, .title-progress-source, .tv-overview, .tv-overview p) { margin-block: 0 .75rem; }
 .series-hero-details .tv-summary { margin: 0; padding: 0; border: 0; }
 .series-hero-details .title-progress-source { color: #c5c5d8; }
@@ -65,11 +67,67 @@ body.product-body .series-hero::after {
 .series-management .watch-actions > form { min-width: 0; }
 .series-management :is(input, select) { max-width: 100%; }
 .series-hero-facts .series-management { margin: .75rem 0 0; }
-.series-hero-facts .tv-history { margin: .65rem 0 0; padding: .8rem; background: #11131ee8; }
+.series-hero-facts .tv-history { margin: 1rem 0 0; padding: 0; background: none; border: 0; }
 .series-hero-facts .tv-history .panel-heading { padding: 0; border: 0; }
 .series-hero-facts .tv-history .product-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); gap: .6rem; padding: .65rem 0 0; }
 .series-hero-facts .tv-history :is(input, select) { width: 100%; min-inline-size: 0; }
 .series-hero-facts .tv-history .button { justify-self: start; align-self: end; }
+
+/* Viewing history and provider inventory answer different questions. Keep their
+   words, numbers and colors distinct even when both are present. */
+.series-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); gap: .85rem; margin: 0; }
+.series-facts > div, .series-viewing-summary, .series-source-summary {
+  min-width: 0;
+  padding: .75rem 1rem;
+  border-inline-start: 3px solid #716485;
+  border-radius: 0 8px 8px 0;
+  background: #11131ef0;
+  overflow-wrap: anywhere;
+}
+.series-hero .series-facts dt, .series-hero .series-fact-label {
+  margin: 0 0 .35rem;
+  color: #c5c5d8;
+  font-size: .8125rem;
+  line-height: 1.4;
+  font-weight: 500;
+}
+.series-facts dd { margin: 0; font-size: 1rem; line-height: 1.5; font-weight: 650; }
+.series-hero .series-source-summary > p:not(.series-fact-label) { margin: 0; font-size: .9375rem; line-height: 1.5; font-weight: 600; }
+.series-viewing-summary, .series-facts [data-fact-tone="viewing"] { border-color: #b9a2ef; }
+.series-viewing-summary .media-progress, .series-facts [data-fact-tone="viewing"] dd { color: #dfd1ff; }
+.series-viewing-summary .media-progress { margin: 0; width: 100%; min-width: 0; grid-template-columns: minmax(0, 1fr); }
+.series-viewing-summary .media-progress > :is(.watched-count, .not-started) { color: #dfd1ff; font-size: 1rem; line-height: 1.5; white-space: normal; }
+.series-source-summary { margin-top: .75rem; }
+.series-hero [data-fact-tone="ready"] { border-color: #72bf9a; }
+.series-facts [data-fact-tone="ready"] dd, .series-source-summary[data-fact-tone="ready"] > p:not(.series-fact-label) { color: #b1e8cd; }
+.series-hero [data-fact-tone="pending"] { border-color: #e2b476; }
+.series-facts [data-fact-tone="pending"] dd { color: #f3cf9f; }
+.series-facts [data-fact-tone="neutral"] dd, .series-source-summary[data-fact-tone="neutral"] > p:not(.series-fact-label) { color: #d1d2dd; }
+.series-hero :is(.series-personal-controls, .series-device-options, .title-watch-controls) {
+  min-width: 0;
+  border: 1px solid #484251;
+  border-radius: 8px;
+  background: #11131ef0;
+  padding: 0 .85rem;
+}
+.series-hero :is(.series-personal-controls, .series-device-options, .title-watch-controls) > summary {
+  min-height: 44px;
+  align-content: center;
+  padding: .5rem 0;
+  box-sizing: border-box;
+  color: #e3d9f8;
+  font-size: .875rem;
+  line-height: 1.5;
+  font-weight: 600;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.series-hero :is(.series-personal-controls, .series-device-options, .title-watch-controls)[open] { padding-bottom: .85rem; }
+.series-hero :is(.series-personal-controls, .series-device-options, .title-watch-controls) > summary:focus-visible { outline: 2px solid #c3b1ff; outline-offset: 3px; border-radius: 4px; }
+.series-device-options { margin-top: .75rem; }
+.series-device-options .apple-tv-link-form { margin: .5rem 0; }
+.series-device-options .button { max-width: 100%; white-space: normal; }
+.series-management .series-device-options { margin: 0; }
 
 .tv-page .tv-availability { margin: 1.5rem 0 2rem; }
 #tv-seasons, #tv-history, [id^="tv-episode-"] { scroll-margin-top: 100px; }
@@ -178,7 +236,9 @@ body.product-body .series-hero::after {
 .series-episode-progress::-webkit-progress-bar { background: #282436; }
 .series-episode-progress::-webkit-progress-value { background: #c3b1ff; }
 .series-episode-progress::-moz-progress-bar { background: #c3b1ff; }
-.series-episode-copy { display: grid; grid-template-rows: 1fr; flex: 1; gap: .4rem; padding: .7rem 0 .8rem; }
+.series-episode-copy { display: grid; grid-template-rows: 1fr; flex: 1; min-width: 0; gap: .4rem; padding: .7rem 0 .8rem; }
+.series-episode-facts > * { min-width: 0; overflow-wrap: anywhere; }
+.viewer-episodes .series-episode .episode-release-date time { white-space: normal; }
 .series-episode-copy :is(h3, h4) {
   display: grid;
   gap: .25rem;

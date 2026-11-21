@@ -26,6 +26,7 @@ struct LiveLibraryScreen: View {
     @State private var episodes: LiveLibraryPage?
     @State private var catalogOffset = 0
     @State private var episodeOffset = 0
+    @State private var checkingEpisodes = false
     @State private var synopsisOpen = false
     @State private var detailsEntry: LiveLibraryEntry?
     @State private var detailsPayload: LiveLibraryDetails?
@@ -794,7 +795,7 @@ struct LiveLibraryScreen: View {
                         .disabled(busy)
                     }
                     if synopsis(for: entry) != nil {
-                        control(kind == .movie ? "Movie details" : "Episode details", key: "details-secondary", icon: "text.alignleft") {
+                        control(kind == .movie ? "Movie details" : "About this series", key: "details-secondary", icon: "text.alignleft") {
                             synopsisOpen = true
                         }
                         .disabled(busy)
@@ -839,6 +840,18 @@ struct LiveLibraryScreen: View {
     private var episodeGrid: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Episodes").font(.title2.bold()).accessibilityAddTraits(.isHeader)
+            if episodes?.hasUncheckedEpisodes == true {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Some episodes have not been checked yet.")
+                        .font(.callout).foregroundStyle(Color.tvWarning)
+                    control(checkingEpisodes ? "Checking…" : "Check again", key: "episode-recheck", icon: "arrow.clockwise", compact: true) {
+                        Task { await recheckEpisodes() }
+                    }
+                    .accessibilityHint("Check the current episode page for available files")
+                    .accessibilityIdentifier("library.episode-recheck")
+                }
+                .padding(.vertical, 12)
+            }
             if let episodes, !episodes.items.isEmpty {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 26, alignment: .topLeading),
                                             count: 4), alignment: .leading, spacing: 30) {
@@ -846,10 +859,28 @@ struct LiveLibraryScreen: View {
                 }
                 pagination(offset: episodeOffset, next: episodes.nextOffset)
             } else if !busy {
-                Text("No episodes are ready to play.").foregroundStyle(.secondary)
+                Text(episodes?.hasUncheckedEpisodes == true ? "Episode availability is still being checked." : "No episodes are ready to play.")
+                    .foregroundStyle(Color.tvMuted)
             }
         }
         .focusSection()
+    }
+
+    private func recheckEpisodes() async {
+        guard !busy, !checkingEpisodes, let selectedTitle = title else { return }
+        let selectedKind = kind
+        checkingEpisodes = true
+        defer { checkingEpisodes = false }
+        await load(episodeOffset)
+        guard !expired, isPresented, title?.id == selectedTitle.id, kind == selectedKind else { return }
+        await Task.yield()
+        if episodes?.hasUncheckedEpisodes == true {
+            focus = "episode-recheck"
+        } else if let firstPlayable = episodes?.items.first(where: { $0.watchPath != nil }) {
+            focus = "episode-\(firstPlayable.id)"
+        } else {
+            focus = "details-secondary"
+        }
     }
 
     private func scrollToShelf(_ id: String, using scroll: ScrollViewProxy) {
@@ -986,8 +1017,9 @@ struct LiveLibraryScreen: View {
                     ProgressView(value: progress).tint(Color.tvFocus)
                         .accessibilityLabel("Episode progress")
                 }
-                if entry.watchPath == nil {
-                    Text("Unavailable").font(.caption).foregroundStyle(Color.tvMuted)
+                if let availability = entry.unavailableLabel {
+                    Text(availability).font(.caption)
+                        .foregroundStyle(entry.availabilityPending ? Color.tvWarning : Color.tvMuted)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1000,7 +1032,7 @@ struct LiveLibraryScreen: View {
         .focused($focus, equals: key)
         .zIndex(focused ? 1 : 0)
         .accessibilityIdentifier(key)
-        .accessibilityLabel([entry.note, entry.episodeDisplayTitle, entry.durationLabel, status, entry.summary]
+        .accessibilityLabel([entry.note, entry.episodeDisplayTitle, entry.durationLabel, status, entry.unavailableLabel, entry.summary]
             .compactMap { $0 }.joined(separator: ", "))
         .accessibilityAction(named: "Episode details") {
             guard !busy, entry.watchPath != nil else { return }

@@ -249,12 +249,22 @@ def collection(
     debrid_movies=(),
     debrid_only=False,
     debrid_torrents=None,
+    verified_only=False,
+    debrid_tv=(),
 ):
     owner = scope.viewer_id
     if scope.kind == "household":
         return _shared_cards(db, scope, kind, offset, query)
     if kind == "anime":
-        entries = _anime_entries(db, scope, _anime(db, scope, debrid_torrents=debrid_torrents))
+        cards = _anime(db, scope, debrid_torrents=debrid_torrents)
+        if verified_only:
+            cards = [
+                card
+                for card in cards
+                if (card["watch_status"] != "completed" or card["resurfaced"])
+                and (card["play_url"] or card["episode_play_urls"])
+            ]
+        entries = _anime_entries(db, scope, cards)
     elif kind == "movie":
         rows = db.execute(
             """SELECT c.imdb_id,c.title,c.year,c.poster_url,c.backdrop_url,c.overview,
@@ -300,22 +310,50 @@ def collection(
                 and (not debrid_only or row["imdb_id"] in debrid_movies),
             )
             for row in rows
-            if personal_legacy_visible(db, scope, domain="movie", canonical_id=row["imdb_id"])
+            if (
+                not verified_only
+                or (
+                    row["watch_status"] != "completed"
+                    and row["imdb_id"] in (debrid_movies if debrid_only else plex_movies)
+                )
+            )
+            and personal_legacy_visible(db, scope, domain="movie", canonical_id=row["imdb_id"])
         ]
         activity = {str(row["imdb_id"]): row["watch_updated_at"] or "" for row in rows}
         for entry in entries:
             entry["_activity"] = activity.get(str(entry["id"]), "")
     else:
+        from omakase.plus.tv_service import TVService
+
+        connection = connections.movie_connections(db, owner) if not debrid_only else None
+        plex_scope = (
+            TVService(db, connection)._plex_scope() if connection and connection.enabled else ""
+        )
         rows = db.execute(
             """SELECT c.tmdb_id,c.metadata_json,h.status AS watch_status,
-                      h.updated_at AS watch_updated_at
+                      h.updated_at AS watch_updated_at,
+                      EXISTS (
+                          SELECT 1 FROM tv_plex_snapshots s JOIN tv_episodes e USING(user_id,tmdb_id)
+                          WHERE s.user_id=c.user_id AND s.tmdb_id=c.tmdb_id
+                            AND s.source_scope=? AND e.plex_present=1
+                      ) AS in_plex
                FROM tv_catalog c LEFT JOIN tv_history h USING(user_id,tmdb_id)
-               WHERE c.user_id=? AND json_extract(c.metadata_json,'$.in_collection')=1
+               WHERE c.user_id=? AND (
+                   json_extract(c.metadata_json,'$.in_collection')=1 OR EXISTS (
+                       SELECT 1 FROM for_you_requests q WHERE q.user_id=c.user_id
+                         AND q.kind='tv' AND q.title_id=c.tmdb_id
+                   )
+               )
                ORDER BY json_extract(c.metadata_json,'$.title') COLLATE NOCASE,c.tmdb_id""",
-            (owner,),
+            (plex_scope, owner),
         )
         entries = []
         for row in rows:
+            if verified_only and (
+                row["watch_status"] == "completed"
+                or not (row["tmdb_id"] in debrid_tv if debrid_only else row["in_plex"])
+            ):
+                continue
             if personal_legacy_visible(db, scope, domain="tv", canonical_id=str(row["tmdb_id"])):
                 metadata = json.loads(row["metadata_json"])
                 watching = row["watch_status"] == "watching"
@@ -340,7 +378,7 @@ def collection(
                 episode_path = (
                     f"/plus/watch/title/tv/{row['tmdb_id']}/"
                     f"{episode['season_number']}/{episode['episode_number']}"
-                    if episode and episode["plex_present"]
+                    if episode and episode["plex_present"] and not debrid_only
                     else None
                 )
                 entry = _entry(
@@ -591,7 +629,10 @@ def _tv_episode_rows(db, scope, key, offset, season):
            LEFT JOIN tv_episodes v ON v.user_id=? AND v.tmdb_id=e.tmdb_id
                AND v.season_number=e.season_number AND v.episode_number=e.episode_number
            WHERE e.user_id=? AND e.tmdb_id=?
-               AND (? OR json_extract(c.metadata_json,'$.in_collection')=1)
+               AND (? OR json_extract(c.metadata_json,'$.in_collection')=1 OR EXISTS (
+                   SELECT 1 FROM for_you_requests q WHERE q.user_id=c.user_id
+                     AND q.kind='tv' AND q.title_id=c.tmdb_id
+               ))
                AND (? IS NULL OR e.season_number=?)
            ORDER BY e.season_number,e.episode_number
            LIMIT ? OFFSET ?""",

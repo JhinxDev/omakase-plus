@@ -348,29 +348,39 @@ class TVService(MovieService):
             "seasons": sorted(seasons, key=lambda s: s["season_number"]),
         }
 
-    async def collection_page(self, user_id, *, view="all", offset=0, query="", cloud_ids=None):
+    async def collection_page(
+        self, user_id, *, view="all", offset=0, query="", cloud_ids=None, verified_only=False
+    ):
         self._owner(user_id)
         if view not in {"all", "watching", "completed", "available"}:
             raise TVError("Invalid TV collection view.")
         number(offset, 10000, zero=True)
         page_size = 100
-        where = "c.user_id=? AND json_extract(c.metadata_json,'$.in_collection')=1"
+        where = "c.user_id=?"
         values = [user_id]
-        if view == "available" and cloud_ids is not None:
+        stored = "json_extract(c.metadata_json,'$.in_collection')=1"
+        if verified_only and view != "completed":
+            where += " AND COALESCE(h.status,'unwatched')<>'completed'"
+        else:
+            where += f" AND {stored}"
+        available = view == "available" or verified_only and view in {"all", "watching"}
+        if available and cloud_ids is not None:
             where += " AND c.tmdb_id IN (SELECT value FROM json_each(?))"
             values.append(json.dumps(sorted(cloud_ids)))
-        elif view == "available":
+        elif available:
             if not self.connections.enabled:
-                raise TVError(
-                    "Connect your library in Settings to check which shows are available."
-                )
+                if not verified_only:
+                    raise TVError(
+                        "Connect your library in Settings to check which shows are available."
+                    )
+                where += " AND 0"
             where += """ AND EXISTS (
                 SELECT 1 FROM tv_plex_snapshots s JOIN tv_episodes e
                   ON e.user_id=s.user_id AND e.tmdb_id=s.tmdb_id
                 WHERE s.user_id=c.user_id AND s.tmdb_id=c.tmdb_id AND s.source_scope=?
                   AND e.plex_present=1)"""
             values.append(self._plex_scope())
-        elif view != "all":
+        if view in {"watching", "completed"}:
             where += " AND h.status=?"
             values.append(view)
         if query:
@@ -521,7 +531,7 @@ class TVService(MovieService):
         return self.card(user_id, metadata)
 
     async def save_history(
-        self, user_id, tmdb_id, *, status=UNSET, rating=UNSET, record_addition=False
+        self, user_id, tmdb_id, *, status=UNSET, rating=UNSET, record_addition=False, comment=None
     ):
         await self.detail(user_id, tmdb_id)
         if status is not UNSET and status not in {"unwatched", "watching", "completed", "dropped"}:
@@ -553,6 +563,10 @@ class TVService(MovieService):
                     "UPDATE tv_history SET rating=?,rating_source='manual',updated_at=? WHERE user_id=? AND tmdb_id=?",
                     (rating, now, user_id, tmdb_id),
                 )
+            if comment is not None:
+                from omakase.plus import title_reviews
+
+                title_reviews.save(self.db, user_id, "tv", tmdb_id, comment=comment)
             self._save(
                 user_id,
                 self._raw(user_id, tmdb_id),
