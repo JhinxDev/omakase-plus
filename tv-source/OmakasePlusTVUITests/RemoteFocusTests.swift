@@ -59,6 +59,55 @@ final class RemoteFocusRenderingTests: XCTestCase {
         try checkBackplate(card, in: app, name: "03-returned-card", card: true)
     }
 
+    @MainActor
+    func testAnimeContinueWatchingUsesEpisodeStillAndFullPoster() async throws {
+        let app = try launchHome()
+        XCUIRemote.shared.press(.select)
+
+        let episode = app.buttons["home-card-continue-anime-qa-anime-7101"]
+        try reach(episode, in: app)
+        try await checkAnimeArtwork(episode, in: app, expectEpisode: true)
+
+        let fallback = app.buttons["home-card-continue-anime-qa-anime-7102"]
+        try reach(fallback, in: app)
+        try await checkAnimeArtwork(fallback, in: app, expectEpisode: false)
+    }
+
+    @MainActor
+    private func checkAnimeArtwork(_ card: XCUIElement, in app: XCUIApplication,
+                                   expectEpisode: Bool) async throws {
+        let frame = card.frame
+        let viewport = app.windows.firstMatch.frame
+        let artworkHeight = frame.width * 214 / 380
+        let y = frame.minY + artworkHeight * 0.21
+        let name = expectEpisode ? "05-anime-episode-still" : "06-anime-poster-fallback"
+        for attempt in 0..<16 {
+            try await Task.sleep(for: .milliseconds(350))
+            let screenshot = app.screenshot()
+            let (pixels, width, height) = try renderedPixels(screenshot)
+
+            func pixel(at fraction: CGFloat) -> (r: Int, g: Int, b: Int) {
+                let x = frame.minX + frame.width * fraction
+                let column = Int((x - viewport.minX) * CGFloat(width) / viewport.width)
+                let row = Int((y - viewport.minY) * CGFloat(height) / viewport.height)
+                guard (0..<width).contains(column), (0..<height).contains(row) else { return (255, 255, 255) }
+                let offset = (row * width + column) * 4
+                return (Int(pixels[offset]), Int(pixels[offset + 1]), Int(pixels[offset + 2]))
+            }
+
+            let side = pixel(at: 0.18), center = pixel(at: 0.5)
+            let matches = expectEpisode
+                ? side.b > side.g + 50 && side.b > side.r + 120 && center.b > center.g + 50
+                : center.g > center.r + 95 && center.g > center.b + 95 && max(side.r, side.g, side.b) < 95
+            if matches || attempt == 15 {
+                let attachment = XCTAttachment(screenshot: screenshot)
+                attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+                XCTAssertTrue(matches, "\(name) rendered unexpected artwork. Side: \(side), center: \(center).")
+                return
+            }
+        }
+    }
+
     private func fixturePlayback() async throws -> FixturePlayback {
         let url = try XCTUnwrap(URL(string: "https://127.0.0.1:8854/qa/state"))
         var request = URLRequest(url: url)
@@ -175,19 +224,7 @@ final class RemoteFocusRenderingTests: XCTestCase {
                        CGRect(x: frame.minX + 8, y: frame.minY + 10,
                               width: 6, height: frame.height - 20)]
         }
-        let image = try XCTUnwrap(shot.image.cgImage)
-        let width = image.width, height = image.height
-        var pixels = [UInt8](repeating: 0, count: width * height * 4)
-        let rendered = pixels.withUnsafeMutableBytes { bytes -> Bool in
-            guard let context = CGContext(data: bytes.baseAddress, width: width, height: height,
-                bitsPerComponent: 8, bytesPerRow: width * 4,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
-            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-            return true
-        }
-        XCTAssertTrue(rendered, "Screenshot must decode for pixel assertions")
-        guard rendered else { throw Stop() }
+        let (pixels, width, height) = try renderedPixels(shot)
         let sx = CGFloat(width) / viewport.width, sy = CGFloat(height) / viewport.height
         for (index, region) in regions.enumerated() {
             XCTAssertTrue(viewport.contains(region), "Sample must not be clipped")
@@ -207,6 +244,23 @@ final class RemoteFocusRenderingTests: XCTestCase {
             XCTAssertLessThan(fraction, 0.08,
                               "\(name): near-white backplate occupies \(fraction) of blank region \(index)")
         }
+    }
+
+    private func renderedPixels(_ screenshot: XCUIScreenshot) throws -> ([UInt8], Int, Int) {
+        let image = try XCTUnwrap(screenshot.image.cgImage)
+        let width = image.width, height = image.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let rendered = pixels.withUnsafeMutableBytes { bytes -> Bool in
+            guard let context = CGContext(data: bytes.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        XCTAssertTrue(rendered, "Screenshot must decode for pixel assertions")
+        guard rendered else { throw Stop() }
+        return (pixels, width, height)
     }
 }
 

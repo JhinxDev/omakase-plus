@@ -17,8 +17,10 @@ identifier; it does not replace the public release version.
 - TV requests can use configured Riven intake. Real-Debrid fallback can verify
   exact missing episodes and reuse eligible files already in the linked account.
 - Recent Apple TV builds combine Continue Watching activity across anime, movies
-  and TV. Resume cards fit the whole landscape image and focused controls use
-  the app’s dark highlight. Media Info shows resolution, codecs, container and size.
+  and TV. Home Screen shelf tiles fit the whole image, and focused in-app controls
+  use the dark highlight. Media Info shows resolution, codecs, container and size.
+- The Apple TV Home Anime Continue Watching row uses matching episode stills
+  where available and shows the full series poster as a fallback.
 - The iPhone simulator prototype shares the Swift playback and resume contracts
   and runs an offline catalog-to-player test in GitHub Actions.
 
