@@ -130,6 +130,7 @@ public struct LiveTitleRequest: Decodable, Identifiable, Sendable {
     public let state: String
     public let label: String
     public let detail: String
+    public let statusLabel: String?
     public let canCheck: Bool?
     public let lastCheckedAt: String?
     public let nextAction: Action?
@@ -142,6 +143,28 @@ public struct LiveTitleRequest: Decodable, Identifiable, Sendable {
     }
     public let reasonText: String?
     public let stages: [Stage]?
+    public let fallbackSearch: FallbackSearch?
+    public let fallbackTransfer: FallbackTransfer?
+
+    public struct FallbackSearch: Decodable, Sendable {
+        public let headline: String
+        public let outcome: String
+        public let checkedAt: String?
+
+        enum CodingKeys: String, CodingKey {
+            case headline, outcome, checkedAt = "checked_at"
+        }
+    }
+
+    public struct FallbackTransfer: Decodable, Sendable {
+        public let state: String
+        public let headline: String
+    }
+
+    public var displayStatus: String {
+        if let statusLabel, !statusLabel.isEmpty { return statusLabel }
+        return label
+    }
 
     public struct Stage: Decodable, Identifiable, Sendable {
         public let id: String
@@ -159,7 +182,8 @@ public struct LiveTitleRequest: Decodable, Identifiable, Sendable {
     enum CodingKeys: String, CodingKey {
         case kind, titleID = "title_id", title, state, label, detail, canCheck = "can_check"
         case lastCheckedAt = "last_checked_at", nextAction = "next_action", reasonText = "reason_text"
-        case stages
+        case statusLabel = "status_label", stages
+        case fallbackSearch = "fallback_search", fallbackTransfer = "fallback_transfer"
     }
 }
 

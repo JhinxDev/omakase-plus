@@ -356,6 +356,21 @@ def test_season_picker_is_one_app_owned_listbox_that_names_the_season_it_shows()
     assert "watch-status.js" not in html
 
 
+def test_partial_cloud_scan_keeps_confirmed_play_action_and_explains_unknowns():
+    html = render(
+        "tv_detail.html",
+        card=show(),
+        selected_season=1,
+        watch_in_app=True,
+        cloud_playback=True,
+        cloud_episodes={(1, 1)},
+        cloud_partial=True,
+    )
+    assert "Some Real-Debrid files are still unchecked." in html
+    assert 'href="/plus/watch/title/tv/321/1/1?play=1"' in html
+    assert 'href="/plus/watch/title/tv/321/1/2?play=1"' not in html
+
+
 def test_season_picker_keeps_a_native_fallback_for_a_browser_without_scripting():
     # listbox.js is what turns the markup into a live control, so the same season choice
     # must still be possible, and still submit exactly one "season" value, without it.

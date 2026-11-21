@@ -320,6 +320,166 @@ def test_check_status_reads_only_and_retry_cannot_duplicate(client, monkeypatch)
             assert request is not None
 
 
+@pytest.mark.parametrize(
+    ("provider_code", "performed"),
+    [
+        ("no_eligible_results", True),
+        ("no_eligible_results", False),
+        ("backend_failed", False),
+        ("searching", True),
+        ("acquiring", True),
+    ],
+)
+def test_request_checks_riven_before_searching_configured_sources(
+    client, monkeypatch, provider_code, performed
+):
+    from types import SimpleNamespace
+
+    from omakase.plus import catalog_config
+    from tests.plus.test_request_candidates import Candidate
+
+    _signup_and_login(client)
+    user_id = _user_id(client)
+    events = []
+
+    class RivenStatus(NoProvider):
+        async def refresh(self, user_id, imdb_id):
+            events.append(("riven", imdb_id))
+            return {"code": provider_code, "request_check": {"performed": performed}}
+
+    class Fallback:
+        async def search(self, query):
+            events.append(("indexer", query))
+            return [Candidate("Chouchou 2003 1080p"), Candidate("Chouchou 1998 1080p")]
+
+    monkeypatch.setenv("OMAKASE_REQUEST_SEARCH", "1")
+    monkeypatch.setattr(for_you, "MovieService", lambda *_: RivenStatus())
+    monkeypatch.setattr(
+        catalog_config,
+        "configured_catalogs",
+        lambda *a, **k: SimpleNamespace(sources=(Fallback(),)),
+    )
+    with _connect_client_db(client) as db:
+        _seed_movie(db, user_id, code="requested", state="requested", detail="Request saved")
+        db.commit()
+
+    url = f"/plus/requests/movie/{CHOUCHOU}"
+    opened = client.get(url)
+    assert opened.status_code == 200
+    assert not events
+    result = client.post(
+        url + "/check",
+        data={"csrf_token": _csrf_token(client)},
+        follow_redirects=False,
+    )
+    assert result.status_code == 303
+    expected = [("riven", CHOUCHOU)]
+    if provider_code in {"no_eligible_results", "backend_failed"}:
+        expected.append(("indexer", "Chouchou"))
+    assert events == expected
+    checked = client.get(result.headers["location"])
+    assert ("the release year does not match the title" in checked.text) == (len(expected) == 2)
+    assert events == expected
+
+
+def test_saved_fallback_evidence_is_available_in_shared_request_status(client, monkeypatch):
+    from omakase.plus import movies_routes, native_tv_test, request_candidates
+    from tests.plus.test_request_candidates import Candidate
+
+    monkeypatch.setenv("OMAKASE_REQUEST_SEARCH", "1")
+    monkeypatch.setattr(movies_routes, "monotonic", lambda: 100.0)
+    _signup_and_login(client)
+    user_id = _user_id(client)
+    monkeypatch.setattr(for_you, "MovieService", lambda *_: NoProvider())
+    with _connect_client_db(client) as db:
+        _seed_movie(db, user_id, code="backend_failed", state="unavailable", detail=FAILED_DETAIL)
+        request_candidates.record(
+            db,
+            user_id + 1000,
+            "movie",
+            CHOUCHOU,
+            [
+                (
+                    Candidate("Other owner's release"),
+                    request_candidates.Verdict(True, "accepted", ""),
+                )
+            ],
+        )
+        request_candidates.record(
+            db,
+            user_id,
+            "movie",
+            CHOUCHOU,
+            [(Candidate("Fixture release"), request_candidates.Verdict(True, "accepted", ""))],
+            marker=request_candidates.PARTIAL_CODE,
+        )
+        status = run(for_you.dashboard(db, user_id))
+
+    expected = {
+        "outcome": "partial",
+        "found": 1,
+        "eligible": 1,
+    }
+    model = next(item for group in status["categories"] for item in group["requests"])
+    native = native_tv_test.native_request_status(model)["fallback_search"]
+    assert {key: native[key] for key in expected} == expected
+    assert native["checked_at"].endswith("Z")
+    assert "Fixture release" not in str(native)
+    web = client.get("/plus/requests/status")
+    assert web.status_code == 200
+    model = next(item for group in web.json()["categories"] for item in group["requests"])
+    assert model["fallback_search"] == native
+
+
+def test_terminal_riven_check_can_advance_an_eligible_cloud_fallback(client, monkeypatch):
+    from types import SimpleNamespace
+
+    from omakase.plus import catalog_config, movie_fallback
+    from tests.plus.test_request_candidates import Candidate
+
+    _signup_and_login(client)
+    user_id = _user_id(client)
+    events = []
+
+    class RivenStatus(NoProvider):
+        async def refresh(self, user_id, imdb_id):
+            events.append("riven")
+            return {"code": "backend_failed"}
+
+    class Fallback:
+        async def search(self, query):
+            events.append("configured sources")
+            return [Candidate("Chouchou 2003 1080p"), Candidate("Chouchou 1998 1080p")]
+
+    async def advance(db, owner, title_id, candidates=()):
+        assert (owner, title_id) == (user_id, CHOUCHOU)
+        if candidates:
+            events.extend(item.title for item in candidates)
+
+    async def library(*args, **kwargs):
+        return {}
+
+    monkeypatch.setenv("OMAKASE_REQUEST_SEARCH", "1")
+    monkeypatch.setenv("OMAKASE_REQUEST_ACQUIRE", "1")
+    monkeypatch.setattr(for_you, "MovieService", lambda *_: RivenStatus())
+    monkeypatch.setattr(for_you, "_movie_library", library)
+    monkeypatch.setattr(
+        for_you.playback_providers, "select", lambda *_: SimpleNamespace(cloud_route=True)
+    )
+    monkeypatch.setattr(movie_fallback, "advance", advance)
+    monkeypatch.setattr(
+        catalog_config,
+        "configured_catalogs",
+        lambda *a, **k: SimpleNamespace(sources=(Fallback(),)),
+    )
+    with _connect_client_db(client) as db:
+        _seed_movie(db, user_id, code="backend_failed", state="unavailable", detail=FAILED_DETAIL)
+        status = run(for_you.refresh_request(db, user_id, "movie", CHOUCHOU))
+
+    assert events == ["riven", "configured sources", "Chouchou 2003 1080p"]
+    assert status["fallback_search"]["eligible"] == 1
+
+
 def test_automatic_refresh_is_bounded_per_viewer(client, monkeypatch):
     from omakase.plus import movies_routes
 

@@ -16,7 +16,7 @@ from omakase.plus.prowlarr import (
 )
 from omakase.plus.secrets import read_secret
 
-_DEFAULT_CATEGORIES = (5070, 5000)
+_DEFAULT_CATEGORIES = {"anime": (5070, 5000), "movie": (2000,), "tv": (5000,)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,12 +29,12 @@ class CatalogConfiguration:
     sources: tuple[CatalogSource, ...] = field(default=(), repr=False)
 
 
-def configured_catalogs(db, user_id: int) -> CatalogConfiguration:
+def configured_catalogs(db, user_id: int, *, kind: str = "anime") -> CatalogConfiguration:
     """Build optional catalog sources without returning stored values to callers."""
     base_url = read_secret(db, user_id, "prowlarr_url") or ""
     public_sources = (
         (AnimeToshoCatalog(),)
-        if os.getenv("OMAKASE_ANIMETOSHO_ENABLED", "").casefold() == "true"
+        if kind == "anime" and os.getenv("OMAKASE_ANIMETOSHO_ENABLED", "").casefold() == "true"
         else ()
     )
     api_key = read_secret(db, user_id, "prowlarr_api_key") or ""
@@ -60,7 +60,7 @@ def configured_catalogs(db, user_id: int) -> CatalogConfiguration:
         indexer_ids = parse_positive_ids(read_secret(db, user_id, "prowlarr_indexer_ids"))
         categories = parse_positive_ids(
             read_secret(db, user_id, "prowlarr_categories"),
-            default=_DEFAULT_CATEGORIES,
+            default=_DEFAULT_CATEGORIES[kind],
         )
     except ProwlarrConfigurationError:
         return CatalogConfiguration(

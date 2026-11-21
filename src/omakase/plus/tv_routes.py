@@ -389,6 +389,7 @@ def create_tv_router(
         cloud_playback = playback_providers.select(db, user.id).cloud_route
         cloud_episodes = set() if cloud_playback else None
         cloud_error = False
+        cloud_partial = False
         try:
             _positive(tmdb_id)
             if season is not None:
@@ -421,15 +422,16 @@ def create_tv_router(
         watch_in_app = web_player_enabled()
         if cloud_playback and watch_in_app and season is not None:
             try:
-                async with asyncio.timeout(8):
-                    availability = await tv_episode_ids(
-                        db,
-                        personal_scope(db, user.id),
-                        str(tmdb_id),
-                        cloud_library,
-                        seasons=[season],
-                    )
+                availability = await tv_episode_ids(
+                    db,
+                    personal_scope(db, user.id),
+                    str(tmdb_id),
+                    cloud_library,
+                    seasons=[season],
+                    timeout=8,
+                )
                 cloud_episodes = availability.episodes
+                cloud_partial = season in availability.partial_seasons
             except (DebridLibraryError, PlaybackSourceError, TimeoutError):
                 cloud_error = True
         return templates.TemplateResponse(
@@ -443,6 +445,7 @@ def create_tv_router(
                 "cloud_playback": cloud_playback,
                 "cloud_episodes": cloud_episodes,
                 "cloud_error": cloud_error,
+                "cloud_partial": cloud_partial,
                 "featured_episode": _episode_navigation(
                     db, user.id, card, cloud_episodes=cloud_episodes
                 )
@@ -502,6 +505,8 @@ def create_tv_router(
                     status_code=303,
                     headers={"Cache-Control": "private, no-store"},
                 )
+        if operation in {"save_history", "save_episode"}:
+            kwargs["record_addition"] = True
         try:
             result = await getattr(service(db, user), operation)(user.id, **kwargs)
         except (TVError, MovieError, ValueError) as exc:

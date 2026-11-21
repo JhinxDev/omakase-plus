@@ -412,6 +412,7 @@ def create_movies_router(
 
     @router.get("/movies/{imdb_id}/request-status")
     async def request_timeline_status(imdb_id: str, user=Depends(require_user), db=Depends(get_db)):
+        from omakase.plus import movie_fallback, request_candidates
         from omakase.plus.for_you import (
             _MOVIE_PROGRESS_LABELS,
             ForYouError,
@@ -506,6 +507,8 @@ def create_movies_router(
         from omakase.plus.web_playback_navigation import enabled as web_player_enabled
 
         can_play = status["state"] in {"in_library", "ready"} and web_player_enabled()
+        request_candidates.attach_search_summaries(db, user.id, [status])
+        movie_fallback.attach_summaries(db, user.id, [status])
         return JSONResponse(
             {
                 **request_payload(status),
@@ -534,7 +537,7 @@ def create_movies_router(
                 raise HTTPException(404, "Requests unavailable", headers=_no_store())
 
     def request_payload(model):
-        return {
+        payload = {
             key: model[key]
             for key in (
                 "identity",
@@ -570,6 +573,10 @@ def create_movies_router(
                 "timeline",
             )
         }
+        for field in ("fallback_search", "fallback_transfer"):
+            if field in model:
+                payload[field] = model[field]
+        return payload
 
     def requests_context(request, user):
         base = context(request, user)
@@ -670,27 +677,7 @@ def create_movies_router(
             {
                 **requests_context(request, user),
                 "item": model,
-                # Owner review W-06: the page states what Omakase's own search found and
-                # why each candidate failed, or says plainly that the search is switched
-                # off or could not run. It never presents a re-stamped check time as
-                # progress. The search is bounded and cached, so rendering stays cheap.
-                "request_search": await request_candidates.refresh(
-                    db,
-                    user.id,
-                    kind,
-                    title_id,
-                    request_candidates.JudgeRequest(
-                        title=str(
-                            getattr(model, "title", "")
-                            or getattr(model, "title_label", "")
-                            or title_id
-                        ),
-                        kind=kind,
-                        year=getattr(model, "year", None),
-                        season=getattr(model, "season", None),
-                        episode=getattr(model, "episode", None),
-                    ),
-                ),
+                "request_search": request_candidates.page_block(db, user.id, kind, title_id),
                 "notice": "checked" if checked else ("retried" if retried else ""),
                 "csrf_token": csrf_token(request),
             },
@@ -706,7 +693,7 @@ def create_movies_router(
         user=Depends(require_user),
         db=Depends(get_db),
     ):
-        """Explicit status check. Reads provider/library state; no new request."""
+        """Check provider and library state and advance authorized fallback for this request."""
         from omakase.plus import for_you
 
         require_csrf(request, csrf)

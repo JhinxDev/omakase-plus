@@ -66,6 +66,22 @@
     text(container, '[data-request-manual]', status.manual_note);
     renderTime(node('[data-request-checked]'), status.last_checked_at, 'Not yet');
     renderTime(node('[data-request-confirmed]'), status.last_confirmed_at, 'Not yet');
+    const searchPanel = node('[data-request-search]');
+    if (searchPanel) {
+      const transfer = node('[data-request-transfer]');
+      transfer.hidden = !status.fallback_transfer?.headline;
+      transfer.textContent = status.fallback_transfer?.headline || '';
+      if (status.fallback_search) {
+        const search = status.fallback_search;
+        text(searchPanel, '[data-request-search-headline]', search.headline);
+        renderTime(node('[data-request-search-checked]'), search.checked_at, '');
+        node('[data-request-search-time]').hidden = !search.checked_at;
+        const changed = (search.checked_at || '') !== searchPanel.dataset.requestEvidenceAt;
+        const releaseList = searchPanel.querySelector('.requests-evidence');
+        if (releaseList && !releaseList.contains(document.activeElement)) releaseList.hidden = changed;
+        node('[data-request-evidence-reload]').hidden = !changed;
+      }
+    }
     for (const stage of status.stages || []) {
       const item = [...container.querySelectorAll('[data-stage]')]
         .find(item => item.dataset.stage === stage.stage);

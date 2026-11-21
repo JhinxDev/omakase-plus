@@ -5,8 +5,41 @@
 {% block page_title %}Your history{% endblock %}
 {% block page_intro %}<p class="page-intro">Viewing activity and library updates.</p>{% endblock %}
 {% block content %}
-<nav class="movie-tabs" aria-label="History views"><a href="/plus/activity?view=watch" {% if activity_view != 'system' %}aria-current="page"{% endif %}>Viewing history</a><a href="/plus/activity?view=system" {% if activity_view == 'system' %}aria-current="page"{% endif %}>Library updates</a></nav>
-{% if activity_view != 'system' %}
+<nav class="movie-tabs" aria-label="History views">
+  <a href="/plus/activity?view=watch" {% if activity_view not in ['system','collection'] %}aria-current="page"{% endif %}>Viewing history</a>
+  <a href="/plus/activity?view=system" {% if activity_view == 'system' %}aria-current="page"{% endif %}>Library updates</a>
+  {% if personal_collection_history %}<a href="/plus/activity?view=collection" {% if activity_view == 'collection' %}aria-current="page"{% endif %}>Collection changes</a>{% endif %}
+</nav>
+{% if activity_view == 'collection' %}
+<header class="stream-section-heading activity-media-heading"><div><h2>TV collection history</h2><p>Personal collection actions are separate from media requests. <a href="/plus/requests">View Requests</a></p></div></header>
+<section class="activity-feed" aria-labelledby="tv-additions-heading">
+  <h3 id="tv-additions-heading">Added to collection</h3>
+  {% if tv_collection_additions %}
+  <ul>
+    {% for item in tv_collection_additions %}
+    <li>
+      <div class="activity-event-main"><a href="/plus/tv/{{ item.tmdb_id }}">{{ item.title }}</a><p>Added via your account when {{ 'episode watch status' if item.source == 'episode_watch_save' else 'watch status or rating' }} was saved.</p></div>
+      <div class="activity-event-state"><time datetime="{{ item.added_at }}" data-local-datetime="{{ item.added_at }}">{{ item.added_at }}</time></div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p>No verified collection additions recorded. Older additions may not have an activity receipt.</p>{% endif %}
+</section>
+<section class="activity-feed" aria-labelledby="tv-review-heading">
+  <h3 id="tv-review-heading">Saved for review</h3>
+  <p>These are local TV intents, not submissions. No request was sent to a service.</p>
+  {% if tv_review_intents %}
+  <ul>
+    {% for item in tv_review_intents %}
+    <li>
+      <div class="activity-event-main"><a href="/plus/tv/{{ item.tmdb_id }}">{{ item.title }}</a><p>Saved via your account.</p></div>
+      <div class="activity-event-state"><time datetime="{{ item.created_at }}" data-local-datetime="{{ item.created_at }}">{{ item.created_at }}</time></div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p>No TV intents recorded.</p>{% endif %}
+</section>
+{% elif activity_view != 'system' %}
 {% if watch_history %}<header class="stream-section-heading"><div><h2>Most recent</h2></div></header><div class="history-grid">{% for item in watch_history %}{{ history_card(item, show_plex=not cloud_playback) }}{% endfor %}</div>{% if history_has_more or history_page | default(1) > 1 %}<nav class="pagination" aria-label="Viewing history pages">{% if history_page | default(1) > 1 %}<a href="/plus/activity?view=watch&page={{ history_page - 1 }}" rel="prev">Newer</a>{% endif %}{% if history_has_more %}<a href="/plus/activity?view=watch&page={{ history_page | default(1) + 1 }}" rel="next">Earlier</a>{% endif %}</nav>{% endif %}
 {% else %}{{ empty_state('Your viewing history starts here', 'Episodes you confirm and linked viewing records appear here. Library checks are kept in their own view.', 'Browse your anime', '/plus/library') }}{% endif %}
 {% else %}

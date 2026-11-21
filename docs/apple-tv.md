@@ -110,9 +110,9 @@ value is embedded in the IPA and is omitted from the build receipt.
 
 Use the project's Apple TV signing flow to sign the production IPA for the
 authorized device. Signing, installation and playback verification are
-separate steps. The source import came from the receipt-matched 0.4.25 tvOS
-archive with its direct-player patch. The production build advances the app
-to 0.5.1 build 32 for device readback.
+separate steps. Before installation, compare the app version and build in the
+receipt with the installed device and the intended source commit. Check the
+version and build again after installation.
 
 ### Direct-player UI regression
 

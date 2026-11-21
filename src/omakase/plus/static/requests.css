@@ -7,6 +7,11 @@
 .requests-category { --request-tone: var(--media-episode); min-inline-size: 0; }
 .requests-category[data-request-category="attention"] { --request-tone: #f1c28f; }
 .requests-category[data-request-category="history"] { --request-tone: #bdc8db; }
+.requests-jump { display: flex; flex-wrap: wrap; gap: .35rem 1.2rem; padding-block: .2rem .8rem; border-bottom: 1px solid var(--om-line-soft); }
+.requests-jump a, .requests-detail-link { color: var(--om-accent); font-size: .87rem; text-decoration: none; }
+.requests-jump a { display: inline-flex; align-items: center; gap: .4rem; min-block-size: 44px; }
+.requests-jump a span { color: var(--om-muted); font-variant-numeric: tabular-nums; }
+.requests-jump a:hover, .requests-detail-link:hover { text-decoration: underline; }
 .requests-category-heading { display: flex; align-items: center; gap: .6rem; margin-block-end: .7rem; }
 .product-body .requests-category-heading h2, .product-body .requests-detail h2 {
   margin: 0;
@@ -28,7 +33,6 @@
 }
 .requests-category .request-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
   gap: .7rem;
   padding: 0;
   margin: 0;
@@ -46,7 +50,6 @@
   border-radius: var(--om-radius);
   background: rgba(17, 21, 31, .86);
 }
-.requests-category .request-card:only-child { max-inline-size: 37rem; }
 .request-cover {
   position: relative;
   display: grid;
@@ -84,9 +87,12 @@
 .requests-checked { margin: .35rem 0 0; }
 .requests-empty { margin: 0; }
 .requests-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .8rem; }
-.requests-actions:empty, .requests-detail [hidden], .requests-checked[hidden], .requests-next:empty { display: none; }
+.requests-actions:empty, .requests-detail [hidden], .requests-screen [hidden], .requests-next:empty { display: none; }
 .requests-actions form { margin: 0; }
-.requests-actions .text-action { min-block-size: 40px; color: var(--om-accent); font-size: .85rem; }
+.requests-actions .text-action, .requests-detail-link { display: inline-flex; align-items: center; min-block-size: 44px; color: var(--om-accent); font-size: .85rem; }
+.requests-primary-actions { margin-block-start: 1.15rem; }
+.requests-fallback { margin: .5rem 0 0; font-size: .85rem; color: var(--om-muted); }
+.requests-fallback strong { margin-inline-end: .25rem; color: var(--om-accent); font-weight: 620; }
 .requests-next { color: var(--om-muted); font-size: .83rem; }
 .request-detail-title { display: flex; align-items: center; gap: clamp(1rem, 3vw, 1.6rem); min-inline-size: 0; }
 .request-detail-title .request-cover { flex: 0 0 clamp(4.6rem, 10vw, 7rem); }
@@ -118,7 +124,10 @@
 
 /* Owner review W-06: the candidate list is evidence, so it is plain, scannable and never
    dresses a rejection up as progress. The verdict column carries the one reason. */
-.request-search p { margin: 0 0 .75rem; color: var(--om-text-muted, #b8c0d1); }
+.request-search p { margin: .55rem 0 0; color: var(--om-muted); }
+.request-search .requests-transfer { padding-inline-start: .75rem; border-inline-start: 2px solid var(--om-accent); color: var(--om-ink); }
+.requests-evidence { margin-block-start: .85rem; }
+.requests-evidence summary { min-block-size: 44px; padding-block: .55rem; cursor: pointer; color: var(--om-accent); }
 .request-search[data-request-search="off"] { border-color: #3b4358; }
 .request-search-candidates { list-style: none; margin: 0; padding: 0; display: grid; gap: .5rem; }
 .request-search-candidates > li {

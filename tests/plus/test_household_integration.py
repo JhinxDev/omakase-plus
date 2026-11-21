@@ -564,3 +564,76 @@ def test_explicit_movie_check_uses_real_actor_and_rejects_legacy_ready_on_render
     assert "Playback not yet verified" in page.text
     assert "Ready for your playback" not in page.text and "Open in Plex" not in page.text
     assert "synthetic-owner-token" not in page.text and "unsafe-old" not in page.text
+
+
+def test_tv_collection_history_is_attributed_to_session_and_personal_only(state):
+    from omakase.plus.tv_collection_activity import record_addition
+
+    app, db, sessions, lib, _ = state
+    personal_libraries = {}
+    for account, title in [(1, "Owner-only title"), (2, "Member-only title")]:
+        personal_libraries[account] = db.execute(
+            "SELECT library_id FROM personal_libraries WHERE user_id=?", (account,)
+        ).fetchone()[0]
+        with db:
+            db.execute(
+                "INSERT INTO tv_catalog VALUES(?,42,'{}','2026-11-14T04:05:06Z')", (account,)
+            )
+            record_addition(
+                db,
+                user_id=account,
+                tmdb_id=42,
+                title=title,
+                source="watch_status_save",
+                added_at="2026-11-14T04:05:06Z",
+            )
+            db.execute(
+                "INSERT INTO for_you_requests VALUES(?,'tv',43,?,'2026-11-15T04:05:06Z')",
+                (account, title + " local review"),
+            )
+
+    path = "/plus/activity?view=collection"
+    for account, own_title, other_title in [
+        (1, "Owner-only title", "Member-only title"),
+        (2, "Member-only title", "Owner-only title"),
+    ]:
+        viewer, csrf = client(app, sessions[account])
+        assert (
+            viewer.post(
+                "/plus/settings/household/select",
+                data={
+                    "csrf_token": csrf,
+                    "library_id": personal_libraries[account],
+                    "next": "/plus/home",
+                },
+            ).status_code
+            == 303
+        )
+        response = viewer.get(path + "&user_id=" + str(3 - account))
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "private, no-store"
+        assert "Cookie" in response.headers["vary"]
+        assert own_title in response.text and other_title not in response.text
+        assert own_title + " local review" in response.text
+        assert "Added to collection" in response.text and "Added via your account" in response.text
+        assert '<time datetime="2026-11-14T04:05:06Z"' in response.text
+        assert '<time datetime="2026-11-15T04:05:06Z"' in response.text
+        assert (
+            "Saved for review" in response.text
+            and "No request was sent to a service." in response.text
+        )
+        assert "View Requests" in response.text
+        assert "/plus/activity?view=collection" in viewer.get("/plus/requests").text
+
+        assert (
+            viewer.post(
+                "/plus/settings/household/select",
+                data={"csrf_token": csrf, "library_id": lib, "next": "/plus/home"},
+            ).status_code
+            == 303
+        )
+        denied = viewer.get(path)
+        assert denied.status_code == 404
+        assert own_title not in denied.text and other_title not in denied.text
+        assert "no-store" in denied.headers["cache-control"]
+        assert "/plus/activity?view=collection" not in viewer.get("/plus/activity").text

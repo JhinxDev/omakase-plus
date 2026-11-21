@@ -105,13 +105,13 @@ def test_summary_counts_and_orders_reasons_by_frequency():
 
 
 def test_describe_never_overstates():
-    assert "found no candidate" in rc.describe(rc.summarize([]))
+    assert "returned no releases" in rc.describe(rc.summarize([]))
     none_usable = rc.describe(rc.summarize([rc.Verdict(False, "no_seeders", "")]))
-    assert "none of them could be used" in none_usable
+    assert "None passed the release checks" in none_usable
     usable = rc.describe(
         rc.summarize([rc.Verdict(True, "accepted", ""), rc.Verdict(False, "no_seeders", "")])
     )
-    assert "2 candidates; 1 could be used" in usable
+    assert "2 releases found. 1 passed the release checks" in usable
 
 
 # --- the page block: honest when the feature is off ------------------------------------
@@ -225,10 +225,123 @@ def test_a_failed_search_never_reads_like_an_empty_result(monkeypatch, db):
     monkeypatch.setenv(rc.SEARCH_ENV, "1")
     block = asyncio.run(rc.refresh(db, 1, "movie", "tt0000005", movie(), catalogs=[BrokenSource()]))
     assert block["error"] is True
-    assert "could not reach the tracked indexers" in block["headline"]
+    assert "could not confirm a result" in block["headline"]
     assert block["candidates"] == []
     # And the failure is durable, so a later render still says so rather than "nothing exists".
     assert rc.page_block(db, 1, "movie", "tt0000005")["error"] is True
+
+
+def test_successful_empty_search_is_distinct_and_cached(monkeypatch, db):
+    monkeypatch.setenv(rc.SEARCH_ENV, "1")
+    sources = [FakeSource([]), FakeSource([])]
+    for _ in range(2):
+        block = asyncio.run(rc.refresh(db, 1, "movie", "tt0000007", movie(), catalogs=sources))
+        assert "returned no releases" in block["headline"]
+        assert "error" not in block and "partial" not in block
+        assert block["candidates"] == []
+    assert [source.calls for source in sources] == [1, 1]
+
+
+def test_no_configured_sources_does_not_claim_a_search(monkeypatch, db):
+    monkeypatch.setenv(rc.SEARCH_ENV, "1")
+    assert "not recorded" in rc.page_block(db, 1, "movie", "tt0000008")["headline"]
+    block = asyncio.run(rc.refresh(db, 1, "movie", "tt0000008", movie(), catalogs=[]))
+    assert "No release sources are configured" in block["headline"]
+    assert block["candidates"] == []
+    assert "error" not in block
+    assert rc.page_block(db, 1, "movie", "tt0000008") == block
+
+
+class SlowSource:
+    def __init__(self):
+        self.cancelled = False
+
+    async def search(self, query):
+        try:
+            await asyncio.Future()
+        finally:
+            self.cancelled = True
+
+
+def test_partial_timeout_keeps_completed_candidates(monkeypatch, db):
+    monkeypatch.setenv(rc.SEARCH_ENV, "1")
+    good = FakeSource([Candidate("Chouchou 2003 1080p")])
+    slow = SlowSource()
+    block = asyncio.run(
+        rc.refresh(db, 1, "movie", "tt0000009", movie(), catalogs=[good, slow], timeout=0.01)
+    )
+    assert slow.cancelled
+    assert block["partial"] is True
+    assert "Some sources did not complete" in block["headline"]
+    assert block["summary"]["found"] == 1
+    assert block["candidates"][0]["accepted"] is True
+    assert rc.page_block(db, 1, "movie", "tt0000009") == block
+
+
+def test_partial_empty_is_not_a_conclusive_no_result(monkeypatch, db):
+    monkeypatch.setenv(rc.SEARCH_ENV, "1")
+    block = asyncio.run(
+        rc.refresh(db, 1, "movie", "tt0000010", movie(), catalogs=[FakeSource([]), BrokenSource()])
+    )
+    assert block["partial"] is True
+    assert "found no candidates in the sources that responded" in block["headline"]
+    assert block["candidates"] == []
+    assert "error" not in block
+
+
+def test_all_sources_time_out_without_a_confirmed_result(monkeypatch, db):
+    monkeypatch.setenv(rc.SEARCH_ENV, "1")
+    slow = SlowSource()
+    block = asyncio.run(
+        rc.refresh(db, 1, "movie", "tt0000011", movie(), catalogs=[slow], timeout=0.01)
+    )
+    assert slow.cancelled
+    assert block["error"] is True
+    assert "could not confirm a result" in block["headline"]
+    assert block["candidates"] == []
+
+
+def test_incomplete_search_can_retry_sooner_than_complete_search(monkeypatch, db):
+    from types import SimpleNamespace
+
+    time = [100000.0]
+    monkeypatch.setenv(rc.SEARCH_ENV, "1")
+    monkeypatch.setattr(rc, "time", SimpleNamespace(time=lambda: time[0]))
+    failure_then_good = FakeSource([Candidate("Chouchou 2003 1080p")])
+    asyncio.run(rc.refresh(db, 1, "movie", "tt0000012", movie(), catalogs=[BrokenSource()]))
+    asyncio.run(rc.refresh(db, 1, "movie", "tt0000013", movie(), catalogs=[FakeSource([])]))
+    time[0] += 120
+    recovered = asyncio.run(
+        rc.refresh(db, 1, "movie", "tt0000012", movie(), catalogs=[failure_then_good])
+    )
+    complete = asyncio.run(
+        rc.refresh(db, 1, "movie", "tt0000013", movie(), catalogs=[failure_then_good])
+    )
+    assert recovered["summary"]["found"] == 1
+    assert complete["summary"]["found"] == 0
+    assert failure_then_good.calls == 1
+
+
+def test_simultaneous_views_share_one_search_for_the_same_request(monkeypatch, db):
+    monkeypatch.setenv(rc.SEARCH_ENV, "1")
+
+    class Source(FakeSource):
+        async def search(self, query):
+            await asyncio.sleep(0.01)
+            return await super().search(query)
+
+    source = Source([Candidate("Chouchou 2003 1080p")])
+
+    async def checks():
+        async def check():
+            return await rc.refresh(db, 1, "movie", "tt0000014", movie(), catalogs=[source])
+
+        return await asyncio.gather(check(), check())
+
+    first, second = asyncio.run(checks())
+    assert source.calls == 1
+    assert first == second
+    assert first["summary"]["found"] == 1
 
 
 def test_refresh_does_nothing_when_the_feature_is_off(monkeypatch, db):

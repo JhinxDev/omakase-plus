@@ -12,8 +12,10 @@ from dataclasses import dataclass, field
 from itertools import islice, zip_longest
 from pathlib import PurePosixPath
 
+from omakase.plus.catalog import quality_from_title
 from omakase.plus.debrid_anime import DebridTitleSource
 from omakase.plus.debrid_library import DebridLibraryError, _video, account_binding, account_token
+from omakase.plus.episode_quality import QUALITY_RANK
 from omakase.plus.household_media import personal_legacy_visible
 from omakase.plus.language_source import digest
 
@@ -221,13 +223,18 @@ def _season_scan(cache, key, title, inventory, signature, now):
     return scan
 
 
-async def tv_episode_ids(db, scope, key, library, *, seasons):
-    """Advance availability for the catalog page's seasons with a shared provider budget."""
+async def tv_episode_ids(db, scope, key, library, *, seasons, timeout=_TV_SCAN_SECONDS):
+    """Return confirmed episodes and unfinished seasons within a caller's time budget."""
     token = account_token(db, scope.viewer_id)
     if scope.kind != "personal" or not token or not seasons:
         return EpisodeAvailability()
     binding = account_binding(token)
-    inventory = await library.inventory(token)
+    deadline = asyncio.get_running_loop().time() + timeout
+    try:
+        async with asyncio.timeout_at(deadline):
+            inventory = await library.inventory(token)
+    except TimeoutError:
+        return EpisodeAvailability(partial_seasons=tuple(sorted(set(seasons))))
     signature = _inventory_signature(inventory)
     if not hasattr(library, "tv_episode_cache"):
         library.tv_episode_cache = {}
@@ -241,9 +248,9 @@ async def tv_episode_ids(db, scope, key, library, *, seasons):
         try:
             files, links, content_hash = await library._torrent(token, record)
         except DebridLibraryError as error:
-            if error.status == 404:
+            if error.status in {404, 451}:
                 scan.pending.pop(record)
-            elif error.status in {401, 403, 451}:
+            elif error.status in {401, 403}:
                 return error
             else:
                 scan.pending[record] = scan.pending.pop(record)
@@ -264,7 +271,7 @@ async def tv_episode_ids(db, scope, key, library, *, seasons):
         return None
 
     try:
-        async with asyncio.timeout(_TV_SCAN_SECONDS), library.tv_episode_scan:
+        async with asyncio.timeout_at(deadline), library.tv_episode_scan:
             now = time.monotonic()
             for season in seasons:
                 title = catalog_title(db, scope, "tv", key, season)
@@ -312,7 +319,16 @@ async def resolve_catalog(db, scope, domain, key, season, episode, library):
     inventory = await library.inventory(token)
     failure = None
     records = _records(inventory, title)
-    if domain == "tv":
+    if domain == "movie":
+        # Release labels order verification. The selected copy still needs to resolve.
+        records = sorted(
+            records,
+            key=lambda pair: QUALITY_RANK.get(
+                quality_from_title(" ".join(_tail(pair[1].get("filename"), title))), 0
+            ),
+            reverse=True,
+        )
+    elif domain == "tv":
         cache_key = (account_binding(token), scope.viewer_id, str(key), season)
         scan = getattr(library, "tv_episode_cache", {}).get(cache_key)
         verified = (

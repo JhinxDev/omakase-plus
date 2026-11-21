@@ -36,6 +36,7 @@
 </div></section>
 {% if not cloud_playback %}<section class="tv-availability" aria-labelledby="tv-availability-title"><div><h2 id="tv-availability-title">Plex availability</h2><p>{{ card.detail or 'Check Plex for an exact match. Catalog listings and watched history do not establish playable availability.' }}</p></div><form method="post" action="/plus/tv/{{ card.tmdb_id }}/check" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit" data-busy-label="Checking Plex…">Check in Plex</button></form></section>{% elif cloud_error %}<p class="product-notice" role="status">Could not check the Real-Debrid library right now.</p>{% endif %}
 <section id="tv-seasons" class="tv-seasons" aria-labelledby="tv-seasons-title"><header class="stream-section-heading"><h2 id="tv-seasons-title">Episodes</h2></header>
+{% if cloud_partial %}<p class="product-notice" role="status">Some Real-Debrid files are still unchecked. Refresh this page to check more episodes.</p>{% endif %}
 {% if card.seasons %}
 {% set regular_seasons = card.seasons | rejectattr('season_number', 'equalto', 0) | list %}
 {% set default_season = regular_seasons[0] if regular_seasons else card.seasons[0] %}

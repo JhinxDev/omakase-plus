@@ -487,3 +487,51 @@ def test_distinct_observed_seasons_include_specials_without_completion_claim(db)
     assert card["plex_summary"] == "2 seasons + specials in Plex"
     assert card["plex_season_ids"] == [0, 1, 2]
     assert not card["season_coverage_known"]
+
+
+def test_collection_receipt_records_only_first_explicit_transition_in_owner_scope(db):
+    from omakase.plus.tv_collection_activity import history
+
+    native = Native()
+    svc = service(db, native)
+    run(svc.detail(1, 42))
+    run(svc.season(2, 42, 1))
+    assert history(db, user_id=1)["tv_collection_additions"] == []
+    assert history(db, user_id=2)["tv_collection_additions"] == []
+    native.calls.clear()
+
+    run(svc.save_history(1, 42, status="watching", record_addition=True))
+    run(svc.save_history(1, 42, rating=8, record_addition=True))
+    run(svc.save_episode(2, 42, 1, 1, True, record_addition=True))
+    expected = {"tmdb_id": 42, "title": "TV Title", "added_at": "2026-10-27T00:00:00Z"}
+    assert history(db, user_id=1) == {
+        "tv_collection_additions": [{**expected, "source": "watch_status_save"}],
+        "tv_review_intents": [],
+    }
+    assert history(db, user_id=2) == {
+        "tv_collection_additions": [{**expected, "source": "episode_watch_save"}],
+        "tv_review_intents": [],
+    }
+    assert not native.calls
+    assert db.execute("SELECT COUNT(*) FROM for_you_requests").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM library_request_events").fetchone()[0] == 0
+
+
+def test_no_historical_backfill_and_receipt_is_atomic_with_collection_transition(db):
+    from omakase.plus.tv_collection_activity import history
+
+    svc = service(db, Native())
+    run(svc.sync(1))
+    run(svc.save_history(1, 42, rating=8, record_addition=True))
+    assert history(db, user_id=1)["tv_collection_additions"] == []
+
+    run(svc.detail(2, 42))
+    with pytest.raises(TVError, match="rating"):
+        run(svc.save_history(2, 42, rating=17, record_addition=True))
+    db.execute("""CREATE TRIGGER refuse_synthetic_receipt BEFORE INSERT ON tv_collection_additions
+                  BEGIN SELECT RAISE(ABORT,'receipt unavailable'); END""")
+    with pytest.raises(sqlite3.IntegrityError, match="receipt unavailable"):
+        run(svc.save_history(2, 42, rating=8, record_addition=True))
+    assert run(svc.list(2)) == []
+    assert db.execute("SELECT COUNT(*) FROM tv_history WHERE user_id=2").fetchone()[0] == 0
+    assert history(db, user_id=2)["tv_collection_additions"] == []
