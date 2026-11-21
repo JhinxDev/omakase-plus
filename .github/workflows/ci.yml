@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main, 'codex/**', 'integrate/**']
+    branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   lint:
