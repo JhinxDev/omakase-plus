@@ -14,8 +14,13 @@ identifier; it does not replace the public release version.
   titles, ratings and optional private notes for movies, anime and TV seasons.
 - Requests show the submitter, recorded activity and playable episodes by season.
   History separates viewing, library activity and collection changes.
+- TV requests can use configured Riven intake. Real-Debrid fallback can verify
+  exact missing episodes and reuse eligible files already in the linked account.
 - Recent Apple TV builds combine Continue Watching activity across anime, movies
-  and TV. Media Info shows available resolution, codecs, container and file size.
+  and TV. Resume cards fit the whole landscape image and focused controls use
+  the app’s dark highlight. Media Info shows resolution, codecs, container and size.
+- The iPhone simulator prototype shares the Swift playback and resume contracts
+  and runs an offline catalog-to-player test in GitHub Actions.
 
 ## 0.4.12 - 2026-11-12
 

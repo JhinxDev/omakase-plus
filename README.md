@@ -148,8 +148,9 @@ Read [Contributing](CONTRIBUTING.md), [Security](SECURITY.md),
 [optional browser QA](docs/browser-qa.md). The recommendation-only CLI/web
 surface remains available; it is distinct from the authenticated Plus app.
 
-The web app and native Apple TV source share this repository. The native build
-and signing instructions are in the [Apple TV guide](docs/apple-tv.md).
+The web app and native Apple TV source share this repository. See the
+[Apple TV build and signing guide](docs/apple-tv.md). The [iPhone simulator
+prototype](ios-source/README.md) uses sample data and a test clip for development.
 
 The code retains its original [MIT license](LICENSE) and upstream attribution.
 Geist retains its [SIL Open Font License](src/omakase/plus/static/GEIST-OFL.txt).

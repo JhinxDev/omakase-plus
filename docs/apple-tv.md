@@ -9,7 +9,8 @@ connected Real-Debrid account.
 - Browse Anime, Movies and TV shelves, with Continue Watching and title details.
 - On recent native builds, the Apple TV Home Screen Top Shelf combines activity
   across Anime, Movies and TV. Open the app after pairing to populate the shelf.
-  It refreshes after supported playback saves.
+  It refreshes after supported playback saves. Continue Watching displays full
+  landscape artwork when available and fits alternate artwork within the card.
 - Pair a device with a one-time code from the web app; the device stays linked
   until you remove it in **Settings → Devices**.
 - Play episodes and films with resume sync and a next-episode control. The

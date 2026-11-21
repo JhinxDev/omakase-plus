@@ -35,3 +35,8 @@ On current builds, the operator can enable TV intake with a compatible Riven
 connection. Older releases or installations without an enabled service may save
 requests for review. Provider acceptance, downloads and playable episode counts
 are reported separately.
+
+When configured for Real-Debrid-only operation, the app can look for missing
+aired episodes through its configured sources. It first checks whether the
+linked account already has an accessible file for the exact episode. Search
+eligibility and provider restrictions still apply. See [Real-Debrid](real-debrid.md).
