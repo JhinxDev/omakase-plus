@@ -11,12 +11,12 @@ final class ContentProvider: TVTopShelfContentProvider {
         let sections: [TVTopShelfItemCollection<TVTopShelfSectionedItem>] =
             TVTopShelfActionKind.allCases.compactMap { action in
                 let items: [TVTopShelfSectionedItem] = snapshot.cards.filter { $0.action == action }.compactMap { card in
-                    let artwork = store.artworkURL(for: card.id)
+                    let artwork = store.artworkURL(for: card)
                     guard let url = card.link.url, FileManager.default.fileExists(atPath: artwork.path)
                     else { return nil }
                     let item = TVTopShelfSectionedItem(identifier: card.id.uuidString)
                     item.title = card.title
-                    item.imageShape = action == .resume ? .square : .poster
+                    item.imageShape = action == .resume ? .hdtv : .poster
                     item.setImageURL(artwork, for: [.screenScale1x, .screenScale2x])
                     item.expirationDate = snapshot.expiresAt
                     let destination = TVTopShelfAction(url: url)
