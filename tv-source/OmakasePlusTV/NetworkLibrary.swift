@@ -1,6 +1,7 @@
 import QualificationCore
 import CoreImage.CIFilterBuiltins
 import SwiftUI
+import UIKit
 
 @MainActor
 private final class NetworkLibrary: ObservableObject {
@@ -196,6 +197,8 @@ struct LiveTestScreen: View {
     @State private var topShelfRequest: TVTopShelfLibrary.Request?
     @State private var topShelfDestination: TVTopShelfDestination?
     @State private var topShelfUnavailable = false
+    @State private var backgroundShelfToken: UUID?
+    @State private var backgroundShelfTask: Task<Void, Never>?
     @State private var resumeImmediately = false
     @State private var resumeWriter: LiveResumeWriter?
     @State private var reloadMediaID: String?
@@ -330,6 +333,7 @@ struct LiveTestScreen: View {
                             runtimeSeconds: Int(pass.duration.rounded(.up)),
                             audioLanguages: pass.audioLanguages,
                             subtitleLanguages: pass.subtitleLanguages,
+                            mediaInformation: pass.mediaInformation,
                             resumeImmediately: resumeImmediately,
                             startPlayback: { await startPlayback(pass, resume: $0) },
                             back: { closePass(pass) })
@@ -449,7 +453,36 @@ struct LiveTestScreen: View {
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
             player.scenePhaseChanged(AppScenePhase(phase))
+            if phase == .background {
+                updateBackgroundShelf()
+            } else if phase == .active, let token = backgroundShelfToken {
+                finishBackgroundShelf(token, cancel: true)
+            }
         }
+    }
+
+    private func updateBackgroundShelf() {
+        guard backgroundShelfToken == nil, !openingProfile, !showingProfiles,
+              let writer = resumeWriter, let library, library.selectedLibrary == nil,
+              let profile = roster.selected else { return }
+        let token = UUID()
+        let version = libraryVersion
+        backgroundShelfToken = token
+        backgroundShelfTask = Task {
+            defer { finishBackgroundShelf(token) }
+            await writer.flush(retryUnsaved: true)
+            guard !Task.isCancelled, libraryVersion == version, scenePhase == .background else { return }
+            await TVTopShelfLibrary.refresh(client: library, profile: profile, fetchArtwork: false) {
+                libraryVersion == version && scenePhase == .background && backgroundShelfToken == token
+            }
+        }
+    }
+
+    private func finishBackgroundShelf(_ token: UUID, cancel: Bool = false) {
+        guard backgroundShelfToken == token else { return }
+        if cancel { backgroundShelfTask?.cancel() }
+        backgroundShelfTask = nil
+        backgroundShelfToken = nil
     }
 
     private func openTopShelf(_ url: URL) {
@@ -758,7 +791,24 @@ struct LiveTestScreen: View {
 
     private func makeResumeWriter(for pass: LiveTestPass, client: LiveLibraryClient) -> LiveResumeWriter? {
         let mediaID = pass.mediaID
-        return client.resumeWriter(for: pass) { loss in
+        let version = libraryVersion
+        var refreshedAt = Date.distantPast
+        var complete = false
+        return client.resumeWriter(for: pass, onSaved: { position in
+            guard scenePhase == .active, libraryVersion == version, self.pass?.mediaID == mediaID,
+                  !openingProfile, !showingProfiles, client.selectedLibrary == nil,
+                  let profile = roster.selected else { return }
+            let completedNow = pass.duration > 0 && position >= pass.duration * 0.85
+            let now = Date()
+            guard now.timeIntervalSince(refreshedAt) >= 60 || complete != completedNow else { return }
+            refreshedAt = now
+            complete = completedNow
+            Task {
+                await TVTopShelfLibrary.refresh(client: client, profile: profile, fetchArtwork: false) {
+                    scenePhase == .active && libraryVersion == version && self.pass?.mediaID == mediaID
+                }
+            }
+        }) { loss in
             guard self.pass?.mediaID == mediaID, !self.closingPass else { return }
             self.playbackAccessLost(loss)
         }

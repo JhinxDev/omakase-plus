@@ -46,6 +46,20 @@ final class EpisodePresentationTests: XCTestCase {
         XCTAssertFalse(try decodePage(#"{"items":[],"availability":{"state":"complete"}}"#).hasUncheckedEpisodes)
     }
 
+    func testMediaInfoKeepsExactDimensionsAndDropsUnusableFields() throws {
+        let decodeInfo: (String) throws -> LiveMediaInformation = {
+            try JSONDecoder().decode(LiveMediaInformation.self, from: Data($0.utf8))
+        }
+        let info = try decodeInfo(#"{"container":"mkv","width":1920,"height":1080,"video_codec":"hevc","audio_codecs":["eac3","https://private.invalid"],"file_bytes":456670000}"#)
+        XCTAssertTrue(info.hasDetails)
+        XCTAssertEqual(info.width, 1920)
+        XCTAssertEqual(info.height, 1080)
+        XCTAssertEqual(info.videoCodec, "hevc")
+        XCTAssertEqual(info.audioCodecs, ["eac3"])
+        XCTAssertEqual(info.fileBytes, 456_670_000)
+        XCTAssertFalse(try decodeInfo(#"{"width":1920,"height":0,"container":"/private.mkv","file_bytes":-1}"#).hasDetails)
+    }
+
     private func decode(_ value: String) throws -> LiveLibraryEntry {
         try JSONDecoder().decode(LiveLibraryEntry.self, from: Data(value.utf8))
     }

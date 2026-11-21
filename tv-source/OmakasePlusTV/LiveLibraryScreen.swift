@@ -345,10 +345,15 @@ struct LiveLibraryScreen: View {
                         .font(.callout.weight(.semibold))
                 }
             }
-            .foregroundStyle(focused ? Color.tvOnFocus : selected ? Color.tvAccent : Color.tvText)
+            .foregroundStyle(focused ? Color.tvText : selected ? Color.tvAccent : Color.tvText)
             .padding(.horizontal, 16)
             .frame(minWidth: 64, minHeight: 64)
-            .background(focused ? Color.tvFocus : .clear, in: RoundedRectangle(cornerRadius: 10))
+            .background(focused ? Color.tvFocusSurface : .clear, in: .rect(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(focused ? Color.tvFocusBorder : .clear, lineWidth: 3)
+                    .allowsHitTesting(false)
+            }
             .overlay(alignment: .bottom) {
                 if selected && !focused {
                     Capsule().fill(Color.tvAccent).frame(height: 3).padding(.horizontal, 16)
@@ -938,8 +943,7 @@ struct LiveLibraryScreen: View {
                     .clipShape(.rect(cornerRadius: 10))
                     .overlay {
                         RoundedRectangle(cornerRadius: 10)
-                            .strokeBorder(focused ? Color.tvFocus : Color.tvKeyline,
-                                          lineWidth: focused ? 5 : 1)
+                            .strokeBorder(Color.tvKeyline, lineWidth: 1)
                     }
                 Text(entry.title).font(.callout.weight(.semibold)).lineLimit(2, reservesSpace: true)
                     .foregroundStyle(focused ? Color.tvFocus : Color.tvText)
@@ -1003,10 +1007,10 @@ struct LiveLibraryScreen: View {
                                           lineWidth: focused ? 5 : 1)
                     }
                 if entry.note != entry.title {
-                    Text(entry.note).font(.caption.monospacedDigit()).foregroundStyle(focused ? Color.tvFocus : Color.tvMuted)
+                    Text(entry.note).font(.caption.monospacedDigit()).foregroundStyle(Color.tvMuted)
                 }
                 Text(entry.episodeDisplayTitle).font(.callout.weight(.semibold)).lineLimit(2, reservesSpace: true)
-                    .foregroundStyle(focused ? Color.tvFocus : Color.tvText)
+                    .foregroundStyle(Color.tvText)
                 if let runtime = entry.durationLabel {
                     Text(runtime).font(.caption.monospacedDigit()).foregroundStyle(Color.tvMuted)
                 }
@@ -1023,6 +1027,13 @@ struct LiveLibraryScreen: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(focused ? Color.tvFocusSurface : Color.tvSurface, in: .rect(cornerRadius: 14))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(focused ? Color.tvFocusBorder : Color.tvKeyline, lineWidth: focused ? 3 : 1)
+                    .allowsHitTesting(false)
+            }
         }
         .buttonStyle(TVLibraryTileStyle(focused: focused, longPress: {
             guard !busy, entry.watchPath != nil else { return }

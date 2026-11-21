@@ -9,6 +9,7 @@ struct PlayerScreen: View {
     @ObservedObject var session: PlaybackSession
     var showsDiagnostics = true
     var playNext: (() async throws -> Void)? = nil
+    var mediaInformation: LiveMediaInformation? = nil
     let dismiss: () -> Void
     @State private var nextTask: Task<Void, Never>?
     @State private var nextError = false
@@ -22,10 +23,12 @@ struct PlayerScreen: View {
         ZStack(alignment: .topLeading) {
             if let direct = session.directEngine {
                 DirectPlayerControls(session: session, engine: direct, next: nextAction,
-                                     openingNext: nextTask != nil, dismiss: dismiss)
+                                     openingNext: nextTask != nil, mediaInformation: mediaInformation,
+                                     dismiss: dismiss)
             } else {
                 NativePlayer(session: session, nextAction: nextAction,
-                             openingNext: nextTask != nil, dismiss: dismiss).ignoresSafeArea()
+                             openingNext: nextTask != nil, mediaInformation: mediaInformation,
+                             dismiss: dismiss).ignoresSafeArea()
             }
             if showsDiagnostics {
                 VStack(alignment: .leading, spacing: 6) {
@@ -92,16 +95,18 @@ private struct DirectPlayerControls: View {
     let engine: VLCPlayerEngine
     let next: (() -> Void)?
     let openingNext: Bool
+    let mediaInformation: LiveMediaInformation?
     let dismiss: () -> Void
 
     @State private var showingControls = true
     @State private var selector: TrackKind?
+    @State private var showsMediaInformation = false
     @State private var returnFocus: Control = .play
     @FocusState private var controlFocus: Control?
     @FocusState private var trackFocus: TrackRow?
 
     private enum Control: String, Hashable {
-        case back, play, forward, audio, subtitles, next, hide, show
+        case back, play, forward, audio, subtitles, info, infoDone, next, hide, show
     }
 
     private enum TrackRow: Hashable {
@@ -114,7 +119,21 @@ private struct DirectPlayerControls: View {
                 .ignoresSafeArea()
                 .accessibilityHidden(true)
 
-            if let selector {
+            if showsMediaInformation {
+                VStack(alignment: .leading, spacing: 22) {
+                    Text("Media Info").font(.title2.bold())
+                    MediaInformationPanel(info: mediaInformation, tracks: engine.mediaTracks)
+                    control(.infoDone, "Done", icon: "checkmark", width: 140, caption: true) {
+                        closeMediaInformation()
+                    }
+                }
+                .padding(38)
+                .foregroundStyle(.white)
+                .background(.black.opacity(0.9), in: .rect(cornerRadius: 24))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black.opacity(0.35).ignoresSafeArea())
+                .defaultFocus($controlFocus, .infoDone)
+            } else if let selector {
                 trackSelector(selector)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color.black.opacity(0.48).ignoresSafeArea())
@@ -176,6 +195,10 @@ private struct DirectPlayerControls: View {
                 .disabled(!session.directTracks.contains { $0.kind == .audio })
                 control(.subtitles, "Subtitles", icon: "captions.bubble", width: 158, caption: true) {
                     openSelector(.subtitle, from: .subtitles)
+                }
+                control(.info, "Media Info", icon: "info.circle", width: 70) {
+                    returnFocus = .info
+                    showsMediaInformation = true
                 }
                 if let next {
                     control(.next, "Next Episode", icon: "forward.end.fill", width: 70, action: next)
@@ -307,12 +330,77 @@ private struct DirectPlayerControls: View {
     }
 
     private func goBack() {
-        if selector != nil {
+        if showsMediaInformation {
+            closeMediaInformation()
+        } else if selector != nil {
             closeSelector()
         } else if showingControls {
             showingControls = false
         } else {
             dismiss()
+        }
+    }
+
+    private func closeMediaInformation() {
+        showsMediaInformation = false
+        returnFocus = .info
+    }
+}
+
+private struct MediaInformationPanel: View {
+    let info: LiveMediaInformation?
+    var tracks = DirectMediaTracks()
+
+    private var rows: [(String, String)] {
+        var values: [(String, String)] = []
+        if let width = info?.width ?? tracks.width, let height = info?.height ?? tracks.height,
+           (1...16384).contains(width), (1...16384).contains(height) {
+            values.append(("Resolution", "\(width) × \(height)"))
+        }
+        if let video = info?.videoCodec ?? tracks.video { values.append(("Video", codecName(video))) }
+        let audio = info?.audioCodecs ?? []
+        var seen: Set<String> = []
+        let unique = (audio.isEmpty ? tracks.audio : audio).map(codecName)
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+        if !unique.isEmpty { values.append(("Audio", unique.joined(separator: ", "))) }
+        if let container = info?.container {
+            values.append(("Container", container.lowercased() == "matroska" ? "MKV" : container.uppercased()))
+        }
+        if let bytes = info?.fileBytes {
+            values.append(("File size", ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)))
+        }
+        return values
+    }
+
+    var body: some View {
+        let items = rows
+        if items.isEmpty {
+            Text("File information is unavailable.").font(.callout)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(items.indices, id: \.self) { index in
+                    HStack(alignment: .firstTextBaseline, spacing: 24) {
+                        Text(items[index].0).foregroundStyle(.secondary)
+                            .frame(width: 176, alignment: .leading)
+                        Text(items[index].1).fontWeight(.medium)
+                    }.accessibilityElement(children: .combine)
+                }
+            }.font(.callout)
+        }
+    }
+
+    private func codecName(_ value: String) -> String {
+        switch value.lowercased().split(separator: ".").first.map(String.init) {
+        case "hevc", "h265", "hvc1", "hev1": "HEVC (H.265)"
+        case "h264", "avc1", "avc3": "H.264"
+        case "av1", "av01": "AV1"
+        case "vp9", "vp09": "VP9"
+        case "aac", "mp4a": "AAC"
+        case "ac3", "ac-3", "a52": "Dolby Digital"
+        case "eac3", "ec-3", "eac-3": "Dolby Digital Plus"
+        case "dca", "dts", "dtsc", "dtsh": "DTS"
+        case "truehd", "mlp": "Dolby TrueHD"
+        default: value.uppercased()
         }
     }
 }
@@ -323,13 +411,14 @@ private struct PlayerControlStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(focused ? Color.black : Color.white)
+            .foregroundStyle(.white)
             .padding(3)
-            .background(focused ? Color(red: 0.85, green: 0.79, blue: 1) : Color.white.opacity(0.1),
+            .background(focused ? Color(red: 0.16, green: 0.13, blue: 0.25) : Color.white.opacity(0.1),
                         in: .rect(cornerRadius: 12))
             .overlay {
                 RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(.white.opacity(focused ? 0 : 0.18), lineWidth: 1)
+                    .strokeBorder(focused ? Color(red: 0.69, green: 0.55, blue: 0.96) : .white.opacity(0.18),
+                                  lineWidth: focused ? 3 : 1)
             }
             .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.42)
     }
@@ -340,6 +429,7 @@ struct NativePlayer: UIViewControllerRepresentable {
     @ObservedObject var session: PlaybackSession
     let nextAction: (() -> Void)?
     let openingNext: Bool
+    let mediaInformation: LiveMediaInformation?
     let dismiss: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(dismiss: dismiss) }
@@ -359,6 +449,7 @@ struct NativePlayer: UIViewControllerRepresentable {
         let nearEnd = PlaybackSession.shouldSuggestNext(position: session.position, duration: session.duration)
         context.coordinator.updateNext(on: controller, action: nextAction, opening: openingNext, nearEnd: nearEnd)
         context.coordinator.updateSubtitleItem(on: controller)
+        context.coordinator.updateMediaInformation(mediaInformation, on: controller)
     }
 
     static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
@@ -379,6 +470,20 @@ struct NativePlayer: UIViewControllerRepresentable {
         private var subtitlePositions: [SubtitlePosition: AVTextStyleRule] = [:]
         private var originalTextStyleRules: [AVTextStyleRule]?
         private var subtitlePosition = SubtitlePosition.saved
+        private var mediaInformation: LiveMediaInformation?
+
+        func updateMediaInformation(_ info: LiveMediaInformation?, on controller: AVPlayerViewController) {
+            guard info != mediaInformation else { return }
+            mediaInformation = info
+            guard let info else {
+                controller.customInfoViewControllers = []
+                return
+            }
+            let panel = UIHostingController(rootView: MediaInformationPanel(info: info))
+            panel.title = "Media Info"
+            panel.preferredContentSize = CGSize(width: 840, height: 245)
+            controller.customInfoViewControllers = [panel]
+        }
 
         private enum NextControl { case hidden, opening, available }
 
