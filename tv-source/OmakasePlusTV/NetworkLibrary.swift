@@ -250,9 +250,13 @@ struct LiveTestScreen: View {
     }
 
     private var activePlaybackMediaID: String? {
-        guard scenePhase == .active, player.isPresenting, !closingPass,
-              let pass, pass.supportsAccessCheck else { return nil }
-        return pass.mediaID
+        guard pass?.supportsAccessCheck == true else { return nil }
+        return diagnosticMediaID
+    }
+
+    private var diagnosticMediaID: String? {
+        guard scenePhase == .active, player.isPresenting, !closingPass else { return nil }
+        return pass?.mediaID
     }
 
     var body: some View {
@@ -278,11 +282,10 @@ struct LiveTestScreen: View {
                     .disabled(!libraryVisible)
                     .accessibilityHidden(!libraryVisible)
                     .onChange(of: player.errorMessage) { _, _ in
-                        guard player.errorMessage != nil else { return }
-                        Task {
-                            let snapshot = player.lastDiagnostic ?? player.diagnostic(trigger: .error)
-                            await library.reportDiagnostic(snapshot.attaching(mediaID: pass?.mediaID))
-                        }
+                        guard player.errorMessage != nil, let mediaID = pass?.mediaID else { return }
+                        let diagnostic = (player.lastDiagnostic ?? player.diagnostic(trigger: .error))
+                            .attaching(mediaID: mediaID)
+                        Task { await library.reportDiagnostic(diagnostic) }
                     }
                     // A stall is not an error, so the state transitions and a
                     // heartbeat are reported too. Both carry the same structured,
@@ -292,18 +295,21 @@ struct LiveTestScreen: View {
                     // facts. No URL, request URI, header, token or error
                     // description is in the payload.
                     .onChange(of: player.status) { _, _ in
-                        guard player.isPresenting else { return }
-                        Task {
-                            await library.reportDiagnostic(
-                                player.diagnostic(trigger: .state).attaching(mediaID: pass?.mediaID))
-                        }
+                        guard let mediaID = diagnosticMediaID else { return }
+                        let diagnostic = player.diagnostic(trigger: .state).attaching(mediaID: mediaID)
+                        Task { await library.reportDiagnostic(diagnostic) }
                     }
-                    .task(id: pass?.mediaID) {
-                        while !Task.isCancelled {
-                            try? await Task.sleep(for: .seconds(15))
-                            guard player.isPresenting else { continue }
+                    .task(id: diagnosticMediaID) { [mediaID = diagnosticMediaID] in
+                        guard let mediaID else { return }
+                        while !Task.isCancelled, diagnosticMediaID == mediaID {
+                            do {
+                                try await Task.sleep(for: .seconds(15))
+                            } catch {
+                                return
+                            }
+                            guard !Task.isCancelled, diagnosticMediaID == mediaID else { return }
                             await library.reportDiagnostic(
-                                player.diagnostic(trigger: .heartbeat).attaching(mediaID: pass?.mediaID))
+                                player.diagnostic(trigger: .heartbeat).attaching(mediaID: mediaID))
                         }
                     }
             }
