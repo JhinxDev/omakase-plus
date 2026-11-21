@@ -18,16 +18,23 @@ different decision from telling the truth about a search.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from weakref import WeakValueDictionary
 
 SEARCH_ENV = "OMAKASE_REQUEST_SEARCH"
 ACQUIRE_ENV = "OMAKASE_REQUEST_ACQUIRE"
 REFRESH_ENV = "OMAKASE_REQUEST_SEARCH_REFRESH_HOURS"
 DEFAULT_REFRESH_HOURS = 6.0
+INCOMPLETE_REFRESH_SECONDS = 60
+_SEARCH_LOCKS: WeakValueDictionary[tuple[str | int, int, str, str], asyncio.Lock] = (
+    WeakValueDictionary()
+)
 SEARCH_TIMEOUT_SECONDS = 25.0
 ERROR_CODE = "search_error"
 EMPTY_CODE = "search_empty"
@@ -306,12 +313,8 @@ def page_block(db, user_id: int, kind: str, title_id: str) -> dict[str, object]:
             ),
             "candidates": [],
         }
-    rows = snapshot(db, user_id, kind, title_id)
-    markers = {str(row["reason_code"]) for row in rows} & _SNAPSHOT_MARKERS
-    rows = [row for row in rows if str(row["reason_code"]) not in _SNAPSHOT_MARKERS]
-    verdicts = [Verdict(bool(row["accepted"]), str(row["reason_code"]), "") for row in rows]
-    summary = summarize(verdicts)
-    candidates = [
+    block, rows = _assess_snapshot(snapshot(db, user_id, kind, title_id))
+    block["candidates"] = [
         {
             "title": row["release_title"],
             "indexer": row["indexer"],
@@ -323,14 +326,31 @@ def page_block(db, user_id: int, kind: str, title_id: str) -> dict[str, object]:
         }
         for row in rows
     ]
+    return block
+
+
+def _assess_snapshot(rows):
+    markers = {str(row["reason_code"]) for row in rows} & _SNAPSHOT_MARKERS
+    checked_at = (
+        datetime.fromtimestamp(max(row["observed_at"] for row in rows), UTC)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+        if rows and NO_SOURCES_CODE not in markers
+        else None
+    )
+    rows = [row for row in rows if str(row["reason_code"]) not in _SNAPSHOT_MARKERS]
+    verdicts = [Verdict(bool(row["accepted"]), str(row["reason_code"]), "") for row in rows]
+    summary = summarize(verdicts)
     block = {
         "enabled": True,
         "headline": describe(summary),
         "summary": summary,
-        "candidates": candidates,
+        "outcome": "complete",
+        "checked_at": checked_at,
     }
     if NO_SOURCES_CODE in markers:
         block["headline"] = "No release sources are configured for Omakase's own request search."
+        block["outcome"] = "unconfigured"
     elif ERROR_CODE in markers:
         # Older versions also recorded this marker for empty successes. Don't
         # claim the indexers were unreachable when the cause isn't known.
@@ -339,6 +359,7 @@ def page_block(db, user_id: int, kind: str, title_id: str) -> dict[str, object]:
             "say what exists yet."
         )
         block["error"] = True
+        block["outcome"] = "unavailable"
     elif PARTIAL_CODE in markers:
         found = int(summary["found"])
         noun = "candidate" if found == 1 else "candidates"
@@ -348,9 +369,41 @@ def page_block(db, user_id: int, kind: str, title_id: str) -> dict[str, object]:
             "Some sources did not complete the search."
         )
         block["partial"] = True
+        block["outcome"] = "partial"
     elif not rows and EMPTY_CODE not in markers:
         block["headline"] = "Omakase has not recorded a result from its own search yet."
-    return block
+        block["outcome"] = "unchecked"
+    return block, rows
+
+
+def attach_search_summaries(db, user_id, models):
+    """Load compact, owner-scoped evidence for the bounded Requests result set."""
+    if not models or not search_enabled():
+        return
+    keys = {(model["kind"], model["title_id"]) for model in models}
+    values_sql = ", ".join("(?, ?)" for _ in keys)
+    params = [item for key in keys for item in key]
+    rows = db.execute(
+        f"""WITH requested(kind, title_id) AS (VALUES {values_sql})
+        SELECT kind, title_id, accepted, reason_code, observed_at
+        FROM request_candidates JOIN requested USING (kind, title_id)
+        WHERE user_id=?""",
+        (*params, user_id),
+    )
+    by_request = {}
+    for row in rows:
+        by_request.setdefault((row["kind"], row["title_id"]), []).append(row)
+    for model in models:
+        records = by_request.get((model["kind"], model["title_id"]))
+        if records:
+            block, _ = _assess_snapshot(records)
+            model["fallback_search"] = {
+                "headline": block["headline"],
+                "outcome": block["outcome"],
+                "checked_at": block["checked_at"],
+                "found": block["summary"]["found"],
+                "eligible": block["summary"]["accepted"],
+            }
 
 
 def _refresh_hours() -> float:
@@ -368,7 +421,11 @@ def is_fresh(db, user_id: int, kind: str, title_id: str) -> bool:
     if not rows:
         return False
     newest = max(float(row["observed_at"] or 0) for row in rows)
-    return (time.time() - newest) < _refresh_hours() * 3600
+    seconds = _refresh_hours() * 3600
+    incomplete = {ERROR_CODE, PARTIAL_CODE, NO_SOURCES_CODE}
+    if any(row["reason_code"] in incomplete for row in rows):
+        seconds = min(INCOMPLETE_REFRESH_SECONDS, seconds)
+    return (time.time() - newest) < seconds
 
 
 async def refresh(
@@ -382,19 +439,18 @@ async def refresh(
     force: bool = False,
     timeout: float = SEARCH_TIMEOUT_SECONDS,
 ) -> dict[str, object]:
-    """Search, judge and record, then return the page block for the request page.
-
-    Bounded twice: sources are searched concurrently under one deadline, and a fresh
-    snapshot is not re-searched at all. A failed run records that it failed instead of
-    leaving an empty snapshot that would read as "nothing exists".
-    """
-    import asyncio
-
+    """Share one bounded search per active request and reuse a fresh snapshot."""
     if not search_enabled():
         return page_block(db, user_id, kind, title_id)
-    if not force and is_fresh(db, user_id, kind, title_id):
-        return page_block(db, user_id, kind, title_id)
+    database = db.execute("PRAGMA database_list").fetchone()[2] or id(db)
+    lock = _SEARCH_LOCKS.setdefault((database, user_id, kind, str(title_id)), asyncio.Lock())
+    async with lock:
+        if not force and is_fresh(db, user_id, kind, title_id):
+            return page_block(db, user_id, kind, title_id)
+        return await _run_search(db, user_id, kind, title_id, request, catalogs, timeout)
 
+
+async def _run_search(db, user_id, kind, title_id, request, catalogs, timeout):
     if catalogs is None:
         from omakase.plus.catalog_config import configured_catalogs
 

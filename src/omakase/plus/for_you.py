@@ -362,6 +362,7 @@ async def dashboard(db, user_id):
             model = _request_status(db, scope, kind, str(row[0]), publication=publication)
             if model is not None:
                 models.append(model)
+    request_candidates.attach_search_summaries(db, user_id, models)
     return status_model.group(models)
 
 
@@ -724,6 +725,7 @@ async def _fallback_movie_search(db, user_id, title_id, status, provider_code):
         title_id,
         request_candidates.JudgeRequest(title=status["title"], year=status.get("release_year")),
     )
+    request_candidates.attach_search_summaries(db, user_id, [status])
 
 
 async def refresh_request(db, user_id, kind, title_id):

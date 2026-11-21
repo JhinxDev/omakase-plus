@@ -534,7 +534,7 @@ def create_movies_router(
                 raise HTTPException(404, "Requests unavailable", headers=_no_store())
 
     def request_payload(model):
-        return {
+        payload = {
             key: model[key]
             for key in (
                 "identity",
@@ -570,6 +570,9 @@ def create_movies_router(
                 "timeline",
             )
         }
+        if "fallback_search" in model:
+            payload["fallback_search"] = model["fallback_search"]
+        return payload
 
     def requests_context(request, user):
         base = context(request, user)

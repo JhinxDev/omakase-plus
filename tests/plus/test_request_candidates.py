@@ -301,6 +301,49 @@ def test_all_sources_time_out_without_a_confirmed_result(monkeypatch, db):
     assert block["candidates"] == []
 
 
+def test_incomplete_search_can_retry_sooner_than_complete_search(monkeypatch, db):
+    from types import SimpleNamespace
+
+    time = [100000.0]
+    monkeypatch.setenv(rc.SEARCH_ENV, "1")
+    monkeypatch.setattr(rc, "time", SimpleNamespace(time=lambda: time[0]))
+    failure_then_good = FakeSource([Candidate("Chouchou 2003 1080p")])
+    asyncio.run(rc.refresh(db, 1, "movie", "tt0000012", movie(), catalogs=[BrokenSource()]))
+    asyncio.run(rc.refresh(db, 1, "movie", "tt0000013", movie(), catalogs=[FakeSource([])]))
+    time[0] += 120
+    recovered = asyncio.run(
+        rc.refresh(db, 1, "movie", "tt0000012", movie(), catalogs=[failure_then_good])
+    )
+    complete = asyncio.run(
+        rc.refresh(db, 1, "movie", "tt0000013", movie(), catalogs=[failure_then_good])
+    )
+    assert recovered["summary"]["found"] == 1
+    assert complete["summary"]["found"] == 0
+    assert failure_then_good.calls == 1
+
+
+def test_simultaneous_views_share_one_search_for_the_same_request(monkeypatch, db):
+    monkeypatch.setenv(rc.SEARCH_ENV, "1")
+
+    class Source(FakeSource):
+        async def search(self, query):
+            await asyncio.sleep(0.01)
+            return await super().search(query)
+
+    source = Source([Candidate("Chouchou 2003 1080p")])
+
+    async def checks():
+        async def check():
+            return await rc.refresh(db, 1, "movie", "tt0000014", movie(), catalogs=[source])
+
+        return await asyncio.gather(check(), check())
+
+    first, second = asyncio.run(checks())
+    assert source.calls == 1
+    assert first == second
+    assert first["summary"]["found"] == 1
+
+
 def test_refresh_does_nothing_when_the_feature_is_off(monkeypatch, db):
     monkeypatch.delenv(rc.SEARCH_ENV, raising=False)
     source = FakeSource([Candidate("Chouchou 2003 1080p")])

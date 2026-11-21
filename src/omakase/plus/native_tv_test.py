@@ -790,6 +790,13 @@ def native_request_status(status):
             }
         )
     payload["stages"] = stages
+    fallback = status.get("fallback_search")
+    if isinstance(fallback, dict):
+        payload["fallback_search"] = {
+            key: fallback[key]
+            for key in ("headline", "outcome", "checked_at", "found", "eligible")
+            if key in fallback
+        }
     return payload
 
 

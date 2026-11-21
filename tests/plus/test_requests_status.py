@@ -382,6 +382,55 @@ def test_request_checks_riven_before_searching_configured_sources(
     assert events == expected
 
 
+def test_saved_fallback_evidence_is_available_in_shared_request_status(client, monkeypatch):
+    from omakase.plus import movies_routes, native_tv_test, request_candidates
+    from tests.plus.test_request_candidates import Candidate
+
+    monkeypatch.setenv("OMAKASE_REQUEST_SEARCH", "1")
+    monkeypatch.setattr(movies_routes, "monotonic", lambda: 100.0)
+    _signup_and_login(client)
+    user_id = _user_id(client)
+    monkeypatch.setattr(for_you, "MovieService", lambda *_: NoProvider())
+    with _connect_client_db(client) as db:
+        _seed_movie(db, user_id, code="backend_failed", state="unavailable", detail=FAILED_DETAIL)
+        request_candidates.record(
+            db,
+            user_id + 1000,
+            "movie",
+            CHOUCHOU,
+            [
+                (
+                    Candidate("Other owner's release"),
+                    request_candidates.Verdict(True, "accepted", ""),
+                )
+            ],
+        )
+        request_candidates.record(
+            db,
+            user_id,
+            "movie",
+            CHOUCHOU,
+            [(Candidate("Fixture release"), request_candidates.Verdict(True, "accepted", ""))],
+            marker=request_candidates.PARTIAL_CODE,
+        )
+        status = run(for_you.dashboard(db, user_id))
+
+    expected = {
+        "outcome": "partial",
+        "found": 1,
+        "eligible": 1,
+    }
+    model = next(item for group in status["categories"] for item in group["requests"])
+    native = native_tv_test.native_request_status(model)["fallback_search"]
+    assert {key: native[key] for key in expected} == expected
+    assert native["checked_at"].endswith("Z")
+    assert "Fixture release" not in str(native)
+    web = client.get("/plus/requests/status")
+    assert web.status_code == 200
+    model = next(item for group in web.json()["categories"] for item in group["requests"])
+    assert model["fallback_search"] == native
+
+
 def test_automatic_refresh_is_bounded_per_viewer(client, monkeypatch):
     from omakase.plus import movies_routes
 
