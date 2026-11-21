@@ -241,7 +241,9 @@ def _tv_model(db, scope, row):
     progress = tv_provider_requests.read(db, scope.viewer_id, row["title_id"])
     if progress and progress["snapshot"]:
         service = TVService(db, movie_connections(db, scope.viewer_id))
-        progress = tv_provider_requests.project_library(db, scope.viewer_id, service, progress)
+        progress = tv_provider_requests.project_library(
+            db, scope.viewer_id, service, progress, row["title_id"]
+        )
     snapshot = db.execute(
         """SELECT complete,observed_at FROM tv_plex_snapshots
            WHERE user_id=? AND tmdb_id=? AND complete=1""",
@@ -792,16 +794,16 @@ async def refresh_request(db, user_id, kind, title_id):
         _require_visible(db, scope, kind, title_id)
         service = TVService(db, movie_connections(db, user_id))
         try:
-            await tv_provider_requests.refresh(
+            refreshed = await tv_provider_requests.refresh(
                 db, user_id, int(title_id), service, cloud_library=_CLOUD_LIBRARY
             )
             provider = tv_provider_requests.read(db, user_id, int(title_id))
-            if provider:
+            if refreshed and provider:
                 await tv_provider_requests.search_missing_episode(
                     db,
                     user_id,
                     int(title_id),
-                    service._raw(user_id, int(title_id)),
+                    service,
                     provider["snapshot"],
                 )
         except (MovieError, TVError) as error:
