@@ -85,8 +85,11 @@ def test_episode_identity_is_enforced_for_series():
     assert rc.judge(Candidate("MobLand S01E04 1080p WEB-DL"), request).code == "episode_mismatch"
     assert rc.judge(Candidate("MobLand S02E03 1080p WEB-DL"), request).code == "episode_mismatch"
     assert rc.judge(Candidate("MobLand 1080p WEB-DL"), request).code == "episode_mismatch"
-    # A batch is a legitimate answer to a single episode request.
-    assert rc.judge(Candidate("MobLand Complete Season 1", is_batch=True), request).accepted
+    # An indexer batch flag alone cannot establish which episodes are in a pack.
+    assert (
+        rc.judge(Candidate("MobLand Complete Season 1", is_batch=True), request).code
+        == "episode_mismatch"
+    )
 
 
 # --- the summary and the sentence the page shows ----------------------------------------
