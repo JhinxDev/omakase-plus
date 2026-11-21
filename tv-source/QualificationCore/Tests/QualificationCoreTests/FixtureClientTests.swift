@@ -77,6 +77,33 @@ final class FixtureClientTests: XCTestCase {
         }
     }
 
+    func testIntroIsOptInAndExpiresAtItsExactEnd() throws {
+        var payload: [String: Any] = [
+            "identity": ["library_id": LibraryFixture.libraryID, "domain": "anime",
+                         "canonical_id": "123", "season_number": 1, "episode_number": 7,
+                         "media_version": LibraryFixture.mediaVersion],
+            "title": "Fixture", "media_id": String(repeating: "a", count: 32),
+            "media_token": String(repeating: "s", count: 43), "media_format": "hls",
+            "media_playlist": "vod", "duration_seconds": 1800, "position_seconds": 0,
+            "expires_in": 1200,
+        ]
+        let origin = try FixtureOrigin("https://fixture.example.invalid")
+        func pass(_ marker: [String: Double]?) throws -> LiveTestPass {
+            payload["intro"] = marker
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            let reply = try JSONDecoder().decode(LiveTestReply.self, from: data)
+            return try LiveTestPass(reply: reply, origin: origin)
+        }
+        XCTAssertNil(try pass(nil).intro)
+        XCTAssertNil(try pass(["start_seconds": 110, "end_seconds": 100]).intro)
+        XCTAssertNil(try pass(["start_seconds": 100, "end_seconds": 1800]).intro)
+        let marker = try XCTUnwrap(pass(["start_seconds": 92, "end_seconds": 183]).intro)
+        XCTAssertFalse(marker.contains(91.999))
+        XCTAssertTrue(marker.contains(92))
+        XCTAssertTrue(marker.contains(182.999))
+        XCTAssertFalse(marker.contains(183))
+    }
+
     func testHouseholdResumeIsolatedByViewerOnTheSameCopy() throws {
         let origin = try FixtureOrigin("https://fixture.example.invalid")
         let reply: [String: Any] = [

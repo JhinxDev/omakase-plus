@@ -48,7 +48,7 @@ TIMELINE_ARGS = dict(
 @pytest.fixture
 def native_plan(tmp_path, monkeypatch):
     """Install a synthetic timeline instead of downloading and remuxing."""
-    timeline = NativeTimeline(**TIMELINE_ARGS)
+    timeline = NativeTimeline(**TIMELINE_ARGS, intro=(2.0, 4.0))
     starts = []
 
     def fake_start(self, key, url, duration, *, subtitle_key="", warm=None, index_identity=None):
@@ -131,6 +131,7 @@ def test_native_engine_returns_a_fixed_vod_pass(system, monkeypatch, native_plan
     assert data["media_playlist"] == "vod"
     assert "media_url" not in data and "media_range_url" not in data
     assert data["duration_seconds"] == 1800
+    assert "intro" not in data  # Generic cloud browsing has no episode identity.
     assert "real-debrid.com" not in opened.text
     assert native_plan and native_plan[0][1].startswith("https://download.real-debrid.com/")
 
@@ -245,6 +246,39 @@ def test_browser_bitmap_request_cancels_when_the_client_disconnects(tmp_path, mo
         assert disconnect.value.status == 499
         assert released.is_set()
         assert not streams.bitmap_requests
+
+    asyncio.run(run())
+
+
+def test_native_master_prepares_captions_and_first_window_together(tmp_path, monkeypatch):
+    streams = DebridStreams()
+    plan = native_hls.NativePlan("sample", TIMELINE_ARGS["url"], 24.0, tmp_path)
+    plan.continuous = True
+    plan.timeline = NativeTimeline(**TIMELINE_ARGS)
+    plan.ready.set()
+    streams.subtitles.jobs["sample"] = SimpleNamespace(tracks=())
+
+    async def run():
+        caption_started = asyncio.Event()
+        opening_started = asyncio.Event()
+
+        async def prepare_captions(job):
+            caption_started.set()
+            await opening_started.wait()
+            job.tracks = (SimpleNamespace(language="eng", name="English"),)
+
+        async def prepare_opening(plan, timeline, request, tracks):
+            opening_started.set()
+            await caption_started.wait()
+
+        monkeypatch.setattr(streams, "_wait_for_subtitles", prepare_captions)
+        monkeypatch.setattr(streams, "_prepare_native_opening", prepare_opening)
+        entry = SimpleNamespace(subtitle_key="sample")
+        request = Request({"type": "http", "method": "GET", "headers": [], "query_string": b""})
+        reply = await asyncio.wait_for(
+            streams._native_response(entry, plan, "index.m3u8", request), 2
+        )
+        assert b"TYPE=SUBTITLES" in reply.body
 
     asyncio.run(run())
 
@@ -417,6 +451,7 @@ def test_replacing_and_closing_native_pass_reclaims_its_segments(
         path = "/plus/watch/1/1"
         opened = native.post(LIBRARY_API + "/play", json={"watch_path": path, "engine": "native"})
         assert opened.status_code == 200, opened.text
+        assert opened.json()["intro"] == {"start_seconds": 2.0, "end_seconds": 4.0}
 
     def request_master(response):
         data = response.json()

@@ -50,6 +50,15 @@ _LOG = logging.getLogger(__name__)
 _TRACKS = 0x1654AE6B
 _INFO = 0x1549A966
 _SEEKHEAD = 0x114D9B74
+_CHAPTERS = 0x1043A770
+_EDITION = 0x45B9
+_CHAPTER = 0xB6
+_CHAPTER_START = 0x91
+_CHAPTER_END = 0x92
+_CHAPTER_SKIP_TYPE = 0x4588
+_CHAPTER_DISPLAY = 0x80
+_CHAPTER_NAME = 0x85
+_INTRO_NAMES = {"intro", "opening", "opening credits", "opening theme", "op", "オープニング"}
 _CLUSTER = 0x1F43B675
 _TIMESTAMP = 0xE7
 _SIMPLE_BLOCK = 0xA3
@@ -102,6 +111,10 @@ _DIRECT = re.compile(r"https?://[a-z0-9-]+(?:\.[a-z0-9-]+)*\.real-debrid\.com/[^
 _SEGMENT_SECONDS = 6.0
 _MAX_SEGMENTS = 4000
 _MAX_INDEX_BYTES = 12 * 1024 * 1024
+_INDEX_PREFIX_BYTES = 1024 * 1024
+_CUE_INDEX_PROBE_BYTES = 128 * 1024
+_CHAPTER_PROBE_BYTES = 4096
+_MAX_CHAPTER_BYTES = 64 * 1024
 _MAX_AUDIO_TRACKS = 4
 _MAX_SUBTITLE_TRACKS = 6
 # Bounds. The host runs about a quarter of a gibibyte above its 8 GiB reserve, so
@@ -256,6 +269,7 @@ class NativeTimeline:
     # CueRelativePosition per window, when the cue table publishes one.
     relatives: tuple[int | None, ...] = ()
     bitmap_subtitles: tuple[BitmapSubtitle, ...] = ()
+    intro: tuple[float, float] | None = None
 
     @property
     def target_duration(self) -> int:
@@ -402,6 +416,81 @@ def _text_field(data, fields, key, limit=64):
         return data[start:stop].decode("utf-8", "ignore").strip()[:limit]
     except (IndexError, ValueError):
         return ""
+
+
+def _intro_chapter(data, chapter_range, origin, duration):
+    """Use an explicit, unambiguous opening from a single local, flat edition."""
+    editions = _children(data, *chapter_range, {_EDITION}).get(_EDITION, ())
+    if len(editions) != 1:
+        return None
+    edition = _children(data, *editions[0], {_CHAPTER, 0x45BD, 0x45DD})
+    # Hidden/ordered editions can describe a different presentation clock.
+    if _uint_field(data, edition, 0x45BD) or _uint_field(data, edition, 0x45DD):
+        return None
+
+    rows = []
+    for chapter in edition.get(_CHAPTER, ()):
+        fields = _children(
+            data,
+            *chapter,
+            {
+                _CHAPTER,
+                _CHAPTER_START,
+                _CHAPTER_END,
+                _CHAPTER_SKIP_TYPE,
+                _CHAPTER_DISPLAY,
+                0x98,
+                0x4598,
+                0x6E67,
+                0x6EBC,
+                0x8F,
+            },
+        )
+        if (
+            any(key in fields for key in (_CHAPTER, 0x6E67, 0x6EBC, 0x8F))
+            or len(fields.get(_CHAPTER_START, ())) != 1
+            or any(len(fields.get(key, ())) > 1 for key in (_CHAPTER_END, _CHAPTER_SKIP_TYPE))
+        ):
+            return None
+        start = _uint_field(data, fields, _CHAPTER_START)
+        end = _uint_field(data, fields, _CHAPTER_END)
+        skip_type = _uint_field(data, fields, _CHAPTER_SKIP_TYPE)
+        visible = not _uint_field(data, fields, 0x98) and _uint_field(data, fields, 0x4598) in (
+            None,
+            1,
+        )
+        named_opening = any(
+            _text_field(data, _children(data, *display, {_CHAPTER_NAME}), _CHAPTER_NAME).casefold()
+            in _INTRO_NAMES
+            for display in fields.get(_CHAPTER_DISPLAY, ())
+        )
+        rows.append(
+            (
+                start,
+                end,
+                skip_type,
+                visible and (skip_type == 1 or (skip_type is None and named_opening)),
+            )
+        )
+
+    rows.sort(key=lambda row: row[0])
+    if any(left[0] == right[0] for left, right in zip(rows, rows[1:])):
+        return None
+    openings = [index for index, row in enumerate(rows) if row[3]]
+    if len(openings) != 1:
+        return None
+    index = openings[0]
+    start, end, skip_type, _ = rows[index]
+    later = rows[index + 1 :]
+    if end is None:
+        # A typed marker without an end lasts until the next typed marker.
+        # Require an actual closing boundary for both kinds of evidence.
+        end = next((row[0] for row in later if skip_type is None or row[2] is not None), None)
+    if end is None or start >= end:
+        return None
+    start_seconds = round(max(0, start / 1_000_000_000 - origin), 3)
+    end_seconds = round(end / 1_000_000_000 - origin, 3)
+    return (start_seconds, end_seconds) if 0 <= start_seconds < end_seconds <= duration else None
 
 
 def _track_table(data, track_range):
@@ -602,14 +691,38 @@ async def _tail_cues(client, url, total):
         return None
     # The element header is at the marker; make sure it parses as a bounded Cues.
     try:
-        element_id, size, _body = _element(tail, position)
+        element_id, size, body = _element(tail, position)
     except (IndexError, ValueError):
         return None
     if element_id != _CUES or not size or size > _MAX_INDEX_BYTES:
         return None
-    if position + size > window:
+    if body + size > window:
         return None
-    return total - window + position
+    return tail[position:], body, body + size
+
+
+async def _indexed_element(client, url, total, prefix, position, tag, *, probe_bytes, max_bytes):
+    if not 0 <= position < total:
+        return None
+    if position < len(prefix) - 12:
+        data = prefix[position:]
+    else:
+        data = await _range(client, url, position, min(position + probe_bytes, total) - 1)
+    if not data:
+        return None
+    try:
+        element_id, size, start = _element(data, 0)
+    except (IndexError, ValueError):
+        return None
+    if element_id != tag or not size or size > max_bytes or position + start + size > total:
+        return None
+    end = start + size
+    if len(data) < end:
+        remainder = await _range(client, url, position + len(data), position + end - 1)
+        if not remainder:
+            return None
+        data += remainder
+    return data, start, end
 
 
 async def build_timeline(url, duration):
@@ -635,7 +748,7 @@ async def build_timeline(url, duration):
             return None
         if total < 1024:
             return None
-        limit = min(1024 * 1024, total)
+        limit = min(_INDEX_PREFIX_BYTES, total)
         first = await _range(client, url, 0, limit - 1)
         if not first or first[:4] != b"\x1a\x45\xdf\xa3":
             return None
@@ -661,7 +774,7 @@ async def build_timeline(url, duration):
             position = body + size
         if segment_start is None:
             return None
-        wanted = _children(first, segment_start, len(first), {_TRACKS, _INFO, _SEEKHEAD})
+        wanted = _children(first, segment_start, len(first), {_TRACKS, _INFO, _SEEKHEAD, _CHAPTERS})
         tracks_range = wanted.get(_TRACKS, [None])[0]
         info_range = wanted.get(_INFO, [None])[0]
         seekhead_range = wanted.get(_SEEKHEAD, [None])[0]
@@ -679,38 +792,63 @@ async def build_timeline(url, duration):
             # failure this route must never present as working playback.
             return None
         scale = _timecode_scale(first, info_range) or 1_000_000
-        cues_position = None
+        seek_positions = {}
         if seekhead_range is not None:
             for seek_start, seek_end in _children(
                 first, seekhead_range[0], seekhead_range[1], {0x4DBB}
             ).get(0x4DBB, []):
                 inner = _children(first, seek_start, seek_end, {0x53AB, 0x53AC})
                 if 0x53AB in inner and 0x53AC in inner:
-                    seek_id = int.from_bytes(
-                        first[inner[0x53AB][0][0] : inner[0x53AB][0][1]], "big"
-                    )
-                    if seek_id == _CUES:
-                        cues_position = segment_start + _uint(first, *inner[0x53AC][0])
+                    seek_id = _uint(first, *inner[0x53AB][0])
+                    seek_positions[seek_id] = segment_start + _uint(first, *inner[0x53AC][0])
+        cues_position = seek_positions.get(_CUES)
         if cues_position is None:
             # Some muxers write the cue table without a seek-head entry. Look in
             # the tail of the file instead of refusing a perfectly good source.
-            cues_position = await _tail_cues(client, url, total)
-        if cues_position is None:
+            read_cues = _tail_cues(client, url, total)
+        else:
+            read_cues = _indexed_element(
+                client,
+                url,
+                total,
+                first,
+                cues_position,
+                _CUES,
+                probe_bytes=_CUE_INDEX_PROBE_BYTES,
+                max_bytes=_MAX_INDEX_BYTES,
+            )
+
+        chapter_ranges = wanted.get(_CHAPTERS, ())
+        chapter_table = None
+        if len(chapter_ranges) == 1:
+            chapter_table = (first, *chapter_ranges[0])
+        chapter_position = seek_positions.get(_CHAPTERS)
+        if not chapter_ranges and chapter_position is not None:
+
+            async def read_chapters():
+                # Fonts and other attachments can put Chapters beyond the header.
+                # Opening evidence is optional; bound its read alongside Cues.
+                try:
+                    async with asyncio.timeout(2):
+                        return await _indexed_element(
+                            client,
+                            url,
+                            total,
+                            first,
+                            chapter_position,
+                            _CHAPTERS,
+                            probe_bytes=_CHAPTER_PROBE_BYTES,
+                            max_bytes=_MAX_CHAPTER_BYTES,
+                        )
+                except TimeoutError:
+                    return None
+
+            cue_table, chapter_table = await asyncio.gather(read_cues, read_chapters())
+        else:
+            cue_table = await read_cues
+        if cue_table is None:
             return None
-        cues_header = await _range(client, url, cues_position, min(cues_position + 31, total - 1))
-        if not cues_header:
-            return None
-        try:
-            element_id, size, body = _element(cues_header, 0)
-        except (IndexError, ValueError):
-            return None
-        if element_id != _CUES or not size or size > _MAX_INDEX_BYTES:
-            return None
-        last = min(cues_position + body + size - 1, total - 1)
-        cues = await _range(client, url, cues_position, last)
-        if not cues or len(cues) < body + size:
-            return None
-        points = _cue_points(cues, body, body + size, video_number, scale)
+        points = _cue_points(*cue_table, video_number, scale)
         if len(points) < 2:
             return None
         origin = points[0][0]
@@ -719,6 +857,11 @@ async def build_timeline(url, duration):
         )
         if not segments:
             return None
+        intro = None
+        if chapter_table is not None:
+            data, start, end = chapter_table
+            if end - start <= _MAX_CHAPTER_BYTES:
+                intro = _intro_chapter(data, (start, end), origin, duration)
         return NativeTimeline(
             url=url,
             duration=float(duration),
@@ -737,6 +880,7 @@ async def build_timeline(url, duration):
             video_number=int(video_number),
             relatives=relatives,
             bitmap_subtitles=bitmaps,
+            intro=intro,
             bandwidth=max(1, int(total * 8 / float(duration))),
         )
 

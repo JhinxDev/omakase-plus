@@ -23,6 +23,9 @@ identifier; it does not replace the public release version.
   use the dark highlight. Media Info shows resolution, codecs, container and size.
 - The Apple TV Home Anime Continue Watching row uses matching episode stills
   where available and shows the full series poster as a fallback.
+- Apple TV offers Skip Intro during verified opening markers. Native playback
+  prepares captions and the first video window together and makes fewer range
+  requests for small Matroska indexes.
 - The iPhone simulator prototype shares the Swift playback and resume contracts
   and runs an offline catalog-to-player test in GitHub Actions.
 
