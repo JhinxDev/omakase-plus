@@ -506,7 +506,18 @@ async def search_missing_episode(db, user_id, tmdb_id, service, snapshot):
     ]
     if not waiting:
         return
-    season, episode = min(waiting, key=lambda item: (item[1], item[0]))
+    waiting.sort(key=lambda item: (item[1], item[0]))
+    last = checks.get("episode")
+    cursor = (0, 0)
+    if (
+        isinstance(last, list)
+        and len(last) == 2
+        and _number(last[0], 200)
+        and _number(last[1], 1000)
+    ):
+        cursor = (last[1], last[0])
+    # An early episode's cooldown can expire before a long request reaches its tail.
+    season, episode = next(((s, e) for s, e in waiting if (e, s) > cursor), waiting[0])
     timestamp = now.isoformat()
     reservation = {"latest": timestamp, "episodes": recent, "episode": checks.get("episode")}
     reserved = db.execute(

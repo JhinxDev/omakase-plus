@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -138,9 +138,10 @@ async def test_enqueue_once_and_select_only_exact_episode(
 
 
 @pytest.mark.anyio
-async def test_stalled_search_moves_to_next_missing_episode(request_db, monkeypatch):
+async def test_search_rotates_past_expired_early_episodes(request_db, monkeypatch):
     db = request_db
-    tv_provider_requests._write_snapshot(db, 1, 77, _snapshot(1, 2))
+    snapshot = _snapshot(1, 2, 3)
+    tv_provider_requests._write_snapshot(db, 1, 77, snapshot)
     first = []
 
     async def search(_db, _user_id, kind, _key, request, **kwargs):
@@ -158,12 +159,20 @@ async def test_stalled_search_moves_to_next_missing_episode(request_db, monkeypa
 
     await run()
     await run()
-    db.execute("""UPDATE tv_provider_requests SET snapshot_json=json_set(
-        snapshot_json,'$.fallback_checks.latest','2025-01-01T00:00:00+00:00')""")
-    db.commit()
-    tv_provider_requests._write_snapshot(db, 1, 77, _snapshot(1, 2))
-    await run()
-    assert first == [(3, 1), (3, 2)]
+    expired = (datetime.now(UTC) - timedelta(hours=13)).isoformat()
+    for cycle in range(3):
+        checks = tv_provider_requests.read(db, 1, 77)["snapshot"]["fallback_checks"]
+        checks["latest"] = expired
+        if cycle == 0:
+            checks["episodes"]["3:1"] = expired
+        db.execute(
+            """UPDATE tv_provider_requests SET snapshot_json=json_set(
+                snapshot_json,'$.fallback_checks',json(?)) WHERE user_id=1 AND title_id=77""",
+            (json.dumps(checks),),
+        )
+        tv_provider_requests._write_snapshot(db, 1, 77, snapshot)
+        await run()
+    assert first == [(3, 1), (3, 2), (3, 3), (3, 1)]
 
 
 def test_only_stale_attempted_aired_episodes_are_eligible():
