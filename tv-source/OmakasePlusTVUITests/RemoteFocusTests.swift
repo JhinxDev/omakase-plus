@@ -221,17 +221,56 @@ final class RemoteFocusRenderingTests: XCTestCase {
     private func checkBackplate(_ target: XCUIElement, in app: XCUIApplication,
                                 name: String, card: Bool) async throws {
         let viewport = app.windows.firstMatch.frame
-        let frame = try await visibleFocusFrame(target, in: viewport)
+        let bounds: CGRect
+        if card {
+            try await Task.sleep(for: .milliseconds(500))
+            XCTAssertTrue(target.hasFocus, "The movie card must have focus before capture")
+            bounds = target.frame
+        } else {
+            bounds = try await visibleFocusFrame(target, in: viewport)
+        }
         let shot = app.screenshot()
         let attachment = XCTAttachment(screenshot: shot)
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+        let (pixels, width, height) = try renderedPixels(shot)
+        let sx = CGFloat(width) / viewport.width, sy = CGFloat(height) / viewport.height
         let regions: [CGRect]
         if card {
+            // Vertical scrolling can leave the movie button at its unscrolled
+            // accessibility offset. Locate the visible artwork outline using
+            // the unaffected horizontal bounds and the known artwork ratio.
+            let columns = Array(stride(from: Int((bounds.minX - viewport.minX + bounds.width * 0.24) * sx),
+                                       to: Int((bounds.minX - viewport.minX + bounds.width * 0.76) * sx), by: 4))
+            guard columns.count > 20, columns.allSatisfy({ (0..<width).contains($0) }) else {
+                XCTFail("Movie focus outline sample falls outside the card's horizontal bounds")
+                throw Stop()
+            }
+            let strokeRows = (0..<height).filter { row in
+                let count = columns.reduce(into: 0) { count, column in
+                    let offset = (row * width + column) * 4
+                    let r = Int(pixels[offset]), g = Int(pixels[offset + 1]), b = Int(pixels[offset + 2])
+                    if r >= 155, r - g >= 8, b >= 175, b - g >= 24 { count += 1 }
+                }
+                return count * 4 >= columns.count * 3
+            }
+            let artworkHeight = Int((bounds.width * 214 / 380 * sy).rounded())
+            let tolerance = max(5, Int((8 * sy).rounded()))
+            guard let top = strokeRows.first(where: { top in
+                strokeRows.contains { abs($0 - top - artworkHeight) <= tolerance }
+            }) else {
+                XCTFail("Could not locate the focused movie artwork outline in the screenshot")
+                throw Stop()
+            }
+            let frame = CGRect(x: bounds.minX, y: viewport.minY + CGFloat(top) / sy,
+                               width: bounds.width, height: bounds.height)
+            XCTAssertTrue(viewport.contains(frame), "The rendered movie card must be fully visible")
+            print("FOCUS_STROKE \(name) screenY=\(top) accessibilityY=\(bounds.minY)")
             // The fixture has no artwork. Only sample the blank right side of the
             // subtitle panel, below the artwork and away from title/subtitle ink.
             regions = [CGRect(x: frame.maxX - frame.width * 0.22,
                               y: frame.maxY - 22, width: frame.width * 0.15, height: 14)]
         } else {
+            let frame = bounds
             // Outside the app's purple outline and away from centered white text.
             regions = [CGRect(x: frame.minX + 14, y: frame.minY - 9,
                               width: frame.width - 28, height: 6),
@@ -240,8 +279,6 @@ final class RemoteFocusRenderingTests: XCTestCase {
                        CGRect(x: frame.minX + 8, y: frame.minY + 10,
                               width: 6, height: frame.height - 20)]
         }
-        let (pixels, width, height) = try renderedPixels(shot)
-        let sx = CGFloat(width) / viewport.width, sy = CGFloat(height) / viewport.height
         for (index, region) in regions.enumerated() {
             XCTAssertTrue(viewport.contains(region), "Sample must not be clipped")
             var white = 0, count = 0
