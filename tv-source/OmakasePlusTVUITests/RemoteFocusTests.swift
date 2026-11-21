@@ -12,12 +12,14 @@ final class RemoteFocusRenderingTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-omakase.tv.server-origin", "https://127.0.0.1:8854"]
         app.launch()
-        if app.buttons["live.enter"].waitForExistence(timeout: 4) {
+        if app.buttons["live.enter"].waitForExistence(timeout: 10) {
             try reach(app.buttons["live.enter"], in: app)
             XCUIRemote.shared.press(.select)
             try reach(app.buttons["live.showCode"], in: app)
             XCUIRemote.shared.press(.select)
         }
+        XCTAssertFalse(app.staticTexts["Couldn’t restore your profile"].exists,
+                       "The simulator must enable Keychain access before the app can pair.\n\(app.debugDescription)")
         let home = app.buttons.matching(NSPredicate(
             format: "identifier == %@ OR label == %@", "nav-home", "Home")).firstMatch
         try reach(home, in: app)
@@ -115,7 +117,7 @@ final class RemoteFocusRenderingTests: XCTestCase {
     @MainActor
     private func reach(_ target: XCUIElement, in app: XCUIApplication) throws {
         guard target.waitForExistence(timeout: 20) else {
-            XCTFail("Missing production focus target: \(target)"); throw Stop()
+            XCTFail("Missing production focus target: \(target)\n\(app.debugDescription)"); throw Stop()
         }
         for _ in 0..<24 {
             if target.hasFocus { return }

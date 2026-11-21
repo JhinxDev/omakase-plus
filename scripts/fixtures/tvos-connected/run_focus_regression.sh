@@ -10,6 +10,14 @@ output=$(cd "$output" && pwd -P)
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/omakase-focus.XXXXXXXX")
 device=
 cleanup() {
+  local app="$scratch/DerivedData/Build/Products/Debug-appletvsimulator/OmakasePlusTV.app"
+  if [[ -d "$app" ]]; then
+    codesign -d --entitlements :- "$app" > "$output/simulator-entitlements.plist" 2> "$output/simulator-signing.log" || true
+  fi
+  if [[ -d "$output/Focus.xcresult" ]]; then
+    xcrun xcresulttool export attachments --path "$output/Focus.xcresult" \
+      --output-path "$output/attachments" > "$output/attachment-export.log" 2>&1 || true
+  fi
   if [[ -f "$scratch/fixture/server.pid" ]]; then kill "$(cat "$scratch/fixture/server.pid")" 2>/dev/null || true; fi
   if [[ -n "$device" ]]; then
     xcrun simctl shutdown "$device" >/dev/null 2>&1 || true
@@ -76,5 +84,5 @@ xcodebuild test -project "$root/tv-source/OmakaseQualification.xcodeproj" \
   -derivedDataPath "$scratch/DerivedData" -resultBundlePath "$output/Focus.xcresult" \
   -parallel-testing-enabled NO \
   -only-testing:OmakasePlusTVUITests/RemoteFocusRenderingTests \
-  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO OMAKASE_SERVER_ORIGIN= \
+  CODE_SIGN_IDENTITY=- OMAKASE_SERVER_ORIGIN= \
   2>&1 | tee "$output/xcodebuild.log"

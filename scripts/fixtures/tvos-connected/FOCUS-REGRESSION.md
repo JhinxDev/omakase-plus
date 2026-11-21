@@ -31,6 +31,8 @@ The runtime above is an example identifier, not a claim it is installed. Omit
 `TVOS_RUNTIME` to select the newest installed available tvOS runtime; the script
 records its exact identifier, inventory, Xcode version, device type, source
 commit and binary diff. A missing requested runtime fails with its inventory.
+The launch uses simulator ad-hoc code signing so the pairing flow has its
+usual Keychain access. The build log and simulator entitlements are retained.
 The script creates, boots, shuts down and deletes only its own simulator.
 Its loopback fixture and temporary TLS material are stopped and removed on exit.
 Use a fresh checkout each run: an existing Vendor directory is rejected rather
