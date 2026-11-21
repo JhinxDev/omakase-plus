@@ -595,8 +595,9 @@ struct LiveLibraryScreen: View {
                     systemImage: subtitlesAlways ? "captions.bubble.fill" : "captions.bubble"
                 )
             }
-            .buttonStyle(TVActionStyle(compact: true, selected: subtitlesAlways))
+            .buttonStyle(TVActionStyle(focused: settingsFocus == .subtitle, compact: true, selected: subtitlesAlways))
             .focusEffectDisabled()
+            .focused($settingsFocus, equals: .subtitle)
             .accessibilityIdentifier("device.settings.subtitles")
             .accessibilityValue(subtitlesAlways ? "On" : "Off")
             .accessibilityHint("Turns subtitles on automatically for every video that includes text subtitles")
@@ -621,6 +622,7 @@ struct LiveLibraryScreen: View {
                     }
                 }
             }
+            .focusSection()
             .disabled(busy)
         }
         .padding(70)
@@ -645,7 +647,7 @@ struct LiveLibraryScreen: View {
     private func settingsButton(_ title: String, key: SettingsAction, role: ButtonRole? = nil,
                                 action: @escaping () -> Void) -> some View {
         Button(title, role: role, action: action)
-            .buttonStyle(TVActionStyle(tint: role == .destructive ? .red : .tvText))
+            .buttonStyle(TVActionStyle(focused: settingsFocus == key, tint: role == .destructive ? .red : .tvText))
             .focusEffectDisabled()
             .focused($settingsFocus, equals: key)
     }

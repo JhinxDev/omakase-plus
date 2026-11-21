@@ -35,31 +35,45 @@
       <div><dt>Last confirmed update</dt><dd data-request-confirmed>{% if item.last_confirmed_at %}<time datetime="{{ item.last_confirmed_at }}" data-local-datetime="{{ item.last_confirmed_at }}">{{ item.last_confirmed_at }}</time>{% else %}Not yet{% endif %}</dd></div>
     </dl>
     {% if item.manual %}<p class="requests-manual" data-request-manual>{{ item.manual_note }}</p>{% endif %}
+    <div class="requests-actions requests-primary-actions">
+      <form method="post" action="/plus/requests/{{ item.kind }}/{{ item.title_id }}/check" data-request-check data-busy-form data-single-flight{% if not item.can_check %} hidden{% endif %}>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button button-primary" type="submit" data-busy-label="Checking…">Check status</button>
+      </form>
+      <form method="post" action="/plus/requests/{{ item.kind }}/{{ item.title_id }}/retry" data-request-retry data-busy-form data-single-flight{% if not item.can_retry %} hidden{% endif %}>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button button-secondary" type="submit" data-busy-label="Retrying…">Retry request</button>
+      </form>
+      <span class="requests-facts" data-request-no-action{% if item.can_check or item.can_retry %} hidden{% endif %}>No automatic action is available for this request.{% if item.manual %} It needs a manual acquisition step.{% endif %}</span>
+    </div>
   </section>
 
-  {# Owner review W-06: Omakase's own search, stated as evidence rather than a promise.
-     When the feature is off this says so plainly instead of implying a search happened;
-     when it is on it names every candidate and the single reason it could not be used. #}
-  {% if request_search %}
-  <section class="requests-panel request-search" aria-labelledby="request-search-heading" data-request-search="{{ 'on' if request_search.enabled else 'off' }}">
-    <h2 id="request-search-heading">Omakase's own search</h2>
+  {% if item.kind == 'movie' or request_search.checked_at %}
+  <section class="requests-panel request-search" aria-labelledby="request-search-heading" data-request-search="{{ 'on' if request_search.enabled else 'off' }}" data-request-evidence-at="{{ request_search.checked_at or '' }}">
+    <h2 id="request-search-heading">Fallback sources</h2>
     <p data-request-search-headline>{{ request_search.headline }}</p>
+    <p class="requests-checked" data-request-search-time{% if not request_search.checked_at %} hidden{% endif %}>Searched <span data-request-search-checked>{% if request_search.checked_at %}<time datetime="{{ request_search.checked_at }}" data-local-datetime="{{ request_search.checked_at }}">{{ request_search.checked_at }}</time>{% endif %}</span></p>
+    <p class="requests-transfer" data-request-transfer{% if not item.fallback_transfer %} hidden{% endif %}>{{ item.fallback_transfer.headline if item.fallback_transfer else '' }}</p>
+    <a href="{{ item.detail_href }}" data-request-evidence-reload hidden>Load latest release details</a>
     {% if request_search.enabled and request_search.candidates %}
-    <ul class="request-search-candidates" aria-label="Candidates found">
-      {% for candidate in request_search.candidates %}
-      <li data-candidate-accepted="{{ 'true' if candidate.accepted else 'false' }}">
-        <span class="request-search-title">{{ candidate.title }}</span>
-        <span class="request-search-verdict">{% if candidate.accepted %}usable{% else %}{{ candidate.text }}{% endif %}</span>
-        {% if candidate.seeders is not none %}<span class="request-search-meta">{{ candidate.seeders }} seeding{% if candidate.indexer %} · {{ candidate.indexer }}{% endif %}</span>{% endif %}
-      </li>
-      {% endfor %}
-    </ul>
+    <details class="requests-evidence">
+      <summary>Review {{ request_search.candidates | length }} release{{ 's' if request_search.candidates | length != 1 else '' }}</summary>
+      <ul class="request-search-candidates" aria-label="Candidates found">
+        {% for candidate in request_search.candidates %}
+        <li data-candidate-accepted="{{ 'true' if candidate.accepted else 'false' }}">
+          <span class="request-search-title">{{ candidate.title }}</span>
+          <span class="request-search-verdict">{% if candidate.accepted %}Passed release checks{% else %}{{ candidate.text }}{% endif %}</span>
+          {% if candidate.seeders is not none or candidate.indexer %}<span class="request-search-meta">{{ candidate.indexer or 'Source unnamed' }}{% if candidate.seeders is not none %} · {{ candidate.seeders }} seeding{% endif %}</span>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </details>
     {% endif %}
   </section>
   {% endif %}
 
   <section class="requests-panel" aria-labelledby="request-stages-heading">
-    <h2 id="request-stages-heading">Stage timeline</h2>
+    <h2 id="request-stages-heading">{{ 'Riven and library stages' if item.kind == 'movie' else 'Request stages' }}</h2>
     <ol class="request-timeline requests-stages" aria-label="Request stages">
       {% for stage in item.stages %}
       <li data-stage="{{ stage.stage }}" data-state="{{ stage.state }}"{% if stage.state == 'current' %} aria-current="step"{% endif %}>
@@ -76,20 +90,6 @@
     <strong data-request-stop-label>{{ item.stage_label }}</strong>
     <p class="{{ 'requests-unknown' if item.unknown_reason else '' }}" data-request-stop-reason{% if item.unknown_reason %} data-unknown-reason{% else %} data-verified-reason{% endif %}>{{ (item.reason_text if item.unknown_reason else item.reason) or '' }}</p>
     <p class="requests-facts" data-request-rejections{% if not item.candidates_rejected %} hidden{% endif %}>{% if item.candidates_rejected %}The acquisition service rejected {{ item.candidates_rejected }} candidate{{ 's' if item.candidates_rejected != 1 else '' }} before it stopped.{% endif %}</p>
-  </section>
-
-  <section aria-label="Request actions">
-    <div class="requests-actions">
-      <form method="post" action="/plus/requests/{{ item.kind }}/{{ item.title_id }}/check" data-request-check data-busy-form data-single-flight{% if not item.can_check %} hidden{% endif %}>
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="button button-secondary" type="submit" data-busy-label="Checking…">Check status</button>
-      </form>
-      <form method="post" action="/plus/requests/{{ item.kind }}/{{ item.title_id }}/retry" data-request-retry data-busy-form data-single-flight{% if not item.can_retry %} hidden{% endif %}>
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="button button-primary" type="submit" data-busy-label="Retrying…">Retry request</button>
-      </form>
-      <span class="requests-facts" data-request-no-action{% if item.can_check or item.can_retry %} hidden{% endif %}>No automatic action is available for this request.{% if item.manual %} It needs a manual acquisition step.{% endif %}</span>
-    </div>
   </section>
 
   <details class="movie-verification-details request-progress" data-request-milestones{% if not item.timeline %} hidden{% endif %}>

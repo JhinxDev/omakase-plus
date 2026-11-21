@@ -47,26 +47,25 @@ struct TVActionStyle: ButtonStyle {
             let focused = focusOverride ?? isFocused
             label
                 .font(.callout.weight(.semibold))
-                .foregroundStyle(focused ? Color.tvOnFocus : selected ? Color.tvFocus : Color.tvText)
+                .foregroundStyle(focused || selected ? Color.tvFocus : Color.tvText)
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
                 .padding(.horizontal, compact ? 18 : 30)
                 .frame(minHeight: 68)
                 .background {
                     RoundedRectangle(cornerRadius: 10)
-                        .fill(focused ? Color.tvFocus : selected ? Color.tvAccent.opacity(0.18) : Color.tvRaised)
+                        .fill(selected ? Color.tvAccent.opacity(0.18) : Color.tvRaised)
                         .overlay {
                             RoundedRectangle(cornerRadius: 10)
-                                .fill((focused ? Color.tvOnFocus : tint)
-                                    .opacity(isPressed ? 0.15 : focused ? 0 : 0.08))
+                                .fill(tint.opacity(isPressed ? 0.15 : 0.08))
                         }
                 }
                 .overlay {
                     RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(focused ? Color.tvAccent : selected ? Color.tvAccent.opacity(0.6) : Color.tvKeyline,
-                                      lineWidth: focused ? 3 : 2)
+                        .strokeBorder(focused ? Color.tvFocus : selected ? Color.tvAccent.opacity(0.6) : Color.tvKeyline,
+                                      lineWidth: focused ? 4 : 2)
                 }
-                .scaleEffect(focused && !reduceMotion ? 1.045 : 1)
+                .scaleEffect(focused && !reduceMotion ? 1.03 : 1)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: focused)
         }
     }

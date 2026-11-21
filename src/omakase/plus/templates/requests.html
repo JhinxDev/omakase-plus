@@ -8,8 +8,11 @@
 <script src="/plus/static/requests.js?v={{ asset_version }}" defer></script>
 {% endblock %}
 {% block content %}
-<p>Looking for when a TV show was added or saved for local review? <a href="/plus/activity?view=collection">View collection changes</a>.</p>
 <section class="requests-screen" data-requests-screen data-requests-status="/plus/requests/status">
+  <nav class="requests-jump" aria-label="Requests sections">
+    {% for category in categories %}<a href="#requests-{{ category.key }}">{{ category.title }} <span>{{ category.requests | length }}</span></a>{% endfor %}
+    <a href="/plus/activity?view=collection">Collection activity</a>
+  </nav>
   {% for category in categories %}
   <section class="requests-category" data-request-category="{{ category.key }}" data-request-count="{{ category.requests | length }}" aria-labelledby="requests-{{ category.key }}">
     <div class="requests-category-heading">
@@ -28,6 +31,10 @@
         </div>
         <p class="requests-type">{{ 'TV Show' if item.media_kind == 'tv' else item.media_kind | title }}{% if item.release_year %} · {{ item.release_year }}{% endif %}{% if item.season is not none %} · Season {{ item.season }}{% endif %}</p>
         <p class="hub-meta requests-description" data-request-detail>{{ item.detail }}</p>
+        <p class="requests-fallback" {% if not item.fallback_transfer and not item.fallback_search %}hidden{% endif %}>
+          <strong>Fallback</strong>
+          <span data-request-fallback>{{ item.fallback_transfer.headline if item.fallback_transfer else (item.fallback_search.headline if item.fallback_search else '') }}</span>
+        </p>
         <p class="requests-checked" {% if not item.last_checked_at %}hidden{% endif %}>Last checked {% if item.last_checked_at %}<time datetime="{{ item.last_checked_at }}" data-local-datetime="{{ item.last_checked_at }}" data-request-checked>{{ item.last_checked_at }}</time>{% else %}<span data-request-checked>not yet</span>{% endif %}</p>
         <div class="requests-actions">
           {% if item.can_check %}
@@ -44,6 +51,7 @@
           {% endif %}
           {% if not item.can_check and not item.can_retry %}<span class="requests-next" data-request-next>{% if item.next_action %}{{ item.next_action.label }}{% elif item.manual_note %}{{ item.manual_note }}{% endif %}</span>{% endif %}
           {% if item.manual_note and (item.can_check or item.can_retry) %}<span class="requests-next">{{ item.manual_note }}</span>{% endif %}
+          <a class="requests-detail-link" href="{{ item.detail_href }}" aria-label="Request details for {{ item.title }}">Details</a>
         </div>
         </div>
       </li>

@@ -19,9 +19,18 @@
       if (Number(section.dataset.requestCount) !== requests.length) changed = true;
       for (const item of requests) {
         const row = screen.querySelector('[data-request-row="' + item.identity + '"]');
-        if (!row) continue;
+        if (!row || !section.contains(row)) {
+          changed = true;
+          continue;
+        }
         setText(row.querySelector('[data-request-status]'), item.status_label);
         setText(row.querySelector('[data-request-detail]'), item.detail);
+        const fallback = row.querySelector('[data-request-fallback]');
+        const headline = item.fallback_transfer?.headline || item.fallback_search?.headline || '';
+        if (fallback) {
+          setText(fallback, headline);
+          fallback.parentElement.hidden = !headline;
+        }
         const checked = row.querySelector('[data-request-checked]');
         const at = Date.parse(item.last_checked_at);
         if (checked && Number.isFinite(at)) {
@@ -31,13 +40,16 @@
         const next = row.querySelector('[data-request-next]');
         const label = item.next_action ? item.next_action.label : '';
         if (next && next.tagName === 'BUTTON') {
-          if (item.next_action && next.textContent !== label) next.textContent = label;
+          const buttonText = next.firstChild;
+          if (item.next_action && buttonText?.nodeType === Node.TEXT_NODE && buttonText.nodeValue !== label) {
+            buttonText.nodeValue = label;
+          }
         } else if (next) {
           setText(next, label || item.manual_note || '');
         }
       }
     }
-    if (changed) location.reload();
+    if (changed && !screen.contains(document.activeElement)) location.reload();
   }
   async function refresh() {
     const now = Date.now();

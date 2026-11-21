@@ -319,6 +319,15 @@ duplicates and preserves its outcome through the redirect. A request or check
 never creates viewing history. Not watched is a display label; the editor keeps
 an unset status distinct from a recorded choice.
 
+The Requests list shows the current state and the most useful fallback update.
+The web detail keeps status and actions together, followed by the fallback search,
+release decisions and provider history. The Apple TV detail shows the current
+state, last check and one status action, with fallback results when available.
+On movie checks, Riven stays first. Omakase searches its configured indexers
+when Riven cannot yield a usable result. A terminal Riven result can authorize
+one exact-file transfer with an enabled private cloud account. A release can pass
+the search checks before the provider has verified its movie file.
+
 Personal title links resolve exact owned identity and season. The home episode
 action opens the next known episode; More info opens the overview. Shared titles
 without a supported episode page expose one useful overview action. Discovery

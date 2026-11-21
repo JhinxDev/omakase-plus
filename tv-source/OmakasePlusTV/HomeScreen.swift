@@ -442,19 +442,24 @@ struct TVRequestsScreen: View {
                     Spacer()
                 } else {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 14) {
+                        LazyVStack(alignment: .leading, spacing: 14) {
                             ForEach(requests) { request in
                                 let current = statusByID[request.id] ?? request
                                 let key = "requests-row-\(current.id)"
                                 Button {
                                     selected = current
                                     error = nil
-                                    focus = "requests-back"
+                                    Task { @MainActor in
+                                        await Task.yield()
+                                        if selected?.id == current.id {
+                                            focus = current.canCheck == true ? "requests-check" : "requests-back"
+                                        }
+                                    }
                                 } label: {
                                     HStack {
                                         Text(current.title).foregroundStyle(Color.tvText)
                                         Spacer()
-                                        Text(current.label).foregroundStyle(Color.tvAccent)
+                                        Text(current.displayStatus).foregroundStyle(Color.tvAccent)
                                     }
                                     .font(.callout.weight(.semibold))
                                     .padding(22)
@@ -468,6 +473,7 @@ struct TVRequestsScreen: View {
                                 .accessibilityIdentifier(key)
                             }
                         }
+                        .focusSection()
                     }
                 }
             } else {
@@ -493,39 +499,49 @@ struct TVRequestsScreen: View {
     }
 
     private func detail(_ item: LiveTitleRequest) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 24) {
+            HStack(alignment: .firstTextBaseline, spacing: 28) {
                 Text(item.title).font(.title.bold()).accessibilityAddTraits(.isHeader)
-                Text(item.label).font(.title3.bold()).foregroundStyle(Color.tvAccent)
-                if !item.detail.isEmpty { Text(item.detail) }
-                if let reason = item.reasonText, !reason.isEmpty, reason != item.detail {
-                    Text(reason).foregroundStyle(Color.tvMuted)
-                }
-                if let checked = formattedDate(item.lastCheckedAt) {
-                    Text("Last checked \(checked)").foregroundStyle(Color.tvMuted)
-                }
-                ForEach(item.stages ?? []) { stage in
-                    Label {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(stage.label)
-                            if let date = formattedDate(stage.occurredAt) {
-                                Text(date).font(.caption).foregroundStyle(Color.tvMuted)
-                            }
-                        }
-                    } icon: {
-                        Image(systemName: stage.occurredAt == nil ? "circle" : "checkmark.circle")
-                            .foregroundStyle(Color.tvAccent)
-                    }
-                }
+                Spacer(minLength: 24)
                 if item.canCheck == true {
-                    button("Check status", key: "requests-check") { Task { await check(item) } }
-                        .disabled(loading)
-                }
-                if let next = item.nextAction, let reason = next.reason, !reason.isEmpty {
-                    Text(reason).foregroundStyle(Color.tvMuted)
+                    button(loading ? "Checking…" : "Check status", key: "requests-check") {
+                        Task { await check(item) }
+                    }
+                    .accessibilityHint(item.kind == "movie"
+                        ? "Check Riven and, if needed, the configured sources for this movie"
+                        : "Refresh this request")
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 30) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(item.displayStatus).font(.title3.bold()).foregroundStyle(Color.tvAccent)
+                        if !item.detail.isEmpty { Text(item.detail) }
+                        if let checked = formattedDate(item.lastCheckedAt) {
+                            Text("Status checked \(checked)").font(.callout).foregroundStyle(Color.tvMuted)
+                        }
+                    }
+                    if item.fallbackSearch != nil || item.fallbackTransfer != nil {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Fallback sources").font(.callout.bold()).foregroundStyle(Color.tvAccent)
+                                .accessibilityAddTraits(.isHeader)
+                            if let search = item.fallbackSearch {
+                                Text(search.headline)
+                                if let checked = formattedDate(search.checkedAt) {
+                                    Text("Searched \(checked)").font(.callout).foregroundStyle(Color.tvMuted)
+                                }
+                            }
+                            if let transfer = item.fallbackTransfer {
+                                Text(transfer.headline).foregroundStyle(Color.tvText)
+                            }
+                        }
+                    } else if let next = item.nextAction, next.kind != "check", next.label != item.detail {
+                        Text(next.label).font(.callout).foregroundStyle(Color.tvMuted)
+                    }
+                }
+                .frame(maxWidth: 1240, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 
@@ -586,7 +602,10 @@ struct TVRequestsScreen: View {
             let updated = try await client.checkRequest(item)
             guard !Task.isCancelled else { return }
             statusByID[item.id] = updated
-            if selected?.id == item.id { selected = updated }
+            if selected?.id == item.id {
+                selected = updated
+                if updated.canCheck != true { focus = "requests-back" }
+            }
         } catch is CancellationError {
             return
         } catch {
