@@ -7,6 +7,9 @@ connected Real-Debrid account.
 ## What the app does
 
 - Browse Anime, Movies and TV shelves, with Continue Watching and title details.
+- On recent native builds, the Apple TV Home Screen Top Shelf combines activity
+  across Anime, Movies and TV. Open the app after pairing to populate the shelf.
+  It refreshes after supported playback saves.
 - Pair a device with a one-time code from the web app; the device stays linked
   until you remove it in **Settings → Devices**.
 - Play episodes and films with resume sync and a next-episode control. The
@@ -21,6 +24,8 @@ connected Real-Debrid account.
   distinguishes them from Plex and manual records.
 - Show subtitle tracks with an always-on preference in Settings. Available
   tracks depend on the media and playback transport.
+- Open **Media Info** from the player controls on supported builds. When available,
+  it shows resolution, video and audio codecs, container and file size.
 - Prepare the next episode on the AVPlayer path so Next can start quickly.
   The direct-original candidate opens a new TVVLCKit item on Next.
 - Refresh the current shelf with the circular-arrow button. Back returns from an

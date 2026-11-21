@@ -21,12 +21,17 @@ and rating independently; this does not mark every episode watched. History show
 explicit episode/completion records and their source. Observation dates are not
 claimed as the time you watched them.
 
-Automatic TV acquisition is not enabled in this candidate. The installed legacy
-Riven adapter uses administrator-managed season scopes; a whole-series request
-would not safely represent a selected-season request. Keep existing Riven/Plex
-TV media intact and use the operator workflow for additions until a documented,
-independently qualified season request interface is implemented.
-
 The collection uses explicit pages rather than silently dropping older shows.
 The Plex inventory import/check is bounded and fails visibly on incomplete or
 ambiguous identity data. It never falls back to guessing from a title string.
+
+## Requests and episode progress
+
+Open **Requests** to follow shows requested through your account, including
+requests submitted on your behalf. Open a request to see its stage, latest
+recorded activity and playable episodes by season.
+
+On current builds, the operator can enable TV intake with a compatible Riven
+connection. Older releases or installations without an enabled service may save
+requests for review. Provider acceptance, downloads and playable episode counts
+are reported separately.

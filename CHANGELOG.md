@@ -6,6 +6,17 @@ GitHub Release. The update-feed identity (`PRODUCT_VERSION` in
 `src/omakase/plus/update_service.py`) is a separate operator-facing build
 identifier; it does not replace the public release version.
 
+## Unreleased
+
+- Home and title pages group playback actions and viewing status. Home remembers
+  the featured carousel’s pause setting. Navigation uses one loading indicator.
+- Collections show verified connected media. Viewing history keeps completed
+  titles, ratings and optional private notes for movies, anime and TV seasons.
+- Requests show the submitter, recorded activity and playable episodes by season.
+  History separates viewing, library activity and collection changes.
+- Recent Apple TV builds combine Continue Watching activity across anime, movies
+  and TV. Media Info shows available resolution, codecs, container and file size.
+
 ## 0.4.12 - 2026-11-12
 
 ### Added

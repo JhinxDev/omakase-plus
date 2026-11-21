@@ -1,8 +1,9 @@
 # About & updates
 
 Omakase Plus has its own date-based product release identifier in
-`src/omakase/plus/update_service.py`. It is independent of the generic Omakase
-CLI/package version (`0.4.0`). Update the product constant with each Plus release.
+`src/omakase/plus/update_service.py`. The [changelog](../CHANGELOG.md) tracks the
+numbered source package, and the [Apple TV guide](apple-tv.md) explains native
+build receipts. Update the product constant for a Plus update-feed release.
 
 Authenticated users of a private Plus deployment can open Settings → About &
 updates (`/plus/settings/updates`). Opening the page never contacts the internet.
