@@ -12,7 +12,11 @@ import sys
 import tarfile
 from pathlib import Path
 
+import pytest
+
 from omakase.plus.db import run_migrations
+
+pytestmark = pytest.mark.usefixtures("isolated_git_environment")
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = ROOT / "deploy/player-recovery"
