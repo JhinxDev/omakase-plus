@@ -77,6 +77,9 @@
   font-size: .77rem;
   font-weight: 600;
   line-height: 1.4;
+  max-inline-size: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .requests-type, .requests-checked, .requests-empty, .requests-facts, .requests-manual {
   color: var(--om-muted);
@@ -96,6 +99,7 @@
 .requests-next { color: var(--om-muted); font-size: .83rem; }
 .request-detail-title { display: flex; align-items: center; gap: clamp(1rem, 3vw, 1.6rem); min-inline-size: 0; }
 .request-detail-title .request-cover { flex: 0 0 clamp(4.6rem, 10vw, 7rem); }
+.request-detail-title > div { min-inline-size: 0; }
 .request-detail-title h1 { margin: .35rem 0; overflow-wrap: anywhere; }
 .request-back { color: var(--om-accent); font-size: .83rem; text-decoration: none; }
 .request-back:hover { text-decoration: underline; }
@@ -119,7 +123,9 @@
 .requests-next-step { display: flex; flex-wrap: wrap; gap: .35rem; margin: .7rem 0 0; }
 .requests-notice { margin: 0; }
 @media (max-width: 480px) {
-  .requests-category .request-card { grid-template-columns: 3.75rem minmax(0, 1fr); gap: .65rem; }
+  .requests-category .request-card { grid-template-columns: clamp(48px, 16vw, 60px) minmax(0, 1fr); gap: 12px; }
+  .request-detail-title { flex-wrap: wrap; }
+  .request-detail-title .request-cover { flex-basis: 64px; }
 }
 
 /* Owner review W-06: the candidate list is evidence, so it is plain, scannable and never
