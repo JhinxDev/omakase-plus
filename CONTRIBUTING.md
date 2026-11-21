@@ -45,6 +45,11 @@ does not authorize live provider work, inference spending or deployment.
 
 ## Extension points
 
+- [Apple TV](docs/apple-tv.md) contains the build and verification steps for the
+  app and Top Shelf extension in `tv-source`.
+- The [iPhone prototype](ios-source/README.md) reuses the shared Swift package and
+  has its own synthetic simulator workflow.
+
 - LLM adapters implement BaseLLM in src/omakase/llm/base.py and register in
   src/omakase/llm/__init__.py. Add focused adapter tests and document configuration.
 - History adapters implement SourceAdapter under src/omakase/adapters and use its

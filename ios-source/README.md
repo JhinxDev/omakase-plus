@@ -1,8 +1,7 @@
 # Offline iPhone qualification prototype
 
-This is a small iOS 17+ simulator target in the canonical Omakase Plus repository.
-It is an engineering starting point, not a production iPhone app or an accepted
-phone design. The web and tvOS targets remain independent.
+This offline iOS 17+ simulator target is the engineering starting point for the
+future iPhone app. It uses synthetic catalog entries and a bundled test clip.
 
 Open `OmakasePlusPhone.xcodeproj` and its shared `OmakasePlusPhone` scheme on a
 macOS build host with full Xcode and an installed iPhone Simulator runtime.
@@ -21,8 +20,9 @@ selects a compatible iPhone, creates a disposable simulator, runs current
 QualificationCore tests and iOS UI tests, retains logs and an xcresult bundle,
 and removes only its simulator and scratch directory. No signing, device install,
 certificate trust change, fixture server, account or provider access is involved.
-The manually dispatched `ios-simulator.yml` workflow checks out its exact event
-SHA. Adding it does not run it. A run needs separately authorized execution.
+The [iOS simulator workflow](../.github/workflows/ios-simulator.yml) runs on
+pull requests that change this target, the simulator script, or the shared Swift
+package. It also supports manual dispatch and verifies the exact source revision.
 
 ## Reused contracts and scope
 
@@ -36,8 +36,8 @@ The app links `../tv-source/QualificationCore` directly and bundles the existing
 silent synthetic `baseline.mp4` by reference. There is no copied core or media.
 The only shared package change declares iOS 17 support alongside existing tvOS
 and macOS support. Catalog identity, media version and session resume validation
-come from the latest `LibraryFixture` and `ResumeLedger`. Search, title detail,
-UI tests are provided for AVKit playback, seeking and per-title session resume.
+come from the latest `LibraryFixture` and `ResumeLedger`. UI tests cover search,
+title details, AVKit playback, seeking, and per-title session resume.
 Progress deliberately stays in memory and resets at process relaunch.
 
 The old live UI depended on an older `PlaybackSession`/player copy and older
@@ -71,7 +71,5 @@ syntax parsing. Shell syntax, project reference IDs, shared-scheme XML, canonica
 package/resource paths and the synthetic clip SHA-256 were checked. A scoped
 source audit found no endpoints, credentials, private fixtures or imported history.
 
-The new iOS app has **not** been compiled with an Apple SDK or run in an iPhone
-simulator in this consolidation. The two UI tests and macOS runner are prepared,
-not passing evidence. Run the manual workflow on the reviewed exact commit only
-after execution is authorized. No provider, physical device or rental was used.
+The prototype built in Xcode 26.3. Both UI tests passed on an iPhone SE
+simulator running iOS 26.2. [Simulator verification](https://github.com/JhinxDev/omakase-plus/actions/runs/44885465095)
