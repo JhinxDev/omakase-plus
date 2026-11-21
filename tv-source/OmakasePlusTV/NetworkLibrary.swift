@@ -198,7 +198,6 @@ struct LiveTestScreen: View {
     @State private var topShelfDestination: TVTopShelfDestination?
     @State private var topShelfUnavailable = false
     @State private var backgroundShelfToken: UUID?
-    @State private var backgroundShelfLease: UIBackgroundTaskIdentifier = .invalid
     @State private var backgroundShelfTask: Task<Void, Never>?
     @State private var resumeImmediately = false
     @State private var resumeWriter: LiveResumeWriter?
@@ -469,13 +468,6 @@ struct LiveTestScreen: View {
         let token = UUID()
         let version = libraryVersion
         backgroundShelfToken = token
-        backgroundShelfLease = UIApplication.shared.beginBackgroundTask(withName: "Refresh Continue Watching") {
-            finishBackgroundShelf(token, cancel: true)
-        }
-        guard backgroundShelfLease != .invalid else {
-            finishBackgroundShelf(token)
-            return
-        }
         backgroundShelfTask = Task {
             defer { finishBackgroundShelf(token) }
             await writer.flush(retryUnsaved: true)
@@ -489,10 +481,6 @@ struct LiveTestScreen: View {
     private func finishBackgroundShelf(_ token: UUID, cancel: Bool = false) {
         guard backgroundShelfToken == token else { return }
         if cancel { backgroundShelfTask?.cancel() }
-        if backgroundShelfLease != .invalid {
-            UIApplication.shared.endBackgroundTask(backgroundShelfLease)
-        }
-        backgroundShelfLease = .invalid
         backgroundShelfTask = nil
         backgroundShelfToken = nil
     }
@@ -803,7 +791,24 @@ struct LiveTestScreen: View {
 
     private func makeResumeWriter(for pass: LiveTestPass, client: LiveLibraryClient) -> LiveResumeWriter? {
         let mediaID = pass.mediaID
-        return client.resumeWriter(for: pass) { loss in
+        let version = libraryVersion
+        var refreshedAt = Date.distantPast
+        var complete = false
+        return client.resumeWriter(for: pass, onSaved: { position in
+            guard scenePhase == .active, libraryVersion == version, self.pass?.mediaID == mediaID,
+                  !openingProfile, !showingProfiles, client.selectedLibrary == nil,
+                  let profile = roster.selected else { return }
+            let completedNow = pass.duration > 0 && position >= pass.duration * 0.85
+            let now = Date()
+            guard now.timeIntervalSince(refreshedAt) >= 60 || complete != completedNow else { return }
+            refreshedAt = now
+            complete = completedNow
+            Task {
+                await TVTopShelfLibrary.refresh(client: client, profile: profile, fetchArtwork: false) {
+                    scenePhase == .active && libraryVersion == version && self.pass?.mediaID == mediaID
+                }
+            }
+        }) { loss in
             guard self.pass?.mediaID == mediaID, !self.closingPass else { return }
             self.playbackAccessLost(loss)
         }

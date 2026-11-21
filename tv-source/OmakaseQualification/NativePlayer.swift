@@ -131,7 +131,7 @@ private struct DirectPlayerControls: View {
                 .foregroundStyle(.white)
                 .background(.black.opacity(0.9), in: .rect(cornerRadius: 24))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(.black.opacity(0.35).ignoresSafeArea())
+                .background(Color.black.opacity(0.35).ignoresSafeArea())
                 .defaultFocus($controlFocus, .infoDone)
             } else if let selector {
                 trackSelector(selector)
