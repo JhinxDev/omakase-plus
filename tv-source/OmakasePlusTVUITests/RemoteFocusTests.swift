@@ -52,7 +52,7 @@ final class RemoteFocusRenderingTests: XCTestCase {
         XCTAssertTrue(started, "Select must open one authenticated playback pass")
         // AVKit may consume one Menu press to dismiss its transport controls.
         for _ in 0..<2 {
-            if card.exists && card.isEnabled { break }
+            if card.exists && card.hasFocus { break }
             XCUIRemote.shared.press(.menu)
             try await Task.sleep(for: .seconds(1))
         }
@@ -103,7 +103,7 @@ final class RemoteFocusRenderingTests: XCTestCase {
         }
         XCTAssertTrue(started, "Short select after closing details must still play")
         for _ in 0..<2 {
-            if card.exists && card.isEnabled { break }
+            if card.exists && card.hasFocus { break }
             XCUIRemote.shared.press(.menu)
             try await Task.sleep(for: .seconds(1))
         }
@@ -121,9 +121,13 @@ final class RemoteFocusRenderingTests: XCTestCase {
             if target.hasFocus { return }
             let current = app.descendants(matching: .any)
                 .matching(NSPredicate(format: "hasFocus == true")).firstMatch
+            guard current.exists else {
+                XCUIRemote.shared.press(.down)
+                continue
+            }
             let from = current.frame, to = target.frame
             let direction: XCUIRemote.Button
-            if !current.exists || to.minY >= from.maxY - 8 { direction = .down }
+            if to.minY >= from.maxY - 8 { direction = .down }
             else if to.maxY <= from.minY + 8 { direction = .up }
             else { direction = to.midX > from.midX ? .right : .left }
             XCUIRemote.shared.press(direction)

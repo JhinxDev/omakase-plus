@@ -37,7 +37,13 @@ if not runtimes:
 print(max(runtimes, key=lambda r: tuple(map(int, r['version'].split('.'))))['identifier'])
 PY
 )
-device_type=${TVOS_DEVICE_TYPE:-com.apple.CoreSimulator.SimDeviceType.Apple-TV-4K-3rd-generation}
+device_type=${TVOS_DEVICE_TYPE:-com.apple.CoreSimulator.SimDeviceType.Apple-TV-4K-3rd-generation-1080p}
+python3 - "$output/device-types.json" "$device_type" <<'PY'
+import json, sys
+types = json.load(open(sys.argv[1]))['devicetypes']
+if not any(d['identifier'] == sys.argv[2] and d['productFamily'] == 'Apple TV' for d in types):
+    sys.exit(f'Apple TV simulator {sys.argv[2]} is unavailable. See device-types.json.')
+PY
 device=$(xcrun simctl create "Omakase focus ${RANDOM}" "$device_type" "$runtime")
 xcrun simctl boot "$device"
 xcrun simctl bootstatus "$device" -b
