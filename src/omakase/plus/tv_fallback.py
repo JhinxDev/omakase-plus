@@ -103,6 +103,15 @@ def _approved(db, user_id, title_id, season, episode, account, title):
              AND json_extract(s.value,'$.season')=? AND json_extract(e.value,'$.episode')=?
              AND json_extract(e.value,'$.fallback_eligible')=1
              AND NOT EXISTS (
+                 SELECT 1 FROM tv_history h WHERE h.user_id=r.user_id AND h.tmdb_id=r.title_id
+                 AND h.status='completed'
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM tv_episodes watched WHERE watched.user_id=r.user_id
+                 AND watched.tmdb_id=r.title_id AND watched.season_number=?
+                 AND watched.episode_number=? AND watched.watched=1
+             )
+             AND NOT EXISTS (
                  SELECT 1 FROM json_each(r.snapshot_json,'$.library.partial_seasons') partial
                  WHERE partial.value=?
              )
@@ -110,7 +119,18 @@ def _approved(db, user_id, title_id, season, episode, account, title):
                  SELECT 1 FROM json_each(r.snapshot_json,'$.library.episodes') ready
                  WHERE json_extract(ready.value,'$[0]')=? AND json_extract(ready.value,'$[1]')=?
              )""",
-        (user_id, title_id, account_binding(account), season, episode, season, season, episode),
+            (
+                user_id,
+                title_id,
+                account_binding(account),
+                season,
+                episode,
+                season,
+                episode,
+                season,
+                season,
+                episode,
+            ),
         ).fetchone()
         is not None
     )

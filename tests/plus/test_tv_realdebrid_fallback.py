@@ -51,7 +51,11 @@ def request_db(monkeypatch):
 
 def _snapshot(*episodes):
     return {
-        "library": {"provider": "Real-Debrid", "binding": account_binding(FIXTURE_ACCOUNT), "episodes": []},
+        "library": {
+            "provider": "Real-Debrid",
+            "binding": account_binding(FIXTURE_ACCOUNT),
+            "episodes": [],
+        },
         "seasons": [
             {
                 "season": 3,
@@ -192,8 +196,42 @@ class PublishedLibrary:
     async def torrent_source(self, token, record, file_id, *, inventory):
         assert (token, record, file_id) == (FIXTURE_ACCOUNT, "abc", 4) and self.selected
         return CloudSource(
-            "unknown.mkv", "synthetic-identity", "synthetic-version", 20, account_binding(FIXTURE_ACCOUNT), ""
+            "unknown.mkv",
+            "synthetic-identity",
+            "synthetic-version",
+            20,
+            account_binding(FIXTURE_ACCOUNT),
+            "",
         )
+
+
+@pytest.mark.anyio
+async def test_fallback_does_not_reacquire_a_watched_episode(request_db):
+    db = request_db
+    tv_provider_requests._write_snapshot(db, 1, 77, _snapshot(1))
+    db.execute("INSERT INTO tv_catalog VALUES(1,77,'{}','2026-01-01T00:00:00Z')")
+    db.execute(
+        """INSERT INTO tv_episodes(user_id,tmdb_id,season_number,episode_number,
+               metadata_json,watched,updated_at) VALUES(1,77,3,1,'{}',1,'2026-01-01T00:00:00Z')"""
+    )
+    provider = FixtureProvider("/Fixture Show S03E01 1080p.mkv")
+    candidate = Candidate(
+        f"{TITLE} S03E01 1080p", magnet=f"magnet:?xt=urn:btih:{HASH}", size_bytes=1234
+    )
+    await tv_fallback.submit(
+        db, 1, 77, 3, 1, [candidate], library=FixtureInventory(), provider=provider
+    )
+    assert provider.added == 0
+
+
+def test_tv_search_evidence_explains_the_resolution_filter():
+    request = request_candidates.JudgeRequest(
+        title=TITLE, kind="tv", season=3, episode=1, allowed_resolutions=("1080p",)
+    )
+    release = Candidate(
+        f"{TITLE} S03E01 720p", magnet=f"magnet:?xt=urn:btih:{HASH}", size_bytes=1234
+    )
+    assert request_candidates.judge(release, request).code == "quality_excluded"
 
 
 @pytest.mark.anyio

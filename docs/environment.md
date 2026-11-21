@@ -32,6 +32,7 @@ plain BYOK/Lite deployment into the authenticated Plus product.
 | `OMAKASE_TV_REQUEST_RIVEN` | `false` | Sends personal requests for aired TV seasons to the connected Riven backend. Requests show Riven progress and exact episode matches from the selected library. |
 | `OMAKASE_REQUEST_SEARCH` | `false` | Searches configured release sources after the primary service reaches a terminal state. TV also checks aired episodes that remain indexed more than two hours after multiple Riven searches. |
 | `OMAKASE_REQUEST_ACQUIRE` | `false` | Lets eligible fallback releases advance through the viewer's linked Real-Debrid account. TV requires an exact numbered episode and selects only its matching video file. |
+| `OMAKASE_REQUEST_SEARCH_REFRESH_HOURS` | `6` | How long to reuse a completed fallback search. Aired TV episodes have a separate limit that rotates checks through missing episodes. |
 | `OMAKASE_PLUS_INVITE` | empty | Non-empty opens signup for invitation-driven registration. Empty keeps signup closed except the first-account bootstrap in a new private instance. |
 | `OMAKASE_SESSION_DAYS` | `90` | Sliding idle session lifetime in days, bounded to 7 through 365. |
 | `OMAKASE_SESSION_ABSOLUTE_DAYS` | `365` | Absolute session lifetime in days, bounded to 7 through 730. Older sessions are rejected and deleted. |

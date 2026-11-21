@@ -10,6 +10,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from omakase.plus import tv_fallback
+from omakase.plus.acquisition_policy import load_user_acquisition_policy
 from omakase.plus.btih import normalize_btih
 from omakase.plus.debrid_catalog import (
     PublishedEpisode,
@@ -537,6 +538,9 @@ async def search_missing_episode(db, user_id, tmdb_id, service, snapshot):
                     return
             await tv_fallback.submit(db, user_id, tmdb_id, season, episode, eligible)
 
+    policy = (
+        load_user_acquisition_policy(db, user_id) if library["provider"] == "Real-Debrid" else None
+    )
     result = await request_candidates.refresh(
         db,
         user_id,
@@ -547,6 +551,9 @@ async def search_missing_episode(db, user_id, tmdb_id, service, snapshot):
             kind="tv",
             season=season,
             episode=episode,
+            allowed_resolutions=policy.allowed_resolutions if policy else (),
+            minimum_seeders=policy.minimum_seeders if policy else 1,
+            maximum_bytes=policy.max_release_size_bytes if policy else 0,
         ),
         force=True,
         timeout=5,
@@ -565,7 +572,7 @@ async def search_missing_episode(db, user_id, tmdb_id, service, snapshot):
 
 
 async def refresh_pending(db, *, heartbeat):
-    """Refresh a small batch per scheduler run using status reads only."""
+    """Read a small batch and advance separately opted-in Real-Debrid transfers."""
     if not enabled():
         return
     from omakase.plus.connections import movie_connections

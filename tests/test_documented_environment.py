@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from omakase.plus import request_candidates
+
 ROOT = Path(__file__).resolve().parents[1]
 REFERENCE = ROOT / "docs" / "environment.md"
 PATTERNS = (
@@ -19,7 +21,12 @@ def _documented_names() -> set[str]:
 
 
 def _source_names() -> set[str]:
-    names: set[str] = set()
+    # Request search keeps these names in constants to share with its callers.
+    names = {
+        request_candidates.SEARCH_ENV,
+        request_candidates.ACQUIRE_ENV,
+        request_candidates.REFRESH_ENV,
+    }
     for path in (ROOT / "src").rglob("*.py"):
         text = path.read_text(encoding="utf-8", errors="replace")
         for pattern in PATTERNS:
