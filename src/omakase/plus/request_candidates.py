@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from weakref import WeakValueDictionary
 
+from omakase.plus.catalog import quality_from_title
+
 SEARCH_ENV = "OMAKASE_REQUEST_SEARCH"
 ACQUIRE_ENV = "OMAKASE_REQUEST_ACQUIRE"
 REFRESH_ENV = "OMAKASE_REQUEST_SEARCH_REFRESH_HOURS"
@@ -46,6 +48,8 @@ _SNAPSHOT_MARKERS = {ERROR_CODE, EMPTY_CODE, NO_SOURCES_CODE, PARTIAL_CODE}
 REASON_TEXT = {
     "no_download": "no downloadable link was published for it",
     "no_seeders": "nobody is seeding it",
+    "insufficient_seeders": "it has fewer seeders than your minimum",
+    "quality_excluded": "the resolution is missing or outside your allowed qualities",
     "title_mismatch": "the release name does not match the title",
     "year_mismatch": "the release year does not match the title",
     "episode_mismatch": "the release is not the episode that was requested",
@@ -150,6 +154,8 @@ class JudgeRequest:
     season: int | None = None
     episode: int | None = None
     maximum_bytes: int = 0
+    minimum_seeders: int = 1
+    allowed_resolutions: tuple[str, ...] = ()
 
     @property
     def episode_expected(self) -> bool:
@@ -168,8 +174,11 @@ def judge(candidate: object, request: JudgeRequest) -> Verdict:
     torrent_url = str(getattr(candidate, "torrent_url", "") or "")
     if not magnet and not torrent_url:
         return Verdict(False, "no_download", "")
-    if int(getattr(candidate, "seeders", 0) or 0) <= 0:
+    seeders = int(getattr(candidate, "seeders", 0) or 0)
+    if seeders <= 0:
         return Verdict(False, "no_seeders", "")
+    if seeders < request.minimum_seeders:
+        return Verdict(False, "insufficient_seeders", "")
 
     wanted = _identity_tokens(request.title)
     found = _identity_tokens(title)
@@ -205,6 +214,8 @@ def judge(candidate: object, request: JudgeRequest) -> Verdict:
     size = int(getattr(candidate, "size_bytes", 0) or 0)
     if request.maximum_bytes and size > request.maximum_bytes:
         return Verdict(False, "too_large", "")
+    if request.allowed_resolutions and quality_from_title(title) not in request.allowed_resolutions:
+        return Verdict(False, "quality_excluded", "")
     return Verdict(True, "accepted", "")
 
 

@@ -72,7 +72,7 @@
 
   {% if item.kind == 'movie' or request_search.checked_at %}
   <section class="requests-panel request-search" aria-labelledby="request-search-heading" data-request-search="{{ 'on' if request_search.enabled else 'off' }}" data-request-evidence-at="{{ request_search.checked_at or '' }}">
-    <h2 id="request-search-heading">Fallback sources</h2>
+    <h2 id="request-search-heading">Fallback sources{% if item.tv_provider and item.tv_provider.snapshot and item.tv_provider.snapshot.fallback_episode %} · S{{ item.tv_provider.snapshot.fallback_episode[0] }} E{{ item.tv_provider.snapshot.fallback_episode[1] }}{% endif %}</h2>
     <p data-request-search-headline>{{ request_search.headline }}</p>
     <p class="requests-checked" data-request-search-time{% if not request_search.checked_at %} hidden{% endif %}>Searched <span data-request-search-checked>{% if request_search.checked_at %}<time datetime="{{ request_search.checked_at }}" data-local-datetime="{{ request_search.checked_at }}">{{ request_search.checked_at }}</time>{% endif %}</span></p>
     <p class="requests-transfer" data-request-transfer{% if not item.fallback_transfer %} hidden{% endif %}>{{ item.fallback_transfer.headline if item.fallback_transfer else '' }}</p>
