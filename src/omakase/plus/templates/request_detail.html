@@ -34,7 +34,13 @@
       <div><dt>Last checked</dt><dd data-request-checked>{% if item.last_checked_at %}<time datetime="{{ item.last_checked_at }}" data-local-datetime="{{ item.last_checked_at }}">{{ item.last_checked_at }}</time>{% else %}Not yet{% endif %}</dd></div>
       <div><dt>Last confirmed update</dt><dd data-request-confirmed>{% if item.last_confirmed_at %}<time datetime="{{ item.last_confirmed_at }}" data-local-datetime="{{ item.last_confirmed_at }}">{{ item.last_confirmed_at }}</time>{% else %}Not yet{% endif %}</dd></div>
     </dl>
-    {% if item.manual %}<p class="requests-manual" data-request-manual>{{ item.manual_note }}</p>{% endif %}
+    {% if item.tv_provider %}
+    <dl class="requests-facts requests-facts-grid">
+      <div><dt>Source</dt><dd>Riven</dd></div>
+      {% if item.tv_provider.seasons %}<div><dt>Requested seasons</dt><dd>{{ item.tv_provider.seasons | join(', ') }}</dd></div>{% endif %}
+      {% if item.tv_provider.origin == 'assistant' %}<div><dt>Submitted by</dt><dd>Assistant</dd></div>{% endif %}
+    </dl>
+    {% endif %}
     <div class="requests-actions requests-primary-actions">
       <form method="post" action="/plus/requests/{{ item.kind }}/{{ item.title_id }}/check" data-request-check data-busy-form data-single-flight{% if not item.can_check %} hidden{% endif %}>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -42,11 +48,27 @@
       </form>
       <form method="post" action="/plus/requests/{{ item.kind }}/{{ item.title_id }}/retry" data-request-retry data-busy-form data-single-flight{% if not item.can_retry %} hidden{% endif %}>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="button button-secondary" type="submit" data-busy-label="Retrying…">Retry request</button>
+        <button class="button button-secondary" type="submit" data-busy-label="{{ 'Sending…' if item.kind == 'tv' else 'Retrying…' }}">{{ 'Send to Riven' if item.kind == 'tv' else 'Retry request' }}</button>
       </form>
-      <span class="requests-facts" data-request-no-action{% if item.can_check or item.can_retry %} hidden{% endif %}>No automatic action is available for this request.{% if item.manual %} It needs a manual acquisition step.{% endif %}</span>
+      <span class="requests-facts" data-request-no-action hidden></span>
     </div>
   </section>
+
+  {% if item.tv_provider and item.tv_provider.snapshot and item.tv_provider.snapshot.seasons %}
+  <section class="requests-panel request-tv-seasons" aria-labelledby="request-tv-seasons-heading">
+    <h2 id="request-tv-seasons-heading">Episode progress</h2>
+    {% for season in item.tv_provider.snapshot.seasons %}
+    <details class="requests-evidence">
+      <summary>Season {{ season.season }} <span>{% if season.ready %}{{ season.ready }} ready · {% endif %}{{ season.episodes | length }} episode{{ 's' if season.episodes | length != 1 else '' }} checked</span></summary>
+      <ol class="request-episode-list">
+        {% for episode in season.episodes %}
+        <li><span>Episode {{ episode.episode }}</span><span{% if episode.available %} data-status-tone="ready"{% endif %}>{{ 'Ready to watch' if episode.available else episode.status }}</span></li>
+        {% endfor %}
+      </ol>
+    </details>
+    {% endfor %}
+  </section>
+  {% endif %}
 
   {% if item.kind == 'movie' or request_search.checked_at %}
   <section class="requests-panel request-search" aria-labelledby="request-search-heading" data-request-search="{{ 'on' if request_search.enabled else 'off' }}" data-request-evidence-at="{{ request_search.checked_at or '' }}">
@@ -72,7 +94,7 @@
   </section>
   {% endif %}
 
-  <section class="requests-panel" aria-labelledby="request-stages-heading">
+  {% if not item.tv_provider %}<section class="requests-panel" aria-labelledby="request-stages-heading">
     <h2 id="request-stages-heading">{{ 'Riven and library stages' if item.kind == 'movie' else 'Request stages' }}</h2>
     <ol class="request-timeline requests-stages" aria-label="Request stages">
       {% for stage in item.stages %}
@@ -83,7 +105,7 @@
       </li>
       {% endfor %}
     </ol>
-  </section>
+  </section>{% endif %}
 
   <section class="requests-stop" aria-labelledby="request-stop-heading" data-stopped-at="{{ item.stopped_at or '' }}"{% if not item.stopped_at %} hidden{% endif %}>
     <h2 id="request-stop-heading">Where it stopped</h2>

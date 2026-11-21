@@ -10,13 +10,24 @@ import httpx
 from starlette.concurrency import run_in_threadpool
 
 from omakase.plus import discover_hub as hub
-from omakase.plus import households, movie_fallback, movies_store, request_candidates
+from omakase.plus import (
+    households,
+    movie_fallback,
+    movies_store,
+    request_candidates,
+    tv_provider_requests,
+)
 from omakase.plus import request_status as status_model
 from omakase.plus.catalog_search import AnimeCatalogSearch, CatalogSearchError, _plain
 from omakase.plus.connections import movie_connections
 from omakase.plus.debrid_anime import anime_episodes
 from omakase.plus.debrid_catalog import movie_ids as debrid_movie_ids
-from omakase.plus.debrid_library import DebridLibrary, DebridLibraryError, account_token
+from omakase.plus.debrid_library import (
+    DebridLibrary,
+    DebridLibraryError,
+    account_token,
+    catalog_library,
+)
 from omakase.plus.direct import resolve_direct_request
 from omakase.plus.household_media import personal_legacy_visible
 from omakase.plus.media_store import upsert_monitor
@@ -177,7 +188,7 @@ async def _movie_library(
     try:
         async with asyncio.timeout(5):
             if cloud_playback:
-                return (await debrid_movie_ids(db, scope, _CLOUD_LIBRARY)).intersection(imdb_ids)
+                return (await debrid_movie_ids(db, scope, catalog_library)).intersection(imdb_ids)
             service = MovieService(db, movie_connections(db, scope.viewer_id))
             return await service.indexed_requests(scope.viewer_id, imdb_ids)
     except (MovieError, DebridLibraryError, PlaybackSourceError, TimeoutError):
@@ -227,6 +238,10 @@ def _anime_model(db, scope, row, monitor, *, publication=None):
 
 
 def _tv_model(db, scope, row):
+    progress = tv_provider_requests.read(db, scope.viewer_id, row["title_id"])
+    if progress and progress["snapshot"]:
+        service = TVService(db, movie_connections(db, scope.viewer_id))
+        progress = tv_provider_requests.project_library(db, scope.viewer_id, service, progress)
     snapshot = db.execute(
         """SELECT complete,observed_at FROM tv_plex_snapshots
            WHERE user_id=? AND tmdb_id=? AND complete=1""",
@@ -246,6 +261,8 @@ def _tv_model(db, scope, row):
         created_at=row["created_at"],
         library_at=library_at,
         library_source="plex_snapshot" if snapshot is not None else "plex_episode",
+        provider=progress,
+        can_check=tv_provider_requests.enabled(),
     )
     model["poster_href"] = f"/plus/tv/{row['title_id']}/artwork?variant=poster"
     return model
@@ -471,10 +488,10 @@ async def recommendations(db, user_id, category):
     else:
         if category in {"movies", "screen"}:
             rows, movie_library = await asyncio.gather(
-                hub.screen_shelves(db, user_id), _movie_library(db, scope)
+                hub.screen_shelves(db, user_id, kind=category), _movie_library(db, scope)
             )
         else:
-            rows = await hub.screen_shelves(db, user_id)
+            rows = await hub.screen_shelves(db, user_id, kind=category)
         if category != "screen":
             rows = [row for row in rows if row["key"] == category]
 
@@ -693,6 +710,8 @@ async def _submit_local(db, scope, kind, title_id):
                ON CONFLICT(user_id,kind,title_id) DO NOTHING""",
             (user_id, kind, title_id, title.strip()[:300]),
         )
+        if inserted.rowcount and kind == "tv" and tv_provider_requests.enabled():
+            service._save(user_id, metadata, commit=False)
         if inserted.rowcount and kind == "anime":
             try:
                 _enroll_anime(db, user_id, target)
@@ -712,6 +731,20 @@ async def submit_request(db, user_id, kind, title_id):
             await _submit_movie(db, scope, title_id)
         else:
             await _submit_local(db, scope, kind, title_id)
+        if kind == "tv" and tv_provider_requests.enabled():
+            service = TVService(db, movie_connections(db, user_id))
+            try:
+                await tv_provider_requests.refresh(
+                    db,
+                    user_id,
+                    int(title_id),
+                    service,
+                    submit=True,
+                    cloud_library=_CLOUD_LIBRARY,
+                )
+            except MovieError:
+                # The local request was committed, so review or send it from Requests.
+                pass
     except households.HouseholdError as error:
         raise ForYouError(str(error), error.status) from None
     except (MovieError, TVError) as error:
@@ -755,6 +788,25 @@ async def refresh_request(db, user_id, kind, title_id):
     status = _request_status(db, scope, kind, title_id, movie_library=library)
     if status is None:
         raise ForYouError("Request not found.", 404)
+    if kind == "tv" and status["can_check"]:
+        _require_visible(db, scope, kind, title_id)
+        service = TVService(db, movie_connections(db, user_id))
+        try:
+            await tv_provider_requests.refresh(
+                db, user_id, int(title_id), service, cloud_library=_CLOUD_LIBRARY
+            )
+            provider = tv_provider_requests.read(db, user_id, int(title_id))
+            if provider:
+                await tv_provider_requests.search_missing_episode(
+                    db,
+                    user_id,
+                    int(title_id),
+                    service._raw(user_id, int(title_id)),
+                    provider["snapshot"],
+                )
+        except (MovieError, TVError) as error:
+            raise ForYouError("Riven could not be checked. Try again shortly.", 503) from error
+        return _request_status(db, scope, kind, title_id)
     if kind == "movie" and status["can_check"]:
         _require_visible(db, scope, kind, title_id)
         row = movies_store.get_request(db, scope.viewer_id, title_id)
@@ -792,6 +844,16 @@ async def retry_request(db, user_id, kind, title_id):
         raise ForYouError("Request not found.", 404)
     if not status["can_retry"]:
         return status
+    if kind == "tv":
+        _require_visible(db, scope, kind, title_id)
+        service = TVService(db, movie_connections(db, user_id))
+        try:
+            await tv_provider_requests.refresh(
+                db, user_id, int(title_id), service, submit=True, cloud_library=_CLOUD_LIBRARY
+            )
+        except (MovieError, TVError):
+            raise ForYouError("Riven could not be reached. Try again shortly.", 503) from None
+        return _request_status(db, scope, kind, title_id)
     if kind != "movie":
         return status
     row = movies_store.get_request(db, scope.viewer_id, title_id)

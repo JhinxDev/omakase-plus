@@ -23,6 +23,7 @@ from omakase.plus import web_playback_compatible as compatibility
 from omakase.plus import web_playback_remux as remux
 from omakase.plus import web_playback_store as store
 from omakase.plus.auth import authenticate_session
+from omakase.plus.catalog_completion import credit_web_completion
 from omakase.plus.completion_cleanup import process_deferred_completion_cleanup
 from omakase.plus.deps import get_db
 from omakase.plus.middleware import require_user
@@ -1414,6 +1415,8 @@ def create_player_router(
                         expected_snapshot=cloud,
                         **body.model_dump(),
                     )
+                    if body.event == "ended":
+                        credit_web_completion(db, result)
                 _mirror_cloud_position(db, cloud, result, user.id)
                 return JSONResponse(result, headers=HEADERS)
             except store.PlaybackStoreError as error:
@@ -1434,6 +1437,8 @@ def create_player_router(
                 )
                 if result["domain"] == "anime":
                     observe_playback(db, source=source, state=result)
+                elif body.event == "ended":
+                    credit_web_completion(db, result)
             return JSONResponse(result, headers=HEADERS)
         except store.PlaybackStoreError as error:
             _LOG.warning("playback_event_rejected reason=%s", error.code)
@@ -1498,6 +1503,8 @@ def create_player_router(
                             expected_snapshot=cloud,
                             **final.model_dump(),
                         )
+                        if final.event == "ended":
+                            credit_web_completion(db, result)
                     _mirror_cloud_position(db, cloud, result, user.id)
                 with households._transaction(db):
                     store.close_session(
@@ -1566,6 +1573,8 @@ def create_player_router(
                     )
                     if result["domain"] == "anime":
                         observe_playback(db, source=source, state=result)
+                    elif final.event == "ended":
+                        credit_web_completion(db, result)
                 store.close_session(
                     db,
                     session_id=sid,

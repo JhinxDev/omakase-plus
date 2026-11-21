@@ -1,10 +1,11 @@
 <section class="storage-intro" aria-labelledby="storage-flow-heading">
   <h2 id="storage-flow-heading">From discovery to playback</h2>
-  <ol class="storage-flow"><li><b>1</b><span>Find releases<small>Search sources</small></span></li><li><b>2</b><span>Access media<small>Cloud cache or your storage</small></span></li><li><b>3</b><span>Watch<small>Your Plex library</small></span></li></ol>
+  <ol class="storage-flow"><li><b>1</b><span>Find releases<small>Search sources</small></span></li><li><b>2</b><span>Access media<small>Cloud cache or your storage</small></span></li><li><b>3</b><span>Watch<small>Omakase web or Apple TV</small></span></li></ol>
 </section>
 <section class="editorial-panel settings-section storage-choice">
   <header class="storage-heading"><img class="service-logo" src="/plus/static/services/realdebrid.png" alt="" width="40" height="40"><div><h2>Cloud downloads &amp; cache</h2><p>Real-Debrid</p></div><span class="status-chip {{ 'status-good' if storage_cloud_configured else 'status-neutral' }}">{{ 'Key saved' if storage_cloud_configured else 'Optional' }}</span></header>
-  <p>Download and access cached media for anime and movies. Search services find releases; Real-Debrid handles cloud downloading and file access, and Plex plays your library.</p>
+  <p>Real-Debrid handles cloud downloads and file access for supported anime, movie and TV sources. Omakase can play matched files directly in the web app and Apple TV app. Plex is another playback source; it is optional for direct Real-Debrid playback.</p>
+  <p>Choose the source for your personal library in <a href="/plus/settings/connections#connection-playback-source">Playback source</a>. A saved key does not confirm that a particular title is available.</p>
   <p class="settings-muted">Cloud cache is not a permanent backup of your media.</p>
   <a class="button button-secondary" href="/plus/settings/connections#connection-realdebrid">Manage Real-Debrid</a>
 </section>

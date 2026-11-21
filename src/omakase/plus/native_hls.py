@@ -28,8 +28,8 @@ import re
 import shutil
 import struct
 import time
-from collections import deque
-from dataclasses import dataclass, field
+from collections import OrderedDict, deque
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import httpx
@@ -2132,29 +2132,32 @@ def _probe_enabled():
 
 
 async def _probe_rates(client, url, total):
-    """Read-only throughput probe: one big read, serial ranges, parallel ranges."""
-    size = min(4 * 1024 * 1024, max(256 * 1024, total // 8))
-    quarter = max(64 * 1024, size // 4)
+    """Measure complete ranges in Mbit/s. Reused offsets can warm provider caches."""
+    size = min(4 * 1024 * 1024, max(256 * 1024, total // 8), total)
+    quarter = size // 4
 
-    async def timed(start, length):
-        began = time.monotonic()
+    async def checked(start, length):
         body = await _range(client, url, start, start + length - 1)
-        return len(body) / max(1e-6, time.monotonic() - began) / 1e6
+        if body is None or len(body) != length:
+            raise ValueError("incomplete probe range")
+        return len(body)
+
+    def mbps(size, began):
+        return 8 * size / max(1e-6, time.monotonic() - began) / 1e6
 
     try:
-        single = await timed(0, size)
+        if not quarter:
+            return
         began = time.monotonic()
+        single = mbps(await checked(0, size), began)
+        began = time.monotonic()
+        received = 0
         for index in range(4):
-            await _range(client, url, index * quarter, index * quarter + quarter - 1)
-        serial = (4 * quarter) / max(1e-6, time.monotonic() - began) / 1e6
+            received += await checked(index * quarter, quarter)
+        serial = mbps(received, began)
         began = time.monotonic()
-        await asyncio.gather(
-            *(
-                _range(client, url, index * quarter, index * quarter + quarter - 1)
-                for index in range(4)
-            )
-        )
-        parallel = (4 * quarter) / max(1e-6, time.monotonic() - began) / 1e6
+        sizes = await asyncio.gather(*(checked(index * quarter, quarter) for index in range(4)))
+        parallel = mbps(sum(sizes), began)
         _LOG.warning(
             "native probe single_mbps=%.2f serial_mbps=%.2f parallel4_mbps=%.2f",
             single,
@@ -2172,6 +2175,7 @@ class NativeStreams:
         self.root = Path(root) if root else None
         self.clock = clock
         self.plans: dict[str, NativePlan] = {}
+        self.index_cache = OrderedDict()
         self.free_bytes = free_bytes or self._default_free
         # Windows are remote-read bound, not CPU bound, so two can overlap safely.
         self.producers = asyncio.Semaphore(2)
@@ -2252,7 +2256,7 @@ class NativeStreams:
 
     # -- lifecycle ----------------------------------------------------------
 
-    def start(self, key, url, duration, *, subtitle_key="", warm=None):
+    def start(self, key, url, duration, *, subtitle_key="", warm=None, index_identity=None):
         if not self.enabled or not key or not _DIRECT.fullmatch(url or ""):
             return None
         existing = self.plans.get(key)
@@ -2274,7 +2278,7 @@ class NativeStreams:
         plan = NativePlan(key, url, float(duration), root, subtitle_key, warm=warm)
         plan.continuous = continuous_enabled()
         self.plans[key] = plan
-        plan.task = asyncio.create_task(self._build(plan))
+        plan.task = asyncio.create_task(self._build(plan, index_identity))
         return plan
 
     def get(self, key):
@@ -2292,9 +2296,20 @@ class NativeStreams:
         """
         return self.plans.get(key) if key else None
 
-    async def _build(self, plan):
+    async def _build(self, plan, index_identity=None):
         try:
-            timeline = await build_timeline(plan.url, plan.duration)
+            cache_key = (index_identity, plan.duration) if index_identity is not None else None
+            cached = self.index_cache.get(cache_key)
+            if cached is not None and cached[0] > self.clock():
+                self.index_cache.move_to_end(cache_key)
+                timeline = replace(cached[1], url=plan.url)
+            else:
+                timeline = await build_timeline(plan.url, plan.duration)
+                if timeline is not None and cache_key is not None:
+                    self.index_cache[cache_key] = (self.clock() + 120, replace(timeline, url=""))
+                    self.index_cache.move_to_end(cache_key)
+                    if len(self.index_cache) > 4:
+                        self.index_cache.popitem(last=False)
             if timeline is None:
                 plan.error = "unsupported"
                 warn(_LOG, "native_index", "unsupported_media", "native", plan.diagnostic_id)

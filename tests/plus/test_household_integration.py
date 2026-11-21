@@ -591,6 +591,17 @@ def test_tv_collection_history_is_attributed_to_session_and_personal_only(state)
                 "INSERT INTO for_you_requests VALUES(?,'tv',43,?,'2026-11-15T04:05:06Z')",
                 (account, title + " local review"),
             )
+            db.execute(
+                "INSERT INTO for_you_requests VALUES(?,'tv',44,?,'2026-11-15T04:05:06Z')",
+                (account, title + " verified series"),
+            )
+            db.execute(
+                """INSERT INTO tv_provider_requests
+                   (user_id,title_id,submission,checked_at,snapshot_json)
+                   VALUES(?,44,'observed','2026-11-16T04:05:06Z',
+                     '{"library":{"provider":"Real-Debrid","episodes":[[1,1],[1,2]]}}')""",
+                (account,),
+            )
 
     path = "/plus/activity?view=collection"
     for account, own_title, other_title in [
@@ -613,15 +624,10 @@ def test_tv_collection_history_is_attributed_to_session_and_personal_only(state)
         assert response.status_code == 200
         assert response.headers["cache-control"] == "private, no-store"
         assert "Cookie" in response.headers["vary"]
-        assert own_title in response.text and other_title not in response.text
-        assert own_title + " local review" in response.text
-        assert "Added to collection" in response.text and "Added via your account" in response.text
-        assert '<time datetime="2026-11-14T04:05:06Z"' in response.text
-        assert '<time datetime="2026-11-15T04:05:06Z"' in response.text
-        assert (
-            "Saved for review" in response.text
-            and "No request was sent to a service." in response.text
-        )
+        assert own_title + " verified series" in response.text and other_title not in response.text
+        assert own_title + " local review" not in response.text
+        assert "2 episodes confirmed in Real-Debrid" in response.text
+        assert '<time datetime="2026-11-16T04:05:06Z"' in response.text
         assert "View Requests" in response.text
         assert "/plus/activity?view=collection" in viewer.get("/plus/requests").text
 

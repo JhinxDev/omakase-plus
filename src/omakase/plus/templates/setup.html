@@ -1,14 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Setup · Omakase{% endblock %}
 {% block eyebrow %}Getting ready{% endblock %}
-{% block page_title %}Setup{% endblock %}
-{% block page_intro %}<p class="page-intro">Connect your library and choose how Omakase finds your media.</p>{% endblock %}
+{% block page_title %}Plex deployment checks{% endblock %}
+{% block page_intro %}<p class="page-intro">Review the server's saved checks for the optional Plex import and download workflow.</p>{% endblock %}
 {% block content %}
+<p class="product-notice">These checks describe the Plex workflow. For direct Real-Debrid playback, review your <a href="/plus/settings/connections#connection-playback-source">playback source and connections</a>. Plex setup is not required for that source.</p>
 <section class="setup-progress">
   <div class="progress-number"><strong>{{ setup_progress.complete }}</strong><span>/ {{ setup_progress.total }}</span></div>
   <div>
     <span>Setup progress</span>
-    <h2>{% if setup_progress.ready %}Ready to watch{% elif setup_progress.blocked == 1 %}One final readiness check remains{% elif setup_progress.blocked %}{{ setup_progress.blocked }} checks still need setup{% else %}Continue configuration{% endif %}</h2>
+    <h2>{% if setup_progress.ready %}Plex setup checks complete{% elif setup_progress.blocked == 1 %}One Plex setup check remains{% elif setup_progress.blocked %}{{ setup_progress.blocked }} checks still need setup{% else %}Continue Plex configuration{% endif %}</h2>
     <small>{{ setup_progress.complete }} of {{ setup_progress.total }} steps ready</small>
     <progress class="setup-track" max="{{ setup_progress.total if setup_progress.total else 1 }}" value="{{ setup_progress.complete }}" aria-label="{{ setup_progress.complete }} of {{ setup_progress.total }} setup steps ready"></progress>
   </div>
@@ -35,7 +36,7 @@
       {% if key == 'plex' %}
       <a class="text-link" href="/plus/settings/connections#connection-plex">Connect Plex →</a>
       {% elif key == 'identity' %}
-      <a class="text-link" href="/plus/settings#tracking-connections">Manage anime tracking →</a>
+      <a class="text-link" href="/plus/settings/tracking#tracking-connections">Manage anime tracking →</a>
       {% elif key == 'readiness' %}
       <a class="text-link" href="/plus/health/overview">Open system health →</a>
       {% elif key == 'acquisition' %}

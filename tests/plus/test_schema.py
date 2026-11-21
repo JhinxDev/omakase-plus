@@ -198,6 +198,10 @@ def test_all_tables_exist(_fresh_db):
         "request_candidates",
         "tv_collection_additions",
         "movie_fallback_transfers",
+        "tv_provider_requests",
+        "title_reviews",
+        "completion_realdebrid_removals",
+        "completion_realdebrid_preferences",
     }
     assert tables == expected, (
         f"Mismatch — missing: {expected - tables}, extra: {tables - expected}"

@@ -14,10 +14,11 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
+from omakase.plus import title_reviews
 from omakase.plus.artwork_delivery import optimized_artwork
 from omakase.plus.connections import movie_connections
 from omakase.plus.debrid_catalog import movie_ids
-from omakase.plus.debrid_library import DebridLibrary, DebridLibraryError
+from omakase.plus.debrid_library import DebridLibraryError, catalog_library
 from omakase.plus.deps import get_db
 from omakase.plus.middleware import require_user
 from omakase.plus.movie_artwork import movie_artwork
@@ -50,14 +51,13 @@ def create_movies_router(
             bounded_form_route(16_384, "Movie form is too large", guard=_private)
         )
     )
-    cloud_library = DebridLibrary()
 
     async def cloud_availability(db, user, *, timeout=8):
         if not playback_providers.select(db, user.id).cloud_route:
             return None, False
         try:
             async with asyncio.timeout(timeout):
-                return await movie_ids(db, personal_scope(db, user.id), cloud_library), False
+                return await movie_ids(db, personal_scope(db, user.id), catalog_library), False
         except (DebridLibraryError, PlaybackSourceError, TimeoutError):
             return set(), True
 
@@ -113,14 +113,16 @@ def create_movies_router(
         svc = service(db, user)
         cloud_ids, cloud_error = await cloud_availability(db, user)
         cards, error = [], ""
+        collection_view = view in {"all", "watching", "available"}
         try:
-            if q and view in {"all", "discover"}:
+            if q and view == "discover":
                 cards = await svc.search(user.id, q)
             else:
+                source_view = "available" if collection_view else view
                 cards = (
-                    await svc.list(user.id, view=view)
+                    await svc.list(user.id, view=source_view)
                     if cloud_ids is None
-                    else await svc.list(user.id, view=view, cloud_ids=cloud_ids)
+                    else await svc.list(user.id, view=source_view, cloud_ids=cloud_ids)
                 )
                 if q:
                     needle = q.strip().casefold()
@@ -148,6 +150,13 @@ def create_movies_router(
                 if (card["history"] or {}).get("status") == "completed"
                 else progress.get(card.get("imdb_id"))
             )
+        if collection_view:
+            cards = [
+                card
+                for card in cards
+                if (card["history"] or {}).get("status") != "completed"
+                and (view != "watching" or (card["history"] or {}).get("status") == "watching")
+            ]
         if view == "requests":
             cards = [
                 card
@@ -399,6 +408,9 @@ def create_movies_router(
                 "cleanup_status": removal,
                 "removal_refresh": request.query_params.get("removal_refresh") != "1",
                 "watch_in_app": web_player_enabled(),
+                "review_comment": title_reviews.read(db, user.id, "movie", imdb_id)
+                .get(0, {})
+                .get("comment", ""),
             },
             headers={"Cache-Control": "private, no-store"},
         )
@@ -930,6 +942,7 @@ def create_movies_router(
         tmdb_id: int = Form(...),
         status: str = Form(""),
         rating: str = Form(""),
+        comment: str | None = Form(None),
         csrf: str = Form("", alias="csrf_token"),
         user=Depends(require_user),
         db=Depends(get_db),
@@ -945,6 +958,9 @@ def create_movies_router(
                 tmdb_id=tmdb_id,
                 status=status if status else UNSET,
                 rating=(float(rating) if rating else None) if "rating" in form else UNSET,
+                **(
+                    {"comment": title_reviews.clean_comment(comment)} if comment is not None else {}
+                ),
             )
         except (MovieError, ValueError) as exc:
             detail = (

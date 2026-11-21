@@ -8,10 +8,11 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
+from omakase.plus import title_reviews
 from omakase.plus.artwork_delivery import optimized_artwork
 from omakase.plus.connections import movie_connections
 from omakase.plus.debrid_catalog import tv_episode_ids, tv_ids
-from omakase.plus.debrid_library import DebridLibrary, DebridLibraryError
+from omakase.plus.debrid_library import DebridLibrary, DebridLibraryError, catalog_library
 from omakase.plus.deps import get_db
 from omakase.plus.middleware import require_user
 from omakase.plus.movie_artwork import movie_artwork
@@ -189,26 +190,28 @@ def create_tv_router(
         cloud_playback = playback_providers.select(db, user.id).cloud_route
         cloud_ids = set()
         cloud_error = False
-        if cloud_playback:
+        if cloud_playback and view != "completed":
             try:
                 async with asyncio.timeout(8):
-                    cloud_ids = await tv_ids(db, personal_scope(db, user.id), cloud_library)
+                    cloud_ids = await tv_ids(db, personal_scope(db, user.id), catalog_library)
             except (DebridLibraryError, PlaybackSourceError, TimeoutError):
                 cloud_error = True
         try:
             svc = service(db, user)
-            if q and view == "all":
-                cards = await svc.search(user.id, q)
-            elif hasattr(svc, "collection_page"):
+            if hasattr(svc, "collection_page"):
                 filters = {"query": q.strip()} if q else {}
                 if cloud_playback:
                     filters["cloud_ids"] = cloud_ids
                 collection_page = await svc.collection_page(
-                    user.id, view=view, offset=offset, **filters
+                    user.id, view=view, offset=offset, verified_only=True, **filters
                 )
                 cards = collection_page["cards"]
             else:
-                cards = await svc.list(user.id, view=view)
+                cards = (
+                    await svc.search(user.id, q)
+                    if q and view == "all"
+                    else await svc.list(user.id, view=view)
+                )
         except (TVError, MovieError) as exc:
             error = exc.detail
         try:
@@ -441,6 +444,8 @@ def create_tv_router(
                 **context(request, user),
                 "card": card,
                 "selected_season": season,
+                "completed_seasons": title_reviews.completed_seasons(card),
+                "reviews": title_reviews.read(db, user.id, "tv", tmdb_id),
                 "watch_in_app": watch_in_app,
                 "cloud_playback": cloud_playback,
                 "cloud_episodes": cloud_episodes,
@@ -548,6 +553,7 @@ def create_tv_router(
         tmdb_id: int = Form(...),
         status: str = Form(""),
         rating: str = Form(""),
+        comment: str | None = Form(None),
         csrf: str = Form("", alias="csrf_token"),
         user=Depends(require_user),
         db=Depends(get_db),
@@ -556,6 +562,9 @@ def create_tv_router(
         form = await request.form()
         try:
             parsed_rating = (float(rating) if rating else None) if "rating" in form else UNSET
+            review = (
+                {"comment": title_reviews.clean_comment(comment)} if comment is not None else {}
+            )
         except ValueError:
             raise HTTPException(422, "Invalid TV rating") from None
         return await action(
@@ -566,6 +575,47 @@ def create_tv_router(
             tmdb_id=tmdb_id,
             status=status if status else UNSET,
             rating=parsed_rating,
+            **review,
+        )
+
+    @router.post("/tv/{tmdb_id}/season-review")
+    async def review_season(
+        request: Request,
+        tmdb_id: int,
+        season: int = Form(...),
+        rating: str = Form(""),
+        comment: str = Form(""),
+        csrf: str = Form("", alias="csrf_token"),
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        require_csrf(request, csrf)
+        if households_enabled() if callable(households_enabled) else households_enabled:
+            from omakase.plus.households import selected_scope
+
+            if selected_scope(db, viewer_id=user.id).kind != "personal":
+                raise HTTPException(404, "Season review unavailable")
+        svc = service(db, user)
+        try:
+            metadata = svc._raw(user.id, tmdb_id)
+            if metadata is None or season not in title_reviews.completed_seasons(
+                svc.card(user.id, metadata)
+            ):
+                raise HTTPException(409, "Finish this season before rating it.")
+            with db:
+                title_reviews.save(
+                    db,
+                    user.id,
+                    "tv",
+                    tmdb_id,
+                    season=season,
+                    comment=comment,
+                    rating=float(rating) if rating else None,
+                )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return RedirectResponse(
+            f"/plus/tv/{tmdb_id}?season={season}#season-review", status_code=303
         )
 
     @router.post("/tv/episode")

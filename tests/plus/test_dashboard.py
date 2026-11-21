@@ -2239,7 +2239,7 @@ class TestProductShell:
             collection_html = client.get("/plus/library").text
             completed_html = client.get("/plus/library?lifecycle=completed").text
             assert f'href="/plus/library/{monitor_id}"' not in active_html
-            assert f'href="/plus/library/{monitor_id}"' in collection_html
+            assert f'href="/plus/library/{monitor_id}"' not in collection_html
             assert f'href="/plus/library/{monitor_id}"' in completed_html
 
             reopened = client.post(

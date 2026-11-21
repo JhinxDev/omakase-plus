@@ -203,12 +203,19 @@
     var panels = Array.from(feature.querySelectorAll('[data-home-feature-panel]'));
     var pause = controls.querySelector('[data-feature-pause]');
     var motion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    var motionKey = 'omakase.home-feature-motion';
     var current = panels.findIndex(function (panel) {
       return panel.dataset.homeFeaturePanel === feature.querySelector('[data-home-banner]').dataset.bannerDomain;
     });
-    var stopped = motion.matches;
+    var preference = null;
+    try {
+      var saved = localStorage.getItem(motionKey);
+      if (saved === 'paused' || saved === 'playing') preference = saved;
+    } catch (_) { /* Storage may be disabled for this browsing session. */ }
+    function isStopped() { return preference === null ? motion.matches : preference === 'paused'; }
     var timer;
     function updatePause() {
+      var stopped = isStopped();
       var label = stopped ? 'Play featured titles' : 'Pause featured titles';
       pause.dataset.paused = String(stopped);
       pause.setAttribute('aria-label', label);
@@ -221,7 +228,7 @@
     }
     function schedule() {
       window.clearTimeout(timer);
-      if (stopped || document.hidden || feature.matches(':hover, :focus-within')) return;
+      if (isStopped() || document.hidden || feature.matches(':hover, :focus-within')) return;
       timer = window.setTimeout(function () { advance(1); schedule(); }, 8000);
     }
     controls.hidden = false;
@@ -229,13 +236,17 @@
     controls.addEventListener('click', function (event) {
       var step = event.target.closest('[data-feature-step]');
       if (step) advance(Number(step.dataset.featureStep));
-      if (pause.contains(event.target)) { stopped = !stopped; updatePause(); }
+      if (pause.contains(event.target)) {
+        preference = isStopped() ? 'playing' : 'paused';
+        try { localStorage.setItem(motionKey, preference); } catch (_) { /* Keep the page setting. */ }
+        updatePause();
+      }
       schedule();
     });
     ['pointerenter', 'pointerleave', 'focusin'].forEach(function (name) { feature.addEventListener(name, schedule); });
     feature.addEventListener('focusout', function () { window.setTimeout(schedule, 0); });
     document.addEventListener('visibilitychange', schedule);
-    motion.addEventListener('change', function () { stopped = motion.matches; updatePause(); schedule(); });
+    motion.addEventListener('change', function () { updatePause(); schedule(); });
     schedule();
   }
 

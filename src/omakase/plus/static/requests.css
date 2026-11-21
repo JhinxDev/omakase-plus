@@ -128,6 +128,12 @@
 .request-search .requests-transfer { padding-inline-start: .75rem; border-inline-start: 2px solid var(--om-accent); color: var(--om-ink); }
 .requests-evidence { margin-block-start: .85rem; }
 .requests-evidence summary { min-block-size: 44px; padding-block: .55rem; cursor: pointer; color: var(--om-accent); }
+.request-tv-seasons summary span { margin-inline-start: .6rem; color: var(--om-muted); font-size: .84rem; }
+.request-episode-list { list-style: none; margin: 0; padding: 0; }
+.request-episode-list li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .25rem 1rem; border-block-start: 1px solid var(--om-line-soft); padding: .55rem .25rem; font-size: .88rem; }
+.request-episode-list li span + span { color: var(--om-muted); }
+.request-episode-list li [data-status-tone="ready"],
+.request-card-heading .hub-request-label[data-status-tone="ready"] { color: var(--media-ready, #97dec1); }
 .request-search[data-request-search="off"] { border-color: #3b4358; }
 .request-search-candidates { list-style: none; margin: 0; padding: 0; display: grid; gap: .5rem; }
 .request-search-candidates > li {

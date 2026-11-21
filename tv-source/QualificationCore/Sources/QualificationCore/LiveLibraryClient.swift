@@ -34,6 +34,7 @@ public struct LiveLibraryEntry: Decodable, Identifiable, Sendable {
     public let durationSeconds: Int?
     public let isFolder: Bool?
     public let watchlistArtwork: Bool?
+    public let availability: String?
 
     public init(
         homeTitleID: String, title: String, note: String, watchPath: String?,
@@ -56,6 +57,7 @@ public struct LiveLibraryEntry: Decodable, Identifiable, Sendable {
         durationSeconds = nil
         isFolder = nil
         watchlistArtwork = nil
+        availability = nil
     }
 
     public var episodeDisplayTitle: String {
@@ -72,12 +74,19 @@ public struct LiveLibraryEntry: Decodable, Identifiable, Sendable {
         return durationSeconds < 60 ? "\(durationSeconds) sec" : "\((durationSeconds + 59) / 60) min"
     }
 
+    public var availabilityPending: Bool { watchPath == nil && availability == "partial" }
+
+    public var unavailableLabel: String? {
+        guard watchPath == nil else { return nil }
+        return availabilityPending ? "Not checked yet" : "Unavailable"
+    }
+
     enum CodingKeys: String, CodingKey {
         case id, title, note, watchPath = "watch_path"
         case artworkID = "artwork_id", posterURL = "poster_url", backdropURL = "backdrop_url"
         case summary, progress, featuredPath = "featured_path", featuredEpisode = "featured_episode"
         case isFolder = "is_folder", watchlistArtwork = "watchlist_artwork"
-        case watched, episodeArtwork = "episode_artwork", durationSeconds = "duration_seconds"
+        case watched, availability, episodeArtwork = "episode_artwork", durationSeconds = "duration_seconds"
     }
 }
 
@@ -102,10 +111,25 @@ public struct LiveLibraryPage: Decodable, Sendable {
     public let featuredRecent: Bool?
     public let continueWatching: [LiveLibraryEntry]?
     public let titleSummary: String?
+    public let availability: LiveLibraryAvailability?
+
+    public var hasUncheckedEpisodes: Bool {
+        availability?.state == "partial" || items.contains { $0.availabilityPending }
+    }
 
     enum CodingKeys: String, CodingKey {
         case items, nextOffset = "next_offset", featured, continueWatching = "continue_watching"
-        case titleSummary = "title_summary", featuredRecent = "featured_recent"
+        case titleSummary = "title_summary", featuredRecent = "featured_recent", availability
+    }
+}
+
+public struct LiveLibraryAvailability: Decodable, Sendable {
+    public let state: String
+    public let seasons: [Int]?
+    public let retryOffset: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case state, seasons, retryOffset = "retry_offset"
     }
 }
 

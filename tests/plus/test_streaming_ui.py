@@ -309,9 +309,19 @@ def test_continue_card_exposes_progress_source_and_artwork_fallback(client):
     assert 'data-fallback-title="Solo Leveling"' in html
 
 
-def test_library_cards_keep_a_visible_title_fallback_when_artwork_is_unavailable(client):
+def test_library_cards_keep_a_visible_title_fallback_when_artwork_is_unavailable(
+    client, monkeypatch
+):
+    from omakase.plus import routes
+
     _signup(client)
     _seed_continue_title(client)
+    read_titles = routes.library_titles
+
+    def available_titles(*args, **kwargs):
+        return [dict(card, usable=1, plex_visible=1) for card in read_titles(*args, **kwargs)]
+
+    monkeypatch.setattr(routes, "library_titles", available_titles)
 
     html = client.get("/plus/library").text
 
@@ -501,7 +511,6 @@ def test_activity_defaults_to_visual_viewing_history_and_keeps_system_work_separ
     system = client.get("/plus/activity?view=system")
     assert system.status_code == 200
     assert 'href="/plus/activity?view=system" aria-current="page"' in system.text
-    assert "Library activity log" in system.text
     assert 'aria-label="Activity outcome"' in system.text
     assert 'href="/plus/activity?view=system&outcome=attention"' in system.text
     assert 'class="history-grid"' not in system.text

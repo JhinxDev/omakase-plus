@@ -43,7 +43,7 @@
 </head>
 <body class="product-body page-{{ active_page }}">
   <a class="skip-link" href="#main-content">Skip to content</a>
-  <div id="navigation-loading" class="navigation-loading" role="status" aria-live="polite" aria-atomic="true" hidden><span class="navigation-loading-track" aria-hidden="true"></span><span class="navigation-loading-label">Loading…</span></div>
+  <div id="navigation-loading" class="navigation-loading" role="status" aria-live="polite" aria-atomic="true" hidden><span class="navigation-loading-track" aria-hidden="true"></span><span class="navigation-loading-label sr-only">Loading…</span></div>
 
   {% set viewer_nav = [('home', '/plus/home', 'Home', 'home'), ('library', '/plus/library', 'Anime', 'library')] %}
   {% if movies_enabled %}{% set viewer_nav = viewer_nav + [('movies', '/plus/movies', 'Movies', 'movies'), ('tv', '/plus/tv', 'TV Shows', 'tv')] %}{% endif %}
@@ -51,7 +51,7 @@
 
   {% macro project_links(class_name) -%}
   <nav class="{{ class_name }} project-links" aria-label="Project links">
-    <a class="project-credit" href="https://jhinx.dev" target="_blank" rel="noopener noreferrer">Made by <strong>Jhinx Dev</strong></a>
+    <a class="project-credit" href="https://jhinx.dev" target="_blank" rel="noopener noreferrer"><span>Made by <strong>Jhinx Dev</strong></span></a>
     <div>
       <a href="https://omakase-plus.jhinx.dev/docs" target="_blank" rel="noopener noreferrer">Documentation</a>
       <a class="project-github" href="https://github.com/JhinxDev/omakase-plus" target="_blank" rel="noopener noreferrer" aria-label="GitHub" title="GitHub">
@@ -118,6 +118,7 @@
               <label class="account-artwork-preference" data-dim-artwork-option hidden>
                 <span>Dim artwork</span>
                 <input type="checkbox" role="switch" data-dim-artwork>
+                <span class="account-artwork-track" aria-hidden="true"></span>
               </label>
               {{ project_links("mobile-project-links") }}
               <form method="post" action="/plus/logout">

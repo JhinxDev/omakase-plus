@@ -8,6 +8,8 @@
 {% block extra_head %}<link rel="stylesheet" href="/plus/static/series-detail.css?v={{ asset_version }}">{% endblock %}
 {% block masthead %}{% endblock %}
 {% block content %}
+{% set reviews = reviews | default({}) %}
+{% set completed_seasons = completed_seasons | default([]) %}
 <div class="tv-page">
 {% if notice in ['saved','updated'] %}<p class="product-notice" role="status">{% if notice == 'saved' %}Your watch history and rating were saved.{% else %}Check finished. Review the current result below.{% endif %}</p>{% endif %}
 {% if tv_error %}<p class="product-notice notice-danger" role="status">{{ tv_error }}</p>{% endif %}
@@ -25,13 +27,38 @@
     {{ playback_link(featured_episode.url, action ~ ' · ' ~ episode_label, action ~ ' ' ~ card.title ~ ', season ' ~ featured_episode.season ~ ', episode ' ~ featured_episode.episode) }}
   {% elif not cloud_playback and card.plex_url %}<a class="button button-primary" href="{{ card.plex_url }}" rel="noopener noreferrer" target="_blank">Open in Plex</a>{% endif %}
   <a class="button {{ 'button-secondary' if featured_episode or (not cloud_playback and card.plex_url) else 'button-primary' }}" href="{{ '?season=' ~ featured_episode.season if featured_episode and featured_episode.season != selected_season else '' }}#tv-seasons">Explore episodes</a>
-  {% if featured_episode and not cloud_playback and card.plex_url %}<a class="button button-secondary" href="{{ card.plex_url }}" rel="noopener noreferrer" target="_blank">Open in Plex</a>{% endif %}
-  {{ apple_tv_link(featured_episode.url if featured_episode else '', native_tv_test_enabled, csrf_token) }}
 </div>
 <div class="series-hero-details">
 {% if card.overview %}<div class="tv-overview"><p>{{ card.overview | truncate(300, false, '…') }}</p>{% if card.overview | length > 300 %}<details><summary>Read full synopsis</summary><p>{{ card.overview }}</p></details>{% endif %}</div>{% else %}<p class="tv-overview tv-muted">A catalog synopsis is not available for this show yet.</p>{% endif %}
-<div class="series-hero-facts"><p>{{ card.watched_episodes | default(0) }} {{ "episode" if card.watched_episodes == 1 else "episodes" }} watched{% if cloud_episodes %} · In Real-Debrid{% endif %}</p>
-<section id="tv-history" class="editorial-panel tv-history" aria-labelledby="tv-history-title"><header class="panel-heading"><h2 id="tv-history-title">Watch status &amp; rating</h2></header><form class="product-form" method="post" action="/plus/tv/history" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="tmdb_id" value="{{ card.tmdb_id }}">{{ watch_status_field(card.status if card.status_source and card.status_source != 'none' else '', 'tv-watch-status') }}<label><span>Your rating / 10</span><input type="number" name="rating" min="1" max="10" step="0.5" value="{{ card.rating if card.rating is not none else '' }}" placeholder="Not rated"></label><button class="button button-primary" type="submit" data-busy-label="Saving…">Save</button></form></section></div>
+<div class="series-hero-facts">
+  <dl class="series-facts">
+    <div data-fact-tone="viewing"><dt>Viewing progress</dt><dd>{{ card.watched_episodes | default(0) }} {{ "episode" if card.watched_episodes == 1 else "episodes" }} watched</dd></div>
+    {% if cloud_playback %}
+    <div data-fact-tone="{{ 'pending' if cloud_error or cloud_partial else 'ready' if cloud_episodes else 'neutral' }}"><dt>Real-Debrid</dt><dd>{% if cloud_error %}Could not check availability{% elif cloud_episodes %}{{ cloud_episodes | length }} {{ 'episode' if cloud_episodes | length == 1 else 'episodes' }} matched{% if cloud_partial %} · Check incomplete{% endif %}{% elif cloud_partial %}Availability check incomplete{% else %}No matched episodes{% endif %}</dd></div>
+    {% else %}
+    <div data-fact-tone="{{ 'ready' if card.plex_snapshot_current and card.in_plex_episodes else 'neutral' }}"><dt>Plex</dt><dd>{% if card.plex_snapshot_current and card.in_plex_episodes %}{{ card.in_plex_episodes }} {{ 'episode' if card.in_plex_episodes == 1 else 'episodes' }} in library{% else %}Availability unconfirmed{% endif %}</dd></div>
+    {% endif %}
+  </dl>
+  <section id="tv-history" class="tv-history" aria-labelledby="tv-history-title">
+    <details class="series-personal-controls"{% if notice == 'saved' %} open{% endif %}>
+      <summary id="tv-history-title">Watch status &amp; rating</summary>
+      <form class="product-form" method="post" action="/plus/tv/history" data-busy-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="tmdb_id" value="{{ card.tmdb_id }}">
+        {{ watch_status_field(card.status if card.status_source and card.status_source != 'none' else '', 'tv-watch-status') }}
+        <label><span>Your rating / 10</span><input type="number" name="rating" min="1" max="10" step="0.5" value="{{ card.rating if card.rating is not none else '' }}" placeholder="Not rated"></label>
+        <label class="review-comment"><span>Private comment <small>Optional</small></span><textarea name="comment" maxlength="500" rows="2">{{ reviews.get(0, {}).get('comment', '') }}</textarea></label>
+        <button class="button button-primary" type="submit" data-busy-label="Saving…">Save</button>
+      </form>
+    </details>
+  </section>
+  {% if featured_episode and (native_tv_test_enabled or (not cloud_playback and card.plex_url)) %}
+  <details class="series-device-options"><summary>More ways to watch</summary>
+    {{ apple_tv_link(featured_episode.url, native_tv_test_enabled, csrf_token) }}
+    {% if not cloud_playback and card.plex_url %}<a class="button button-secondary" href="{{ card.plex_url }}" rel="noopener noreferrer" target="_blank">Open in Plex</a>{% endif %}
+  </details>
+  {% endif %}
+</div>
 </div>
 </div></section>
 {% if not cloud_playback %}<section class="tv-availability" aria-labelledby="tv-availability-title"><div><h2 id="tv-availability-title">Plex availability</h2><p>{{ card.detail or 'Check Plex for an exact match. Catalog listings and watched history do not establish playable availability.' }}</p></div><form method="post" action="/plus/tv/{{ card.tmdb_id }}/check" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit" data-busy-label="Checking Plex…">Check in Plex</button></form></section>{% elif cloud_error %}<p class="product-notice" role="status">Could not check the Real-Debrid library right now.</p>{% endif %}
@@ -42,8 +69,27 @@
 {% set default_season = regular_seasons[0] if regular_seasons else card.seasons[0] %}
 {% set chosen = selected_season | int if selected_season is defined and selected_season is not none else default_season.season_number %}
 {{ season_picker(card, chosen) }}
+{% set pending_reviews = completed_seasons | reject('in', reviews) | sort %}
+{% if pending_reviews and chosen not in pending_reviews %}
+<nav class="season-review-links" aria-label="Finished seasons to rate">
+  {% for number in pending_reviews %}<a href="/plus/tv/{{ card.tmdb_id }}?season={{ number }}#season-review">Rate Season {{ number }}</a>{% endfor %}
+</nav>
+{% endif %}
 {% for season in card.seasons %}{% if chosen == season.season_number %}
 <div class="tv-season-heading"><h3>{{ season.name or 'Season ' ~ season.season_number }}</h3>{% if season.air_date %}<span>{% if season.released %}First aired{% else %}Expected{% endif %} <time datetime="{{ season.air_date }}">{{ season.air_date }}</time></span>{% endif %}</div>
+{% if chosen in completed_seasons %}
+{% set review = reviews.get(chosen, {}) %}
+<details id="season-review" class="series-personal-controls season-review"{% if not review %} open{% endif %}>
+  <summary>{{ 'Edit Season ' ~ chosen ~ ' rating' if review else 'Rate Season ' ~ chosen }}{% if review.rating %} <span class="watch-state" data-watch-state="watched">{{ review.rating }} / 10</span>{% endif %}</summary>
+  <form method="post" action="/plus/tv/{{ card.tmdb_id }}/season-review" class="product-form" data-busy-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="season" value="{{ chosen }}">
+    <label><span>Your rating / 10</span><input type="number" name="rating" min="1" max="10" step="0.5" value="{{ review.rating or '' }}"></label>
+    <label class="review-comment"><span>Private comment <small>Optional</small></span><textarea name="comment" maxlength="500" rows="2">{{ review.comment | default('') }}</textarea></label>
+    <button class="button button-secondary" type="submit" data-busy-label="Saving…">Save review</button>
+  </form>
+</details>
+{% endif %}
 {% if season.episodes and not season.episodes_loaded %}<div class="tv-season-empty"><p>{% if card.plex_snapshot_current and (season.episodes | rejectattr('in_plex') | list | length) == 0 %}Showing episodes observed in Plex.{% else %}Showing cached episode details.{% endif %} Load the season to see its full catalog listing.</p><form method="post" action="/plus/tv/{{ card.tmdb_id }}/season/{{ season.season_number }}" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit" data-busy-label="Loading episodes…">Load full season listing</button></form></div>{% endif %}
 {% if season.episodes %}<ol class="series-episode-grid" aria-label="{{ season.name or 'Season ' ~ season.season_number }} episodes">
   {% for episode in season.episodes %}

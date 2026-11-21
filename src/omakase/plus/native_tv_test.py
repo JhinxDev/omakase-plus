@@ -28,6 +28,7 @@ from omakase.plus import native_tv_devices as devices
 from omakase.plus import web_playback_store as store
 from omakase.plus.anime_synopsis import cached_synopsis
 from omakase.plus.auth import authenticate_session
+from omakase.plus.catalog_completion import credit_movie_completion, credit_tv_completion
 from omakase.plus.connections import private_connections_enabled
 from omakase.plus.db import _connect_runtime
 from omakase.plus.debrid_anime import (
@@ -48,6 +49,9 @@ from omakase.plus.debrid_catalog import (
 )
 from omakase.plus.debrid_catalog import (
     tv_episode_ids as debrid_tv_episode_ids,
+)
+from omakase.plus.debrid_catalog import (
+    tv_ids as debrid_tv_ids,
 )
 from omakase.plus.debrid_library import (
     DebridLibrary,
@@ -247,106 +251,15 @@ class _WatchCredit:
 
 
 def _credit_movie_completion(db, target, stamp):
-    catalog = db.execute(
-        "SELECT tmdb_id FROM movie_catalog WHERE user_id=? AND imdb_id=?",
-        (target.user_id, target.canonical_id),
-    ).fetchone()
-    if catalog is None:
-        return None
-    history = db.execute(
-        "SELECT status_source FROM movie_history WHERE user_id=? AND imdb_id=?",
-        (target.user_id, target.canonical_id),
-    ).fetchone()
-    if history is not None and history["status_source"] == "manual":
+    if credit_movie_completion(db, target, stamp, source="apple_tv"):
         return _WatchCredit()
-    if history is None:
-        db.execute(
-            "INSERT INTO movie_history(user_id,imdb_id,tmdb_id,status,status_source,"
-            "status_source_detail,status_updated_at,last_viewed_at,created_at,updated_at) "
-            "VALUES(?,?,?,'completed','plex','apple_tv',?,?,?,?)",
-            (
-                target.user_id,
-                target.canonical_id,
-                catalog["tmdb_id"],
-                stamp,
-                stamp,
-                stamp,
-                stamp,
-            ),
-        )
-    else:
-        db.execute(
-            "UPDATE movie_history SET status='completed',status_source='plex',"
-            "status_source_detail='apple_tv',status_updated_at=?,last_viewed_at=?,"
-            "updated_at=? WHERE user_id=? AND imdb_id=?",
-            (stamp, stamp, stamp, target.user_id, target.canonical_id),
-        )
-    return _WatchCredit()
+    return None
 
 
 def _credit_tv_completion(db, target, stamp):
-    catalog = db.execute(
-        "SELECT 1 FROM tv_catalog WHERE user_id=? AND tmdb_id=?",
-        (target.user_id, target.canonical_id),
-    ).fetchone()
-    if catalog is None:
-        return None
-    episode = db.execute(
-        "SELECT watched,watch_source FROM tv_episodes "
-        "WHERE user_id=? AND tmdb_id=? AND season_number=? AND episode_number=?",
-        (
-            target.user_id,
-            target.canonical_id,
-            target.season_number,
-            target.episode_number,
-        ),
-    ).fetchone()
-    if episode is not None and episode["watch_source"] == "manual":
+    if credit_tv_completion(db, target, stamp, source="apple_tv"):
         return _WatchCredit()
-    if episode is None:
-        db.execute(
-            "INSERT INTO tv_episodes(user_id,tmdb_id,season_number,episode_number,"
-            "metadata_json,watched,watch_source,watch_source_detail,plex_present,updated_at) "
-            "VALUES(?,?,?,?,'{}',1,'plex','apple_tv',0,?)",
-            (
-                target.user_id,
-                target.canonical_id,
-                target.season_number,
-                target.episode_number,
-                stamp,
-            ),
-        )
-    else:
-        db.execute(
-            "UPDATE tv_episodes SET watched=1,watch_source='plex',"
-            "watch_source_detail='apple_tv',updated_at=? "
-            "WHERE user_id=? AND tmdb_id=? AND season_number=? AND episode_number=?",
-            (
-                stamp,
-                target.user_id,
-                target.canonical_id,
-                target.season_number,
-                target.episode_number,
-            ),
-        )
-    history = db.execute(
-        "SELECT status,status_source FROM tv_history WHERE user_id=? AND tmdb_id=?",
-        (target.user_id, target.canonical_id),
-    ).fetchone()
-    if history is None:
-        db.execute(
-            "INSERT INTO tv_history(user_id,tmdb_id,status,status_source,"
-            "status_source_detail,updated_at) VALUES(?,?,'watching','plex','apple_tv',?)",
-            (target.user_id, target.canonical_id, stamp),
-        )
-    elif history["status_source"] != "manual":
-        status = "completed" if history["status"] == "completed" else "watching"
-        db.execute(
-            "UPDATE tv_history SET status=?,status_source='plex',"
-            "status_source_detail='apple_tv',updated_at=? WHERE user_id=? AND tmdb_id=?",
-            (status, stamp, target.user_id, target.canonical_id),
-        )
-    return _WatchCredit()
+    return None
 
 
 def _completion_fraction(grant, position):
@@ -1867,6 +1780,7 @@ def create_native_tv_test_router(
         try:
             plex_movies = ()
             debrid_movies = ()
+            debrid_tv = ()
             debrid_torrents = None
             mode = playback_provider(db, scope.viewer_id) if scope.kind == "personal" else "plex"
             if kind == "anime" and mode == "realdebrid":
@@ -1884,6 +1798,10 @@ def create_native_tv_test_router(
                             raise
                 if library_for_key(db, key) is None:
                     raise HTTPException(401, "Apple TV library link expired", headers=NO_STORE)
+            if kind == "tv" and mode == "realdebrid":
+                async with asyncio.timeout(8):
+                    debrid_tv = await debrid_tv_ids(db, scope, cloud_library)
+                _, _, scope = requested_scope(request, db)
             reply = collection(
                 db,
                 scope,
@@ -1894,6 +1812,8 @@ def create_native_tv_test_router(
                 debrid_movies=debrid_movies,
                 debrid_only=mode == "realdebrid",
                 debrid_torrents=debrid_torrents,
+                verified_only=True,
+                debrid_tv=debrid_tv,
             )
             if mode == "realdebrid":
                 featured = reply.get("featured") or {}
@@ -1901,6 +1821,8 @@ def create_native_tv_test_router(
                 schedule_path_warm(scope, path)
         except DebridLibraryError as error:
             raise HTTPException(error.status, str(error), headers=NO_STORE) from None
+        except TimeoutError:
+            raise HTTPException(503, "Library check timed out", headers=NO_STORE) from None
         except households.HouseholdError:
             raise HTTPException(404, "Apple TV library unavailable", headers=NO_STORE) from None
         return JSONResponse(reply, headers=NO_STORE)
@@ -2745,6 +2667,7 @@ def create_native_tv_test_router(
                                 cloud.direct,
                                 cloud.duration,
                                 subtitle_key=subtitle_key,
+                                index_identity=(scope.viewer_id, candidate[0].media_version),
                             )
                             open_phases["plan"] = opened_stamp()
                             if native is None:

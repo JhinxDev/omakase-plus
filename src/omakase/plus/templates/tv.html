@@ -53,7 +53,7 @@
 {% block content %}
 <div class="tv-page">
 {{ collection_tabs('/plus/tv', view | default('all')) }}
-{% call(slot) collection_search('/plus/tv', 'tv', 'Search the TV catalog' if view == 'all' else 'Filter this view', 'Find a TV show', query | default(''), placeholder='Title or TMDB ID', count=cards | length, collapsible=true) %}
+{% call(slot) collection_search('/plus/tv', 'tv', 'Filter this view', 'Find a TV show', query | default(''), placeholder='Title or TMDB ID', count=cards | length, collapsible=true) %}
   {% if slot == 'fields' %}<input type="hidden" name="view" value="{{ view | default('all') }}">{% endif %}
 {% endcall %}
 {% if notice in ['saved','updated','synced'] %}<p class="product-notice" role="status">{% if notice == 'saved' %}Your watch history and rating were saved.{% elif notice == 'synced' %}Library sync finished. Review your collection below.{% else %}Check finished. Review the current result below.{% endif %}</p>{% endif %}

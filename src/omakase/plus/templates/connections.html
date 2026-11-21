@@ -27,7 +27,7 @@
       {% if selection and selection.reason %}
       <p class="connection-note">{{ selection.reason }} Automatic selection is in use.</p>
       {% elif selection and selection.provider %}
-      <p class="connection-note">Playing from {{ selection.label }}.</p>
+      <p class="connection-note">Selected source: {{ selection.label }}. Availability is checked separately for each title.</p>
       {% endif %}
     </div>
     <button class="button button-secondary" type="submit">Save playback source</button>
@@ -35,9 +35,9 @@
 </section>
 <aside class="editorial-panel connection-guidance" aria-label="Connection privacy and movie setup">
   <div><strong>Private to your account</strong><p>Keys are encrypted. Saved keys and addresses are never returned to this page. Choose Change key when you want to replace a key. A different server requires a replacement key.</p></div>
-  <div><strong>{{ 'Movie services are ready' if movies_ready else 'Set up movies in three steps' }}</strong><p>Save and test Plex, Riven and Seerr to enable movie discovery and requests. Each test checks access without requesting or changing media.</p></div>
+  <div><strong>Connect the services you use</strong><p>Seerr supplies movie and TV discovery; Riven manages supported requests. Playback uses your selected source above. Plex is optional when playing directly from Real-Debrid. Save and test each service you need; a connection test does not request media or prove a title is playable.</p></div>
 </aside>
-{% for group in [('Playback', 'Open your anime and movies in your own Plex library.', ['plex']), ('Movie discovery & requests', 'Seerr finds titles; Riven manages movie acquisition.', ['riven','seerr']), ('Cloud downloads & cache', 'Cross-media file access, separate from release search.', ['realdebrid']), ('Release search', 'Find releases across your configured indexers.', ['prowlarr'])] %}
+{% for group in [('Plex library', 'Optional playback from your own Plex server.', ['plex']), ('Discovery & requests', 'Seerr finds movie and TV titles; Riven manages supported acquisition.', ['riven','seerr']), ('Cloud playback & downloads', 'Real-Debrid file access and direct playback, separate from release search.', ['realdebrid']), ('Release search', 'Find releases across your configured indexers.', ['prowlarr'])] %}
 <header class="connection-group-heading"><div><h2>{{ group[0] }}</h2><p>{{ group[1] }}</p></div></header>
 <div class="connection-grid">
   {% for connection in connections %}

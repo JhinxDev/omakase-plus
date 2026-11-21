@@ -7,7 +7,8 @@
 {% block content %}
 <div class="settings-workspace">{{ settings_nav('updates', households_enabled) }}<div class="settings-content updates-content">
 <section class="editorial-panel settings-section update-card" aria-labelledby="installed-heading">
-<h2 id="installed-heading">Omakase Plus</h2><div class="update-installed"><span>Installed release</span><strong class="status-chip status-neutral">{{ installed_version }}</strong><span>Stable channel</span></div>
+<h2 id="installed-heading">Omakase Plus</h2><div class="update-installed"><span>Update channel version</span><strong class="status-chip status-neutral">{{ installed_version }}</strong><span>Stable channel</span></div>
+{% if build_revision %}<p>Running build <code>{{ build_revision }}</code></p>{% endif %}
 <p>Updates are installed separately by your host administrator. This page only checks public release information.</p>
 </section>
 <section class="editorial-panel settings-section update-card" aria-labelledby="update-heading">

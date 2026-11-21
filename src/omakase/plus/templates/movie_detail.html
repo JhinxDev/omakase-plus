@@ -113,6 +113,7 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="imdb_id" value="{{ card.imdb_id }}"><input type="hidden" name="tmdb_id" value="{{ card.tmdb_id }}">
           {{ watch_status_field(history.status if status_known else '', 'movie-watch-status') }}
           <label><span>Your rating / 10</span><input type="number" name="rating" min="1" max="10" step="0.5" value="{{ history.rating if history.rating is not none else '' }}" placeholder="Not rated"></label>
+          <label class="review-comment"><span>Private comment <small>Optional</small></span><textarea name="comment" maxlength="500" rows="2">{{ review_comment | default('') }}</textarea></label>
           <button class="button button-secondary" type="submit" data-busy-label="Saving…">Save</button>
         </form>
         {% if not cloud_playback and history.status == 'completed' and status_known %}

@@ -75,7 +75,12 @@ def catalog_title(db, scope, domain, key, season=0, episode=0):
         return CatalogTitle(domain, key, row["title"], row["year"]) if row and row["year"] else None
     row = db.execute(
         """SELECT c.metadata_json FROM tv_catalog c
-           WHERE c.user_id=? AND c.tmdb_id=? AND json_extract(c.metadata_json,'$.in_collection')=1
+           WHERE c.user_id=? AND c.tmdb_id=? AND (
+               json_extract(c.metadata_json,'$.in_collection')=1 OR EXISTS (
+                   SELECT 1 FROM for_you_requests q WHERE q.user_id=c.user_id
+                     AND q.title_id=c.tmdb_id AND q.kind='tv'
+               )
+           )
            AND (?=0 OR EXISTS (
                SELECT 1 FROM tv_episodes e WHERE e.user_id=c.user_id AND e.tmdb_id=c.tmdb_id
                  AND e.season_number=? AND e.episode_number=?
@@ -160,8 +165,12 @@ async def tv_ids(db, scope, library):
     inventory = await library.inventory(token)
     ids = set()
     for row in db.execute(
-        "SELECT tmdb_id,metadata_json FROM tv_catalog WHERE user_id=? "
-        "AND json_extract(metadata_json,'$.in_collection')=1",
+        """SELECT tmdb_id,metadata_json FROM tv_catalog c WHERE user_id=? AND (
+               json_extract(metadata_json,'$.in_collection')=1 OR EXISTS (
+                   SELECT 1 FROM for_you_requests q WHERE q.user_id=c.user_id
+                     AND q.title_id=c.tmdb_id AND q.kind='tv'
+               )
+           )""",
         (scope.viewer_id,),
     ):
         metadata = json.loads(row[1])

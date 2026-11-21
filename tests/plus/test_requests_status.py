@@ -532,10 +532,8 @@ def test_tv_requests_stay_manual_and_resolve_on_a_verified_copy(client):
         assert manual["manual"] is True
         assert manual["supported_stages"] == ["saved", "library"]
         assert [entry["stage"] for entry in manual["stages"]] == ["saved", "library"]
-        assert manual["detail"] == (
-            "Waiting for owner review. TV acquisition requires a manual step."
-        )
-        assert "No automatic request is sent" in manual["manual_note"]
+        assert manual["detail"] == "Saved for review."
+        assert manual["manual_note"] is None
         assert manual["next_action"] is None
         assert manual["can_retry"] is False
         assert manual["category"] == "active"

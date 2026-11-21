@@ -187,8 +187,8 @@ def test_saved_watchlist_is_local_planning_with_exact_intake_and_csrf():
     assert posts["/plus/add/preview"]["inputs"]["query"] == ("https://anilist.co/anime/182205/")
     assert "/plus/watchlist/182205/remove" in posts
     assert all(form["inputs"]["csrf_token"] == "test-csrf" for form in posts.values())
-    assert "Availability not checked" in html
-    assert "Saved for later" in html
+    assert "Check availability" in html
+    assert "Watchlist" in html
     assert 'href="/plus/library?lifecycle=in_progress' in html
     assert ">Watching</a>" in html
     assert ">Pending</option>" in html
@@ -332,9 +332,9 @@ def test_collection_search_scope_and_form_contract_are_explicit():
     movies = render("movies.html", cards=[], query="test", view="all")
     tv = render("tv.html", cards=[], query="test", view="all")
     for html, kind, action, field, scope in [
-        (library, "anime", "/plus/library", "query", "Filter your saved collection"),
-        (movies, "movies", "/plus/movies", "q", "Search the movie catalog"),
-        (tv, "tv", "/plus/tv", "q", "Search the TV catalog"),
+        (library, "anime", "/plus/library", "query", "Filter your collection"),
+        (movies, "movies", "/plus/movies", "q", "Filter this view"),
+        (tv, "tv", "/plus/tv", "q", "Filter this view"),
     ]:
         forms = Forms()
         forms.feed(html)

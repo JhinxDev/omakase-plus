@@ -5,13 +5,33 @@
 {% block title %}Anime · Omakase{% endblock %}
 {% block eyebrow %}Saved for your next watch{% endblock %}
 {% block page_title %}Your anime{% endblock %}
-{% block page_intro %}<p class="page-intro">Everything you have chosen, from the next episode to the final credits.</p>{% endblock %}
+{% block page_intro %}{% endblock %}
 {% block page_actions %}<a class="button button-primary" href="/plus/add">Add anime</a>{% endblock %}
 {% block content %}
 <div class="watchlist-browser">
 {% set collection_extra = '&query=' ~ (query | urlencode) ~ '&state=' ~ state_filter ~ '&provider=' ~ provider_filter ~ '&content_type=' ~ content_type_filter %}
 {{ collection_tabs('/plus/library', lifecycle_filter, 'lifecycle', 'in_progress', collection_extra) }}
-{% call(slot) collection_search('/plus/library', 'anime', 'Filter your saved collection', 'Search your anime', query, 'query', 'Find a saved title', titles | length) %}
+{% if saved_picks %}
+<details class="watchlist-compact">
+  <summary>Watchlist <span>{{ saved_picks | length }} saved</span></summary>
+  <ul>
+    {% for item in saved_picks %}
+    <li><strong>{{ item.title }}</strong><div>
+      <form method="post" action="/plus/add/preview" data-busy-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="query" value="https://anilist.co/anime/{{ item.anilist_id }}/">
+        <button class="text-action" type="submit" data-busy-label="Checking…">Check availability<span class="sr-only"> for {{ item.title }}</span></button>
+      </form>
+      <form method="post" action="/plus/watchlist/{{ item.anilist_id }}/remove">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="text-action" type="submit">Remove<span class="sr-only"> {{ item.title }} from watchlist</span></button>
+      </form>
+    </div></li>
+    {% endfor %}
+  </ul>
+</details>
+{% endif %}
+{% call(slot) collection_search('/plus/library', 'anime', 'Filter your collection', 'Search your anime', query, 'query', 'Find in your collection', titles | length) %}
 {% if slot == 'fields' %}
   <datalist id="library-title-suggestions">{% for title in title_suggestions %}<option value="{{ title }}"></option>{% endfor %}</datalist>
 {% else %}
@@ -113,42 +133,14 @@
   {% endfor %}
 </section>
 {% if lifecycle_filter == 'completed' %}</form>{% endif %}
-{% elif not saved_picks %}
+{% else %}
 <div class="product-empty product-empty-large">
   <span class="empty-mark" aria-hidden="true"></span>
   <h2>No titles match these filters.</h2>
-  <p>{% if saved_picks %}Your saved titles are above. Check availability to bring one into your library.{% else %}Clear a filter, or add a title through the intake flow.{% endif %}</p>
+  <p>{% if query %}Try a different search.{% else %}Titles with a copy ready to watch appear here.{% endif %}</p>
   <a class="button button-secondary" href="/plus/library">Clear filters</a>
   <a class="button button-primary" href="/plus/add">Add anime</a>
 </div>
 {% endif %}
-{% if saved_picks %}
-<section class="saved-watchlist" aria-labelledby="saved-watchlist-heading">
-  <header class="stream-section-heading"><div><h2 id="saved-watchlist-heading">Saved for later</h2><p>Check availability when you are ready to add one.</p></div><span>{{ saved_picks | length }} saved</span></header>
-  <div class="library-grid watchlist-grid catalog-poster-grid">
-    {% for item in saved_picks %}
-    <article class="library-card watchlist-card saved-watchlist-card catalog-card">
-      <div class="library-poster poster-frame" data-fallback-title="{{ item.title }}" aria-hidden="true">
-        <span class="media-art-fallback" aria-hidden="true">{{ item.title[:2] | upper }}</span>
-        <img src="/plus/media/{{ item.anilist_id }}/poster" alt="" loading="lazy" data-poster>
-      </div>
-      <div class="library-card-copy">{{ catalog_card_copy(item.title, heading_level=3) }}<span class="saved-watchlist-badge">Saved</span><p>Availability not checked</p></div>
-      <div class="saved-watchlist-actions">
-        <form method="post" action="/plus/add/preview" data-busy-form>
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <input type="hidden" name="query" value="https://anilist.co/anime/{{ item.anilist_id }}/">
-          <button class="button button-secondary" type="submit" data-busy-label="Checking…">Check availability</button>
-        </form>
-        <form method="post" action="/plus/watchlist/{{ item.anilist_id }}/remove">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button class="text-action" type="submit">Remove from watchlist<span class="sr-only">: {{ item.title }}</span></button>
-        </form>
-      </div>
-    </article>
-    {% endfor %}
-  </div>
-</section>
-{% endif %}
-
 </div>
 {% endblock %}

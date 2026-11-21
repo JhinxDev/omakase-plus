@@ -73,9 +73,11 @@ from omakase.plus.catalog_config import configured_catalogs
 from omakase.plus.codex_jobs import CodexJobError, get_worker_status
 from omakase.plus.completion_cleanup import (
     get_completion_cleanup_preference,
+    remove_from_realdebrid,
     retry_completion_cleanup,
     set_completion_cleanup_preference,
     set_keep_completed_in_plex,
+    set_realdebrid_cleanup_preference,
 )
 from omakase.plus.connections_routes import create_connections_router
 from omakase.plus.debrid_routes import create_debrid_router
@@ -1249,6 +1251,7 @@ async def library_page(
 ):
     from omakase.plus.providers import playback as playback_providers
 
+    cloud_playback = playback_providers.select(db, user.id).cloud_route
     selected = None
     if households.feature_enabled():
         selected = households.selected_scope(db, viewer_id=user.id)
@@ -1280,6 +1283,17 @@ async def library_page(
         )
     except ProductViewError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if lifecycle in {"all", "available", "in_progress"}:
+        titles = [
+            item
+            for item in titles
+            if (item["watch_status"] != "completed" or item["resurfaced"])
+            and (
+                item.get("play_url")
+                or item.get("episode_play_urls")
+                or (not cloud_playback and min(item["usable"], item["plex_visible"]) > 0)
+            )
+        ]
     title_suggestions = [
         row["title"]
         for row in db.execute(
@@ -1300,17 +1314,12 @@ async def library_page(
         {
             **_product_context(request, user, active_page="library"),
             "titles": titles,
-            "saved_picks": saved_watchlist(db, user_id=user.id, query=query)
-            if lifecycle in {"active", "all"}
-            and state == "all"
-            and provider == "all"
-            and content_type == "all"
-            else [],
+            "saved_picks": saved_watchlist(db, user_id=user.id) if lifecycle == "all" else [],
             "lifecycle_filter": lifecycle,
             "state_filter": state,
             "provider_filter": provider,
             "content_type_filter": content_type,
-            "cloud_playback": playback_providers.select(db, user.id).cloud_route,
+            "cloud_playback": cloud_playback,
             "plex_library": latest_plex_library_summary(db),
             "query": query,
             "title_suggestions": title_suggestions,
@@ -1504,6 +1513,7 @@ async def title_page(
     user=Depends(require_user),
     db=Depends(get_db),
 ):
+    from omakase.plus import title_reviews
     from omakase.plus.providers import playback as playback_providers
 
     if library_id is not None or households.feature_enabled():
@@ -1555,6 +1565,9 @@ async def title_page(
             "message": message,
             "completed": completed,
             "tracker_state": tracker["sync_state"] if tracker else None,
+            "review_comment": title_reviews.read(db, user.id, "anime", title["anilist_id"])
+            .get(0, {})
+            .get("comment", ""),
             "remove_completed_from_plex": get_completion_cleanup_preference(db, user_id=user.id),
         },
     )
@@ -1578,11 +1591,11 @@ def _completion_message(result) -> str:
     message = "Marked complete and moved to Completed."
     cleanup = result.cleanup or {}
     if cleanup.get("status") == "awaiting_plex":
-        message += " Removal from Plex is queued. Your history, rating and source media are saved."
+        message += f" {cleanup['detail']}. Your history and rating are saved."
     elif cleanup.get("status") == "blocked":
         message += " Plex removal needs attention; your history and rating are saved."
     elif cleanup.get("status") == "kept":
-        message += " Kept in Plex for rewatching."
+        message += f" {cleanup['detail']}."
     return message
 
 
@@ -1699,13 +1712,17 @@ async def watch_mark_complete(
     monitor_id: int,
     csrf_token: str = Form(""),
     score_ten: str = Form(""),
+    comment: str | None = Form(None),
     completion_policy_present: str = Form(""),
     keep_completed_in_plex: str = Form(""),
     user=Depends(require_user),
     db=Depends(get_db),
 ):
+    from omakase.plus import title_reviews
+
     _require_csrf(request, csrf_token)
     try:
+        note = title_reviews.clean_comment(comment) if comment is not None else None
         score = int(score_ten) if score_ten.strip() else None
         if score is not None and not 1 <= score <= 10:
             raise ValueError("Score must be from 1 to 10")
@@ -1724,6 +1741,8 @@ async def watch_mark_complete(
             observed_at=_canonical_now(),
             score_ten=score,
         )
+        if note is not None:
+            title_reviews.save(db, user.id, "anime", result.entry.anilist_id, comment=note)
         db.commit()
     except (ValueError, WatchServiceError) as exc:
         db.rollback()
@@ -2293,7 +2312,7 @@ async def activity_page(
             # A missing or revoked selection must never expose personal receipts.
             personal_collection = False
     if view == "collection":
-        from omakase.plus.tv_collection_activity import history as tv_collection_history
+        from omakase.plus.tv_collection_activity import inventory_history
 
         headers = {"Cache-Control": "private, no-store", "Vary": "Cookie"}
         if not personal_collection:
@@ -2303,15 +2322,23 @@ async def activity_page(
             "activity.html",
             {
                 **_product_context(request, user, active_page="activity"),
-                **tv_collection_history(db, user_id=user.id),
+                "inventory_events": inventory_history(db, user_id=user.id),
                 "activity_view": view,
                 "personal_collection_history": True,
             },
             headers=headers,
         )
     try:
-        activity_data = activity_view(db, user_id=user.id, outcome=outcome, page=page)
-        history = viewing_history(db, user_id=user.id, limit=24, page=page)
+        activity_data = (
+            activity_view(db, user_id=user.id, outcome=outcome, page=page)
+            if view == "system"
+            else {}
+        )
+        history = (
+            viewing_history(db, user_id=user.id, limit=24, page=page)
+            if view != "system"
+            else {"items": [], "page": 1, "has_more": False}
+        )
     except ProductViewError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return templates.TemplateResponse(
@@ -3554,6 +3581,7 @@ async def settings_page(
             "apple_tv_watch_enabled": apple_tv_watch_enabled,
             "remove_completed_from_plex": get_completion_cleanup_preference(db, user_id=user.id),
             "movie_cleanup_enabled": movie_cleanup_enabled(),
+            "remove_completed_from_realdebrid": remove_from_realdebrid(db, user_id=user.id),
             "remove_completed_movies": movie_cleanup_preference(db, user.id),
         },
     )
@@ -3576,6 +3604,14 @@ async def settings_post(
         raise HTTPException(422, "Use Settings > Connections to change media credentials")
     user_id = user.id
     saved_keys: list[str] = []
+
+    if form.get("realdebrid_cleanup_present") == "1":
+        choice = form.get("remove_completed_from_realdebrid")
+        if section != "tracking" or choice not in {"0", "1"}:
+            raise HTTPException(422, "Invalid Real-Debrid cleanup preference")
+        with db:
+            set_realdebrid_cleanup_preference(db, user_id=user_id, enabled=choice == "1")
+        saved_keys.append("Real-Debrid cleanup preference")
 
     if form.get("movie_cleanup_present") == "1":
         from omakase.plus.movie_cleanup import movie_cleanup_enabled, set_movie_cleanup_preference

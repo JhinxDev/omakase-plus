@@ -2683,8 +2683,10 @@ async def run_media_sync(
         db.commit()
         if monitor_ids is None:
             from omakase.plus.movie_cleanup_worker import process_movie_cleanup_jobs
+            from omakase.plus.tv_provider_requests import refresh_pending
 
             await process_movie_cleanup_jobs(db, heartbeat=heartbeat)
+            await refresh_pending(db, heartbeat=heartbeat)
         _maintain_web_playback(db)
         selected_monitors = _selected_monitors(
             db,

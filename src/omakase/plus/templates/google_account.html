@@ -13,9 +13,8 @@
     <span class="state-tag {{ 'state-ready' if google_linked else 'state-planned' }}">{{ 'Linked' if google_linked else 'Optional' }}</span>
   </header>
   <div class="google-account-content">
-  <p>{% if google_linked %}Your Google account and password open the same private library.{% else %}Link Google to your existing private account. Your password stays available.{% endif %}</p>
+  <p>{% if google_linked and google_enabled %}Your Google account and password open the same private library.{% elif google_linked %}Your Google account is linked. Use your password while Google sign-in is disabled on this server.{% else %}Link Google to your existing private account. Your password stays available.{% endif %}</p>
   {% if google_linked %}
-  <p>Google is ready for your next sign-in.</p>
   <form method="post" action="/plus/auth/google/unlink">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button class="button button-secondary" type="submit">Remove Google sign-in</button>
