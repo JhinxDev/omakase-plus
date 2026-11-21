@@ -37,11 +37,11 @@ final class RemoteFocusRenderingTests: XCTestCase {
     }
 
     @MainActor
-    func testHomeNavigationHasNoWhiteBackplate() throws {
+    func testHomeNavigationHasNoWhiteBackplate() async throws {
         let app = try launchHome()
         let home = app.buttons.matching(NSPredicate(
             format: "identifier == %@ OR label == %@", "nav-home", "Home")).firstMatch
-        try checkBackplate(home, in: app, name: "01-home-tab", card: false)
+        try await checkBackplate(home, in: app, name: "01-home-tab", card: false)
     }
 
     @MainActor
@@ -51,12 +51,12 @@ final class RemoteFocusRenderingTests: XCTestCase {
 
         let card = app.buttons["home-card-continue-movies-qa-movie"]
         try reach(card, in: app)
-        try checkBackplate(card, in: app, name: "02-continue-watching", card: true)
+        try await checkBackplate(card, in: app, name: "02-continue-watching", card: true)
         let before = try await fixturePlayback().freshPassesOpened
         XCUIRemote.shared.press(.select)
         try await waitForPlayback(after: before)
         try await returnFromPlayer(to: card, in: app)
-        try checkBackplate(card, in: app, name: "03-returned-card", card: true)
+        try await checkBackplate(card, in: app, name: "03-returned-card", card: true)
     }
 
     @MainActor
@@ -76,8 +76,8 @@ final class RemoteFocusRenderingTests: XCTestCase {
     @MainActor
     private func checkAnimeArtwork(_ card: XCUIElement, in app: XCUIApplication,
                                    expectEpisode: Bool) async throws {
-        let frame = card.frame
         let viewport = app.windows.firstMatch.frame
+        let frame = try await visibleFocusFrame(card, in: viewport)
         let artworkHeight = frame.width * 214 / 380
         let y = frame.minY + artworkHeight * 0.21
         let name = expectEpisode ? "05-anime-episode-still" : "06-anime-poster-fallback"
@@ -199,16 +199,32 @@ final class RemoteFocusRenderingTests: XCTestCase {
     }
 
     @MainActor
+    private func visibleFocusFrame(_ target: XCUIElement, in viewport: CGRect) async throws -> CGRect {
+        // The focus engine can report the destination before accessibility has
+        // published its final frame after the enclosing scroll view moves.
+        var previous: CGRect?
+        for _ in 0..<20 {
+            try await Task.sleep(for: .milliseconds(250))
+            let frame = target.frame
+            guard target.hasFocus, !frame.isEmpty, viewport.contains(frame) else {
+                previous = nil
+                continue
+            }
+            if frame == previous { return frame }
+            previous = frame
+        }
+        XCTFail("\(target.identifier) must settle on screen. Frame: \(target.frame), viewport: \(viewport)")
+        throw Stop()
+    }
+
+    @MainActor
     private func checkBackplate(_ target: XCUIElement, in app: XCUIApplication,
-                                name: String, card: Bool) throws {
-        // Let the 160 ms scale transition settle before measuring the screenshot.
-        Thread.sleep(forTimeInterval: 0.35)
+                                name: String, card: Bool) async throws {
+        let viewport = app.windows.firstMatch.frame
+        let frame = try await visibleFocusFrame(target, in: viewport)
         let shot = app.screenshot()
         let attachment = XCTAttachment(screenshot: shot)
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
-        let frame = target.frame
-        let viewport = app.windows.firstMatch.frame
-        XCTAssertTrue(viewport.contains(frame), "Focus target must be fully visible")
         let regions: [CGRect]
         if card {
             // The fixture has no artwork. Only sample the blank right side of the
