@@ -221,13 +221,18 @@ def _season_scan(cache, key, title, inventory, signature, now):
     return scan
 
 
-async def tv_episode_ids(db, scope, key, library, *, seasons):
-    """Advance availability for the catalog page's seasons with a shared provider budget."""
+async def tv_episode_ids(db, scope, key, library, *, seasons, timeout=_TV_SCAN_SECONDS):
+    """Return confirmed episodes and unfinished seasons within a caller's time budget."""
     token = account_token(db, scope.viewer_id)
     if scope.kind != "personal" or not token or not seasons:
         return EpisodeAvailability()
     binding = account_binding(token)
-    inventory = await library.inventory(token)
+    deadline = asyncio.get_running_loop().time() + timeout
+    try:
+        async with asyncio.timeout_at(deadline):
+            inventory = await library.inventory(token)
+    except TimeoutError:
+        return EpisodeAvailability(partial_seasons=tuple(sorted(set(seasons))))
     signature = _inventory_signature(inventory)
     if not hasattr(library, "tv_episode_cache"):
         library.tv_episode_cache = {}
@@ -264,7 +269,7 @@ async def tv_episode_ids(db, scope, key, library, *, seasons):
         return None
 
     try:
-        async with asyncio.timeout(_TV_SCAN_SECONDS), library.tv_episode_scan:
+        async with asyncio.timeout_at(deadline), library.tv_episode_scan:
             now = time.monotonic()
             for season in seasons:
                 title = catalog_title(db, scope, "tv", key, season)

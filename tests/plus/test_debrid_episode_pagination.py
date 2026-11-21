@@ -139,6 +139,40 @@ async def test_transient_error_leaves_availability_partial_and_retryable(binding
     assert library.calls == ["one", "two", "two"]
 
 
+@pytest.mark.anyio
+async def test_short_scan_keeps_confirmed_episodes_and_reports_unfinished_work(binding):
+    class SlowLibrary(Library):
+        async def _torrent(self, token, record):
+            if record == "two":
+                await asyncio.Future()
+            return await super()._torrent(token, record)
+
+    library = SlowLibrary(
+        {
+            "one": {"filename": "Fixture Show S02E01", "hash": "one", "status": "downloaded"},
+            "two": {"filename": "Fixture Show S02E02", "hash": "two", "status": "downloaded"},
+        }
+    )
+    result = await catalog.tv_episode_ids(
+        None, binding, "fixture", library, seasons=(2,), timeout=0.1
+    )
+    assert result.episodes == {(2, 1)}
+    assert result.partial_seasons == (2,)
+
+
+@pytest.mark.anyio
+async def test_scan_deadline_also_bounds_initial_inventory(binding):
+    class SlowInventory(Library):
+        async def inventory(self, token):
+            await asyncio.Future()
+
+    async with asyncio.timeout(1):
+        result = await catalog.tv_episode_ids(
+            None, binding, "fixture", SlowInventory({}), seasons=(2,), timeout=0.1
+        )
+    assert result == catalog.EpisodeAvailability(partial_seasons=(2,))
+
+
 def test_episode_route_requests_the_page_season_and_marks_unscanned_items(system, monkeypatch):
     app, db, sessions, _ = system
     monkeypatch.setenv("OMAKASE_NATIVE_TV_LIBRARY", "1")
