@@ -225,10 +225,80 @@ def test_a_failed_search_never_reads_like_an_empty_result(monkeypatch, db):
     monkeypatch.setenv(rc.SEARCH_ENV, "1")
     block = asyncio.run(rc.refresh(db, 1, "movie", "tt0000005", movie(), catalogs=[BrokenSource()]))
     assert block["error"] is True
-    assert "could not reach the tracked indexers" in block["headline"]
+    assert "could not confirm a result" in block["headline"]
     assert block["candidates"] == []
     # And the failure is durable, so a later render still says so rather than "nothing exists".
     assert rc.page_block(db, 1, "movie", "tt0000005")["error"] is True
+
+
+def test_successful_empty_search_is_distinct_and_cached(monkeypatch, db):
+    monkeypatch.setenv(rc.SEARCH_ENV, "1")
+    sources = [FakeSource([]), FakeSource([])]
+    for _ in range(2):
+        block = asyncio.run(rc.refresh(db, 1, "movie", "tt0000007", movie(), catalogs=sources))
+        assert "found no candidate" in block["headline"]
+        assert "error" not in block and "partial" not in block
+        assert block["candidates"] == []
+    assert [source.calls for source in sources] == [1, 1]
+
+
+def test_no_configured_sources_does_not_claim_a_search(monkeypatch, db):
+    monkeypatch.setenv(rc.SEARCH_ENV, "1")
+    assert "not recorded" in rc.page_block(db, 1, "movie", "tt0000008")["headline"]
+    block = asyncio.run(rc.refresh(db, 1, "movie", "tt0000008", movie(), catalogs=[]))
+    assert "No release sources are configured" in block["headline"]
+    assert block["candidates"] == []
+    assert "error" not in block
+    assert rc.page_block(db, 1, "movie", "tt0000008") == block
+
+
+class SlowSource:
+    def __init__(self):
+        self.cancelled = False
+
+    async def search(self, query):
+        try:
+            await asyncio.Future()
+        finally:
+            self.cancelled = True
+
+
+def test_partial_timeout_keeps_completed_candidates(monkeypatch, db):
+    monkeypatch.setenv(rc.SEARCH_ENV, "1")
+    good = FakeSource([Candidate("Chouchou 2003 1080p")])
+    slow = SlowSource()
+    block = asyncio.run(
+        rc.refresh(db, 1, "movie", "tt0000009", movie(), catalogs=[good, slow], timeout=0.01)
+    )
+    assert slow.cancelled
+    assert block["partial"] is True
+    assert "Some sources did not complete" in block["headline"]
+    assert block["summary"]["found"] == 1
+    assert block["candidates"][0]["accepted"] is True
+    assert rc.page_block(db, 1, "movie", "tt0000009") == block
+
+
+def test_partial_empty_is_not_a_conclusive_no_result(monkeypatch, db):
+    monkeypatch.setenv(rc.SEARCH_ENV, "1")
+    block = asyncio.run(
+        rc.refresh(db, 1, "movie", "tt0000010", movie(), catalogs=[FakeSource([]), BrokenSource()])
+    )
+    assert block["partial"] is True
+    assert "found no candidates in the sources that responded" in block["headline"]
+    assert block["candidates"] == []
+    assert "error" not in block
+
+
+def test_all_sources_time_out_without_a_confirmed_result(monkeypatch, db):
+    monkeypatch.setenv(rc.SEARCH_ENV, "1")
+    slow = SlowSource()
+    block = asyncio.run(
+        rc.refresh(db, 1, "movie", "tt0000011", movie(), catalogs=[slow], timeout=0.01)
+    )
+    assert slow.cancelled
+    assert block["error"] is True
+    assert "could not confirm a result" in block["headline"]
+    assert block["candidates"] == []
 
 
 def test_refresh_does_nothing_when_the_feature_is_off(monkeypatch, db):

@@ -670,27 +670,7 @@ def create_movies_router(
             {
                 **requests_context(request, user),
                 "item": model,
-                # Owner review W-06: the page states what Omakase's own search found and
-                # why each candidate failed, or says plainly that the search is switched
-                # off or could not run. It never presents a re-stamped check time as
-                # progress. The search is bounded and cached, so rendering stays cheap.
-                "request_search": await request_candidates.refresh(
-                    db,
-                    user.id,
-                    kind,
-                    title_id,
-                    request_candidates.JudgeRequest(
-                        title=str(
-                            getattr(model, "title", "")
-                            or getattr(model, "title_label", "")
-                            or title_id
-                        ),
-                        kind=kind,
-                        year=getattr(model, "year", None),
-                        season=getattr(model, "season", None),
-                        episode=getattr(model, "episode", None),
-                    ),
-                ),
+                "request_search": request_candidates.page_block(db, user.id, kind, title_id),
                 "notice": "checked" if checked else ("retried" if retried else ""),
                 "csrf_token": csrf_token(request),
             },

@@ -10,7 +10,7 @@ import httpx
 from starlette.concurrency import run_in_threadpool
 
 from omakase.plus import discover_hub as hub
-from omakase.plus import households, movies_store
+from omakase.plus import households, movies_store, request_candidates
 from omakase.plus import request_status as status_model
 from omakase.plus.catalog_search import AnimeCatalogSearch, CatalogSearchError, _plain
 from omakase.plus.connections import movie_connections
@@ -35,6 +35,18 @@ _SEARCH_HEADINGS = {"anime": "Anime", "tv": "TV Shows", "movies": "Movies"}
 _LABELS = status_model.LABELS
 _MOVIE_PROGRESS_LABELS = status_model.MOVIE_PROGRESS_LABELS
 _CLOUD_LIBRARY = DebridLibrary()
+_FALLBACK_AFTER_RIVEN = frozenset(
+    {
+        "backend_failed",
+        "backend_item_missing",
+        "backend_unavailable",
+        "investigation_exhausted",
+        "no_eligible_results",
+        "search_complete",
+        "transport_error",
+        "transport_timeout",
+    }
+)
 _POSTER = re.compile(
     r"https://(?:image\.tmdb\.org/t/p/(?:w[0-9]{2,4}|original)/[A-Za-z0-9_-]{1,96}"
     r"|s4\.anilist\.co/file/anilistcdn/media/anime/cover/(?:medium|large)/[A-Za-z0-9_-]{1,128})"
@@ -702,8 +714,20 @@ async def submit_request(db, user_id, kind, title_id):
     return _request_status(db, scope, kind, title_id)
 
 
+async def _fallback_movie_search(db, user_id, title_id, status, provider_code):
+    if status is None or status["resolved"] or provider_code not in _FALLBACK_AFTER_RIVEN:
+        return
+    await request_candidates.refresh(
+        db,
+        user_id,
+        "movie",
+        title_id,
+        request_candidates.JudgeRequest(title=status["title"], year=status.get("release_year")),
+    )
+
+
 async def refresh_request(db, user_id, kind, title_id):
-    """Read-only status check: reads provider/library state, never a new request."""
+    """Check provider and library state, then record fallback search evidence when needed."""
     title_id = _identity(kind, title_id)
     scope = _scope(db, user_id)
     cloud = kind == "movie" and playback_providers.select(db, user_id).cloud_route
@@ -726,7 +750,9 @@ async def refresh_request(db, user_id, kind, title_id):
             _record_movie_observation(
                 user_id, title_id, row, card.get("code"), check.get("attempted_at")
             )
-        return _request_status(db, scope, kind, title_id, movie_library=library)
+        status = _request_status(db, scope, kind, title_id, movie_library=library)
+        await _fallback_movie_search(db, user_id, title_id, status, card.get("code"))
+        return status
     return status
 
 
@@ -761,4 +787,6 @@ async def retry_request(db, user_id, kind, title_id):
         _record_movie_observation(
             user_id, title_id, row, card.get("code"), check.get("attempted_at")
         )
-    return _request_status(db, scope, kind, title_id, movie_library=library)
+    status = _request_status(db, scope, kind, title_id, movie_library=library)
+    await _fallback_movie_search(db, user_id, title_id, status, card.get("code"))
+    return status

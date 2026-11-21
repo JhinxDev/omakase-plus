@@ -320,6 +320,68 @@ def test_check_status_reads_only_and_retry_cannot_duplicate(client, monkeypatch)
             assert request is not None
 
 
+@pytest.mark.parametrize(
+    ("provider_code", "performed"),
+    [
+        ("no_eligible_results", True),
+        ("no_eligible_results", False),
+        ("backend_failed", False),
+        ("searching", True),
+        ("acquiring", True),
+    ],
+)
+def test_request_checks_riven_before_searching_configured_sources(
+    client, monkeypatch, provider_code, performed
+):
+    from types import SimpleNamespace
+
+    from omakase.plus import catalog_config
+    from tests.plus.test_request_candidates import Candidate
+
+    _signup_and_login(client)
+    user_id = _user_id(client)
+    events = []
+
+    class RivenStatus(NoProvider):
+        async def refresh(self, user_id, imdb_id):
+            events.append(("riven", imdb_id))
+            return {"code": provider_code, "request_check": {"performed": performed}}
+
+    class Fallback:
+        async def search(self, query):
+            events.append(("indexer", query))
+            return [Candidate("Chouchou 2003 1080p"), Candidate("Chouchou 1998 1080p")]
+
+    monkeypatch.setenv("OMAKASE_REQUEST_SEARCH", "1")
+    monkeypatch.setattr(for_you, "MovieService", lambda *_: RivenStatus())
+    monkeypatch.setattr(
+        catalog_config,
+        "configured_catalogs",
+        lambda *a, **k: SimpleNamespace(sources=(Fallback(),)),
+    )
+    with _connect_client_db(client) as db:
+        _seed_movie(db, user_id, code="requested", state="requested", detail="Request saved")
+        db.commit()
+
+    url = f"/plus/requests/movie/{CHOUCHOU}"
+    opened = client.get(url)
+    assert opened.status_code == 200
+    assert not events
+    result = client.post(
+        url + "/check",
+        data={"csrf_token": _csrf_token(client)},
+        follow_redirects=False,
+    )
+    assert result.status_code == 303
+    expected = [("riven", CHOUCHOU)]
+    if provider_code in {"no_eligible_results", "backend_failed"}:
+        expected.append(("indexer", "Chouchou"))
+    assert events == expected
+    checked = client.get(result.headers["location"])
+    assert ("the release year does not match the title" in checked.text) == (len(expected) == 2)
+    assert events == expected
+
+
 def test_automatic_refresh_is_bounded_per_viewer(client, monkeypatch):
     from omakase.plus import movies_routes
 

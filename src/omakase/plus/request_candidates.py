@@ -30,6 +30,10 @@ REFRESH_ENV = "OMAKASE_REQUEST_SEARCH_REFRESH_HOURS"
 DEFAULT_REFRESH_HOURS = 6.0
 SEARCH_TIMEOUT_SECONDS = 25.0
 ERROR_CODE = "search_error"
+EMPTY_CODE = "search_empty"
+NO_SOURCES_CODE = "search_no_sources"
+PARTIAL_CODE = "search_partial"
+_SNAPSHOT_MARKERS = {ERROR_CODE, EMPTY_CODE, NO_SOURCES_CODE, PARTIAL_CODE}
 
 # Every rejection carries one of these codes so the page never has to invent wording.
 REASON_TEXT = {
@@ -232,7 +236,13 @@ def describe(summary: dict[str, object]) -> str:
 
 
 def record(
-    db, user_id: int, kind: str, title_id: str, verdicts: Iterable[tuple[object, Verdict]]
+    db,
+    user_id: int,
+    kind: str,
+    title_id: str,
+    verdicts: Iterable[tuple[object, Verdict]],
+    *,
+    marker: str | None = None,
 ) -> int:
     """Replace this request's candidate snapshot with the current search result.
 
@@ -264,6 +274,12 @@ def record(
                 observed,
             ),
         )
+    if marker is not None:
+        db.execute(
+            "INSERT INTO request_candidates(user_id, kind, title_id, release_title, "
+            "reason_code, observed_at) VALUES(?,?,?,?,?,?)",
+            (user_id, kind, str(title_id), "", marker, observed),
+        )
     db.commit()
     return len(rows)
 
@@ -291,8 +307,8 @@ def page_block(db, user_id: int, kind: str, title_id: str) -> dict[str, object]:
             "candidates": [],
         }
     rows = snapshot(db, user_id, kind, title_id)
-    failed = [row for row in rows if str(row["reason_code"]) == ERROR_CODE]
-    rows = [row for row in rows if str(row["reason_code"]) != ERROR_CODE]
+    markers = {str(row["reason_code"]) for row in rows} & _SNAPSHOT_MARKERS
+    rows = [row for row in rows if str(row["reason_code"]) not in _SNAPSHOT_MARKERS]
     verdicts = [Verdict(bool(row["accepted"]), str(row["reason_code"]), "") for row in rows]
     summary = summarize(verdicts)
     candidates = [
@@ -313,13 +329,27 @@ def page_block(db, user_id: int, kind: str, title_id: str) -> dict[str, object]:
         "summary": summary,
         "candidates": candidates,
     }
-    if failed and not rows:
-        # A failed run must never read like "we searched and there was nothing".
+    if NO_SOURCES_CODE in markers:
+        block["headline"] = "No release sources are configured for Omakase's own request search."
+    elif ERROR_CODE in markers:
+        # Older versions also recorded this marker for empty successes. Don't
+        # claim the indexers were unreachable when the cause isn't known.
         block["headline"] = (
-            "Omakase's own search could not reach the tracked indexers, so this page cannot "
-            "say what exists yet. It will try again."
+            "Omakase could not confirm a result from its own search. This page cannot "
+            "say what exists yet."
         )
         block["error"] = True
+    elif PARTIAL_CODE in markers:
+        found = int(summary["found"])
+        noun = "candidate" if found == 1 else "candidates"
+        result = f"found {found} {noun}" if found else "found no candidates"
+        block["headline"] = (
+            f"Omakase {result} in the sources that responded. "
+            "Some sources did not complete the search."
+        )
+        block["partial"] = True
+    elif not rows and EMPTY_CODE not in markers:
+        block["headline"] = "Omakase has not recorded a result from its own search yet."
     return block
 
 
@@ -368,41 +398,45 @@ async def refresh(
     if catalogs is None:
         from omakase.plus.catalog_config import configured_catalogs
 
-        catalogs = configured_catalogs(db, user_id).sources
+        catalogs = configured_catalogs(db, user_id, kind=kind).sources
 
     async def one(source):
-        return await source.search(request.title)
+        return tuple(await source.search(request.title))
 
-    results: list[object] = []
-    try:
-        results = await asyncio.wait_for(
-            asyncio.gather(*(one(source) for source in catalogs), return_exceptions=True),
-            timeout=timeout,
-        )
-    except (asyncio.TimeoutError, TimeoutError):
-        results = []
-    except Exception:  # noqa: BLE001 - a search must never break the page
-        results = []
-
-    candidates = []
-    for result in results:
-        if isinstance(result, BaseException) or not result:
-            continue
-        candidates.extend(result)
-
-    if not candidates and not any(isinstance(item, tuple) and item for item in results):
-        # Nothing came back at all: record the failure, not an empty result set.
-        db.execute(
-            "DELETE FROM request_candidates WHERE user_id=? AND kind=? AND title_id=?",
-            (user_id, kind, str(title_id)),
-        )
-        db.execute(
-            "INSERT INTO request_candidates(user_id, kind, title_id, release_title, indexer,"
-            " size_bytes, seeders, accepted, reason_code, observed_at) VALUES(?,?,?,?,?,0,0,0,?,?)",
-            (user_id, kind, str(title_id), "", "", ERROR_CODE, time.time()),
-        )
-        db.commit()
+    tasks = [asyncio.create_task(one(source)) for source in catalogs]
+    if not tasks:
+        record(db, user_id, kind, title_id, [], marker=NO_SOURCES_CODE)
         return page_block(db, user_id, kind, title_id)
 
-    record(db, user_id, kind, title_id, [(item, judge(item, request)) for item in candidates])
+    try:
+        completed, _ = await asyncio.wait(tasks, timeout=timeout)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    candidates = []
+    successes = 0
+    for task, result in zip(tasks, results, strict=True):
+        if task not in completed or isinstance(result, BaseException):
+            continue
+        successes += 1
+        candidates.extend(result)
+
+    marker = None
+    if not successes:
+        marker = ERROR_CODE
+    elif successes != len(tasks):
+        marker = PARTIAL_CODE
+    elif not candidates:
+        marker = EMPTY_CODE
+    record(
+        db,
+        user_id,
+        kind,
+        title_id,
+        [(item, judge(item, request)) for item in candidates],
+        marker=marker,
+    )
     return page_block(db, user_id, kind, title_id)
