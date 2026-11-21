@@ -36,10 +36,10 @@ Its loopback fixture and temporary TLS material are stopped and removed on exit.
 Use a fresh checkout each run: an existing Vendor directory is rejected rather
 than silently trusting an unverified dependency.
 
-The manual-only `.github/workflows/tvos-focus.yml` performs this same launch
-and retains artifacts even on failure. Preparing this workflow does not run it
-or authorize a push. Once separately authorized and present on the selected
-remote ref, dispatch `tvOS focus rendering regression` on that exact ref.
+The `tvOS focus rendering regression` workflow runs on the exact pull request
+head when the tvOS source or fixture changes. It keeps artifacts on failure.
+You can also dispatch it manually on an exact ref when the workflow is present
+on the default branch.
 
 ## Baseline and candidate evidence
 

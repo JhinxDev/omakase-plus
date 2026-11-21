@@ -1,6 +1,11 @@
 name: tvOS focus rendering regression
 
 on:
+  pull_request:
+    paths:
+      - .github/workflows/tvos-focus.yml
+      - scripts/fixtures/tvos-connected/**
+      - tv-source/**
   workflow_dispatch:
     inputs:
       runtime:
@@ -22,6 +27,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Exercise real Home focus and inspect rendered pixels
         run: bash scripts/fixtures/tvos-connected/run_focus_regression.sh "$RUNNER_TEMP/focus-proof"
       - name: Retain screenshots, pixel measurements and runtime receipt
