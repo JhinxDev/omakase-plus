@@ -128,6 +128,10 @@ def test_mutations_require_csrf_and_use_session_owner(browser, path, data):
     )
     assert response.status_code == 200
     assert svc.calls[0][1] == 1
+    if path in {"/tv/history", "/tv/episode"}:
+        assert svc.calls[0][2]["record_addition"] is True
+    else:
+        assert "record_addition" not in svc.calls[0][2]
 
 
 def test_route_auth_private_and_body_boundaries(browser, monkeypatch):

@@ -2279,10 +2279,36 @@ async def activity_page(
     user=Depends(require_user),
     db=Depends(get_db),
 ):
-    if view not in {"watch", "system"}:
+    if view not in {"watch", "system", "collection"}:
         raise HTTPException(422, "Invalid history view")
     from omakase.plus.providers import playback as playback_providers
 
+    personal_collection = not households.feature_enabled()
+    if not personal_collection:
+        try:
+            personal_collection = (
+                households.selected_scope(db, viewer_id=user.id).kind == "personal"
+            )
+        except households.HouseholdError:
+            # A missing or revoked selection must never expose personal receipts.
+            personal_collection = False
+    if view == "collection":
+        from omakase.plus.tv_collection_activity import history as tv_collection_history
+
+        headers = {"Cache-Control": "private, no-store", "Vary": "Cookie"}
+        if not personal_collection:
+            raise HTTPException(404, "Personal collection history unavailable", headers=headers)
+        return templates.TemplateResponse(
+            request,
+            "activity.html",
+            {
+                **_product_context(request, user, active_page="activity"),
+                **tv_collection_history(db, user_id=user.id),
+                "activity_view": view,
+                "personal_collection_history": True,
+            },
+            headers=headers,
+        )
     try:
         activity_data = activity_view(db, user_id=user.id, outcome=outcome, page=page)
         history = viewing_history(db, user_id=user.id, limit=24, page=page)
@@ -2295,6 +2321,7 @@ async def activity_page(
             **_product_context(request, user, active_page="activity"),
             **activity_data,
             "activity_view": view,
+            "personal_collection_history": personal_collection,
             "cloud_playback": playback_providers.select(db, user.id).cloud_route,
             "watch_history": history["items"],
             "history_page": history["page"],

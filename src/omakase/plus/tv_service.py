@@ -117,12 +117,14 @@ class TVService(MovieService):
         ).fetchone()
         return json.loads(row[0]) if row else None
 
-    def _save(self, user_id, metadata, *, collection=False):
+    def _save(self, user_id, metadata, *, collection=False, addition_source=None, commit=True):
         old = self._raw(user_id, metadata["tmdb_id"])
         if old and old.get("imdb_id") and metadata.get("imdb_id") != old["imdb_id"]:
             raise TVError("Catalog identity changed; import stopped.", "identity_mismatch")
+        now = _iso(self._clock())
+        was_in_collection = bool(old and old.get("in_collection"))
         metadata = dict(metadata)
-        metadata["in_collection"] = collection or bool(old and old.get("in_collection"))
+        metadata["in_collection"] = collection or was_in_collection
         if old:
             loaded = {
                 row["season_number"] for row in old.get("seasons", []) if row.get("episodes_loaded")
@@ -136,9 +138,21 @@ class TVService(MovieService):
             ]
         self.db.execute(
             "INSERT INTO tv_catalog VALUES(?,?,?,?) ON CONFLICT(user_id,tmdb_id) DO UPDATE SET metadata_json=excluded.metadata_json,updated_at=excluded.updated_at",
-            (user_id, metadata["tmdb_id"], json.dumps(metadata), _iso(self._clock())),
+            (user_id, metadata["tmdb_id"], json.dumps(metadata), now),
         )
-        self.db.commit()
+        if collection and not was_in_collection and addition_source is not None:
+            from omakase.plus.tv_collection_activity import record_addition
+
+            record_addition(
+                self.db,
+                user_id=user_id,
+                tmdb_id=metadata["tmdb_id"],
+                title=metadata.get("title") or "",
+                source=addition_source,
+                added_at=now,
+            )
+        if commit:
+            self.db.commit()
 
     def _plex_scope(self):
         return hashlib.sha256(
@@ -506,7 +520,9 @@ class TVService(MovieService):
         self._save(user_id, metadata)
         return self.card(user_id, metadata)
 
-    async def save_history(self, user_id, tmdb_id, *, status=UNSET, rating=UNSET):
+    async def save_history(
+        self, user_id, tmdb_id, *, status=UNSET, rating=UNSET, record_addition=False
+    ):
         await self.detail(user_id, tmdb_id)
         if status is not UNSET and status not in {"unwatched", "watching", "completed", "dropped"}:
             raise TVError("Invalid TV watch status.")
@@ -537,10 +553,18 @@ class TVService(MovieService):
                     "UPDATE tv_history SET rating=?,rating_source='manual',updated_at=? WHERE user_id=? AND tmdb_id=?",
                     (rating, now, user_id, tmdb_id),
                 )
-        self._save(user_id, self._raw(user_id, tmdb_id), collection=True)
+            self._save(
+                user_id,
+                self._raw(user_id, tmdb_id),
+                collection=True,
+                addition_source="watch_status_save" if record_addition else None,
+                commit=False,
+            )
         return self.card(user_id, self._raw(user_id, tmdb_id))
 
-    async def save_episode(self, user_id, tmdb_id, season_number, episode_number, watched):
+    async def save_episode(
+        self, user_id, tmdb_id, season_number, episode_number, watched, *, record_addition=False
+    ):
         self._owner(user_id)
         _positive(tmdb_id)
         number(season_number, 200, zero=True)
@@ -565,7 +589,13 @@ class TVService(MovieService):
                     episode_number,
                 ),
             )
-        self._save(user_id, self._raw(user_id, tmdb_id), collection=True)
+            self._save(
+                user_id,
+                self._raw(user_id, tmdb_id),
+                collection=True,
+                addition_source="episode_watch_save" if record_addition else None,
+                commit=False,
+            )
         return self.card(user_id, self._raw(user_id, tmdb_id))
 
     async def _tv_section(self):

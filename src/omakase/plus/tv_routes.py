@@ -505,6 +505,8 @@ def create_tv_router(
                     status_code=303,
                     headers={"Cache-Control": "private, no-store"},
                 )
+        if operation in {"save_history", "save_episode"}:
+            kwargs["record_addition"] = True
         try:
             result = await getattr(service(db, user), operation)(user.id, **kwargs)
         except (TVError, MovieError, ValueError) as exc:

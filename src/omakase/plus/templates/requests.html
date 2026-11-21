@@ -8,6 +8,7 @@
 <script src="/plus/static/requests.js?v={{ asset_version }}" defer></script>
 {% endblock %}
 {% block content %}
+<p>Looking for when a TV show was added or saved for local review? <a href="/plus/activity?view=collection">View collection changes</a>.</p>
 <section class="requests-screen" data-requests-screen data-requests-status="/plus/requests/status">
   {% for category in categories %}
   <section class="requests-category" data-request-category="{{ category.key }}" data-request-count="{{ category.requests | length }}" aria-labelledby="requests-{{ category.key }}">
