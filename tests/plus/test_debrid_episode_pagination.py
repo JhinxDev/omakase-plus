@@ -140,6 +140,25 @@ async def test_transient_error_leaves_availability_partial_and_retryable(binding
 
 
 @pytest.mark.anyio
+async def test_restricted_torrent_does_not_hide_other_confirmed_episodes(binding):
+    class RestrictedLibrary(Library):
+        async def _torrent(self, token, record):
+            if record == "blocked":
+                raise DebridLibraryError(status=451)
+            return await super()._torrent(token, record)
+
+    library = RestrictedLibrary(
+        {
+            "blocked": {"filename": "Fixture Show S02E01", "hash": "a", "status": "downloaded"},
+            "playable": {"filename": "Fixture Show S02E02", "hash": "b", "status": "downloaded"},
+        }
+    )
+    result = await catalog.tv_episode_ids(None, binding, "fixture", library, seasons=(2,))
+    assert result.episodes == {(2, 2)}
+    assert result.partial_seasons == ()
+
+
+@pytest.mark.anyio
 async def test_short_scan_keeps_confirmed_episodes_and_reports_unfinished_work(binding):
     class SlowLibrary(Library):
         async def _torrent(self, token, record):
@@ -171,6 +190,35 @@ async def test_scan_deadline_also_bounds_initial_inventory(binding):
             None, binding, "fixture", SlowInventory({}), seasons=(2,), timeout=0.1
         )
     assert result == catalog.EpisodeAvailability(partial_seasons=(2,))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("supports_4k", [True, False])
+async def test_movie_resolver_prefers_4k_and_keeps_1080p_as_a_fallback(
+    binding, monkeypatch, supports_4k
+):
+    from types import SimpleNamespace
+
+    title = catalog.CatalogTitle("movie", "tt0000001", "Fixture Film", 2025)
+    monkeypatch.setattr(catalog, "catalog_title", lambda *_: title)
+    monkeypatch.setattr(catalog, "revalidate_catalog", lambda *_: None)
+
+    class Copies(Library):
+        async def torrent_source(self, token, record, number, *, inventory):
+            if record == "uhd" and not supports_4k:
+                raise DebridLibraryError(status=415)
+            return SimpleNamespace(media_version=record)
+
+    library = Copies(
+        {
+            "lower": {"filename": "Fixture Film 2025 720p", "hash": "a", "status": "downloaded"},
+            "hd": {"filename": "Fixture Film 2025 1080p", "hash": "b", "status": "downloaded"},
+            "uhd": {"filename": "Fixture Film 2025 2160p", "hash": "c", "status": "downloaded"},
+        }
+    )
+    source, _ = await catalog.resolve_catalog(None, binding, "movie", title.key, 0, 0, library)
+    assert source.cloud.media_version == ("uhd" if supports_4k else "hd")
+    assert library.calls == (["uhd"] if supports_4k else ["uhd", "hd"])
 
 
 def test_episode_route_requests_the_page_season_and_marks_unscanned_items(system, monkeypatch):
