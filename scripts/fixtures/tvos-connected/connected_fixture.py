@@ -30,10 +30,12 @@ import os
 import re
 import secrets
 import ssl
+import struct
 import subprocess
 import sys
 import time
 import uuid
+import zlib
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -56,6 +58,7 @@ HLS_TITLE = "Harbor Signal"
 HLS_WATCH_PATH = f"/plus/watch/title/movie/{HLS_ID}"
 WATCHLIST_ID = "901"
 WATCHLIST_TITLE = "QA Watchlist"
+HOME_ANIME_IDS = ("7101", "7102")
 DETAILS_SUMMARY = "Synthetic saved series details."
 RESUME_POSITION = 9.0
 PLAYLIST_REPEATS = 8
@@ -75,6 +78,24 @@ CONTENT_TYPES = {
     ".m4s": "video/iso.segment",
     ".vtt": "text/vtt",
 }
+
+
+def _solid_png(width: int, height: int, color: tuple[int, int, int]) -> bytes:
+    """Synthetic, distinguishable artwork for Home screenshot assertions."""
+
+    def chunk(kind, data):
+        return (
+            struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    rows = (b"\0" + bytes(color) * width) * height
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
 
 
 # --------------------------------------------------------------------- playlists
@@ -536,6 +557,12 @@ class Handler(BaseHTTPRequestHandler):
             )
         if route.path == API + "home":
             return self.home_page()
+        if route.path == API + f"episode-artwork/anime/{HOME_ANIME_IDS[0]}/1/3":
+            return self.reply(200, _solid_png(160, 90, (24, 96, 224)), content_type="image/png")
+        if route.path in {API + f"artwork/{key}/poster" for key in HOME_ANIME_IDS}:
+            return self.reply(200, _solid_png(90, 135, (32, 208, 72)), content_type="image/png")
+        if route.path in {API + f"artwork/{key}/banner" for key in HOME_ANIME_IDS}:
+            return self.reply(200, _solid_png(240, 50, (224, 40, 32)), content_type="image/png")
         if route.path == API + "requests":
             return self.requests_page()
         if route.path == API + "catalog":
@@ -716,6 +743,27 @@ class Handler(BaseHTTPRequestHandler):
             "play_label": "Resume",
             "artwork": artwork,
         }
+        anime = [
+            {
+                "id": f"qa-anime-{key}",
+                "domain": "anime",
+                "title": title,
+                "title_id": key,
+                "subtitle": "Episode 3",
+                "detail_label": "Up next",
+                "progress": {"percent": None, "remaining_label": ""},
+                "play_url": f"/plus/watch/{key}/3?play=1",
+                "play_label": "Play episode 3",
+                "episode": {"season": 1, "episode": 3},
+                "artwork": {
+                    "landscape": f"artwork/{key}/banner",
+                    "poster": f"artwork/{key}/poster",
+                },
+            }
+            for key, title in zip(
+                HOME_ANIME_IDS, ("Fixture Episode Still", "Fixture Series Poster"), strict=True
+            )
+        ]
         return self.json_reply(
             200,
             {
@@ -729,7 +777,12 @@ class Handler(BaseHTTPRequestHandler):
                         "id": "continue-movies",
                         "label": "Continue Watching \u2014 Movies",
                         "cards": [card],
-                    }
+                    },
+                    {
+                        "id": "continue-anime",
+                        "label": "Continue Watching \u2014 Anime",
+                        "cards": anime,
+                    },
                 ],
                 "layout": {"rows": []},
             },

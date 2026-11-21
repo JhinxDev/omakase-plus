@@ -7,6 +7,9 @@ connected Real-Debrid account.
 ## What the app does
 
 - Browse Anime, Movies and TV shelves, with Continue Watching and title details.
+- On Home inside Omakase, Anime Continue Watching shows the episode still when
+  it can be matched. The card uses the full series poster while the still loads
+  or when episode artwork is unavailable.
 - On recent native builds, the Apple TV Home Screen Top Shelf combines activity
   across Anime, Movies and TV. Open the app after pairing to populate the shelf.
   It refreshes after supported playback saves. Continue Watching displays full

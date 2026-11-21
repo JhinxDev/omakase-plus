@@ -37,11 +37,11 @@ final class RemoteFocusRenderingTests: XCTestCase {
     }
 
     @MainActor
-    func testHomeNavigationHasNoWhiteBackplate() throws {
+    func testHomeNavigationHasNoWhiteBackplate() async throws {
         let app = try launchHome()
         let home = app.buttons.matching(NSPredicate(
             format: "identifier == %@ OR label == %@", "nav-home", "Home")).firstMatch
-        try checkBackplate(home, in: app, name: "01-home-tab", card: false)
+        try await checkBackplate(home, in: app, name: "01-home-tab", card: false)
     }
 
     @MainActor
@@ -51,12 +51,61 @@ final class RemoteFocusRenderingTests: XCTestCase {
 
         let card = app.buttons["home-card-continue-movies-qa-movie"]
         try reach(card, in: app)
-        try checkBackplate(card, in: app, name: "02-continue-watching", card: true)
+        try await checkBackplate(card, in: app, name: "02-continue-watching", card: true)
         let before = try await fixturePlayback().freshPassesOpened
         XCUIRemote.shared.press(.select)
         try await waitForPlayback(after: before)
         try await returnFromPlayer(to: card, in: app)
-        try checkBackplate(card, in: app, name: "03-returned-card", card: true)
+        try await checkBackplate(card, in: app, name: "03-returned-card", card: true)
+    }
+
+    @MainActor
+    func testAnimeContinueWatchingUsesEpisodeStillAndFullPoster() async throws {
+        let app = try launchHome()
+        XCUIRemote.shared.press(.select)
+
+        let episode = app.buttons["home-card-continue-anime-qa-anime-7101"]
+        try reach(episode, in: app)
+        try await checkAnimeArtwork(episode, in: app, expectEpisode: true)
+
+        let fallback = app.buttons["home-card-continue-anime-qa-anime-7102"]
+        try reach(fallback, in: app)
+        try await checkAnimeArtwork(fallback, in: app, expectEpisode: false)
+    }
+
+    @MainActor
+    private func checkAnimeArtwork(_ card: XCUIElement, in app: XCUIApplication,
+                                   expectEpisode: Bool) async throws {
+        let viewport = app.windows.firstMatch.frame
+        let frame = try await visibleFocusFrame(card, in: viewport)
+        let artworkHeight = frame.width * 214 / 380
+        let y = frame.minY + artworkHeight * 0.21
+        let name = expectEpisode ? "05-anime-episode-still" : "06-anime-poster-fallback"
+        for attempt in 0..<16 {
+            try await Task.sleep(for: .milliseconds(350))
+            let screenshot = app.screenshot()
+            let (pixels, width, height) = try renderedPixels(screenshot)
+
+            func pixel(at fraction: CGFloat) -> (r: Int, g: Int, b: Int) {
+                let x = frame.minX + frame.width * fraction
+                let column = Int((x - viewport.minX) * CGFloat(width) / viewport.width)
+                let row = Int((y - viewport.minY) * CGFloat(height) / viewport.height)
+                guard (0..<width).contains(column), (0..<height).contains(row) else { return (255, 255, 255) }
+                let offset = (row * width + column) * 4
+                return (Int(pixels[offset]), Int(pixels[offset + 1]), Int(pixels[offset + 2]))
+            }
+
+            let side = pixel(at: 0.18), center = pixel(at: 0.5)
+            let matches = expectEpisode
+                ? side.b > side.g + 50 && side.b > side.r + 120 && center.b > center.g + 50
+                : center.g > center.r + 95 && center.g > center.b + 95 && max(side.r, side.g, side.b) < 95
+            if matches || attempt == 15 {
+                let attachment = XCTAttachment(screenshot: screenshot)
+                attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+                XCTAssertTrue(matches, "\(name) rendered unexpected artwork. Side: \(side), center: \(center).")
+                return
+            }
+        }
     }
 
     private func fixturePlayback() async throws -> FixturePlayback {
@@ -150,23 +199,78 @@ final class RemoteFocusRenderingTests: XCTestCase {
     }
 
     @MainActor
+    private func visibleFocusFrame(_ target: XCUIElement, in viewport: CGRect) async throws -> CGRect {
+        // The focus engine can report the destination before accessibility has
+        // published its final frame after the enclosing scroll view moves.
+        var previous: CGRect?
+        for _ in 0..<20 {
+            try await Task.sleep(for: .milliseconds(250))
+            let frame = target.frame
+            guard target.hasFocus, !frame.isEmpty, viewport.contains(frame) else {
+                previous = nil
+                continue
+            }
+            if frame == previous { return frame }
+            previous = frame
+        }
+        XCTFail("\(target.identifier) must settle on screen. Frame: \(target.frame), viewport: \(viewport)")
+        throw Stop()
+    }
+
+    @MainActor
     private func checkBackplate(_ target: XCUIElement, in app: XCUIApplication,
-                                name: String, card: Bool) throws {
-        // Let the 160 ms scale transition settle before measuring the screenshot.
-        Thread.sleep(forTimeInterval: 0.35)
+                                name: String, card: Bool) async throws {
+        let viewport = app.windows.firstMatch.frame
+        let bounds: CGRect
+        if card {
+            try await Task.sleep(for: .milliseconds(500))
+            XCTAssertTrue(target.hasFocus, "The movie card must have focus before capture")
+            bounds = target.frame
+        } else {
+            bounds = try await visibleFocusFrame(target, in: viewport)
+        }
         let shot = app.screenshot()
         let attachment = XCTAttachment(screenshot: shot)
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
-        let frame = target.frame
-        let viewport = app.windows.firstMatch.frame
-        XCTAssertTrue(viewport.contains(frame), "Focus target must be fully visible")
+        let (pixels, width, height) = try renderedPixels(shot)
+        let sx = CGFloat(width) / viewport.width, sy = CGFloat(height) / viewport.height
         let regions: [CGRect]
         if card {
+            // Vertical scrolling can leave the movie button at its unscrolled
+            // accessibility offset. Locate the visible artwork outline using
+            // the unaffected horizontal bounds and the known artwork ratio.
+            let columns = Array(stride(from: Int((bounds.minX - viewport.minX + bounds.width * 0.24) * sx),
+                                       to: Int((bounds.minX - viewport.minX + bounds.width * 0.76) * sx), by: 4))
+            guard columns.count > 20, columns.allSatisfy({ (0..<width).contains($0) }) else {
+                XCTFail("Movie focus outline sample falls outside the card's horizontal bounds")
+                throw Stop()
+            }
+            let strokeRows = (0..<height).filter { row in
+                let count = columns.reduce(into: 0) { count, column in
+                    let offset = (row * width + column) * 4
+                    let r = Int(pixels[offset]), g = Int(pixels[offset + 1]), b = Int(pixels[offset + 2])
+                    if r >= 155, r - g >= 8, b >= 175, b - g >= 24 { count += 1 }
+                }
+                return count * 4 >= columns.count * 3
+            }
+            let artworkHeight = Int((bounds.width * 214 / 380 * sy).rounded())
+            let tolerance = max(5, Int((8 * sy).rounded()))
+            guard let top = strokeRows.first(where: { top in
+                strokeRows.contains { abs($0 - top - artworkHeight) <= tolerance }
+            }) else {
+                XCTFail("Could not locate the focused movie artwork outline in the screenshot")
+                throw Stop()
+            }
+            let frame = CGRect(x: bounds.minX, y: viewport.minY + CGFloat(top) / sy,
+                               width: bounds.width, height: bounds.height)
+            XCTAssertTrue(viewport.contains(frame), "The rendered movie card must be fully visible")
+            print("FOCUS_STROKE \(name) screenY=\(top) accessibilityY=\(bounds.minY)")
             // The fixture has no artwork. Only sample the blank right side of the
             // subtitle panel, below the artwork and away from title/subtitle ink.
             regions = [CGRect(x: frame.maxX - frame.width * 0.22,
                               y: frame.maxY - 22, width: frame.width * 0.15, height: 14)]
         } else {
+            let frame = bounds
             // Outside the app's purple outline and away from centered white text.
             regions = [CGRect(x: frame.minX + 14, y: frame.minY - 9,
                               width: frame.width - 28, height: 6),
@@ -175,20 +279,6 @@ final class RemoteFocusRenderingTests: XCTestCase {
                        CGRect(x: frame.minX + 8, y: frame.minY + 10,
                               width: 6, height: frame.height - 20)]
         }
-        let image = try XCTUnwrap(shot.image.cgImage)
-        let width = image.width, height = image.height
-        var pixels = [UInt8](repeating: 0, count: width * height * 4)
-        let rendered = pixels.withUnsafeMutableBytes { bytes -> Bool in
-            guard let context = CGContext(data: bytes.baseAddress, width: width, height: height,
-                bitsPerComponent: 8, bytesPerRow: width * 4,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
-            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-            return true
-        }
-        XCTAssertTrue(rendered, "Screenshot must decode for pixel assertions")
-        guard rendered else { throw Stop() }
-        let sx = CGFloat(width) / viewport.width, sy = CGFloat(height) / viewport.height
         for (index, region) in regions.enumerated() {
             XCTAssertTrue(viewport.contains(region), "Sample must not be clipped")
             var white = 0, count = 0
@@ -207,6 +297,23 @@ final class RemoteFocusRenderingTests: XCTestCase {
             XCTAssertLessThan(fraction, 0.08,
                               "\(name): near-white backplate occupies \(fraction) of blank region \(index)")
         }
+    }
+
+    private func renderedPixels(_ screenshot: XCUIScreenshot) throws -> ([UInt8], Int, Int) {
+        let image = try XCTUnwrap(screenshot.image.cgImage)
+        let width = image.width, height = image.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let rendered = pixels.withUnsafeMutableBytes { bytes -> Bool in
+            guard let context = CGContext(data: bytes.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        XCTAssertTrue(rendered, "Screenshot must decode for pixel assertions")
+        guard rendered else { throw Stop() }
+        return (pixels, width, height)
     }
 }
 

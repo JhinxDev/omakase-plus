@@ -17,6 +17,11 @@ struct HomeCard: Decodable, Identifiable {
         }
     }
 
+    struct Episode: Decodable {
+        let season: Int?
+        let episode: Int?
+    }
+
     let id: String
     let domain: LiveLibraryKind
     let title: String
@@ -28,9 +33,10 @@ struct HomeCard: Decodable, Identifiable {
     let playLabel: String
     let artwork: HomeArtwork
     let lastWatchAt: String?
+    let episode: Episode?
 
     enum CodingKeys: String, CodingKey {
-        case id, domain, title, subtitle, progress, artwork
+        case id, domain, title, subtitle, progress, artwork, episode
         case titleID = "title_id", detailLabel = "detail_label"
         case playURL = "play_url", playLabel = "play_label"
         case lastWatchAt = "last_watch_at"
@@ -55,6 +61,13 @@ struct HomeCard: Decodable, Identifiable {
             backdropURL: artwork.landscape.flatMap(URL.init(string:)),
             progress: progress.percent.map { Double($0) / 100 }
         )
+    }
+
+    var animeEpisodeArtworkPath: String? {
+        guard domain == .anime, let season = episode?.season, (1...99).contains(season),
+              let number = episode?.episode, (1...5000).contains(number),
+              entry.watchPath == "/plus/watch/\(titleID)/\(number)" else { return nil }
+        return "episode-artwork/anime/\(titleID)/\(season)/\(number)"
     }
 }
 
@@ -212,13 +225,22 @@ struct HomeScreen: View {
                     ForEach(row.cards) { card in
                         let key = row.focusKey(for: card)
                         let focused = focus.wrappedValue == key
+                        let animeResume = row.id == "continue-anime" && card.domain == .anime
+                        let framing: NativeHomeArtwork.Framing = if animeResume {
+                            .episode(card.animeEpisodeArtworkPath)
+                        } else if row.id.hasPrefix("continue-") {
+                            .fit
+                        } else {
+                            .fill
+                        }
                         Button { onSelect(card, key) } label: {
                             VStack(alignment: .leading, spacing: 10) {
                                 ZStack(alignment: .bottomLeading) {
                                     RoundedRectangle(cornerRadius: 14).fill(Color.tvSurface)
-                                    NativeHomeArtwork(paths: [card.artwork.landscape, card.artwork.poster],
-                                                      client: client,
-                                                      fit: row.id.hasPrefix("continue-"))
+                                    NativeHomeArtwork(
+                                        paths: animeResume ? [card.artwork.poster] : [card.artwork.landscape, card.artwork.poster],
+                                        client: client, framing: framing
+                                    )
                                     if let percent = card.progress.percent, percent > 0 {
                                         ProgressView(value: Double(min(percent, 100)), total: 100)
                                             .progressViewStyle(.linear).tint(Color.tvAccent)
@@ -376,18 +398,38 @@ struct HomeScreen: View {
 
 @MainActor
 private struct NativeHomeArtwork: View {
+    enum Framing {
+        case fill, fit, episode(String?)
+    }
+
     let paths: [String?]
     let client: LiveLibraryClient
-    var fit = false
+    var framing = Framing.fill
     @State private var image: UIImage?
+    @State private var episodeImage: (path: String, image: UIImage)?
+
+    private var episodePath: String? {
+        if case let .episode(path) = framing { return path }
+        return nil
+    }
 
     var body: some View {
         GeometryReader { geometry in
-            if let image {
-                Image(uiImage: image)
-                    .resizable().aspectRatio(contentMode: fit ? .fit : .fill)
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .clipped()
+            if let episodeImage, episodeImage.path == episodePath {
+                picture(episodeImage.image, size: geometry.size, contentMode: .fill)
+            } else if let image {
+                switch framing {
+                case .fill:
+                    picture(image, size: geometry.size, contentMode: .fill)
+                case .fit:
+                    picture(image, size: geometry.size, contentMode: .fit)
+                case .episode:
+                    ZStack {
+                        LinearGradient(colors: [.tvRaised, .tvBackground],
+                                       startPoint: .topLeading, endPoint: .bottomTrailing)
+                        Image(uiImage: image).resizable().scaledToFit().padding(.vertical, 10)
+                    }
+                }
             }
         }
         .accessibilityHidden(true)
@@ -401,6 +443,18 @@ private struct NativeHomeArtwork: View {
                 }
             }
         }
+        .task(id: episodePath) {
+            episodeImage = nil
+            guard let path = episodePath, let data = try? await client.detailsArtwork(path: path),
+                  !Task.isCancelled, let still = UIImage(data: data) else { return }
+            episodeImage = (path, still)
+        }
+    }
+
+    private func picture(_ image: UIImage, size: CGSize, contentMode: ContentMode) -> some View {
+        Image(uiImage: image).resizable().aspectRatio(contentMode: contentMode)
+            .frame(width: size.width, height: size.height)
+            .clipped()
     }
 }
 
