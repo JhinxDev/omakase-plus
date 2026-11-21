@@ -1,0 +1,175 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		110000000000000000000029 = {isa = PBXBuildFile; fileRef = 110000000000000000000042; };
+		110000000000000000000020 /* PrototypeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000010; };
+		110000000000000000000027 /* PrototypeJourneyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000017; };
+		110000000000000000000028 /* QualificationCore in Frameworks */ = {isa = PBXBuildFile; productRef = 110000000000000000000041; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		110000000000000000000042 = {isa = PBXFileReference; lastKnownFileType = file; path = ../tv-source/OmakaseQualification/Resources/baseline.mp4; sourceTree = "<group>"; };
+		110000000000000000000010 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrototypeApp.swift; sourceTree = "<group>"; };
+		110000000000000000000017 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmakasePlusPhoneUITests/PrototypeJourneyTests.swift; sourceTree = "<group>"; };
+		110000000000000000000018 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OmakasePlusPhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		110000000000000000000019 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OmakasePlusPhoneUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		110000000000000000000002 = {
+			isa = PBXGroup;
+			children = (110000000000000000000042, 110000000000000000000004, 110000000000000000000017, 110000000000000000000003,);
+			sourceTree = "<group>";
+		};
+		110000000000000000000003 = {isa = PBXGroup; name = Products; children = (110000000000000000000018, 110000000000000000000019,); sourceTree = "<group>"; };
+		110000000000000000000004 = {
+			isa = PBXGroup;
+			path = OmakasePlusPhone;
+			children = (110000000000000000000010,);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		110000000000000000000030 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 110000000000000000000052;
+			buildPhases = (110000000000000000000060, 110000000000000000000061, 110000000000000000000062,);
+			buildRules = ();
+			dependencies = ();
+			name = OmakasePlusPhone;
+			packageProductDependencies = (110000000000000000000041,);
+			productName = OmakasePlusPhone;
+			productReference = 110000000000000000000018;
+			productType = "com.apple.product-type.application";
+		};
+		110000000000000000000031 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 110000000000000000000055;
+			buildPhases = (110000000000000000000063, 110000000000000000000064, 110000000000000000000065,);
+			buildRules = ();
+			dependencies = (110000000000000000000033,);
+			name = OmakasePlusPhoneUITests;
+			productName = OmakasePlusPhoneUITests;
+			productReference = 110000000000000000000019;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		110000000000000000000032 = {isa = PBXContainerItemProxy; containerPortal = 110000000000000000000001; proxyType = 1; remoteGlobalIDString = 110000000000000000000030; remoteInfo = OmakasePlusPhone; };
+		110000000000000000000033 = {isa = PBXTargetDependency; target = 110000000000000000000030; targetProxy = 110000000000000000000032; };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		110000000000000000000001 = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = { 110000000000000000000031 = { TestTargetID = 110000000000000000000030; }; };
+			};
+			buildConfigurationList = 110000000000000000000050;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (en, Base,);
+			mainGroup = 110000000000000000000002;
+			packageReferences = (110000000000000000000040,);
+			productRefGroup = 110000000000000000000003;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (110000000000000000000030, 110000000000000000000031,);
+		};
+/* End PBXProject section */
+
+/* Begin Build phases */
+		110000000000000000000060 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (110000000000000000000020,); runOnlyForDeploymentPostprocessing = 0; };
+		110000000000000000000061 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (110000000000000000000028,); runOnlyForDeploymentPostprocessing = 0; };
+		110000000000000000000062 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (110000000000000000000029,); runOnlyForDeploymentPostprocessing = 0; };
+		110000000000000000000063 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (110000000000000000000027,); runOnlyForDeploymentPostprocessing = 0; };
+		110000000000000000000064 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		110000000000000000000065 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End Build phases */
+
+/* Begin XCBuildConfiguration section */
+		110000000000000000000051 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {
+			ALWAYS_SEARCH_USER_PATHS = NO;
+			IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+			ONLY_ACTIVE_ARCH = YES;
+			SDKROOT = iphoneos;
+			SWIFT_VERSION = 5.0;
+			SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+			SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+		}; };
+		110000000000000000000059 = {isa = XCBuildConfiguration; name = Release; buildSettings = {
+			ALWAYS_SEARCH_USER_PATHS = NO;
+			IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+			SDKROOT = iphoneos;
+			SWIFT_VERSION = 5.0;
+			SWIFT_COMPILATION_MODE = wholemodule;
+		}; };
+		110000000000000000000053 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {
+			CODE_SIGN_STYLE = Automatic;
+			CURRENT_PROJECT_VERSION = 1;
+			GENERATE_INFOPLIST_FILE = YES;
+			INFOPLIST_KEY_CFBundleDisplayName = "Omakase Prototype";
+			INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+			INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+			MARKETING_VERSION = 0.1.0;
+			PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.plus.iosprototype;
+			PRODUCT_NAME = "$(TARGET_NAME)";
+			SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+			TARGETED_DEVICE_FAMILY = 1;
+		}; };
+		110000000000000000000054 = {isa = XCBuildConfiguration; name = Release; buildSettings = {
+			CODE_SIGN_STYLE = Automatic;
+			CURRENT_PROJECT_VERSION = 1;
+			GENERATE_INFOPLIST_FILE = YES;
+			INFOPLIST_KEY_CFBundleDisplayName = "Omakase Prototype";
+			INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+			INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+			MARKETING_VERSION = 0.1.0;
+			PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.plus.iosprototype;
+			PRODUCT_NAME = "$(TARGET_NAME)";
+			SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+			TARGETED_DEVICE_FAMILY = 1;
+		}; };
+		110000000000000000000056 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {
+			CODE_SIGN_STYLE = Automatic;
+			GENERATE_INFOPLIST_FILE = YES;
+			PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.plus.iosprototype.uitests;
+			PRODUCT_NAME = "$(TARGET_NAME)";
+			SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+			TARGETED_DEVICE_FAMILY = 1;
+			TEST_TARGET_NAME = OmakasePlusPhone;
+		}; };
+		110000000000000000000057 = {isa = XCBuildConfiguration; name = Release; buildSettings = {
+			CODE_SIGN_STYLE = Automatic;
+			GENERATE_INFOPLIST_FILE = YES;
+			PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.plus.iosprototype.uitests;
+			PRODUCT_NAME = "$(TARGET_NAME)";
+			SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+			TARGETED_DEVICE_FAMILY = 1;
+			TEST_TARGET_NAME = OmakasePlusPhone;
+		}; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		110000000000000000000050 = {isa = XCConfigurationList; buildConfigurations = (110000000000000000000051, 110000000000000000000059,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		110000000000000000000052 = {isa = XCConfigurationList; buildConfigurations = (110000000000000000000053, 110000000000000000000054,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		110000000000000000000055 = {isa = XCConfigurationList; buildConfigurations = (110000000000000000000056, 110000000000000000000057,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		110000000000000000000040 = {isa = XCLocalSwiftPackageReference; relativePath = ../tv-source/QualificationCore; };
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		110000000000000000000041 = {isa = XCSwiftPackageProductDependency; package = 110000000000000000000040; productName = QualificationCore; };
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 110000000000000000000001;
+}

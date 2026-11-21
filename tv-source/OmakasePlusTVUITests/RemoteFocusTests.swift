@@ -1,4 +1,214 @@
 import XCTest
+import UIKit
+
+// Runs the actual authenticated Home and navigation, using the existing loopback
+// companion fixture. No duplicate button renderer or app-only test view.
+final class RemoteFocusRenderingTests: XCTestCase {
+    private struct Stop: Error {}
+
+    private struct FixturePlayback: Decodable {
+        let freshPassesOpened: Int
+        let checkpointSeq: Int
+
+        enum CodingKeys: String, CodingKey {
+            case freshPassesOpened = "fresh_passes_opened"
+            case checkpointSeq = "checkpoint_seq"
+        }
+    }
+
+    @MainActor
+    private func launchHome() throws -> XCUIApplication {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-omakase.tv.server-origin", "https://127.0.0.1:8854"]
+        app.launch()
+        if app.buttons["live.enter"].waitForExistence(timeout: 10) {
+            try reach(app.buttons["live.enter"], in: app)
+            XCUIRemote.shared.press(.select)
+            try reach(app.buttons["live.showCode"], in: app)
+            XCUIRemote.shared.press(.select)
+        }
+        XCTAssertFalse(app.staticTexts["Couldn’t restore your profile"].exists,
+                       "The simulator must enable Keychain access before the app can pair.\n\(app.debugDescription)")
+        let home = app.buttons.matching(NSPredicate(
+            format: "identifier == %@ OR label == %@", "nav-home", "Home")).firstMatch
+        try reach(home, in: app)
+        return app
+    }
+
+    @MainActor
+    func testHomeNavigationHasNoWhiteBackplate() throws {
+        let app = try launchHome()
+        let home = app.buttons.matching(NSPredicate(
+            format: "identifier == %@ OR label == %@", "nav-home", "Home")).firstMatch
+        try checkBackplate(home, in: app, name: "01-home-tab", card: false)
+    }
+
+    @MainActor
+    func testContinueWatchingSelectReturnHasNoWhiteBackplate() async throws {
+        let app = try launchHome()
+        XCUIRemote.shared.press(.select)
+
+        let card = app.buttons["home-card-continue-movies-qa-movie"]
+        try reach(card, in: app)
+        try checkBackplate(card, in: app, name: "02-continue-watching", card: true)
+        let before = try await fixturePlayback().freshPassesOpened
+        XCUIRemote.shared.press(.select)
+        try await waitForPlayback(after: before)
+        try await returnFromPlayer(to: card, in: app)
+        try checkBackplate(card, in: app, name: "03-returned-card", card: true)
+    }
+
+    private func fixturePlayback() async throws -> FixturePlayback {
+        let url = try XCTUnwrap(URL(string: "https://127.0.0.1:8854/qa/state"))
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        return try JSONDecoder().decode(FixturePlayback.self, from: data)
+    }
+
+    @MainActor
+    private func waitForPlayback(after previousPasses: Int) async throws {
+        // Creating the pass precedes presenting AVKit. The fixture resets the
+        // checkpoint sequence when it opens a new pass.
+        for _ in 0..<20 {
+            let proof = try await fixturePlayback()
+            if proof.freshPassesOpened == previousPasses + 1 && proof.checkpointSeq > 0 { return }
+            try await Task.sleep(for: .seconds(1))
+        }
+        XCTFail("Select must open one authenticated playback pass and reach its first checkpoint")
+        throw Stop()
+    }
+
+    @MainActor
+    private func returnFromPlayer(to card: XCUIElement, in app: XCUIApplication) async throws {
+        let ready = NSPredicate(format: "exists == true AND enabled == true")
+        // AVKit may consume one Menu press to hide its transport. Give each
+        // transition time to finish before deciding whether to press again.
+        for _ in 0..<2 {
+            if card.exists && card.isEnabled { break }
+            XCUIRemote.shared.press(.menu)
+            let redisplayed = XCTNSPredicateExpectation(predicate: ready, object: card)
+            if await XCTWaiter.fulfillment(of: [redisplayed], timeout: 2.5) == .completed { break }
+        }
+        let focused = NSPredicate(format: "exists == true AND enabled == true AND hasFocus == true")
+        let restored = XCTNSPredicateExpectation(predicate: focused, object: card)
+        let result = await XCTWaiter.fulfillment(of: [restored], timeout: 10)
+        XCTAssertEqual(result, .completed,
+                       "Menu must restore the enabled card that opened playback.\n\(app.debugDescription)")
+    }
+
+    @MainActor
+    func testLibraryLongSelectOpensDetailsWithoutAlsoPlaying() async throws {
+        let app = try launchHome()
+        let movies = app.buttons.matching(NSPredicate(
+            format: "identifier == %@ OR label == %@", "nav-movie", "Movies")).firstMatch
+        try reach(movies, in: app)
+        XCUIRemote.shared.press(.select)
+        let card = app.buttons["continue-tt0000002"]
+        try reach(card, in: app)
+        let before = try await fixturePlayback().freshPassesOpened
+        XCUIRemote.shared.press(.select, forDuration: 0.9)
+        let close = app.buttons.matching(NSPredicate(format: "label == %@", "Close")).firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 10), "Long select must open library details")
+        try await Task.sleep(for: .seconds(1))
+        let afterLongSelect = try await fixturePlayback().freshPassesOpened
+        XCTAssertEqual(afterLongSelect, before, "Long select must never also invoke short-select playback")
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "04-library-long-select-details"; shot.lifetime = .keepAlways; add(shot)
+        XCUIRemote.shared.press(.menu)
+        let returned = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND hasFocus == true"), object: card)
+        XCTAssertEqual(XCTWaiter.wait(for: [returned], timeout: 8), .completed)
+        XCUIRemote.shared.press(.select)
+        try await waitForPlayback(after: before)
+        try await returnFromPlayer(to: card, in: app)
+    }
+
+    @MainActor
+    private func reach(_ target: XCUIElement, in app: XCUIApplication) throws {
+        guard target.waitForExistence(timeout: 20) else {
+            XCTFail("Missing production focus target: \(target)\n\(app.debugDescription)"); throw Stop()
+        }
+        for _ in 0..<24 {
+            if target.hasFocus { return }
+            let current = app.descendants(matching: .any)
+                .matching(NSPredicate(format: "hasFocus == true")).firstMatch
+            guard current.exists else {
+                XCUIRemote.shared.press(.down)
+                continue
+            }
+            let from = current.frame, to = target.frame
+            let direction: XCUIRemote.Button
+            if to.minY >= from.maxY - 8 { direction = .down }
+            else if to.maxY <= from.minY + 8 { direction = .up }
+            else { direction = to.midX > from.midX ? .right : .left }
+            XCUIRemote.shared.press(direction)
+        }
+        XCTFail("Siri Remote cannot focus \(target.identifier)"); throw Stop()
+    }
+
+    @MainActor
+    private func checkBackplate(_ target: XCUIElement, in app: XCUIApplication,
+                                name: String, card: Bool) throws {
+        // Let the 160 ms scale transition settle before measuring the screenshot.
+        Thread.sleep(forTimeInterval: 0.35)
+        let shot = app.screenshot()
+        let attachment = XCTAttachment(screenshot: shot)
+        attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+        let frame = target.frame
+        let viewport = app.windows.firstMatch.frame
+        XCTAssertTrue(viewport.contains(frame), "Focus target must be fully visible")
+        let regions: [CGRect]
+        if card {
+            // The fixture has no artwork. Only sample the blank right side of the
+            // subtitle panel, below the artwork and away from title/subtitle ink.
+            regions = [CGRect(x: frame.maxX - frame.width * 0.22,
+                              y: frame.maxY - 22, width: frame.width * 0.15, height: 14)]
+        } else {
+            // Outside the app's purple outline and away from centered white text.
+            regions = [CGRect(x: frame.minX + 14, y: frame.minY - 9,
+                              width: frame.width - 28, height: 6),
+                       CGRect(x: frame.minX + 14, y: frame.maxY + 3,
+                              width: frame.width - 28, height: 6),
+                       CGRect(x: frame.minX + 8, y: frame.minY + 10,
+                              width: 6, height: frame.height - 20)]
+        }
+        let image = try XCTUnwrap(shot.image.cgImage)
+        let width = image.width, height = image.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let rendered = pixels.withUnsafeMutableBytes { bytes -> Bool in
+            guard let context = CGContext(data: bytes.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        XCTAssertTrue(rendered, "Screenshot must decode for pixel assertions")
+        guard rendered else { throw Stop() }
+        let sx = CGFloat(width) / viewport.width, sy = CGFloat(height) / viewport.height
+        for (index, region) in regions.enumerated() {
+            XCTAssertTrue(viewport.contains(region), "Sample must not be clipped")
+            var white = 0, count = 0
+            for y in Int((region.minY - viewport.minY) * sy)..<Int((region.maxY - viewport.minY) * sy) {
+                for x in Int((region.minX - viewport.minX) * sx)..<Int((region.maxX - viewport.minX) * sx) {
+                    guard x >= 0, x < width, y >= 0, y < height else { continue }
+                    let offset = (y * width + x) * 4
+                    let rgb = [Int(pixels[offset]), Int(pixels[offset + 1]), Int(pixels[offset + 2])]
+                    if rgb.min()! >= 200 && rgb.max()! - rgb.min()! <= 28 { white += 1 }
+                    count += 1
+                }
+            }
+            XCTAssertGreaterThan(count, 50, "Empty pixel sample must fail")
+            let fraction = Double(white) / Double(max(count, 1))
+            print("FOCUS_PIXELS \(name) region=\(index) rect=\(region) white=\(white)/\(count)")
+            XCTAssertLessThan(fraction, 0.08,
+                              "\(name): near-white backplate occupies \(fraction) of blank region \(index)")
+        }
+    }
+}
 
 final class RemoteFocusTests: XCTestCase {
     @MainActor

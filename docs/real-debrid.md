@@ -24,6 +24,14 @@ Cloud files that are not matched to a title remain available under
 **Settings → Connections → Browse Cloud files**. They play in the main web player
 with the same progress and resume behavior as the rest of the library.
 
+## TV requests
+
+Current builds can follow an operator-enabled Riven intake. The Real-Debrid-only
+fallback can check configured sources for missing aired episodes. Exact title,
+season and episode evidence, quality settings and provider access determine
+which files can count. Open [TV requests](television.md#requests-and-episode-progress)
+for the recorded activity and episode counts.
+
 ## Playback behavior
 
 - Warm and preloaded episodes start quickly; a never-opened episode has one

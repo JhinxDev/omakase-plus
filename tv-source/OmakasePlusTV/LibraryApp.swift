@@ -24,15 +24,63 @@ extension Color {
     }
 }
 
-struct TVActionStyle: ButtonStyle {
+// A plain Button may still draw platform focus chrome on tvOS. Render the
+// primitive label itself as the focus target, with no nested system Button.
+struct TVBareButtonStyle: PrimitiveButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        TVButtonSurface(action: configuration.trigger) { _ in configuration.label }
+    }
+}
+
+private struct TVButtonSurface<Label: View>: View {
+    @Environment(\.isEnabled) private var isEnabled
+    @GestureState private var pressed = false
+    let action: () -> Void
+    var longPress: (() -> Void)? = nil
+    @ViewBuilder let label: (Bool) -> Label
+
+    private var target: some View {
+        label(pressed)
+            .contentShape(Rectangle())
+            .focusable(isEnabled)
+            .focusEffectDisabled()
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { if isEnabled { action() } }
+    }
+
+    @ViewBuilder var body: some View {
+        if let longPress {
+            target.gesture(
+                LongPressGesture(minimumDuration: 0.55)
+                    .updating($pressed) { down, state, _ in state = down }
+                    .exclusively(before: TapGesture())
+                    .onEnded { result in
+                        guard isEnabled else { return }
+                        switch result {
+                        case .first(true): longPress()
+                        case .second: action()
+                        default: break
+                        }
+                    }
+            )
+        } else {
+            target.onTapGesture { if isEnabled { action() } }
+        }
+    }
+}
+
+struct TVActionStyle: PrimitiveButtonStyle {
     var focused: Bool? = nil
     var tint: Color = .tvText
     var compact = false
     var selected = false
 
     func makeBody(configuration: Configuration) -> some View {
-        Chrome(label: configuration.label, focusOverride: focused, tint: tint,
-               compact: compact, selected: selected, isPressed: configuration.isPressed)
+        TVButtonSurface(action: configuration.trigger) { pressed in
+            Chrome(label: configuration.label, focusOverride: focused, tint: tint,
+                   compact: compact, selected: selected, isPressed: pressed)
+        }
     }
 
     private struct Chrome<Label: View>: View {
@@ -73,22 +121,21 @@ struct TVActionStyle: ButtonStyle {
     }
 }
 
-struct TVLibraryTileStyle: ButtonStyle {
+struct TVLibraryTileStyle: PrimitiveButtonStyle {
     var focused = false
     var longPress: (() -> Void)? = nil
 
     func makeBody(configuration: Configuration) -> some View {
-        Chrome(focused: focused, pressed: configuration.isPressed,
-               longPress: longPress, label: configuration.label)
+        TVButtonSurface(action: configuration.trigger, longPress: longPress) { pressed in
+            Chrome(focused: focused, pressed: pressed, label: configuration.label)
+        }
     }
 
     private struct Chrome<Label: View>: View {
         @Environment(\.accessibilityReduceMotion) private var reduceMotion
         let focused: Bool
         let pressed: Bool
-        let longPress: (() -> Void)?
         let label: Label
-        @State private var press: Task<Void, Never>?
 
         var body: some View {
             label
@@ -96,17 +143,6 @@ struct TVLibraryTileStyle: ButtonStyle {
                 .shadow(color: focused ? .black.opacity(0.5) : .clear, radius: 9, y: 6)
                 .scaleEffect(focused && !reduceMotion ? 1.05 : 1)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: focused)
-                .onChange(of: pressed) { _, down in
-                    press?.cancel()
-                    press = nil
-                    guard down, let longPress else { return }
-                    press = Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(550))
-                        guard !Task.isCancelled else { return }
-                        longPress()
-                    }
-                }
-                .onDisappear { press?.cancel() }
         }
     }
 }
@@ -383,7 +419,7 @@ struct LibraryShelf: View {
                                 .strokeBorder(focus == card.id ? Color.tvFocus : Color.white.opacity(0.14), lineWidth: 2)
                         }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TVBareButtonStyle())
                     .focusEffectDisabled()
                     .focused($focus, equals: card.id)
                     .accessibilityLabel("\(card.title), \(card.kind.label)")
@@ -392,6 +428,7 @@ struct LibraryShelf: View {
                 }
             }
             Button(actionTitle, action: action)
+                .buttonStyle(TVActionStyle())
         }
         .padding(.horizontal, 70)
         .defaultFocus($focus, returnTo ?? cards.first?.id)
@@ -590,10 +627,12 @@ struct TitleScreen: View {
                 HStack(spacing: 26) {
                     if let previous {
                         Button("Previous episode") { selectEpisode(previous) }
+                            .buttonStyle(TVActionStyle())
                             .accessibilityIdentifier("fixture.previous")
                     }
                     if let next {
                         Button("Next episode") { selectEpisode(next) }
+                            .buttonStyle(TVActionStyle())
                             .accessibilityIdentifier("fixture.next")
                     }
                 }

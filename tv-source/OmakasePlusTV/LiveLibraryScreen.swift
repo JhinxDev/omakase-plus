@@ -363,11 +363,12 @@ struct LiveLibraryScreen: View {
             .scaleEffect(focused && !reduceMotion ? 1.045 : 1)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: focused)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TVBareButtonStyle())
         .fixedSize()
         .focusEffectDisabled()
         .focused($focus, equals: key)
         .accessibilityLabel(label)
+        .accessibilityIdentifier("nav-\(key)")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
@@ -1827,7 +1828,7 @@ private struct TVForYouScreen: View {
                                 }
                             }
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(TVBareButtonStyle())
                         .focusEffectDisabled()
                         .focused($focus, equals: key)
                     }

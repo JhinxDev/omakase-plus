@@ -6,6 +6,22 @@ GitHub Release. The update-feed identity (`PRODUCT_VERSION` in
 `src/omakase/plus/update_service.py`) is a separate operator-facing build
 identifier; it does not replace the public release version.
 
+## Unreleased
+
+- Home and title pages group playback actions and viewing status. Home remembers
+  the featured carousel’s pause setting. Navigation uses one loading indicator.
+- Collections show verified connected media. Viewing history keeps completed
+  titles, ratings and optional private notes for movies, anime and TV seasons.
+- Requests show the submitter, recorded activity and playable episodes by season.
+  History separates viewing, library activity and collection changes.
+- TV requests can use configured Riven intake. Real-Debrid fallback can verify
+  exact missing episodes and reuse eligible files already in the linked account.
+- Recent Apple TV builds combine Continue Watching activity across anime, movies
+  and TV. Resume cards fit the whole landscape image and focused controls use
+  the app’s dark highlight. Media Info shows resolution, codecs, container and size.
+- The iPhone simulator prototype shares the Swift playback and resume contracts
+  and runs an offline catalog-to-player test in GitHub Actions.
+
 ## 0.4.12 - 2026-11-12
 
 ### Added

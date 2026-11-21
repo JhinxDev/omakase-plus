@@ -1,0 +1,43 @@
+name: Offline iOS prototype qualification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/ios-simulator.yml'
+      - 'ios-source/**'
+      - 'scripts/qualify-ios.sh'
+      - 'tv-source/QualificationCore/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-prototype-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  synthetic-simulator:
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact checkout
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Test current shared core and synthetic iPhone journey
+        run: bash scripts/qualify-ios.sh "$RUNNER_TEMP/omakase-ios-evidence"
+      - name: Retain synthetic qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-prototype-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/omakase-ios-evidence/
+          if-no-files-found: warn
+          retention-days: 7

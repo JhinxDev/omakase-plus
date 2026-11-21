@@ -1,0 +1,41 @@
+name: tvOS focus rendering regression
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/tvos-focus.yml
+      - scripts/fixtures/tvos-connected/**
+      - tv-source/**
+  workflow_dispatch:
+    inputs:
+      runtime:
+        description: 'Exact installed tvOS runtime identifier; blank selects newest and records it'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  focus-rendering:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      TVOS_RUNTIME: ${{ inputs.runtime }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Exercise real Home focus and inspect rendered pixels
+        run: bash scripts/fixtures/tvos-connected/run_focus_regression.sh "$RUNNER_TEMP/focus-proof"
+      - name: Retain screenshots, pixel measurements and runtime receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tvos-focus-${{ github.sha }}
+          path: ${{ runner.temp }}/focus-proof/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

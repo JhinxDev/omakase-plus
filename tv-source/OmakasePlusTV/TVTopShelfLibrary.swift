@@ -95,7 +95,7 @@ enum TVTopShelfLibrary {
                 let id = old?.id ?? UUID()
                 let card = TVTopShelfCard(id: id, action: candidate.action, kind: candidate.kind.rawValue,
                                           match: match, title: title, progress: candidate.entry.progress)
-                if !FileManager.default.fileExists(atPath: store.artworkURL(for: id).path) {
+                if !FileManager.default.fileExists(atPath: store.artworkURL(for: card).path) {
                     fallbackImages[id] = renderedArtwork(nil, card: card)
                 }
                 tiles.append((card, candidate))
@@ -114,8 +114,11 @@ enum TVTopShelfLibrary {
                 let fetched = await withTaskGroup(of: (UUID, Data?).self) { tasks in
                     for (card, candidate) in tiles[start..<end] {
                         tasks.addTask {
-                            let data = try? await client.artwork(candidate.entry, banner: false)
-                            return (card.id, data)
+                            if card.action == .resume,
+                               let banner = try? await client.artwork(candidate.entry, banner: true) {
+                                return (card.id, banner)
+                            }
+                            return (card.id, try? await client.artwork(candidate.entry, banner: false))
                         }
                     }
                     var results: [UUID: Data] = [:]
@@ -188,7 +191,8 @@ enum TVTopShelfLibrary {
     }
 
     private static func renderedArtwork(_ data: Data?, card: TVTopShelfCard) -> Data? {
-        let size = card.action == .resume ? CGSize(width: 480, height: 480) : CGSize(width: 404, height: 606)
+        let isResume = card.action == .resume
+        let size = isResume ? CGSize(width: 960, height: 540) : CGSize(width: 404, height: 606)
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = true
@@ -208,7 +212,9 @@ enum TVTopShelfLibrary {
             UIColor(red: 0.071, green: 0.086, blue: 0.125, alpha: 1).setFill()
             context.fill(rect)
             if let image, image.size.width > 0, image.size.height > 0 {
-                let scale = max(size.width / image.size.width, size.height / image.size.height)
+                let widthScale = size.width / image.size.width
+                let heightScale = size.height / image.size.height
+                let scale = isResume ? min(widthScale, heightScale) : max(widthScale, heightScale)
                 let width = image.size.width * scale
                 let height = image.size.height * scale
                 image.draw(in: CGRect(x: (size.width - width) / 2, y: (size.height - height) / 2,

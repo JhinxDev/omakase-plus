@@ -24,48 +24,31 @@ owners' rights; see [third-party notices](THIRD-PARTY-NOTICES.md).*
 
 ## Releases
 
-**[0.4.12](https://github.com/JhinxDev/omakase-plus/releases/tag/v0.4.12)** is the
-latest numbered source release. It adds Apple TV watch tracking for movies and
-TV episodes and improves seeking on matched Real-Debrid HEVC files. Large HEVC
-TV files can use the native Apple TV HLS path. Back up your app data before
-upgrading. See the [changelog](CHANGELOG.md) for earlier releases.
-
-The [November 15 web build](https://github.com/JhinxDev/omakase-plus/tree/web-26619cc3cd85)
-is a separate source snapshot with a browser player that fits beneath the header,
-fullscreen controls that stay visible, and clearer playback errors. That snapshot
-also includes opt-in request search from the
-[preceding web build](https://github.com/JhinxDev/omakase-plus/tree/web-abb4641eaa58).
-For the setup below, use the numbered release.
+The setup below uses [0.4.12](https://github.com/JhinxDev/omakase-plus/releases/tag/v0.4.12),
+the latest numbered source release. The [changelog](CHANGELOG.md) lists newer
+web and tvOS features under **Unreleased**. They may require a newer server or
+native build. Back up app data before upgrading.
 
 ## What works
 
-- Anime search, recommendations, planning and progress, with optional AniList sync.
-- Movie discovery and requests through configured services, explicit Plex history
-  import and personal ratings.
-- TV season browsing, exact-ID Plex inventory and manual episode progress.
-- Managed anime media checks and Plex publication, with protected shared/adopted
-  assets and separately confirmed removal.
-- Standalone Real-Debrid playback on the web and Apple TV: catalog matching,
-  Cloud file browsing, resume progress and optional Plex or Auto modes.
-- Native Apple TV app with one-time device pairing, shelves, title details,
-  resume sync, a next-episode control, subtitle tracks and always-on subtitles.
-- Native Apple TV playback credits anime, movie and TV progress at 85 percent
-  completion, updates History and Continue Watching at 85 percent completion
-  and queues the AniList progress update for anime.
-- Embedded text subtitle extraction with a player subtitle picker and an
-  always-on preference; image-based PGS subtitles remain a tracked limitation.
-- Fast warm starts, next-episode preload and seekable playback built from the
-  Real-Debrid file itself, including exact six-second H.264 seek segments for
-  HEVC copies.
-- Account-specific [notifications](docs/notification-center.md) to rate finished titles
-  and review safely owned anime media, with read/dismiss controls.
+- Discover anime, movies and TV with optional AniList sync and Seerr catalog search.
+- Use **Edit Home** to choose your rows. Continue Watching remembers your place
+  across the web and paired Apple TV.
+- Browse media from connected sources in Collection. Find completed titles,
+  ratings and private review notes in your personal viewing history.
+- Follow requests submitted by you or on your behalf. TV requests can show
+  playable episode counts by season and activity from configured services.
+  See [TV requests and episodes](docs/television.md).
+- Stream exact Real-Debrid or Plex matches. The Apple TV app supports device
+  pairing, subtitles, resume sync, next episode and Media Info for supported copies.
+  See [Real-Debrid playback](docs/real-debrid.md) and [Apple TV](docs/apple-tv.md).
+- Get [notifications](docs/notification-center.md) to rate finished titles or
+  review eligible managed media. Shared or externally managed copies stay protected.
 - Account-scoped JSON CLI and optional stdio MCP access, with named permissions
   and an audit log. See [agent tools](docs/agent-tools.md).
 
-Availability, watch progress, requests and media verification remain independent.
-Catalog metadata does not prove a file can play. TV acquisition is not automated.
-Native Apple TV progress syncs through a linked device, while manual progress
-stays available from the web. No media, provider account or API key is included.
+Catalog matches, provider decisions, playable files and watch progress have
+distinct statuses. Supply your own media and service credentials.
 
 ## Start with the app
 
@@ -128,24 +111,6 @@ Onboarding saves preferences and guidance; it does not install services or chang
 host mounts. Optional qBittorrent acquisition remains scoped to its VPN profile.
 Use only media and services you are authorized to access.
 
-## Playback sources
-
-Plex is optional, not required. A Real-Debrid-only setup plays matched titles
-directly from the Real-Debrid account on the web and on the Apple TV, and a mixed
-setup keeps Plex available while Auto prefers the Real-Debrid copy. Warm and
-preloaded episodes start quickly, the next episode is prepared near the end of
-the current one, and embedded text subtitles become real player subtitle tracks
-with an always-on preference.
-
-Long forward seeks work on H.264 copies through a seekable timeline built from
-the file's keyframe index. HEVC copies use exact six-second H.264 seek segments
-generated from the direct file, so far seeks still work instead of erroring;
-preparing a far segment takes about eight seconds and converts only that window
-at 720p. Titles whose only subtitles are image-based PGS tracks do not yet have
-a text subtitle track.
-
-See [Apple TV](docs/apple-tv.md) and [Real-Debrid playback](docs/real-debrid.md).
-
 ## Optional shared libraries, languages and personal tracker sync
 
 **Released optional capabilities.** Shared libraries, language settings and personal
@@ -159,8 +124,6 @@ preference or passing unit test is not proof of working provider connections.
 | [Households](docs/households.md) | Shared catalog/files; each member's progress, ratings, tracker accounts and stream choices |
 | [Audio and subtitles](docs/language-settings.md) | Requested languages, physically verified tracks and the viewer's current Plex selection |
 | [Optional web player](docs/web-player.md) | Exact anime playback, prepared MKV, personal resume and truthful viewing coverage |
-| [Native Apple TV app](docs/apple-tv.md) | tvOS shelves, pairing, subtitle tracks, preload and resume sync |
-| [Real-Debrid playback](docs/real-debrid.md) | Standalone source, Cloud files, fast starts and H.264 seeks |
 | [MyAnimeList ↔ AniList](docs/myanimelist-bridge.md) | Each user's verified identities; first-sync preview, conflict decisions and opt-in ongoing checks |
 
 An owner connector never grants members its credentials. Revocation stops future
@@ -184,6 +147,10 @@ Read [Contributing](CONTRIBUTING.md), [Security](SECURITY.md),
 [release checks](docs/release-checklist.md), [updates](docs/updates.md), and
 [optional browser QA](docs/browser-qa.md). The recommendation-only CLI/web
 surface remains available; it is distinct from the authenticated Plus app.
+
+The web app and native Apple TV source share this repository. See the
+[Apple TV build and signing guide](docs/apple-tv.md). The [iPhone simulator
+prototype](ios-source/README.md) uses sample data and a test clip for development.
 
 The code retains its original [MIT license](LICENSE) and upstream attribution.
 Geist retains its [SIL Open Font License](src/omakase/plus/static/GEIST-OFL.txt).

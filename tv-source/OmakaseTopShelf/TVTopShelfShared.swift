@@ -105,8 +105,10 @@ struct TVTopShelfStore {
         return snapshot
     }
 
-    func artworkURL(for id: UUID) -> URL {
-        directory.appendingPathComponent(id.uuidString + ".jpg", isDirectory: false)
+    func artworkURL(for card: TVTopShelfCard) -> URL {
+        // Keep item identifiers and deep links while replacing the old square JPEGs.
+        let suffix = card.action == .resume ? "-landscape.jpg" : ".jpg"
+        return directory.appendingPathComponent(card.id.uuidString + suffix, isDirectory: false)
     }
 
     func publish(_ snapshot: TVTopShelfSnapshot, artwork: [UUID: Data]) throws {
@@ -114,13 +116,13 @@ struct TVTopShelfStore {
         try manager.createDirectory(at: directory, withIntermediateDirectories: true)
         for card in snapshot.cards {
             if let image = artwork[card.id] {
-                try image.write(to: artworkURL(for: card.id), options: .atomic)
+                try image.write(to: artworkURL(for: card), options: .atomic)
             }
         }
         let data = try JSONEncoder().encode(snapshot)
         try data.write(to: directory.appendingPathComponent("shelf.json"), options: .atomic)
         let files = (try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-        let active = Set(snapshot.cards.map { artworkURL(for: $0.id).lastPathComponent })
+        let active = Set(snapshot.cards.map { artworkURL(for: $0).lastPathComponent })
         for file in files where file.pathExtension == "jpg" && !active.contains(file.lastPathComponent) {
             try? manager.removeItem(at: file)
         }
