@@ -6,7 +6,7 @@ name: Deploy tooling
 
 on:
   push:
-    branches: [main, 'codex/**']
+    branches: [main]
     paths:
       - 'ops/release/**'
       - 'tests/infra/**'
@@ -17,6 +17,7 @@ on:
       - 'ops/release/**'
       - 'tests/infra/**'
       - '.github/workflows/deploy.yml'
+  workflow_dispatch:
 
 jobs:
   release-tooling:
