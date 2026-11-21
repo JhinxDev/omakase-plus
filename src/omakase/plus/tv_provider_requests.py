@@ -5,9 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import UTC, datetime
+import re
+from collections import Counter
+from datetime import UTC, datetime, timedelta
 
-from omakase.plus.debrid_catalog import tv_episode_ids
+from omakase.plus import tv_fallback
+from omakase.plus.acquisition_policy import load_user_acquisition_policy
+from omakase.plus.btih import normalize_btih
+from omakase.plus.debrid_catalog import (
+    PublishedEpisode,
+    _published_episodes,
+    published_name,
+    tv_episode_ids,
+)
 from omakase.plus.debrid_library import DebridLibraryError, account_binding, account_token
 from omakase.plus.movies import MovieError
 from omakase.plus.providers import playback
@@ -33,6 +43,10 @@ RIVEN_STATES = {
 }
 
 FALLBACK_STATES = {"No release found", "Needs attention"}
+_RIVEN_FILE_ID = re.compile(r"[A-Za-z0-9_-]{1,96}")
+_PUBLICATION_BATCH = 8
+_INDEXED_GRACE = timedelta(hours=2)
+_FALLBACK_REPEAT = timedelta(hours=12)
 
 
 def enabled():
@@ -93,7 +107,9 @@ def _plex_availability(db, user_id, tmdb_id, binding):
     }
 
 
-async def _library_observation(db, user_id, tmdb_id, service, cloud_library, expected):
+async def _library_observation(
+    db, user_id, tmdb_id, service, cloud_library, expected, published=None
+):
     identity = source_binding(db, user_id, service)
     if not identity or not expected:
         return None
@@ -109,24 +125,53 @@ async def _library_observation(db, user_id, tmdb_id, service, cloud_library, exp
                 cloud_library,
                 seasons=sorted({season for season, _ in expected}),
                 timeout=4,
+                published=published,
             )
         except DebridLibraryError:
             return None
         available = observed.episodes
     else:
         available = _plex_availability(db, user_id, tmdb_id, binding)
-    return {"provider": provider, "binding": binding, "episodes": sorted(expected & available)}
+    return {
+        "provider": provider,
+        "binding": binding,
+        "episodes": sorted(expected & available),
+        "partial_seasons": list(observed.partial_seasons) if provider == "Real-Debrid" else [],
+    }
 
 
-def project_library(db, user_id, service, progress):
+def project_library(db, user_id, service, progress, tmdb_id=None):
     """Expose last verified episode matches for the currently selected account."""
     if progress is None or not progress["snapshot"]:
         return progress
     snapshot = dict(progress["snapshot"])
     library = snapshot.pop("library", None)
-    if library and (library.get("provider"), library.get("binding")) == source_binding(
-        db, user_id, service
-    ):
+    snapshot.pop("published_files", None)
+    search = snapshot.pop("fallback_checks", {}).get("episode")
+    if search:
+        snapshot["fallback_episode"] = search
+    identity = source_binding(db, user_id, service)
+    transfers = (
+        tv_fallback.receipts(db, user_id, tmdb_id, identity[1])
+        if identity and identity[0] == "Real-Debrid" and tmdb_id
+        else {}
+    )
+    snapshot["seasons"] = [
+        {
+            **row,
+            "episodes": [
+                {
+                    "episode": episode["episode"],
+                    "status": tv_fallback.LABELS.get(
+                        transfers.get((row["season"], episode["episode"])), episode["status"]
+                    ),
+                }
+                for episode in row["episodes"]
+            ],
+        }
+        for row in snapshot.get("seasons", ())
+    ]
+    if library and (library.get("provider"), library.get("binding")) == identity:
         ready = {tuple(row) for row in library["episodes"]}
         stored = {row["season"]: row["episodes"] for row in snapshot["seasons"]}
         for season, episode in sorted(ready):
@@ -179,15 +224,124 @@ def remember(db, user_id, tmdb_id, seasons, *, origin="viewer", submission="acce
 
 def _write_snapshot(db, user_id, tmdb_id, snapshot):
     checked = _stamp()
-    serialized = json.dumps(snapshot, sort_keys=True)
+    serialized = json.dumps(
+        {key: value for key, value in snapshot.items() if key != "fallback_checks"}, sort_keys=True
+    )
     db.execute(
-        """UPDATE tv_provider_requests SET checked_at=?,attempted_at=?,
-             changed_at=CASE WHEN snapshot_json IS NOT ? THEN ? ELSE changed_at END,
-             snapshot_json=?
+        """UPDATE tv_provider_requests AS r SET checked_at=?,attempted_at=?,
+             changed_at=CASE WHEN json_remove(r.snapshot_json,'$.fallback_checks') IS NOT json(?)
+                        THEN ? ELSE changed_at END,
+             snapshot_json=json_set(?,'$.fallback_checks',
+                                    COALESCE(json_extract(r.snapshot_json,'$.fallback_checks'),json('{}')))
            WHERE user_id=? AND title_id=?""",
         (checked, checked, serialized, checked, serialized, user_id, tmdb_id),
     )
     db.commit()
+
+
+def _provider_time(value):
+    try:
+        date = datetime.fromisoformat(value) if isinstance(value, str) and len(value) < 48 else None
+    except ValueError:
+        return None
+    return date.replace(tzinfo=UTC) if date is not None and date.tzinfo is None else date
+
+
+def _fallback_eligible(episode, label, now):
+    aired = _provider_time(episode.get("aired_at"))
+    if aired is None or aired > now:
+        return False
+    if label in FALLBACK_STATES:
+        return True
+    searched = _provider_time(episode.get("scraped_at"))
+    return bool(
+        label == "Looking for episodes"
+        and (_number(episode.get("scraped_times"), 10000) or 0) >= 2
+        and searched is not None
+        and searched <= now - _INDEXED_GRACE
+    )
+
+
+def _publication(episode, season, number):
+    identity = episode.get("id")
+    folder = published_name(episode.get("folder"))
+    filename = published_name(episode.get("file"))
+    if (
+        episode.get("symlinked") is True
+        and episode.get("season_number") == season
+        and episode.get("episode_number") == number
+        and isinstance(identity, str)
+        and _RIVEN_FILE_ID.fullmatch(identity)
+        and folder
+        and filename
+    ):
+        return identity, folder, filename
+    return None
+
+
+async def _recover_publications(
+    db, user_id, tmdb_id, service, cloud_library, baseline, publications, previous, expected
+):
+    """Reconcile Riven's exact published file against a release in this Real-Debrid account."""
+    token = account_token(db, user_id)
+    binding = account_binding(token)
+    if not token or not baseline or baseline["provider"] != "Real-Debrid":
+        return {}, None
+    scope = personal_scope(db, user_id)
+    current = _published_episodes(db, scope, str(tmdb_id), binding)
+    pairs = Counter((folder, filename) for _, folder, filename in publications.values())
+    choices = {
+        key: claim
+        for key, claim in publications.items()
+        if key in expected and pairs[claim[1:]] == 1
+    }
+    current = {
+        key: hint
+        for key, hint in current.items()
+        if key in choices and choices[key][1:] == (hint.folder, hint.filename)
+    }
+    ready = {tuple(episode) for episode in baseline["episodes"]}
+    if not choices.keys() - ready - current.keys():
+        return current, None
+    try:
+        torrents, _ = await cloud_library.inventory(token)
+    except DebridLibraryError:
+        return current, None
+    hashes = {}
+    for item in torrents.values():
+        if item.get("status") == "downloaded" and (value := normalize_btih(item.get("hash"))):
+            hashes.setdefault(item.get("filename"), set()).add(value)
+    waiting = [
+        key for key in sorted(choices.keys() - ready - current.keys()) if choices[key][1] in hashes
+    ]
+    old = previous.get("published_files") or {}
+    after = tuple(old.get("cursor") or ()) if old.get("binding") == binding else ()
+    batch = sorted(waiting, key=lambda key: (key <= after, key))[:_PUBLICATION_BATCH]
+
+    async def verify(key):
+        identity, folder, filename = choices[key]
+        try:
+            data = await service._json("riven", f"/api/v1/items/{identity}/streams")
+        except MovieError:
+            return None
+        streams = data.get("streams") if isinstance(data, dict) else None
+        if not isinstance(streams, list):
+            return None
+        matched = {
+            normalize_btih(row.get("infohash")) for row in streams if isinstance(row, dict)
+        } & hashes[folder]
+        if len(matched) == 1:
+            return PublishedEpisode(matched.pop(), folder, filename)
+        return None
+
+    if batch:
+        try:
+            async with asyncio.timeout(2):
+                verified = await asyncio.gather(*(verify(key) for key in batch))
+        except TimeoutError:
+            return current, after
+        current.update({key: hint for key, hint in zip(batch, verified, strict=True) if hint})
+    return current, batch[-1] if batch else None
 
 
 async def inspect_riven(service, tmdb_id, metadata, seasons):
@@ -207,7 +361,8 @@ async def inspect_riven(service, tmdb_id, metadata, seasons):
         and data.get("imdb_id") != metadata["imdb_id"]
     ):
         raise MovieError("invalid_metadata")
-    by_season, remaining = {}, MAX_EPISODES
+    by_season, publications, remaining = {}, {}, MAX_EPISODES
+    now = datetime.now(UTC)
     for season in data.get("seasons") or ():
         if not isinstance(season, dict):
             continue
@@ -226,7 +381,13 @@ async def inspect_riven(service, tmdb_id, metadata, seasons):
             label = RIVEN_STATES.get(
                 str(episode.get("state", "")).strip().casefold(), "Awaiting update"
             )
-            episodes[n] = {"episode": n, "status": label}
+            episodes[n] = {
+                "episode": n,
+                "status": label,
+                "fallback_eligible": _fallback_eligible(episode, label, now),
+            }
+            if metadata.get("imdb_id") and (publication := _publication(episode, number, n)):
+                publications[number, n] = publication
             remaining -= 1
         by_season[number] = {
             "season": number,
@@ -237,6 +398,7 @@ async def inspect_riven(service, tmdb_id, metadata, seasons):
             str(data.get("state", "")).strip().casefold(), "Riven is checking"
         ),
         "seasons": [by_season[key] for key in sorted(by_season)],
+        "publications": publications,
     }
 
 
@@ -253,12 +415,40 @@ async def refresh(db, user_id, tmdb_id, service, *, submit=False, cloud_library=
         if existing is None:
             remember(db, user_id, tmdb_id, seasons, submission="observed")
         expected = expected_episodes(metadata, seasons)
+        previous = (existing or {}).get("snapshot") or {}
+        publications = snapshot.pop("publications")
         snapshot["expected"] = len(expected)
         snapshot["library"] = await _library_observation(
             db, user_id, tmdb_id, service, cloud_library, expected
         )
+        if snapshot["library"] and snapshot["library"]["provider"] == "Real-Debrid":
+            published, cursor = await _recover_publications(
+                db,
+                user_id,
+                tmdb_id,
+                service,
+                cloud_library,
+                snapshot["library"],
+                publications,
+                previous,
+                expected,
+            )
+            prior = previous.get("published_files") or {}
+            receipt = {
+                "binding": snapshot["library"]["binding"],
+                "cursor": cursor,
+                "episodes": [
+                    (s, e, hint.infohash, hint.folder, hint.filename)
+                    for (s, e), hint in sorted(published.items())
+                ],
+            }
+            if json.dumps(receipt["episodes"]) != json.dumps(prior.get("episodes", [])):
+                snapshot["library"] = await _library_observation(
+                    db, user_id, tmdb_id, service, cloud_library, expected, published
+                )
+            snapshot["published_files"] = receipt
         _write_snapshot(db, user_id, tmdb_id, snapshot)
-        return
+        return True
     if not submit or existing is not None or not seasons or not metadata.get("imdb_id"):
         return
     if not remember(db, user_id, tmdb_id, seasons, submission="sending"):
@@ -279,26 +469,79 @@ async def refresh(db, user_id, tmdb_id, service, *, submit=False, cloud_library=
     db.commit()
 
 
-async def search_missing_episode(db, user_id, tmdb_id, metadata, snapshot):
-    """Search one exact episode when Riven confirms it could not find a release."""
+async def search_missing_episode(db, user_id, tmdb_id, service, snapshot):
+    """Give one aired episode a bounded fallback search after Riven has had a chance."""
     from omakase.plus import request_candidates
 
-    if not request_candidates.search_enabled() or not metadata or not snapshot:
+    if not request_candidates.search_enabled() or not snapshot:
         return
-    ready = {tuple(episode) for episode in (snapshot.get("library") or {}).get("episodes", ())}
-    missing = next(
-        (
-            (row["season"], ep["episode"])
-            for row in snapshot["seasons"]
-            for ep in row["episodes"]
-            if ep["status"] in FALLBACK_STATES and (row["season"], ep["episode"]) not in ready
-        ),
-        None,
+    metadata = service._raw(user_id, tmdb_id)
+    if not metadata:
+        return
+    library = snapshot.get("library") or {}
+    if not library:
+        return
+    if await tv_fallback.advance_pending(db, user_id, tmdb_id):
+        return
+    checks = snapshot.get("fallback_checks") or {}
+    now = datetime.now(UTC)
+    latest = _provider_time(checks.get("latest"))
+    if latest is not None and latest > now - timedelta(minutes=10):
+        return
+    ready = {tuple(episode) for episode in library.get("episodes", ())}
+    partial = set(library.get("partial_seasons", ()))
+    recent = {
+        key: value
+        for key, value in checks.get("episodes", {}).items()
+        if (checked := _provider_time(value)) and checked > now - _FALLBACK_REPEAT
+    }
+    waiting = [
+        (row["season"], episode["episode"])
+        for row in snapshot["seasons"]
+        if row["season"] not in partial
+        for episode in row["episodes"]
+        if episode.get("fallback_eligible")
+        and (row["season"], episode["episode"]) not in ready
+        and f"{row['season']}:{episode['episode']}" not in recent
+    ]
+    if not waiting:
+        return
+    season, episode = min(waiting, key=lambda item: (item[1], item[0]))
+    timestamp = now.isoformat()
+    reservation = {"latest": timestamp, "episodes": recent, "episode": checks.get("episode")}
+    reserved = db.execute(
+        """UPDATE tv_provider_requests SET snapshot_json=json_set(snapshot_json,'$.fallback_checks',json(?))
+           WHERE user_id=? AND title_id=?
+             AND json_extract(snapshot_json,'$.fallback_checks.latest') IS ?""",
+        (json.dumps(reservation), user_id, tmdb_id, checks.get("latest")),
+    ).rowcount
+    db.commit()
+    if not reserved:
+        return
+
+    async def on_matches(eligible):
+        if library["provider"] == "Real-Debrid":
+            if (
+                request_candidates.acquire_enabled()
+                and not db.execute(
+                    """SELECT 1 FROM tv_episodes WHERE user_id=? AND tmdb_id=?
+                   AND season_number=? AND episode_number=?""",
+                    (user_id, tmdb_id, season, episode),
+                ).fetchone()
+            ):
+                from omakase.plus.tv_service import TVError
+
+                try:
+                    async with asyncio.timeout(3):
+                        await service.season(user_id, tmdb_id, season)
+                except (MovieError, TVError, TimeoutError):
+                    return
+            await tv_fallback.submit(db, user_id, tmdb_id, season, episode, eligible)
+
+    policy = (
+        load_user_acquisition_policy(db, user_id) if library["provider"] == "Real-Debrid" else None
     )
-    if missing is None:
-        return
-    season, episode = missing
-    await request_candidates.refresh(
+    result = await request_candidates.refresh(
         db,
         user_id,
         "tv",
@@ -308,12 +551,28 @@ async def search_missing_episode(db, user_id, tmdb_id, metadata, snapshot):
             kind="tv",
             season=season,
             episode=episode,
+            allowed_resolutions=policy.allowed_resolutions if policy else (),
+            minimum_seeders=policy.minimum_seeders if policy else 1,
+            maximum_bytes=policy.max_release_size_bytes if policy else 0,
         ),
+        force=True,
+        timeout=5,
+        on_matches=on_matches,
     )
+    if result.get("outcome") in {"complete", "partial"}:
+        recent[f"{season}:{episode}"] = timestamp
+    completed = {"latest": timestamp, "episodes": recent, "episode": [season, episode]}
+    db.execute(
+        """UPDATE tv_provider_requests SET snapshot_json=json_set(snapshot_json,'$.fallback_checks',json(?))
+           WHERE user_id=? AND title_id=?
+             AND json_extract(snapshot_json,'$.fallback_checks.latest')=?""",
+        (json.dumps(completed), user_id, tmdb_id, timestamp),
+    )
+    db.commit()
 
 
 async def refresh_pending(db, *, heartbeat):
-    """Refresh a small batch per scheduler run using status reads only."""
+    """Read a small batch and advance separately opted-in Real-Debrid transfers."""
     if not enabled():
         return
     from omakase.plus.connections import movie_connections
@@ -336,12 +595,11 @@ async def refresh_pending(db, *, heartbeat):
         )
         db.commit()
         try:
-            async with asyncio.timeout(12):
-                await refresh(db, user_id, tmdb_id, service, cloud_library=library)
-                current = read(db, user_id, tmdb_id)
-                if current:
-                    await search_missing_episode(
-                        db, user_id, tmdb_id, service._raw(user_id, tmdb_id), current["snapshot"]
-                    )
+            async with asyncio.timeout(26):
+                if await refresh(db, user_id, tmdb_id, service, cloud_library=library):
+                    current = read(db, user_id, tmdb_id)
+                    if current is None:
+                        continue
+                    await search_missing_episode(db, user_id, tmdb_id, service, current["snapshot"])
         except (TVError, MovieError, TimeoutError):
             continue

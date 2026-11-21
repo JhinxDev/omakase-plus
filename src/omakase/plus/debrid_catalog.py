@@ -8,13 +8,20 @@ import json
 import re
 import time
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import islice, zip_longest
 from pathlib import PurePosixPath
 
+from omakase.plus.btih import normalize_btih
 from omakase.plus.catalog import quality_from_title
 from omakase.plus.debrid_anime import DebridTitleSource
-from omakase.plus.debrid_library import DebridLibraryError, _video, account_binding, account_token
+from omakase.plus.debrid_library import (
+    DebridLibraryError,
+    _size,
+    _video,
+    account_binding,
+    account_token,
+)
 from omakase.plus.episode_quality import QUALITY_RANK
 from omakase.plus.household_media import personal_legacy_visible
 from omakase.plus.language_source import digest
@@ -39,6 +46,58 @@ def _tokens(name):
 
 def _leaf(path):
     return PurePosixPath(path.replace("\\", "/")).name if isinstance(path, str) else ""
+
+
+def published_name(name):
+    """A provider label or leaf filename, never a path or an endpoint."""
+    if (
+        isinstance(name, str)
+        and 0 < len(name) <= 255
+        and name not in {".", ".."}
+        and _leaf(name) == name
+        and not any(ord(char) < 32 for char in name)
+    ):
+        return name
+    return ""
+
+
+@dataclass(frozen=True)
+class PublishedEpisode:
+    infohash: str
+    folder: str
+    filename: str
+
+    def matches(self, torrent):
+        return (
+            torrent.get("status") == "downloaded"
+            and torrent.get("filename") == self.folder
+            and normalize_btih(torrent.get("hash")) == self.infohash
+        )
+
+    def file_id(self, files, links, title):
+        marker = _tv_marker(self.filename, title, from_pack=True)
+        if marker and marker != (title.season, title.episode):
+            return None
+        selected = [number for number, name in _video_files(files, links) if name == self.filename]
+        if len(selected) == 1 and _size(files[selected[0]].get("bytes")):
+            return selected[0]
+        return None
+
+
+def _published_episodes(db, scope, key, binding):
+    if db is None or scope.kind != "personal" or scope.viewer_id != scope.operational_owner_id:
+        return {}
+    row = db.execute(
+        "SELECT snapshot_json FROM tv_provider_requests WHERE user_id=? AND title_id=?",
+        (scope.viewer_id, key),
+    ).fetchone()
+    publication = (json.loads(row[0]).get("published_files") or {}) if row and row[0] else {}
+    if not binding or publication.get("binding") != binding:
+        return {}
+    return {
+        (season, episode): PublishedEpisode(infohash, folder, filename)
+        for season, episode, infohash, folder, filename in publication.get("episodes", ())
+    }
 
 
 @dataclass(frozen=True)
@@ -135,10 +194,12 @@ def _matches(name, title):
     )
 
 
-def _records(inventory, title):
+def _records(inventory, title, published=()):
     torrents, _ = inventory
     for key, data in torrents.items():
-        if data.get("status") == "downloaded" and _matches(data.get("filename"), title):
+        if data.get("status") == "downloaded" and (
+            _matches(data.get("filename"), title) or any(hint.matches(data) for hint in published)
+        ):
             yield key, data
 
 
@@ -210,34 +271,46 @@ class _SeasonScan:
     expires: float
     signature: str
     title: CatalogTitle
+    published: dict[int, PublishedEpisode]
     # Insertion order rotates retryable rows to the end of the pending queue.
     pending: dict
     matched: dict[str, frozenset[tuple[int, int]]] = field(default_factory=dict)
 
 
-def _season_scan(cache, key, title, inventory, signature, now):
+def _season_scan(cache, key, title, inventory, signature, now, published):
     previous = cache.get(key)
     if (
         previous is not None
         and previous.expires > now
         and previous.signature == signature
         and previous.title == title
+        and previous.published == published
     ):
         return previous
     cache.pop(key, None)
     while len(cache) >= _TV_CACHE_LIMIT:
         cache.pop(next(iter(cache)))
-    scan = _SeasonScan(now + _TV_CACHE_TTL, signature, title, dict(_records(inventory, title)))
+    scan = _SeasonScan(
+        now + _TV_CACHE_TTL,
+        signature,
+        title,
+        published,
+        dict(_records(inventory, title, published.values())),
+    )
     cache[key] = scan
     return scan
 
 
-async def tv_episode_ids(db, scope, key, library, *, seasons, timeout=_TV_SCAN_SECONDS):
+async def tv_episode_ids(
+    db, scope, key, library, *, seasons, timeout=_TV_SCAN_SECONDS, published=None
+):
     """Return confirmed episodes and unfinished seasons within a caller's time budget."""
     token = account_token(db, scope.viewer_id)
     if scope.kind != "personal" or not token or not seasons:
         return EpisodeAvailability()
     binding = account_binding(token)
+    if published is None:
+        published = _published_episodes(db, scope, key, binding)
     deadline = asyncio.get_running_loop().time() + timeout
     try:
         async with asyncio.timeout_at(deadline):
@@ -267,15 +340,22 @@ async def tv_episode_ids(db, scope, key, library, *, seasons, timeout=_TV_SCAN_S
         if content_hash.upper() != str(data.get("hash") or "").upper():
             scan.pending[record] = scan.pending.pop(record)
             return None
-        markers = frozenset(
-            marker
-            for _, name in _video_files(files, links)
-            if (marker := _tv_marker(name, scan.title, from_pack=True))
-            and marker[0] == season
-            and marker[1]
-        )
+        markers = set()
+        if _matches(data.get("filename"), scan.title):
+            markers.update(
+                marker
+                for _, name in _video_files(files, links)
+                if (marker := _tv_marker(name, scan.title, from_pack=True))
+                and marker[0] == season
+                and marker[1]
+            )
+        for episode, hint in scan.published.items():
+            if hint.matches(data) and hint.file_id(
+                files, links, replace(scan.title, episode=episode)
+            ):
+                markers.add((season, episode))
         if markers:
-            scan.matched[record] = markers
+            scan.matched[record] = frozenset(markers)
         scan.pending.pop(record)
         return None
 
@@ -288,7 +368,10 @@ async def tv_episode_ids(db, scope, key, library, *, seasons, timeout=_TV_SCAN_S
                     partial.discard(season)
                     continue
                 cache_key = (binding, scope.viewer_id, str(key), season)
-                scans[season] = _season_scan(cache, cache_key, title, inventory, signature, now)
+                season_files = {ep: hint for (s, ep), hint in published.items() if s == season}
+                scans[season] = _season_scan(
+                    cache, cache_key, title, inventory, signature, now, season_files
+                )
             # Round-robin across seasons so a busy season cannot starve the other
             # seasons on this page. Snapshot the jobs before mutating queues.
             pending = [
@@ -327,7 +410,12 @@ async def resolve_catalog(db, scope, domain, key, season, episode, library):
         return None
     inventory = await library.inventory(token)
     failure = None
-    records = _records(inventory, title)
+    hint = (
+        _published_episodes(db, scope, key, account_binding(token)).get((season, episode))
+        if domain == "tv"
+        else None
+    )
+    records = _records(inventory, title, (hint,) if hint else ())
     if domain == "movie":
         # Release labels order verification. The selected copy still needs to resolve.
         records = sorted(
@@ -352,6 +440,7 @@ async def resolve_catalog(db, scope, domain, key, season, episode, library):
             key=lambda pair: (
                 pair[0] not in verified,
                 _tv_marker(pair[1].get("filename"), title) != (season, episode),
+                not (hint and hint.matches(pair[1])),
             ),
         )
     for index, (record, data) in enumerate(records):
@@ -362,18 +451,27 @@ async def resolve_catalog(db, scope, domain, key, season, episode, library):
             files, links, content_hash = info
             if content_hash.upper() != str(data.get("hash") or "").upper():
                 continue
-            matches = [
-                number
-                for number, name in _video_files(files, links)
-                if (
-                    _movie_matches(name, title)
-                    if domain == "movie"
-                    else _tv_marker(name, title, from_pack=True) == (season, episode)
-                )
-            ]
-            if len(matches) != 1:
+            matches = (
+                [
+                    number
+                    for number, name in _video_files(files, links)
+                    if (
+                        _movie_matches(name, title)
+                        if domain == "movie"
+                        else _tv_marker(name, title, from_pack=True) == (season, episode)
+                    )
+                ]
+                if _matches(data.get("filename"), title)
+                else []
+            )
+            locator = title
+            if len(matches) == 1:
+                file_id = matches[0]
+            elif hint and hint.matches(data) and (file_id := hint.file_id(files, links, title)):
+                locator = (title, hint)
+            else:
                 continue
-            cloud = await library.torrent_source(token, record, matches[0], inventory=info)
+            cloud = await library.torrent_source(token, record, file_id, inventory=info)
         except DebridLibraryError as error:
             if error.status in {403, 429, 451}:
                 raise
@@ -387,7 +485,7 @@ async def resolve_catalog(db, scope, domain, key, season, episode, library):
             episode,
             cloud,
             digest(["realdebrid", domain, key, season, episode, cloud.media_version]),
-            title,
+            locator,
         )
         revalidate_catalog(db, source)
         return source, title.title
@@ -398,16 +496,14 @@ async def resolve_catalog(db, scope, domain, key, season, episode, library):
 
 def revalidate_catalog(db, source):
     scope = source._scope
-    if (
-        catalog_title(
-            db,
-            scope,
-            source.domain,
-            source.canonical_id,
-            source.season_number,
-            source.episode_number,
-        )
-        != source.locator
-        or account_binding(account_token(db, scope.viewer_id)) != source.cloud.account
-    ):
+    title = catalog_title(
+        db, scope, source.domain, source.canonical_id, source.season_number, source.episode_number
+    )
+    locator = source.locator
+    binding = account_binding(account_token(db, scope.viewer_id))
+    if isinstance(locator, tuple):
+        published = _published_episodes(db, scope, source.canonical_id, binding)
+        hint = published.get((source.season_number, source.episode_number))
+        locator = locator[0] if hint == locator[1] else None
+    if title is None or title != locator or binding != source.cloud.account:
         raise DebridLibraryError("The Real-Debrid copy is no longer available.", 404)
