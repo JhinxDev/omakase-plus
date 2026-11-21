@@ -6,12 +6,13 @@ import json
 import re
 from collections import defaultdict
 from datetime import UTC, datetime
+from functools import cache
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from omakase.plus.anime_synopsis import cached_synopsis
 from omakase.plus.catalog_config import configured_catalogs
-from omakase.plus.episode_quality import episode_qualities
+from omakase.plus.episode_quality import episode_qualities, read_publication_receipt
 from omakase.plus.health import reason_label
 from omakase.plus.manifest import validate_curator_receipt
 from omakase.plus.media_store import covered_episodes, verified_asset_coverage
@@ -331,6 +332,11 @@ def library_titles(
            ORDER BY active DESC, title COLLATE NOCASE, id""",
         (user_id,),
     ).fetchall()
+
+    @cache
+    def read_receipt():
+        return read_publication_receipt(db)
+
     titles: list[dict[str, Any]] = []
     for monitor in monitors:
         excluded = (str(monitor["anilist_id"]), monitor["season_number"] or 0) in removed
@@ -376,7 +382,7 @@ def library_titles(
         qualities = [
             quality for quality in ("1080p", "2160p", "720p") if quality in quality_coverage
         ]
-        effective_quality = episode_qualities(db, assets)
+        effective_quality = episode_qualities(db, assets, read_receipt=read_receipt)
         if required:
             effective_quality = {
                 episode: value

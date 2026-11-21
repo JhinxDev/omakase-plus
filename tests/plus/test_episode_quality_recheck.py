@@ -50,6 +50,28 @@ def test_unconfirmed_higher_releases_do_not_displace_the_existing_fallback(db):
     assert 4 not in quality
 
 
+def test_library_reads_one_episode_quality_receipt_per_view(db):
+    first, _ = entry(db)
+    second, _ = entry(db, anilist_id=22, title="Another Series")
+    asset(db, first, "A", (1,))
+    asset(db, second, "B", (1,), "1080p")
+    reads = []
+
+    def count_receipt_read(statement):
+        if statement == "SELECT receipt_json FROM media_curator_receipt_latest WHERE id=1":
+            reads.append(statement)
+
+    db.set_trace_callback(count_receipt_read)
+    try:
+        for request_count in (1, 2):
+            cards = {card["id"]: card for card in library_titles(db, user_id=1)}
+            assert cards[first]["episode_qualities"][1]["label"] == "720p fallback release"
+            assert cards[second]["episode_qualities"][1]["label"] == "1080p release"
+            assert len(reads) == request_count
+    finally:
+        db.set_trace_callback(None)
+
+
 @pytest.mark.parametrize("status", ["downloading", "quarantined", "error"])
 def test_unusable_preferred_copy_does_not_hide_fallback(db, status):
     monitor, _ = entry(db)

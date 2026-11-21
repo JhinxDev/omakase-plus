@@ -95,14 +95,15 @@ def _current_file_quality(db, asset):
     }
 
 
-def _selected_files(db, assets):
-    from omakase.plus.quality_publication import source_generation, validate_receipt
+def read_publication_receipt(db):
+    """Read the current qualified publication for an episode-quality view."""
+    from omakase.plus.quality_publication import validate_receipt
 
     latest = db.execute(
         "SELECT receipt_json FROM media_curator_receipt_latest WHERE id=1"
     ).fetchone()
     if latest is None:
-        return {}
+        return None
     try:
         receipt = validate_receipt(json.loads(latest[0]))
         if (
@@ -110,8 +111,17 @@ def _selected_files(db, assets):
             or receipt["mode"] != "live"
             or not receipt["topology_converged"]
         ):
-            return {}
+            return None
     except (ValueError, TypeError, KeyError):
+        return None
+    return receipt
+
+
+def _selected_files(db, assets, *, read_receipt=None):
+    from omakase.plus.quality_publication import source_generation
+
+    receipt = read_publication_receipt(db) if read_receipt is None else read_receipt()
+    if receipt is None:
         return {}
     result = {}
     for asset in assets:
@@ -185,10 +195,10 @@ def _selected_files(db, assets):
     return result
 
 
-def episode_qualities(db, assets):
+def episode_qualities(db, assets, *, read_receipt=None):
     """Keep the selected fallback until a qualified publication replaces it."""
     result = {}
-    selected = _selected_files(db, assets)
+    selected = _selected_files(db, assets, read_receipt=read_receipt)
     alternatives = {}
     for asset in assets:
         coverage = verified_asset_coverage(asset)
