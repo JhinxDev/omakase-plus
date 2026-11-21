@@ -9,6 +9,7 @@ from omakase.plus import debrid_catalog, request_candidates, tv_fallback, tv_pro
 from omakase.plus.db import run_migrations
 from omakase.plus.debrid_catalog import CatalogTitle, PublishedEpisode
 from omakase.plus.debrid_library import CloudSource, DebridLibraryError, account_binding
+from omakase.plus.movies import MovieError
 from omakase.plus.realdebrid import RDFile, RDTorrent
 from tests.plus.test_request_candidates import Candidate
 
@@ -173,6 +174,63 @@ async def test_search_rotates_past_expired_early_episodes(request_db, monkeypatc
         tv_provider_requests._write_snapshot(db, 1, 77, snapshot)
         await run()
     assert first == [(3, 1), (3, 2), (3, 3), (3, 1)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("error", "token", "newer_snapshot", "ready_episodes"),
+    [
+        ("transport_error", FIXTURE_ACCOUNT, False, {1, 2}),
+        ("invalid_metadata", FIXTURE_ACCOUNT, False, {1}),
+        ("transport_error", "different-account", False, set()),
+        ("transport_error", FIXTURE_ACCOUNT, True, {3}),
+    ],
+)
+async def test_riven_outage_can_show_new_verified_cloud_episodes(
+    request_db, monkeypatch, error, token, newer_snapshot, ready_episodes
+):
+    db = request_db
+    snapshot = _snapshot(1, 2, 3)
+    snapshot["library"]["episodes"] = [[3, 1]]
+    monkeypatch.setattr(tv_provider_requests, "_stamp", lambda: "2026-11-21T16:00:00Z")
+    tv_provider_requests._write_snapshot(db, 1, 77, snapshot)
+    old = tv_provider_requests.read(db, 1, 77)
+    monkeypatch.setattr(tv_provider_requests, "_stamp", lambda: "2026-11-21T16:01:00Z")
+    library = object()
+    metadata = {"seasons": [{"season_number": 3, "episode_count": 3}]}
+
+    async def unavailable(*_args, **_kwargs):
+        raise MovieError(error)
+
+    async def scan(_db, _scope, title, supplied, *, seasons, **_kwargs):
+        assert (title, supplied, seasons) == ("77", library, [3])
+        if newer_snapshot:
+            db.execute(
+                """UPDATE tv_provider_requests SET
+                      snapshot_json=json_set(snapshot_json, '$.library.episodes', json('[[3,3]]'))
+                   WHERE user_id=1 AND title_id=77"""
+            )
+            db.commit()
+        return debrid_catalog.EpisodeAvailability(frozenset({(3, 2), (3, 4)}), (3,))
+
+    service = SimpleNamespace(_raw=lambda *_: metadata, _json=unavailable)
+    monkeypatch.setattr(tv_provider_requests, "account_token", lambda *_: token)
+    monkeypatch.setattr(tv_provider_requests, "tv_episode_ids", scan)
+    with pytest.raises(MovieError, match=MovieError(error).detail):
+        await tv_provider_requests.refresh(db, 1, 77, service, cloud_library=library)
+
+    current = tv_provider_requests.read(db, 1, 77)
+    assert current["checked_at"] == old["checked_at"]
+    assert current["snapshot"]["seasons"] == old["snapshot"]["seasons"]
+    projected = tv_provider_requests.project_library(db, 1, service, current, 77)
+    assert projected["snapshot"].get("ready", 0) == len(ready_episodes)
+    assert {
+        episode["episode"]
+        for season in projected["snapshot"]["seasons"]
+        for episode in season["episodes"]
+        if episode.get("available")
+    } == ready_episodes
+    assert db.execute("SELECT count(*) FROM tv_fallback_transfers").fetchone()[0] == 0
 
 
 def test_only_stale_attempted_aired_episodes_are_eligible():

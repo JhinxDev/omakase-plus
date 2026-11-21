@@ -16,6 +16,8 @@ identifier; it does not replace the public release version.
   History separates viewing, library activity and collection changes.
 - TV requests can use configured Riven intake. Real-Debrid fallback can verify
   exact missing episodes and reuse eligible files already in the linked account.
+- Existing TV requests can show newly verified Real-Debrid episodes during a
+  Riven outage while retaining the last confirmed Riven status.
 - Recent Apple TV builds combine Continue Watching activity across anime, movies
   and TV. Home Screen shelf tiles fit the whole image, and focused in-app controls
   use the dark highlight. Media Info shows resolution, codecs, container and size.

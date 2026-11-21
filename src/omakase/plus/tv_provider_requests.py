@@ -239,6 +239,42 @@ def _write_snapshot(db, user_id, tmdb_id, snapshot):
     db.commit()
 
 
+async def _refresh_cloud_during_outage(db, user_id, tmdb_id, service, library, existing, metadata):
+    if library is None or not existing or not existing["snapshot"]:
+        return
+    prior = existing["snapshot"].get("library") or {}
+    identity = source_binding(db, user_id, service)
+    if not identity or identity[0] != "Real-Debrid":
+        return
+    if identity != (prior.get("provider"), prior.get("binding")):
+        return
+    expected = expected_episodes(metadata, existing["seasons"])
+    observation = await _library_observation(db, user_id, tmdb_id, service, library, expected)
+    if not observation or source_binding(db, user_id, service) != identity:
+        return
+    saved = {tuple(episode) for episode in prior["episodes"]} & expected
+    matched = set(observation["episodes"])
+    if matched <= saved:
+        return
+    observation["episodes"] = sorted(saved | matched)
+    # Refresh the cloud match while keeping the last Riven check and search state.
+    db.execute(
+        """UPDATE tv_provider_requests
+           SET snapshot_json=json_set(snapshot_json,'$.library',json(?)),changed_at=?
+           WHERE user_id=? AND title_id=? AND checked_at IS ?
+             AND json_extract(snapshot_json,'$.library')=json(?)""",
+        (
+            json.dumps(observation),
+            _stamp(),
+            user_id,
+            tmdb_id,
+            existing["checked_at"],
+            json.dumps(prior),
+        ),
+    )
+    db.commit()
+
+
 def _provider_time(value):
     try:
         date = datetime.fromisoformat(value) if isinstance(value, str) and len(value) < 48 else None
@@ -410,7 +446,16 @@ async def refresh(db, user_id, tmdb_id, service, *, submit=False, cloud_library=
         service._save(user_id, metadata)
     existing = read(db, user_id, tmdb_id)
     seasons = existing["seasons"] if existing else exact_seasons(metadata)
-    snapshot = await inspect_riven(service, tmdb_id, metadata, seasons)
+    try:
+        snapshot = await inspect_riven(service, tmdb_id, metadata, seasons)
+    except MovieError as error:
+        if error.code in {"transport_error", "transport_timeout"} or (
+            error.code == "backend_unavailable" and (error.http_status or 0) >= 500
+        ):
+            await _refresh_cloud_during_outage(
+                db, user_id, tmdb_id, service, cloud_library, existing, metadata
+            )
+        raise
     if snapshot is not None:
         if existing is None:
             remember(db, user_id, tmdb_id, seasons, submission="observed")
