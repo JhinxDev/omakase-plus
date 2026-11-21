@@ -59,6 +59,23 @@ public struct LiveMediaInformation: Decodable, Sendable, Equatable {
     }
 }
 
+public struct LiveIntro: Decodable, Equatable, Sendable {
+    public let start: Double
+    public let end: Double
+
+    enum CodingKeys: String, CodingKey {
+        case start = "start_seconds", end = "end_seconds"
+    }
+
+    func isValid(for duration: Double) -> Bool {
+        start.isFinite && end.isFinite && start >= 0 && start < end && end < duration
+    }
+
+    public func contains(_ position: Double) -> Bool {
+        position >= start && position < end
+    }
+}
+
 public struct LiveTestPass: Sendable {
     public let card: LibraryCard
     public let mediaID: String
@@ -82,6 +99,7 @@ public struct LiveTestPass: Sendable {
     public let audioLanguages: [String]
     public let subtitleLanguages: [String]
     public let mediaInformation: LiveMediaInformation?
+    public let intro: LiveIntro?
     let resumeScope: String?
     let watchPath: String?
     private let cookie: HTTPCookie
@@ -183,6 +201,9 @@ public struct LiveTestPass: Sendable {
         self.audioLanguages = (reply.audioLanguages ?? []).prefix(4).compactMap { Self.displayText($0, limit: 48) }
         self.subtitleLanguages = (reply.subtitleLanguages ?? []).prefix(4).compactMap { Self.displayText($0, limit: 48) }
         self.mediaInformation = reply.mediaInformation.flatMap { $0.hasDetails ? $0 : nil }
+        self.intro = format == .direct ? nil : reply.intro.flatMap {
+            $0.isValid(for: reply.duration) ? $0 : nil
+        }
         self.card = LibraryCard(identity: identity, title: reply.title, episodeTitle: episode,
                                 synopsis: episode == nil ? "" : Self.displayText(reply.episodeSummary, limit: 650) ?? "")
     }
@@ -282,6 +303,7 @@ struct LiveTestReply: Decodable {
     let audioLanguages: [String]?
     let subtitleLanguages: [String]?
     let mediaInformation: LiveMediaInformation?
+    let intro: LiveIntro?
 
     enum CodingKeys: String, CodingKey {
         case identity, title, mediaID = "media_id", mediaToken = "media_token"
@@ -295,6 +317,7 @@ struct LiveTestReply: Decodable {
         case episodeName = "episode_name", episodeSummary = "episode_summary"
         case audioLanguages = "audio_languages", subtitleLanguages = "subtitle_languages"
         case mediaInformation = "media_info"
+        case intro
     }
 }
 

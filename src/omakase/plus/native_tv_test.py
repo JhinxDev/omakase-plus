@@ -103,6 +103,7 @@ from omakase.plus.web_playback_catalog import (
     revalidate_catalog_source,
     revalidate_remote_catalog_source,
 )
+from omakase.plus.web_playback_context import normalize_skip_segments
 from omakase.plus.web_playback_delivery import DeliveryError, open_local, open_part
 from omakase.plus.web_playback_navigation import enabled as playback_enabled
 from omakase.plus.web_playback_source import (
@@ -1517,9 +1518,22 @@ def create_native_tv_test_router(
             if target.episode_number and (value := getattr(grant.source, key, ""))
         }
         native_plan = cloud_streams.native.peek(grant.native_key) if grant.native_key else None
-        media_info = _media_information(
-            grant.source, direct=grant.direct, timeline=getattr(native_plan, "timeline", None)
-        )
+        timeline = getattr(native_plan, "timeline", None)
+        media_info = _media_information(grant.source, direct=grant.direct, timeline=timeline)
+        intro = None
+        if target.episode_number and grant.direct is None:
+            chapters = getattr(timeline, "intro", None)
+            if chapters is not None and 0 <= chapters[0] < chapters[1] < target.duration_seconds:
+                intro = {"start_seconds": chapters[0], "end_seconds": chapters[1]}
+            elif getattr(grant.source, "_skip_evidence", None):
+                intro = next(
+                    (
+                        {"start_seconds": row["start_seconds"], "end_seconds": row["end_seconds"]}
+                        for row in normalize_skip_segments(grant.source)["segments"]
+                        if row["kind"] == "intro" and row["end_seconds"] < target.duration_seconds
+                    ),
+                    None,
+                )
         response = JSONResponse(
             {
                 "title": grant.title,
@@ -1553,6 +1567,7 @@ def create_native_tv_test_router(
                 **episode_metadata,
                 **_playback_languages(grant, cloud_streams),
                 **({"media_info": media_info} if media_info else {}),
+                **({"intro": intro} if intro else {}),
                 **(
                     {
                         "resume_sync": True,

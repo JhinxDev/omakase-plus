@@ -1053,13 +1053,26 @@ class DebridStreams:
             offset = plan.timeline.origin if plan.timeline is not None else 0
             return _binary_reply(_shift_webvtt(track.data, offset), "text/vtt", request)
         if asset == "index.m3u8":
-            started = time.monotonic()
-            if plan.web_codecs:
-                tracks = ()
-            else:
-                await self._wait_for_subtitles(job)
-                tracks = tuple(getattr(job, "tracks", ()) or ())[:_NATIVE_SUBTITLE_LIMIT]
-            _record_phase(plan, "captions", started)
+
+            async def caption_tracks():
+                started = time.monotonic()
+                if plan.web_codecs:
+                    result = ()
+                else:
+                    await self._wait_for_subtitles(job)
+                    result = tuple(getattr(job, "tracks", ()) or ())[:_NATIVE_SUBTITLE_LIMIT]
+                _record_phase(plan, "captions", started)
+                return result
+
+            async def prepare_opening(subtitles):
+                started = time.monotonic()
+                try:
+                    await self._prepare_native_opening(plan, timeline, request, subtitles)
+                except NativeError as error:
+                    return error
+                _record_phase(plan, "opening", started)
+                return None
+
             started = time.monotonic()
             timeline = await self.native.ready(plan, _NATIVE_OPEN_WAIT)
             _record_phase(plan, "timeline", started)
@@ -1067,13 +1080,24 @@ class DebridStreams:
                 warn(_LOG, "native_open", "unsupported_media", "native", plan.diagnostic_id)
                 device = "web" if plan.web_codecs else "Apple TV"
                 raise DebridLibraryError(f"This copy cannot use the {device} player yet.", 415)
-            started = time.monotonic()
-            try:
-                await self._prepare_native_opening(plan, timeline, request, len(tracks))
-            except NativeError as error:
+            if (
+                plan.continuous
+                and not plan.web_codecs
+                and job is not None
+                and request.method != "HEAD"
+            ):
+                # Continuous media windows and caption discovery have independent
+                # output. Keep caption tracks in the first master playlist.
+                async with asyncio.TaskGroup() as tasks:
+                    captions = tasks.create_task(caption_tracks())
+                    opening = tasks.create_task(prepare_opening(1))
+                tracks, error = captions.result(), opening.result()
+            else:
+                tracks = await caption_tracks()
+                error = await prepare_opening(len(tracks))
+            if error is not None:
                 warn(_LOG, "native_open", error.code, "native", plan.diagnostic_id)
                 raise DebridLibraryError("This position could not be prepared.", 503) from None
-            _record_phase(plan, "opening", started)
             return _playlist_reply(self.native.master_playlist(plan, tracks), request)
         if asset == "stream.m3u8":
             return _playlist_reply(self.native.video_playlist(plan), request)

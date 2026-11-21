@@ -179,6 +179,14 @@ def _run(*args):
 def _build_fixture(folder: Path) -> Path:
     source = folder / "fixture.mkv"
     subtitles = folder / "subs.srt"
+    chapters = folder / "chapters.ffmeta"
+    chapters.write_text(
+        ";FFMETADATA1\n"
+        "[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=2000\ntitle=Prologue\n"
+        "[CHAPTER]\nTIMEBASE=1/1000\nSTART=2000\nEND=12000\ntitle=Opening\n"
+        "[CHAPTER]\nTIMEBASE=1/1000\nSTART=12000\nEND=30000\ntitle=Episode\n",
+        encoding="utf-8",
+    )
     subtitles.write_text(
         "1\n00:00:01,000 --> 00:00:03,500\nFirst line\n\n"
         "2\n00:00:07,250 --> 00:00:09,000\nSecond line\n\n"
@@ -205,6 +213,10 @@ def _build_fixture(folder: Path) -> Path:
         f"sine=frequency=880:duration={DURATION}",
         "-i",
         str(subtitles),
+        "-i",
+        str(chapters),
+        "-map_chapters",
+        "4",
         "-map",
         "0:v",
         "-map",
@@ -293,6 +305,8 @@ def test_index_uses_head_length_and_preserves_a_bounded_range(provider):
     assert provider.requests[1] == ("GET", "bytes=0-1048575")
     # Every body read is ranged, so no request can pull a whole title.
     assert all(header for method, header in provider.requests if method == "GET")
+    # The cue table fits in the first small read. No separate cue-header GET.
+    assert len(provider.requests) == 3
 
     try:
         provider.server.mode = "omit-total"
@@ -1131,6 +1145,63 @@ def test_timeline_follows_the_cue_index(provider):
     assert len(timeline.clusters) == len(timeline.segments)
     # Boundaries are real keyframe times: the fixture forces one every six seconds.
     assert abs(timeline.segments[1][0] - SEGMENT_SECONDS) < 0.1
+    assert timeline.intro == pytest.approx((2.0 - timeline.origin, 12.0 - timeline.origin))
+
+
+def test_opening_chapter_uses_seekhead_beyond_index_prefix(provider, monkeypatch):
+    data = provider.payload
+    _, size, body = native_hls._element(data, 0)
+    _, _, segment = native_hls._element(data, body + size)
+    chapters = native_hls._element_ranges(data, segment, len(data), {native_hls._CHAPTERS})
+    offset = chapters[native_hls._CHAPTERS][0][0]
+    # Make the same layout as a file with attachments that fill the prefix.
+    monkeypatch.setattr(native_hls, "_INDEX_PREFIX_BYTES", offset)
+    provider.requests.clear()
+    timeline = _timeline(provider)
+    assert timeline.intro == pytest.approx((2.0 - timeline.origin, 12.0 - timeline.origin))
+    assert ("GET", f"bytes={offset}-{offset + 4095}") in provider.requests
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("named", (1.5, 13.5)),
+        ("typed", (1.5, 13.5)),
+        ("recap", None),
+        ("last_without_end", None),
+        ("same_start", None),
+        ("linked", None),
+    ],
+)
+def test_intro_chapter_requires_an_explicit_local_interval(kind, expected):
+    def element(tag, value):
+        if isinstance(value, int):
+            value = value.to_bytes(max(1, (value.bit_length() + 7) // 8), "big")
+        return native_hls._encode_element(tag, value)
+
+    def chapter(start, *, label=b"", skip_type=None, extra=b""):
+        fields = element(0x91, start * 1_000_000_000)
+        if label:
+            fields += element(0x80, element(0x85, label))
+        if skip_type is not None:
+            fields += element(0x4588, skip_type)
+        return element(0xB6, fields + extra)
+
+    opening = {
+        "typed": chapter(2, skip_type=1),
+        "recap": chapter(2, label=b"Opening", skip_type=3),
+        "linked": chapter(2, label=b"Opening", extra=element(0x6E67, b"x" * 16)),
+    }.get(kind, chapter(2, label=b"Opening"))
+    outro = (
+        b""
+        if kind == "last_without_end"
+        else chapter(
+            2 if kind == "same_start" else 14,
+            skip_type=0,
+        )
+    )
+    data = element(0x45B9, chapter(0, label=b"Recap") + opening + outro)
+    assert native_hls._intro_chapter(data, (0, len(data)), 0.5, 30) == expected
 
 
 def test_timeline_refuses_unsupported_media(tmp_path):

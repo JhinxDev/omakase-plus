@@ -19,6 +19,9 @@ connected Real-Debrid account.
 - Play episodes and films with resume sync and a next-episode control. The
   AVPlayer path uses native controls. The direct-original candidate uses the
   TVVLCKit player with its own controls.
+- **Skip Intro** appears while an episode is within a verified opening interval
+  on the AVPlayer path. It jumps to the end of the opening when selected.
+  Availability depends on the specific copy’s chapter or Plex marker metadata.
 - Remember playback progress on the server, so a title resumes on the web, the
   Apple TV or another linked device.
 - Finishing an episode or movie credits anime, TV and movie progress, History and

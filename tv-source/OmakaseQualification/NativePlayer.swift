@@ -447,7 +447,8 @@ struct NativePlayer: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         if controller.player !== session.player { controller.player = session.player }
         let nearEnd = PlaybackSession.shouldSuggestNext(position: session.position, duration: session.duration)
-        context.coordinator.updateNext(on: controller, action: nextAction, opening: openingNext, nearEnd: nearEnd)
+        context.coordinator.updateNext(on: controller, action: nextAction, opening: openingNext)
+        context.coordinator.updateContext(on: controller, session: session, nearEnd: nearEnd)
         context.coordinator.updateSubtitleItem(on: controller)
         context.coordinator.updateMediaInformation(mediaInformation, on: controller)
     }
@@ -464,7 +465,8 @@ struct NativePlayer: UIViewControllerRepresentable {
         let dismiss: () -> Void
         private var nextAction: (() -> Void)?
         private var transportState: NextControl = .hidden
-        private var contextualVisible = false
+        private var contextState: ContextControl = .hidden
+        private weak var contextPlayer: AVPlayer?
         private weak var subtitleItem: AVPlayerItem?
         private var subtitleDiscovery: Task<Void, Never>?
         private var subtitlePositions: [SubtitlePosition: AVTextStyleRule] = [:]
@@ -486,6 +488,7 @@ struct NativePlayer: UIViewControllerRepresentable {
         }
 
         private enum NextControl { case hidden, opening, available }
+        private enum ContextControl: Equatable { case hidden, next, intro(LiveIntro) }
 
         private enum SubtitlePosition: String, CaseIterable {
             case system, top, topLower, bottomHigher, bottom
@@ -526,17 +529,37 @@ struct NativePlayer: UIViewControllerRepresentable {
 
         init(dismiss: @escaping () -> Void) { self.dismiss = dismiss }
 
-        func updateNext(on controller: AVPlayerViewController, action: (() -> Void)?, opening: Bool, nearEnd: Bool) {
+        func updateNext(on controller: AVPlayerViewController, action: (() -> Void)?, opening: Bool) {
             nextAction = action
             let transport: NextControl = action == nil ? .hidden : opening ? .opening : .available
             if transport != transportState {
                 transportState = transport
                 updateTransport(on: controller)
             }
-            let context = transport == .available && nearEnd
-            if context != contextualVisible {
-                controller.contextualActions = context ? [nextButton()] : []
-                contextualVisible = context
+        }
+
+        func updateContext(on controller: AVPlayerViewController, session: PlaybackSession, nearEnd: Bool) {
+            let player = controller.player
+            let context: ContextControl
+            if let marker = session.intro, player != nil, marker.end < session.duration,
+               marker.contains(session.position) {
+                context = .intro(marker)
+            } else {
+                context = transportState == .available && nearEnd ? .next : .hidden
+            }
+            guard context != contextState || player !== contextPlayer else { return }
+            contextState = context
+            contextPlayer = player
+            switch context {
+            case .hidden: controller.contextualActions = []
+            case .next: controller.contextualActions = [nextButton()]
+            case .intro(let marker):
+                let skip = UIAction(title: "Skip Intro", image: UIImage(systemName: "forward.end.fill")) {
+                    [weak session, weak player] _ in
+                    guard let player else { return }
+                    session?.skipIntro(marker, on: player)
+                }
+                controller.contextualActions = [skip]
             }
         }
 
