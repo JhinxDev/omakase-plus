@@ -10,7 +10,7 @@ import httpx
 from starlette.concurrency import run_in_threadpool
 
 from omakase.plus import discover_hub as hub
-from omakase.plus import households, movies_store, request_candidates
+from omakase.plus import households, movie_fallback, movies_store, request_candidates
 from omakase.plus import request_status as status_model
 from omakase.plus.catalog_search import AnimeCatalogSearch, CatalogSearchError, _plain
 from omakase.plus.connections import movie_connections
@@ -363,6 +363,7 @@ async def dashboard(db, user_id):
             if model is not None:
                 models.append(model)
     request_candidates.attach_search_summaries(db, user_id, models)
+    movie_fallback.attach_summaries(db, user_id, models)
     return status_model.group(models)
 
 
@@ -379,6 +380,7 @@ async def request_detail(db, user_id, kind, title_id):
         model = _request_status(db, scope, kind, title_id, publication=_publication_reader(db))
     if model is None:
         raise ForYouError("Request not found.", 404)
+    movie_fallback.attach_summaries(db, user_id, [model])
     return model
 
 
@@ -486,6 +488,8 @@ async def recommendations(db, user_id, category):
             db, scope, kind, publication=publication, movie_library=movie_library
         )
     ]
+    request_candidates.attach_search_summaries(db, user_id, requests)
+    movie_fallback.attach_summaries(db, user_id, requests)
     return {
         "category": category,
         "rows": _project_shelves(
@@ -715,17 +719,31 @@ async def submit_request(db, user_id, kind, title_id):
     return _request_status(db, scope, kind, title_id)
 
 
-async def _fallback_movie_search(db, user_id, title_id, status, provider_code):
-    if status is None or status["resolved"] or provider_code not in _FALLBACK_AFTER_RIVEN:
+async def _fallback_movie_search(db, user_id, title_id, status, provider_code, *, cloud):
+    if status is None:
         return
-    await request_candidates.refresh(
-        db,
-        user_id,
-        "movie",
-        title_id,
-        request_candidates.JudgeRequest(title=status["title"], year=status.get("release_year")),
-    )
+    if not status["resolved"] and provider_code in _FALLBACK_AFTER_RIVEN:
+        on_matches = None
+        if (
+            cloud
+            and provider_code in movie_fallback.TERMINAL_RIVEN_CODES
+            and request_candidates.acquire_enabled()
+            and await movie_fallback.advance(db, user_id, title_id) is None
+        ):
+
+            async def on_matches(eligible):
+                await movie_fallback.advance(db, user_id, title_id, eligible)
+
+        await request_candidates.refresh(
+            db,
+            user_id,
+            "movie",
+            title_id,
+            request_candidates.JudgeRequest(title=status["title"], year=status.get("release_year")),
+            on_matches=on_matches,
+        )
     request_candidates.attach_search_summaries(db, user_id, [status])
+    movie_fallback.attach_summaries(db, user_id, [status])
 
 
 async def refresh_request(db, user_id, kind, title_id):
@@ -753,7 +771,7 @@ async def refresh_request(db, user_id, kind, title_id):
                 user_id, title_id, row, card.get("code"), check.get("attempted_at")
             )
         status = _request_status(db, scope, kind, title_id, movie_library=library)
-        await _fallback_movie_search(db, user_id, title_id, status, card.get("code"))
+        await _fallback_movie_search(db, user_id, title_id, status, card.get("code"), cloud=cloud)
         return status
     return status
 
@@ -790,5 +808,5 @@ async def retry_request(db, user_id, kind, title_id):
             user_id, title_id, row, card.get("code"), check.get("attempted_at")
         )
     status = _request_status(db, scope, kind, title_id, movie_library=library)
-    await _fallback_movie_search(db, user_id, title_id, status, card.get("code"))
+    await _fallback_movie_search(db, user_id, title_id, status, card.get("code"), cloud=cloud)
     return status

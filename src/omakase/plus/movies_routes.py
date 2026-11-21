@@ -412,6 +412,7 @@ def create_movies_router(
 
     @router.get("/movies/{imdb_id}/request-status")
     async def request_timeline_status(imdb_id: str, user=Depends(require_user), db=Depends(get_db)):
+        from omakase.plus import movie_fallback, request_candidates
         from omakase.plus.for_you import (
             _MOVIE_PROGRESS_LABELS,
             ForYouError,
@@ -506,6 +507,8 @@ def create_movies_router(
         from omakase.plus.web_playback_navigation import enabled as web_player_enabled
 
         can_play = status["state"] in {"in_library", "ready"} and web_player_enabled()
+        request_candidates.attach_search_summaries(db, user.id, [status])
+        movie_fallback.attach_summaries(db, user.id, [status])
         return JSONResponse(
             {
                 **request_payload(status),
@@ -570,8 +573,9 @@ def create_movies_router(
                 "timeline",
             )
         }
-        if "fallback_search" in model:
-            payload["fallback_search"] = model["fallback_search"]
+        for field in ("fallback_search", "fallback_transfer"):
+            if field in model:
+                payload[field] = model[field]
         return payload
 
     def requests_context(request, user):
@@ -689,7 +693,7 @@ def create_movies_router(
         user=Depends(require_user),
         db=Depends(get_db),
     ):
-        """Explicit status check. Reads provider/library state; no new request."""
+        """Check provider and library state and advance authorized fallback for this request."""
         from omakase.plus import for_you
 
         require_csrf(request, csrf)

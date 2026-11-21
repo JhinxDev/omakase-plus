@@ -197,6 +197,7 @@ def test_all_tables_exist(_fresh_db):
         # omakase.plus.request_candidates from movies_routes.
         "request_candidates",
         "tv_collection_additions",
+        "movie_fallback_transfers",
     }
     assert tables == expected, (
         f"Mismatch — missing: {expected - tables}, extra: {tables - expected}"

@@ -210,6 +210,10 @@ class DebridLibrary:
                 return entries
         raise DebridLibraryError("This account inventory exceeds the current browse limit.", 422)
 
+    async def fresh_torrents(self, token):
+        """Return confirmed torrent inventory without reusing a stale browse result."""
+        return await self._all(token, "torrents")
+
     async def inventory(self, token):
         binding = account_binding(token)
         async with self.lock:

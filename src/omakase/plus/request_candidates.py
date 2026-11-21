@@ -230,15 +230,14 @@ def describe(summary: dict[str, object]) -> str:
     found = int(summary.get("found", 0) or 0)
     accepted = int(summary.get("accepted", 0) or 0)
     if not found:
-        return "Omakase searched the tracked indexers and found no candidate for this title."
+        return "The configured sources returned no releases for this title."
     if accepted:
         return (
-            f"Omakase searched the tracked indexers and found {found} "
-            f"{'candidate' if found == 1 else 'candidates'}; {accepted} could be used."
+            f"{found} {'release' if found == 1 else 'releases'} found. "
+            f"{accepted} passed the release checks."
         )
     return (
-        f"Omakase searched the tracked indexers and found {found} "
-        f"{'candidate' if found == 1 else 'candidates'}, and none of them could be used."
+        f"{found} {'release' if found == 1 else 'releases'} found. None passed the release checks."
     )
 
 
@@ -415,7 +414,7 @@ def _refresh_hours() -> float:
     return value if value >= 0 else DEFAULT_REFRESH_HOURS
 
 
-def is_fresh(db, user_id: int, kind: str, title_id: str) -> bool:
+def is_fresh(db, user_id: int, kind: str, title_id: str, *, max_age=None) -> bool:
     """True when the stored snapshot is recent enough that another search is wasteful."""
     rows = snapshot(db, user_id, kind, title_id)
     if not rows:
@@ -425,6 +424,8 @@ def is_fresh(db, user_id: int, kind: str, title_id: str) -> bool:
     incomplete = {ERROR_CODE, PARTIAL_CODE, NO_SOURCES_CODE}
     if any(row["reason_code"] in incomplete for row in rows):
         seconds = min(INCOMPLETE_REFRESH_SECONDS, seconds)
+    if max_age is not None:
+        seconds = min(max_age, seconds)
     return (time.time() - newest) < seconds
 
 
@@ -438,6 +439,7 @@ async def refresh(
     catalogs=None,
     force: bool = False,
     timeout: float = SEARCH_TIMEOUT_SECONDS,
+    on_matches=None,
 ) -> dict[str, object]:
     """Share one bounded search per active request and reuse a fresh snapshot."""
     if not search_enabled():
@@ -445,12 +447,15 @@ async def refresh(
     database = db.execute("PRAGMA database_list").fetchone()[2] or id(db)
     lock = _SEARCH_LOCKS.setdefault((database, user_id, kind, str(title_id)), asyncio.Lock())
     async with lock:
-        if not force and is_fresh(db, user_id, kind, title_id):
+        max_age = INCOMPLETE_REFRESH_SECONDS if on_matches is not None else None
+        if not force and is_fresh(db, user_id, kind, title_id, max_age=max_age):
             return page_block(db, user_id, kind, title_id)
-        return await _run_search(db, user_id, kind, title_id, request, catalogs, timeout)
+        return await _run_search(
+            db, user_id, kind, title_id, request, catalogs, timeout, on_matches
+        )
 
 
-async def _run_search(db, user_id, kind, title_id, request, catalogs, timeout):
+async def _run_search(db, user_id, kind, title_id, request, catalogs, timeout, on_matches):
     if catalogs is None:
         from omakase.plus.catalog_config import configured_catalogs
 
@@ -487,12 +492,10 @@ async def _run_search(db, user_id, kind, title_id, request, catalogs, timeout):
         marker = PARTIAL_CODE
     elif not candidates:
         marker = EMPTY_CODE
-    record(
-        db,
-        user_id,
-        kind,
-        title_id,
-        [(item, judge(item, request)) for item in candidates],
-        marker=marker,
-    )
+    evaluated = [(item, judge(item, request)) for item in candidates]
+    record(db, user_id, kind, title_id, evaluated, marker=marker)
+    if on_matches is not None:
+        eligible = [item for item, verdict in evaluated if verdict.accepted]
+        if eligible:
+            await on_matches(eligible)
     return page_block(db, user_id, kind, title_id)

@@ -797,6 +797,11 @@ def native_request_status(status):
             for key in ("headline", "outcome", "checked_at", "found", "eligible")
             if key in fallback
         }
+    transfer = status.get("fallback_transfer")
+    if isinstance(transfer, dict):
+        payload["fallback_transfer"] = {
+            key: transfer[key] for key in ("state", "headline") if key in transfer
+        }
     return payload
 
 

@@ -105,13 +105,13 @@ def test_summary_counts_and_orders_reasons_by_frequency():
 
 
 def test_describe_never_overstates():
-    assert "found no candidate" in rc.describe(rc.summarize([]))
+    assert "returned no releases" in rc.describe(rc.summarize([]))
     none_usable = rc.describe(rc.summarize([rc.Verdict(False, "no_seeders", "")]))
-    assert "none of them could be used" in none_usable
+    assert "None passed the release checks" in none_usable
     usable = rc.describe(
         rc.summarize([rc.Verdict(True, "accepted", ""), rc.Verdict(False, "no_seeders", "")])
     )
-    assert "2 candidates; 1 could be used" in usable
+    assert "2 releases found. 1 passed the release checks" in usable
 
 
 # --- the page block: honest when the feature is off ------------------------------------
@@ -236,7 +236,7 @@ def test_successful_empty_search_is_distinct_and_cached(monkeypatch, db):
     sources = [FakeSource([]), FakeSource([])]
     for _ in range(2):
         block = asyncio.run(rc.refresh(db, 1, "movie", "tt0000007", movie(), catalogs=sources))
-        assert "found no candidate" in block["headline"]
+        assert "returned no releases" in block["headline"]
         assert "error" not in block and "partial" not in block
         assert block["candidates"] == []
     assert [source.calls for source in sources] == [1, 1]
