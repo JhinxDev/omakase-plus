@@ -217,7 +217,8 @@ struct HomeScreen: View {
                                 ZStack(alignment: .bottomLeading) {
                                     RoundedRectangle(cornerRadius: 14).fill(Color.tvSurface)
                                     NativeHomeArtwork(paths: [card.artwork.landscape, card.artwork.poster],
-                                                      client: client)
+                                                      client: client,
+                                                      fit: row.id.hasPrefix("continue-"))
                                     if let percent = card.progress.percent, percent > 0 {
                                         ProgressView(value: Double(min(percent, 100)), total: 100)
                                             .progressViewStyle(.linear).tint(Color.tvAccent)
@@ -240,10 +241,10 @@ struct HomeScreen: View {
                             }
                             .frame(width: 380, alignment: .leading)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(TVBareButtonStyle())
                         .focusEffectDisabled()
                         .focused(focus, equals: key)
-                        .scaleEffect(focused ? 1.03 : 1)
+                        .scaleEffect(focused && !reduceMotion ? 1.03 : 1)
                         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: focused)
                         .accessibilityIdentifier(key)
                     }
@@ -377,13 +378,14 @@ struct HomeScreen: View {
 private struct NativeHomeArtwork: View {
     let paths: [String?]
     let client: LiveLibraryClient
+    var fit = false
     @State private var image: UIImage?
 
     var body: some View {
         GeometryReader { geometry in
             if let image {
                 Image(uiImage: image)
-                    .resizable().scaledToFill()
+                    .resizable().aspectRatio(contentMode: fit ? .fit : .fill)
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .clipped()
             }
@@ -471,7 +473,7 @@ struct TVRequestsScreen: View {
                                             .strokeBorder(focus == key ? Color.tvFocus : Color.clear, lineWidth: 3)
                                     }
                                 }
-                                .buttonStyle(.plain).focusEffectDisabled().focused($focus, equals: key)
+                                .buttonStyle(TVBareButtonStyle()).focusEffectDisabled().focused($focus, equals: key)
                                 .accessibilityIdentifier(key)
                             }
                         }
