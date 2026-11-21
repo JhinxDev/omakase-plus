@@ -1,0 +1,7 @@
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.ipa
+*.xcarchive
+*.mobileprovision
+*.xcresult/
