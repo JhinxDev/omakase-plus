@@ -14,6 +14,51 @@ public enum LiveMediaFormat: String, Sendable, CaseIterable {
     case direct
 }
 
+public struct LiveMediaInformation: Decodable, Sendable, Equatable {
+    public let container: String?
+    public let videoCodec: String?
+    public let audioCodecs: [String]
+    public let width: Int?
+    public let height: Int?
+    public let fileBytes: Int64?
+
+    private enum CodingKeys: String, CodingKey {
+        case container, videoCodec = "video_codec", audioCodecs = "audio_codecs"
+        case width, height, fileBytes = "file_bytes"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        container = Self.safeToken(try? fields.decode(String.self, forKey: .container))
+        videoCodec = Self.safeToken(try? fields.decode(String.self, forKey: .videoCodec))
+        audioCodecs = (try? fields.decode([String].self, forKey: .audioCodecs))?
+            .prefix(4).compactMap { Self.safeToken($0) } ?? []
+        if let w = try? fields.decode(Int.self, forKey: .width),
+           let h = try? fields.decode(Int.self, forKey: .height),
+           (1...16384).contains(w), (1...16384).contains(h) {
+            width = w
+            height = h
+        } else {
+            width = nil
+            height = nil
+        }
+        fileBytes = (try? fields.decode(Int64.self, forKey: .fileBytes)).flatMap {
+            (1...10_000_000_000_000).contains($0) ? $0 : nil
+        }
+    }
+
+    public var hasDetails: Bool {
+        container != nil || videoCodec != nil || !audioCodecs.isEmpty || width != nil || fileBytes != nil
+    }
+
+    private static func safeToken(_ value: String?) -> String? {
+        guard let value, value.range(of: #"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,39}$"#,
+                                     options: .regularExpression) == value.startIndex..<value.endIndex
+        else { return nil }
+        return value
+    }
+}
+
 public struct LiveTestPass: Sendable {
     public let card: LibraryCard
     public let mediaID: String
@@ -36,6 +81,7 @@ public struct LiveTestPass: Sendable {
     public let episodeName: String?
     public let audioLanguages: [String]
     public let subtitleLanguages: [String]
+    public let mediaInformation: LiveMediaInformation?
     let resumeScope: String?
     let watchPath: String?
     private let cookie: HTTPCookie
@@ -136,6 +182,7 @@ public struct LiveTestPass: Sendable {
         self.episodeName = episode == nil ? nil : Self.displayText(reply.episodeName, limit: 120)
         self.audioLanguages = (reply.audioLanguages ?? []).prefix(4).compactMap { Self.displayText($0, limit: 48) }
         self.subtitleLanguages = (reply.subtitleLanguages ?? []).prefix(4).compactMap { Self.displayText($0, limit: 48) }
+        self.mediaInformation = reply.mediaInformation.flatMap { $0.hasDetails ? $0 : nil }
         self.card = LibraryCard(identity: identity, title: reply.title, episodeTitle: episode,
                                 synopsis: episode == nil ? "" : Self.displayText(reply.episodeSummary, limit: 650) ?? "")
     }
@@ -234,6 +281,7 @@ struct LiveTestReply: Decodable {
     let episodeSummary: String?
     let audioLanguages: [String]?
     let subtitleLanguages: [String]?
+    let mediaInformation: LiveMediaInformation?
 
     enum CodingKeys: String, CodingKey {
         case identity, title, mediaID = "media_id", mediaToken = "media_token"
@@ -246,6 +294,7 @@ struct LiveTestReply: Decodable {
         case resumeScope = "resume_scope"
         case episodeName = "episode_name", episodeSummary = "episode_summary"
         case audioLanguages = "audio_languages", subtitleLanguages = "subtitle_languages"
+        case mediaInformation = "media_info"
     }
 }
 

@@ -600,6 +600,12 @@ def test_live_test_pass_is_scoped_and_revocable_without_watch_writes(system):
     assert native.post(API + "/redeem", json={"code": link}).status_code == 404
     data = redeem.json()
     assert data["title"] == "Fixture episode"
+    assert data["media_info"] == {
+        "container": "mp4",
+        "video_codec": "h264",
+        "audio_codecs": ["aac"],
+        "file_bytes": 100,
+    }
     assert "access_check" not in data
     assert data["identity"]["media_version"] == "a" * 64
     assert options.fixture_credential not in redeem.text and sessions[1] not in redeem.text

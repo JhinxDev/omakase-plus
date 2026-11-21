@@ -16,7 +16,7 @@ final class ContentProvider: TVTopShelfContentProvider {
                     else { return nil }
                     let item = TVTopShelfSectionedItem(identifier: card.id.uuidString)
                     item.title = card.title
-                    item.imageShape = action == .resume ? .hdtv : .poster
+                    item.imageShape = action == .resume ? .square : .poster
                     item.setImageURL(artwork, for: [.screenScale1x, .screenScale2x])
                     item.expirationDate = snapshot.expiresAt
                     let destination = TVTopShelfAction(url: url)

@@ -4,6 +4,13 @@ import QualificationCore
 import SwiftUI
 import UIKit
 
+struct DirectMediaTracks {
+    var width: Int? = nil
+    var height: Int? = nil
+    var video: String? = nil
+    var audio: [String] = []
+}
+
 #if canImport(TVVLCKit)
 import TVVLCKit
 #elseif OMAKASE_REQUIRE_TVVLCKIT
@@ -73,6 +80,23 @@ final class VLCPlayerEngine: NSObject, PlayerEngine, VLCMediaPlayerDelegate {
     }
 
     // MARK: - PlayerEngine
+
+    var mediaTracks: DirectMediaTracks {
+        guard let rows = media.tracksInformation as? [[String: Any]] else { return .init() }
+        func fourCC(_ row: [String: Any]) -> String? {
+            guard let code = row[VLCMediaTracksInformationCodec] as? NSNumber else { return nil }
+            let value = code.uint32Value
+            let bytes = (0..<4).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }
+            guard bytes.allSatisfy({ (32...126).contains($0) }) else { return nil }
+            return String(bytes: bytes, encoding: .ascii)?.trimmingCharacters(in: .whitespaces)
+        }
+        let video = rows.first { $0[VLCMediaTracksInformationType] as? String == VLCMediaTracksInformationTypeVideo }
+        let audio = rows.filter { $0[VLCMediaTracksInformationType] as? String == VLCMediaTracksInformationTypeAudio }
+        let width = (video?[VLCMediaTracksInformationVideoWidth] as? NSNumber)?.intValue
+        let height = (video?[VLCMediaTracksInformationVideoHeight] as? NSNumber)?.intValue
+        return DirectMediaTracks(width: width, height: height, video: video.flatMap(fourCC),
+                                 audio: Array(audio.prefix(4).compactMap(fourCC)))
+    }
 
     var currentTime: Double {
         let milliseconds = Double(player.time.intValue)
@@ -331,6 +355,7 @@ struct VLCPlayerView: UIViewRepresentable {
 /// Fallback for external builds that do not require the tvOS direct player.
 @MainActor
 final class VLCPlayerEngine: NSObject, PlayerEngine {
+    var mediaTracks: DirectMediaTracks { .init() }
     static let unavailableReason = "TVVLCKit is not linked in this build."
 
     let videoView = UIView(frame: .zero)

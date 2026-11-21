@@ -27,11 +27,13 @@ struct HomeCard: Decodable, Identifiable {
     let playURL: String?
     let playLabel: String
     let artwork: HomeArtwork
+    let lastWatchAt: String?
 
     enum CodingKeys: String, CodingKey {
         case id, domain, title, subtitle, progress, artwork
         case titleID = "title_id", detailLabel = "detail_label"
         case playURL = "play_url", playLabel = "play_label"
+        case lastWatchAt = "last_watch_at"
     }
 
     var entry: LiveLibraryEntry {
