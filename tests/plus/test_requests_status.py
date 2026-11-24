@@ -632,3 +632,69 @@ def test_dashboard_rejects_a_request_owned_by_another_viewer(client):
         db.commit()
         assert for_you.request_status(db, other, "movie", CHOUCHOU) is None
     assert client.get("/plus/requests/movie/tt0000001").status_code == 404
+
+
+def test_requests_dashboard_renders_progress_bar_clean_copy_and_diagnostics_disclosure(
+    client, monkeypatch
+):
+    _signup_and_login(client)
+    user_id = _user_id(client)
+    monkeypatch.setenv("OMAKASE_REQUEST_SEARCH", "1")
+    monkeypatch.setenv("OMAKASE_TV_REQUEST_RIVEN", "1")
+    with _connect_client_db(client) as db:
+        _seed_movie(
+            db,
+            user_id,
+            code="requested",
+            state="requested",
+            detail="Requested; delivery has not been verified.",
+        )
+        db.execute(
+            "UPDATE movie_requests SET backend_id='verified-riven-id' WHERE user_id=? AND imdb_id=?",
+            (user_id, CHOUCHOU),
+        )
+        db.execute(
+            "INSERT INTO for_you_requests (user_id,kind,title_id,title) VALUES (?,'tv',909,'Ray Fixture')",
+            (user_id,),
+        )
+        from omakase.plus import tv_provider_requests
+
+        tv_provider_requests.remember(db, user_id, 909, [1])
+        tv_provider_requests._write_snapshot(
+            db,
+            user_id,
+            909,
+            {
+                "status": "Some episodes sent to the library",
+                "expected": 10,
+                "library": {
+                    "provider": "Real-Debrid",
+                    "binding": "b" * 64,
+                    "episodes": [[1, 1], [1, 2]],
+                },
+                "seasons": [
+                    {
+                        "season": 1,
+                        "episodes": [
+                            {"episode": n, "status": "Sent to the library"} for n in range(1, 11)
+                        ],
+                    }
+                ],
+            },
+        )
+        db.execute(
+            "UPDATE tv_provider_requests SET snapshot_json=json_set(snapshot_json,'$.library.binding',?) WHERE user_id=? AND title_id=909",
+            ("", user_id),
+        )
+        db.commit()
+
+    page = client.get("/plus/requests")
+    assert page.status_code == 200
+    assert "Received by Riven" not in page.text
+    assert "This page cannot say what exists yet" not in page.text
+    assert "10 episodes" in page.text or "episodes" in page.text
+
+    detail = client.get(f"/plus/requests/movie/{CHOUCHOU}")
+    assert detail.status_code == 200
+    assert "requests-diagnostics" in detail.text
+    assert "Source &amp; Release Diagnostics" in detail.text

@@ -242,7 +242,11 @@ def create_movies_router(
 
     @router.get("/movies/{imdb_id}/artwork")
     async def artwork(
-        imdb_id: str, variant: str = "poster", user=Depends(require_user), db=Depends(get_db)
+        imdb_id: str,
+        variant: str = "poster",
+        size: str = "",
+        user=Depends(require_user),
+        db=Depends(get_db),
     ):
         if households_enabled() if callable(households_enabled) else households_enabled:
             from omakase.plus.household_media import matching_item
@@ -266,11 +270,14 @@ def create_movies_router(
         field = "backdrop_url" if variant == "backdrop" else "poster_url"
         if not movie or not movie.get(field):
             raise HTTPException(404, "Artwork unavailable")
+        kind_name = (
+            "card"
+            if variant == "backdrop" and size == "card"
+            else ("banner" if variant == "backdrop" else "poster")
+        )
         try:
             payload, kind = await movie_artwork(movie[field])
-            payload, kind = await run_in_threadpool(
-                optimized_artwork, payload, kind="banner" if variant == "backdrop" else "poster"
-            )
+            payload, kind = await run_in_threadpool(optimized_artwork, payload, kind=kind_name)
         except PosterUnavailable:
             raise HTTPException(404, "Artwork unavailable") from None
         return Response(
@@ -521,6 +528,9 @@ def create_movies_router(
         can_play = status["state"] in {"in_library", "ready"} and web_player_enabled()
         request_candidates.attach_search_summaries(db, user.id, [status])
         movie_fallback.attach_summaries(db, user.id, [status])
+        from omakase.plus.request_status import decorate_display
+
+        decorate_display(status)
         return JSONResponse(
             {
                 **request_payload(status),
@@ -585,7 +595,15 @@ def create_movies_router(
                 "timeline",
             )
         }
-        for field in ("fallback_search", "fallback_transfer"):
+        for field in (
+            "fallback_search",
+            "fallback_transfer",
+            "display_label",
+            "display_tone",
+            "display_detail",
+            "display_subline",
+            "progress",
+        ):
             if field in model:
                 payload[field] = model[field]
         return payload

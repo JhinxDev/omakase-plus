@@ -1173,12 +1173,14 @@ async def anime_poster(
 
 
 @router.get("/media/{anilist_id}/banner")
-async def anime_banner(anilist_id: int, user=Depends(require_user)):
+async def anime_banner(anilist_id: int, size: str = "", user=Depends(require_user)):
     """Serve bounded wide AniList artwork through the authenticated origin."""
     del user
     try:
         payload, content_type = await banner_bytes(anilist_id)
-        payload, content_type = await run_in_threadpool(optimized_artwork, payload, kind="banner")
+        payload, content_type = await run_in_threadpool(
+            optimized_artwork, payload, kind="card" if size == "card" else "banner"
+        )
     except PosterUnavailable:
         return Response(
             content=_TRANSPARENT_POSTER_PLACEHOLDER,

@@ -1,6 +1,6 @@
-{% macro request_cover(item) -%}
+{% macro request_cover(item, eager=false) -%}
 <div class="request-cover" aria-hidden="true">
   <span>{{ item.title[:1] }}</span>
-  {% if item.poster_href %}<img src="{{ item.poster_href }}" alt="" width="300" height="450" loading="lazy" data-poster>{% endif %}
+  {% if item.poster_href %}<img src="{{ item.poster_href }}" alt="" width="300" height="450" loading="{{ 'eager' if eager else 'lazy' }}" decoding="async"{% if eager %} fetchpriority="high"{% endif %} data-poster>{% endif %}
 </div>
 {%- endmacro %}

@@ -116,3 +116,76 @@ def test_a_resumed_riven_request_prevents_fallback_submission(request_db):
     provider = Provider()
     assert run(request_db, provider, offers()) is None
     assert not provider.added
+
+
+def test_stale_requested_movie_escalates_with_original_title_and_tiered_selection(
+    request_db, monkeypatch
+):
+    from datetime import UTC, datetime, timedelta
+
+    from omakase.plus.acquisition_policy import AcquisitionPolicy
+
+    stale_ts = (datetime.now(UTC) - timedelta(hours=3)).isoformat().replace("+00:00", "Z")
+    fresh_ts = (datetime.now(UTC) - timedelta(minutes=20)).isoformat().replace("+00:00", "Z")
+    request_db.execute(
+        "UPDATE movie_catalog SET original_title='Le Dîner de Cons', year=1998 WHERE imdb_id='tt0000001'"
+    )
+    request_db.execute(
+        "UPDATE movie_requests SET code='requested', created_at=? WHERE imdb_id='tt0000001'",
+        (fresh_ts,),
+    )
+    monkeypatch.setattr(
+        movie_fallback,
+        "load_user_acquisition_policy",
+        lambda *_: AcquisitionPolicy(
+            allowed_resolutions=("1080p", "2160p"), minimum_seeders=10, preferred_seeders=20
+        ),
+    )
+    cam = Candidate(
+        "1998 Le Diner de Cons 1080p HDCAM", seeders=80, magnet="magnet:?xt=urn:btih:" + "1" * 40
+    )
+    clean_sd = Candidate(
+        "1998 Fixture Film [EngSub]", seeders=2, magnet="magnet:?xt=urn:btih:" + "2" * 40
+    )
+    alt_hd = Candidate(
+        "Le Diner de Cons 1998 1080p", seeders=4, magnet="magnet:?xt=urn:btih:" + "3" * 40
+    )
+
+    provider = Provider()
+    # Fresh requested movie (< 2h) waits for Riven first.
+    assert run(request_db, provider, [alt_hd]) is None
+    assert not provider.added
+
+    # Stale (> 2h) escalates using original_title and tiered fallback (low-seeder HD > clean SD, never CAM).
+    request_db.execute(
+        "UPDATE movie_requests SET created_at=? WHERE imdb_id='tt0000001'", (stale_ts,)
+    )
+    request_db.commit()
+
+    class AltProvider(Provider):
+        async def get_torrent(self, item_id, *, require_definite_absence):
+            return RDTorrent(
+                item_id,
+                "Le.Diner.de.Cons.1998.1080p",
+                "waiting_files_selection",
+                0,
+                1234,
+                0,
+                (),
+                (RDFile(9, "/Le.Diner.de.Cons.1998.1080p.mkv", 1234, False),),
+                self.content_hash,
+            )
+
+    alt_provider = AltProvider()
+    assert run(request_db, alt_provider, [cam, clean_sd, alt_hd]) == "selected"
+    assert alt_provider.added == ["magnet:?xt=urn:btih:" + "3" * 40]
+    assert alt_provider.selection == [("fixture123", "9")]
+
+    # Tier 3 fallback accepts clean SD when no HD/4K exists, still rejecting CAM.
+    title_obj = movie_fallback.CatalogTitle("movie", "tt0000001", "Fixture Film", 1998)
+    assert (
+        movie_fallback._choose(
+            [cam, clean_sd], title_obj, movie_fallback.load_user_acquisition_policy(request_db, 1)
+        )
+        == "2" * 40
+    )

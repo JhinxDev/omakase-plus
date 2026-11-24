@@ -200,6 +200,7 @@ def test_all_tables_exist(_fresh_db):
         "movie_fallback_transfers",
         "tv_provider_requests",
         "tv_fallback_transfers",
+        "tv_season_pack_transfers",
         "title_reviews",
         "completion_realdebrid_removals",
         "completion_realdebrid_preferences",

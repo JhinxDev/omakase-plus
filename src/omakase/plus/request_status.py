@@ -309,7 +309,7 @@ def build(
     confirmed = normalize_time(last_confirmed_at)
     rejected = candidates_rejected if type(candidates_rejected) is int else None
     considered = candidates_considered if type(candidates_considered) is int else None
-    return {
+    model = {
         "identity": identity(kind, title_id),
         "kind": kind,
         "media_kind": media_kind or kind,
@@ -346,6 +346,152 @@ def build(
         "detail_href": detail_href or f"/plus/requests/{kind}/{title_id}",
         "timeline": list(legacy_timeline),
     }
+    return decorate_display(model)
+
+
+def decorate_display(model):
+    """Attach clean product-grade labels, tones, summaries, and TV episode progress bars."""
+    if not isinstance(model, dict):
+        return model
+    kind = model.get("kind")
+    state = model.get("state")
+    category = model.get("category")
+    status_label = str(model.get("status_label") or "")
+    detail = str(model.get("detail") or "")
+    resolved = bool(model.get("resolved"))
+    removed = bool(model.get("removed"))
+    tv_provider = model.get("tv_provider") or {}
+    snap = tv_provider.get("snapshot") or {}
+    expected = int(snap.get("expected") or 0) if kind == "tv" else 0
+    progress = None
+    if expected > 0:
+        ready = min(expected, max(0, int(snap.get("ready") or 0)))
+        percent = min(100, round(ready * 100 / expected))
+        progress = {"ready": ready, "expected": expected, "percent": percent}
+
+    transfer = model.get("fallback_transfer") or {}
+    transfer_state = str(transfer.get("state") or "")
+    search = model.get("fallback_search") or {}
+
+    if removed:
+        display_tone = "muted"
+    elif resolved or (progress and progress["ready"] >= progress["expected"] > 0):
+        display_tone = "ready"
+    elif category == "attention":
+        display_tone = "attention"
+    elif transfer_state in {"submitting", "submitted", "selecting", "selected", "downloaded"} or (
+        progress and progress["ready"] > 0
+    ):
+        display_tone = "progress"
+    else:
+        display_tone = "searching"
+
+    if removed:
+        display_label = "Removed"
+    elif resolved:
+        if kind == "tv":
+            display_label = "Ready to Watch"
+        elif state == "ready":
+            display_label = "Ready to Play"
+        else:
+            display_label = "In your library"
+    elif category == "attention":
+        display_label = "Needs attention"
+    elif transfer_state in {"submitting", "submitted", "selecting", "selected"}:
+        display_label = "Downloading"
+    elif transfer_state == "downloaded":
+        display_label = "Preparing library"
+    elif progress and progress["ready"] > 0:
+        display_label = f"{progress['ready']} / {progress['expected']} Ready"
+    elif status_label in {
+        "Received by Riven",
+        "Request saved",
+        "Awaiting confirmation",
+        "Queued",
+        "Queued in Riven",
+        "Sending to Riven",
+        "Looking for episodes",
+        "Checking releases",
+        "Waiting for Riven",
+    }:
+        display_label = "Searching" if search.get("checked_at") else "Queued"
+    elif status_label == "Preparing":
+        display_label = "Preparing"
+    else:
+        display_label = status_label
+
+    if removed:
+        display_detail = detail
+    elif kind == "tv" and progress:
+        if progress["ready"] >= progress["expected"] > 0:
+            display_detail = f"All {progress['expected']} episodes are ready to watch."
+        elif progress["ready"] > 0:
+            display_detail = (
+                f"{progress['ready']} of {progress['expected']} episodes ready to watch."
+            )
+        else:
+            display_detail = "Searching configured sources for season packs and episodes."
+    elif kind == "tv":
+        if resolved:
+            display_detail = "Ready in your TV library."
+        elif category == "attention":
+            display_detail = "No matching episodes confirmed yet. Check status or open details."
+        elif detail == "Saved for review.":
+            display_detail = detail
+        else:
+            display_detail = "Queued to find and prepare episodes for your library."
+    elif kind == "movie":
+        if resolved:
+            display_detail = detail
+        elif transfer_state in {"submitting", "submitted", "selecting", "selected"}:
+            display_detail = "Matching copy found and transferring to your cloud library."
+        elif transfer_state == "downloaded":
+            display_detail = "Downloaded to cloud storage and preparing for playback."
+        elif category == "attention":
+            display_detail = (
+                "No matching release confirmed yet. Try checking status or opening details."
+            )
+        elif int(search.get("eligible") or 0) > 0:
+            elig = int(search["eligible"])
+            noun = "release" if elig == 1 else "releases"
+            display_detail = f"{elig} matching {noun} found. Queuing cloud transfer."
+        elif status_label in {
+            "Received by Riven",
+            "Request saved",
+            "Awaiting confirmation",
+            "Requested",
+        }:
+            display_detail = "Searching configured sources for a clean matching copy."
+        else:
+            display_detail = detail
+    else:
+        display_detail = detail
+
+    display_subline = ""
+    if transfer_state in {"submitting", "submitted", "selecting", "selected", "downloaded"}:
+        display_subline = "Cloud transfer active"
+    elif transfer_state in {"file_mismatch", "provider_restricted", "provider_failed"}:
+        display_subline = {
+            "file_mismatch": "Waiting for cleaner file match",
+            "provider_restricted": "Previous source restricted; checking alternatives",
+            "provider_failed": "Previous transfer failed; checking alternatives",
+        }[transfer_state]
+    elif search and search.get("outcome") in {"complete", "partial"} and not resolved:
+        found = int(search.get("found") or 0)
+        elig = int(search.get("eligible") or 0)
+        if elig > 0:
+            display_subline = (
+                f"Sources checked · {elig} {'match' if elig == 1 else 'matches'} eligible"
+            )
+        elif found > 0:
+            display_subline = "Sources checked · Trying broader fallback tiers"
+
+    model["progress"] = progress
+    model["display_tone"] = display_tone
+    model["display_label"] = display_label
+    model["display_detail"] = display_detail
+    model["display_subline"] = display_subline
+    return model
 
 
 # ---------------------------------------------------------------------------
@@ -919,7 +1065,7 @@ def build_tv(
             detail_href=f"/plus/requests/tv/{tmdb_id}",
         )
         model["tv_provider"] = provider
-        return model
+        return decorate_display(model)
     if library_at is not None and not can_check:
         done = {"saved": created, "library": normalize_time(library_at)}
         return build(

@@ -337,3 +337,83 @@ async def test_published_match_requires_saved_account_bound_hash_and_exact_selec
     db.execute("UPDATE tv_provider_requests SET snapshot_json=?", (json.dumps(snapshot),))
     with pytest.raises(DebridLibraryError, match="no longer available"):
         debrid_catalog.revalidate_catalog(db, source)
+
+
+@pytest.mark.anyio
+async def test_submit_season_pack_selects_all_missing_episodes_and_tracks_receipts(request_db):
+    db = request_db
+    tv_provider_requests._write_snapshot(db, 1, 77, _snapshot(1, 2, 3))
+    pack_hash = "B" * 40
+
+    class PackSource:
+        async def search(self, query):
+            assert query == f"{TITLE} S03"
+            return [
+                Candidate(
+                    f"{TITLE} S03 1080p BluRay",
+                    magnet=f"magnet:?xt=urn:btih:{pack_hash}",
+                    seeders=14,
+                    size_bytes=8 * 1024**3,
+                ),
+                Candidate(
+                    f"{TITLE} S03E01 1080p WEB-DL",
+                    magnet="magnet:?xt=urn:btih:" + "C" * 40,
+                    seeders=30,
+                ),
+            ]
+
+    class PackProvider:
+        def __init__(self):
+            self.added = []
+            self.selected = []
+            self.done = False
+
+        async def add_magnet(self, magnet):
+            self.added.append(magnet)
+            return "pack123"
+
+        async def get_torrent(self, item_id, *, require_definite_absence):
+            assert item_id == "pack123" and require_definite_absence
+            return RDTorrent(
+                item_id,
+                f"{TITLE} S03 1080p BluRay",
+                "downloaded" if self.done else "waiting_files_selection",
+                100 if self.done else 0,
+                8 * 1024**3,
+                0,
+                ("l1", "l2", "l3") if self.done else (),
+                (
+                    RDFile(11, f"/{TITLE}.S03E01.mkv", 1000, self.done),
+                    RDFile(12, f"/{TITLE}.S03E02.mkv", 1000, self.done),
+                    RDFile(13, f"/{TITLE}.S03E03.mkv", 1000, self.done),
+                    RDFile(14, "/Featurette.Sample.mkv", 200, False),
+                ),
+                pack_hash,
+            )
+
+        async def select_files(self, item_id, files):
+            self.selected.append((item_id, files))
+            self.done = True
+            return True
+
+    provider = PackProvider()
+    searched, submitted = await tv_fallback.submit_season_pack(
+        db,
+        1,
+        77,
+        3,
+        [1, 2, 3],
+        catalogs=[PackSource()],
+        library=FixtureInventory(),
+        provider=provider,
+    )
+    assert (searched, submitted) == (True, True)
+    assert provider.added == [f"magnet:?xt=urn:btih:{pack_hash}"]
+    assert provider.selected == [("pack123", "11,12,13")]
+    assert await tv_fallback.advance_pending(db, 1, 77, provider=provider) is False
+    binding = account_binding(FIXTURE_ACCOUNT)
+    assert tv_fallback.receipts(db, 1, 77, binding) == {
+        (3, 1): "downloaded",
+        (3, 2): "downloaded",
+        (3, 3): "downloaded",
+    }

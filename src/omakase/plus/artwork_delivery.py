@@ -18,7 +18,12 @@ MAX_PIXELS = 16_000_000
 MAX_DIMENSION = 8192
 MAX_CACHE_BYTES = 8 * 1024 * 1024
 _MAX_CACHE_ENTRIES = 128
-_BOUNDS = {"poster": (480, 720), "banner": (2560, 1440), "episode": (780, 440)}
+_BOUNDS = {
+    "poster": (480, 720),
+    "card": (640, 360),
+    "banner": (2560, 1440),
+    "episode": (780, 440),
+}
 _CONTENT_TYPE = "image/webp"
 _DERIVATIVE_VERSION = b"hero-2560-q88-v2:"
 
@@ -85,7 +90,10 @@ def _derive(payload: bytes, *, kind: str) -> bytes:
                         clean.paste(pixels)
                         output = io.BytesIO()
                         clean.save(
-                            output, format="WEBP", quality=88 if kind == "banner" else 80, method=4
+                            output,
+                            format="WEBP",
+                            quality=88 if kind == "banner" else (78 if kind == "card" else 80),
+                            method=4,
                         )
                         result = output.getvalue()
                         if len(result) > MAX_DISPLAY_BYTES:

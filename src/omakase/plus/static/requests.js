@@ -23,14 +23,42 @@
           changed = true;
           continue;
         }
-        setText(row.querySelector('[data-request-status]'), item.status_label);
-        setText(row.querySelector('[data-request-detail]'), item.detail);
-        const fallback = row.querySelector('[data-request-fallback]');
-        const headline = item.fallback_transfer?.headline || item.fallback_search?.headline || '';
-        if (fallback) {
-          setText(fallback, headline);
-          fallback.parentElement.hidden = !headline;
+        const statusNode = row.querySelector('[data-request-status]');
+        setText(statusNode, item.display_label || item.status_label);
+        if (statusNode && item.display_tone) {
+          statusNode.dataset.statusTone = item.display_tone;
         }
+        setText(row.querySelector('[data-request-detail]'), item.display_detail || item.detail);
+
+        const progressWrap = row.querySelector('[data-request-progress]');
+        if (progressWrap) {
+          if (item.progress && item.progress.expected > 0) {
+            progressWrap.hidden = false;
+            const fill = progressWrap.querySelector('[data-request-progress-fill]');
+            const bar = progressWrap.querySelector('[role="progressbar"]');
+            const txt = progressWrap.querySelector('[data-request-progress-text]');
+            if (fill) fill.style.width = item.progress.percent + '%';
+            if (bar) {
+              bar.setAttribute('aria-valuemax', String(item.progress.expected));
+              bar.setAttribute('aria-valuenow', String(item.progress.ready));
+            }
+            setText(
+              txt,
+              item.progress.ready + ' / ' + item.progress.expected + ' episodes · ' + item.progress.percent + '%',
+            );
+          } else {
+            progressWrap.hidden = true;
+          }
+        }
+
+        const sublineWrap = row.querySelector('[data-request-subline-wrap]');
+        const subline = row.querySelector('[data-request-subline]');
+        const subtext = typeof item.display_subline === 'string' ? item.display_subline : '';
+        if (sublineWrap && subline) {
+          setText(subline, subtext);
+          sublineWrap.hidden = !subtext;
+        }
+
         const checked = row.querySelector('[data-request-checked]');
         const at = Date.parse(item.last_checked_at);
         if (checked && Number.isFinite(at)) {

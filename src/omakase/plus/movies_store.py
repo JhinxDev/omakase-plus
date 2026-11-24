@@ -8,7 +8,16 @@ from typing import Any
 
 COPY_REMOVED_DETAIL = "Removal of this copy was confirmed. Your watch history and rating are saved."
 
-_CATALOG_FIELDS = ("imdb_id", "tmdb_id", "title", "year", "poster_url", "backdrop_url", "overview")
+_CATALOG_FIELDS = (
+    "imdb_id",
+    "tmdb_id",
+    "title",
+    "original_title",
+    "year",
+    "poster_url",
+    "backdrop_url",
+    "overview",
+)
 _REQUEST_FIELDS = {"backend_id", "state", "code", "detail", "retry_after", "retry_at"}
 _RECEIPT_FIELDS = (
     "fingerprint",
@@ -76,10 +85,10 @@ def upsert_movie(
     try:
         conn.execute(
             "INSERT INTO movie_catalog "
-            "(user_id, imdb_id, tmdb_id, title, year, poster_url, backdrop_url, overview, identity_verified, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "(user_id, imdb_id, tmdb_id, title, original_title, year, poster_url, backdrop_url, overview, identity_verified, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(user_id, imdb_id) DO UPDATE SET "
-            "tmdb_id=excluded.tmdb_id, title=excluded.title, year=excluded.year, "
+            "tmdb_id=excluded.tmdb_id, title=excluded.title, original_title=excluded.original_title, year=excluded.year, "
             "poster_url=excluded.poster_url, backdrop_url=excluded.backdrop_url, "
             "overview=excluded.overview, identity_verified=excluded.identity_verified, updated_at=excluded.updated_at",
             (user_id, *(values.get(key) for key in _CATALOG_FIELDS), int(identity_verified), now),

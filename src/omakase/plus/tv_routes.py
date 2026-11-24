@@ -292,7 +292,11 @@ def create_tv_router(
 
     @router.get("/tv/{tmdb_id}/artwork")
     async def artwork(
-        tmdb_id: int, variant: str = "poster", user=Depends(require_user), db=Depends(get_db)
+        tmdb_id: int,
+        variant: str = "poster",
+        size: str = "",
+        user=Depends(require_user),
+        db=Depends(get_db),
     ):
         if households_enabled() if callable(households_enabled) else households_enabled:
             from omakase.plus.household_media import matching_item
@@ -316,11 +320,14 @@ def create_tv_router(
         url = (metadata or {}).get("backdrop_url" if variant == "backdrop" else "poster_url")
         if not url:
             raise HTTPException(404, "Artwork unavailable")
+        kind_name = (
+            "card"
+            if variant == "backdrop" and size == "card"
+            else ("banner" if variant == "backdrop" else "poster")
+        )
         try:
             payload, kind = await movie_artwork(url)
-            payload, kind = await run_in_threadpool(
-                optimized_artwork, payload, kind="banner" if variant == "backdrop" else "poster"
-            )
+            payload, kind = await run_in_threadpool(optimized_artwork, payload, kind=kind_name)
         except PosterUnavailable:
             raise HTTPException(404, "Artwork unavailable") from None
         return Response(

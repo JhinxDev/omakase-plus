@@ -61,9 +61,20 @@
     if (!status) return;
 
     const node = selector => container.querySelector(selector);
-    text(container, '[data-request-label]', status.status_label);
-    text(container, '[data-request-detail]', status.detail);
+    const labelNode = node('[data-request-label]');
+    if (labelNode) {
+      labelNode.textContent = status.display_label || status.status_label || '';
+      if (status.display_tone) labelNode.dataset.statusTone = status.display_tone;
+    }
+    text(container, '[data-request-detail]', status.display_detail || status.detail);
     text(container, '[data-request-manual]', status.manual_note);
+    const sublineWrap = node('[data-request-subline-wrap]');
+    const subline = node('[data-request-subline]');
+    if (sublineWrap && subline) {
+      const subtext = typeof status.display_subline === 'string' ? status.display_subline : '';
+      subline.textContent = subtext;
+      sublineWrap.hidden = !subtext;
+    }
     renderTime(node('[data-request-checked]'), status.last_checked_at, 'Not yet');
     renderTime(node('[data-request-confirmed]'), status.last_confirmed_at, 'Not yet');
     const searchPanel = node('[data-request-search]');

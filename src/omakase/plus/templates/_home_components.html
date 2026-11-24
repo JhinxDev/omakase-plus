@@ -52,7 +52,8 @@
     <span class="media-art-fallback om-card-art om-card-art--empty" data-fallback-title="{{ card.title }}" data-artwork-missing aria-hidden="true"><span>{{ card.title }}</span></span>
     <a class="om-card-link" href="{{ card.play_url or card.detail_url }}" aria-label="{{ label }}">
       {% if card.artwork.landscape %}
-      <img class="om-card-art" src="{{ card.artwork.landscape }}" alt="" loading="lazy" decoding="async" data-artwork data-fallback="poster" data-poster="{{ card.artwork.poster or '' }}">
+      {% set landscape_src = card.artwork.landscape ~ ('&size=card' if '?' in card.artwork.landscape else '?size=card') %}
+      <img class="om-card-art" src="{{ landscape_src }}" alt="" loading="lazy" decoding="async" data-artwork data-fallback="poster" data-poster="{{ card.artwork.poster or '' }}">
       {% elif card.artwork.poster %}
       <img class="om-card-art om-card-art--poster" src="{{ card.artwork.poster }}" alt="" loading="lazy" decoding="async" data-artwork data-fallback="none">
       {% endif %}

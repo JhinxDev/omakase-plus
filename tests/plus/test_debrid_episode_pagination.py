@@ -255,3 +255,31 @@ def test_episode_route_requests_the_page_season_and_marks_unscanned_items(system
     assert playable["watch_path"].endswith("/42/31/1")
     assert unknown["watch_path"] is None and unknown["availability"] == "partial"
     assert reply["next_offset"] is None
+
+
+@pytest.mark.anyio
+async def test_multi_season_and_complete_series_folders_confirm_episodes_for_later_seasons(
+    binding,
+):
+    library = Library(
+        {
+            "pack": {
+                "filename": "Fixture Show 2013-2020 S01-S07 COMPLETE 1080p",
+                "hash": "packhash",
+                "status": "downloaded",
+                "files": [
+                    "Fixture Show/Season 4/Fixture.Show.S04E05.1080p.mkv",
+                    "Fixture Show/Season 6/Fixture.Show.S06E12.1080p.mkv",
+                ],
+            },
+            "complete_only": {
+                "filename": "Fixture Show COMPLETE 720p",
+                "hash": "completehash",
+                "status": "downloaded",
+                "files": ["Fixture.Show.S05E03.720p.mkv"],
+            },
+        }
+    )
+    result = await catalog.tv_episode_ids(None, binding, "fixture", library, seasons=(4, 5, 6))
+    assert result.episodes == frozenset({(4, 5), (5, 3), (6, 12)})
+    assert result.partial_seasons == ()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import PurePosixPath
 
@@ -95,17 +96,25 @@ def _current_file_quality(db, asset):
     }
 
 
-def read_publication_receipt(db):
-    """Read the current qualified publication for an episode-quality view."""
+def _index_receipt(receipt):
+    files_by_key = {}
+    for file in receipt.get("publication_files") or ():
+        if file.get("selected"):
+            key = (file["torrent_hash"], file["anilist_id"], file["season_number"])
+            files_by_key.setdefault(key, []).append(file)
+    coverage_keys = frozenset(
+        (title["anilist_id"], title["section"], title["season_number"])
+        for title in (receipt.get("title_coverage") or ())
+    )
+    return files_by_key, coverage_keys
+
+
+@functools.lru_cache(maxsize=8)
+def _validated_receipt_bundle(raw_json: str):
     from omakase.plus.quality_publication import validate_receipt
 
-    latest = db.execute(
-        "SELECT receipt_json FROM media_curator_receipt_latest WHERE id=1"
-    ).fetchone()
-    if latest is None:
-        return None
     try:
-        receipt = validate_receipt(json.loads(latest[0]))
+        receipt = validate_receipt(json.loads(raw_json))
         if (
             not receipt["selection_applied"]
             or receipt["mode"] != "live"
@@ -114,15 +123,41 @@ def read_publication_receipt(db):
             return None
     except (ValueError, TypeError, KeyError):
         return None
-    return receipt
+    files_by_key, coverage_keys = _index_receipt(receipt)
+    return receipt, files_by_key, coverage_keys
+
+
+def read_publication_receipt(db):
+    """Read the current qualified publication for an episode-quality view."""
+    latest = db.execute(
+        "SELECT receipt_json FROM media_curator_receipt_latest WHERE id=1"
+    ).fetchone()
+    if latest is None or not isinstance(latest[0], str):
+        return None
+    bundle = _validated_receipt_bundle(latest[0])
+    return bundle[0] if bundle is not None else None
 
 
 def _selected_files(db, assets, *, read_receipt=None):
     from omakase.plus.quality_publication import source_generation
 
-    receipt = read_publication_receipt(db) if read_receipt is None else read_receipt()
-    if receipt is None:
-        return {}
+    if read_receipt is None:
+        latest = db.execute(
+            "SELECT receipt_json FROM media_curator_receipt_latest WHERE id=1"
+        ).fetchone()
+        bundle = (
+            _validated_receipt_bundle(latest[0])
+            if latest is not None and isinstance(latest[0], str)
+            else None
+        )
+        if bundle is None:
+            return {}
+        _receipt, files_by_key, coverage_keys = bundle
+    else:
+        receipt = read_receipt()
+        if receipt is None:
+            return {}
+        files_by_key, coverage_keys = _index_receipt(receipt)
     result = {}
     for asset in assets:
         if not verified_asset_coverage(asset):
@@ -134,31 +169,31 @@ def _selected_files(db, assets, *, read_receipt=None):
         monitor = db.execute(
             "SELECT * FROM media_monitors WHERE id=?", (asset["monitor_id"],)
         ).fetchone()
+        if monitor is None:
+            continue
+        section = "Anime Movies" if monitor["format"] == "MOVIE" else "Anime"
+        expected_season = None if monitor["format"] == "MOVIE" else (monitor["season_number"] or 1)
+        if (monitor["anilist_id"], section, expected_season) not in coverage_keys:
+            continue
+        candidates = files_by_key.get(
+            (
+                str(asset["torrent_hash"]).upper(),
+                monitor["anilist_id"],
+                monitor["season_number"] or 1,
+            ),
+            (),
+        )
         matches = []
-        for file in receipt["publication_files"]:
-            if not (
-                file["selected"]
-                and file["torrent_hash"] == str(asset["torrent_hash"]).upper()
-                and file["inventory_generation"] == asset["inventory_fingerprint"]
-                and file["source_generation"] == binding
-                and monitor is not None
-                and file["anilist_id"] == monitor["anilist_id"]
-                and file["season_number"] == (monitor["season_number"] or 1)
+        for file in candidates:
+            if (
+                file["inventory_generation"] != asset["inventory_fingerprint"]
+                or file["source_generation"] != binding
             ):
                 continue
             try:
                 from omakase.plus.identity import identity_rejection_reason
                 from omakase.plus.publication_episodes import parse_file_episode
 
-                section = "Anime Movies" if monitor["format"] == "MOVIE" else "Anime"
-                if not any(
-                    title["anilist_id"] == monitor["anilist_id"]
-                    and title["section"] == section
-                    and title["season_number"]
-                    == (None if monitor["format"] == "MOVIE" else monitor["season_number"] or 1)
-                    for title in receipt["title_coverage"]
-                ):
-                    continue
                 if identity_rejection_reason(
                     str(asset["source_title"]),
                     target_title=monitor["title"],
