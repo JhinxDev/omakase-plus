@@ -8,6 +8,9 @@ identifier; it does not replace the public release version.
 
 ## Unreleased
 
+- Web player & Settings reliability: unbuffered VOD HLS seeks stay on the current session without reloading `index.m3u8` or triggering unnecessary far-segment CEA-608 probes; cloud subtitles load in parallel with clear menu state synchronization; playback telemetry ignores Shaka `playbackRate == 0` transitions outside `[0.25, 2]`; the `/plus/` Content-Security-Policy allows `data:` URIs in `media-src` (`omakase.plus.web_security.plus_content_security_policy`) so Shaka's placeholder WebVTT `<track>` runs without console violations; and Settings validation, Prowlarr filter normalization, and reset button controls are aligned across routes.
+- Apple TV TestFlight distribution: both `OmakasePlusTV` and `OmakaseTopShelf` declare `UIRequiredDeviceCapabilities` (`arm64`) alongside `ITSAppUsesNonExemptEncryption = false`, and `scripts/deploy-testflight-tvos.sh` + `.github/workflows/tvos-testflight.yml` (`mode=upload`) pass App Store Connect validation cleanly.
+- Public repository & showcase refresh: repaired `scripts/showcase_preview.py` for current movie and TV views, removed stale internal review captures, regenerated `v5` screenshots and the BYOM `omakase-plus-setup-v4.png` diagram, and clarified Plex-style Bring Your Own Media positioning across the README and docs.
 - Backend storage and networking now use tuned SQLite WAL/cache PRAGMAs,
   batched library queries, a shared loop-scoped HTTP/2 connection pool across
   playback and Real-Debrid clients, and a 20s TTL downloads cache that skips

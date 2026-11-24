@@ -676,11 +676,28 @@ def create_showcase(data: Path, catalog, *, library_state="personal"):
 
     TVService.search = tv_search
 
-    async def movie_list(self, user_id, *, view="all"):
+    actual_tv_collection_page = TVService.collection_page
+
+    async def tv_collection_page(
+        self, user_id, *, view="all", offset=0, query="", cloud_ids=None, verified_only=False
+    ):
+        return await actual_tv_collection_page(
+            self,
+            user_id,
+            view=view,
+            offset=offset,
+            query=query,
+            cloud_ids=None,
+            verified_only=False,
+        )
+
+    TVService.collection_page = tv_collection_page
+
+    async def movie_list(self, user_id, *, view="all", **_extra):
         movies_store.require_user(self.db, user_id)
         return (
             [self._card(user_id, row) for row in movies_store.list_movies(self.db, user_id)]
-            if view in {"all", "discover"}
+            if view in {"all", "discover", "available", "completed"}
             else []
         )
 
@@ -1254,9 +1271,9 @@ def check(app, catalog):
             and "A provider has not produced a candidate yet" not in populated
         )
         assert "8.4" in client.get("/plus/discover?mode=recommend").text
-        assert '<article class="movie-card">' not in client.get("/plus/discover/movies").text
+        assert '<article class="movie-card' not in client.get("/plus/discover/movies").text
         assert (
-            '<article class="movie-card">'
+            '<article class="movie-card'
             in client.get("/plus/discover/movies?include_completed=true").text
         )
         detail = client.get("/plus/library/1").text

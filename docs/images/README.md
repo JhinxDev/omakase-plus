@@ -1,19 +1,12 @@
 # Actual-app screenshots
 
-These WebP files preserve pixels captured from the maintained local showcase:
-real anime, television and movie artwork with a synthetic Alex Morgan account.
-Only screenshot encoding/compression changed; controls and content were not
-composited or painted over. The visible banner identifies sample progress,
-ratings and availability. No owner account, credentials or private viewing
-records are present.
+These WebP files preserve captures from the maintained local showcase (`scripts/showcase_preview.py`): real anime, television, and movie metadata with locally cached artwork and a synthetic Alex Morgan account. Controls and layout are unmodified application renders; the visible top banner identifies demonstration fixtures. No owner account, credentials, or private viewing records are present.
 
-- `omakase-plus-home-ui4-37fb6d5956e3.webp`: 1440×900 single-window Home capture with sample account data. The documentation website uses the same file bytes, and the repository [README](../../README.md) shows this capture.
-- `omakase-plus-home-ui3-60c29a860351.webp`: native Home with real AniList title artwork.
-- `omakase-plus-setup-ui3-7fbaa39ebcc1.webp`: native optional setup paths.
-- `omakase-plus-tv-ui3-f36945ebb1d2.webp`: real TMDB series in the sample collection.
-- `omakase-plus-movies-ui3-69b83fcbe5b9.webp`: real TMDB movies in the sample collection.
+- `omakase-plus-home-v5.webp`: 1440x960 Home view with featured title banner and Continue Watching row.
+- `omakase-plus-library-v5.webp`: 1440x900 Anime collection view with search, filters, and episode progress badges.
+- `omakase-plus-movies-v5.webp`: 1440x900 Movies Watched view with personal ratings.
+- `omakase-plus-tv-v5.webp`: 1440x900 TV Shows collection with episode progress and personal ratings.
+- `omakase-plus-settings-v5.webp`: 1440x900 Settings directory showing account, playback, language, and service sections.
+- `omakase-plus-setup-v4.png`: 1920x1200 Omakase Plus workflow and Bring Your Own Storage overview diagram.
 
-Artwork metadata comes from AniList and TMDB via the configured catalog adapter.
-The runner itself never fetches artwork or contacts those services. Captures are
-product-interface examples, not a license to underlying films or artwork, and
-are not proof that those media files were downloaded or played.
+Artwork metadata comes from AniList and TMDB via the caller's manifest (`docs/showcase-media.json`). The runner itself never fetches artwork or contacts external services. Captures are product interface examples, confer no license to underlying titles or artwork, and are not proof of bundled or downloaded media.

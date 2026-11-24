@@ -112,10 +112,7 @@ To publish signed internal builds to Apple TV via TestFlight without `tvsign`:
 bash scripts/deploy-testflight-tvos.sh --output /absolute/empty-output-directory
 ```
 
-`OmakasePlusTV` declares `ITSAppUsesNonExemptEncryption = false` in
-`tv-source/OmakasePlusTV/Info.plist` for App Store Connect export compliance and
-does not embed `TVVLCKit`. Once the first internal TestFlight build installs and
-verifies cleanly on the Apple TV, the temporary `tvsign` workflow can be retired.
+`OmakasePlusTV` declares `ITSAppUsesNonExemptEncryption = false` and `UIRequiredDeviceCapabilities = [arm64]` in `tv-source/OmakasePlusTV/Info.plist` (with matching `arm64` capability in `tv-source/OmakaseTopShelf/Info.plist`) for App Store Connect export compliance and 64-bit TestFlight validation, and does not embed `TVVLCKit`. `scripts/deploy-testflight-tvos.sh` and `.github/workflows/tvos-testflight.yml` (`mode=upload`) are verified end-to-end against App Store Connect, allowing `tvsign` to remain optional or be retired once testers install from TestFlight.
 
 A builder without a Git checkout can use a verified source snapshot. Create
 the archive from the commit you intend to build:
