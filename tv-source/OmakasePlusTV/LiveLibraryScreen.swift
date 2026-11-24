@@ -26,6 +26,7 @@ struct LiveLibraryScreen: View {
     @State private var episodes: LiveLibraryPage?
     @State private var catalogOffset = 0
     @State private var episodeOffset = 0
+    @State private var selectedSeason: Int?
     @State private var checkingEpisodes = false
     @State private var synopsisOpen = false
     @State private var detailsEntry: LiveLibraryEntry?
@@ -78,7 +79,7 @@ struct LiveLibraryScreen: View {
     }
 
     private enum SettingsAction: Hashable {
-        case done, disconnect, cancel, confirmDisconnect, audio, subtitle
+        case done, disconnect, cancel, confirmDisconnect, audio, subtitle, subtitleLanguage
     }
 
     var body: some View {
@@ -595,6 +596,18 @@ struct LiveLibraryScreen: View {
                 .font(.headline).foregroundStyle(Color.tvAccent)
                 .accessibilityAddTraits(.isHeader)
             Button {
+                audioLanguage = nextLanguage(audioLanguage)
+            } label: {
+                Label("Audio language: \(languageLabel(audioLanguage))", systemImage: "waveform")
+            }
+            .buttonStyle(TVActionStyle(focused: settingsFocus == .audio, compact: true,
+                                       selected: audioLanguage != "auto"))
+            .focusEffectDisabled()
+            .focused($settingsFocus, equals: .audio)
+            .accessibilityIdentifier("device.settings.audio")
+            .accessibilityValue(languageLabel(audioLanguage))
+            .accessibilityHint("Cycles the preferred audio language when multiple audio tracks exist")
+            Button {
                 subtitlesAlways.toggle()
             } label: {
                 Label(
@@ -608,6 +621,18 @@ struct LiveLibraryScreen: View {
             .accessibilityIdentifier("device.settings.subtitles")
             .accessibilityValue(subtitlesAlways ? "On" : "Off")
             .accessibilityHint("Turns subtitles on automatically for every video that includes text subtitles")
+            Button {
+                subtitleLanguage = nextLanguage(subtitleLanguage)
+            } label: {
+                Label("Subtitle language: \(languageLabel(subtitleLanguage))", systemImage: "text.bubble")
+            }
+            .buttonStyle(TVActionStyle(focused: settingsFocus == .subtitleLanguage, compact: true,
+                                       selected: subtitleLanguage != "auto"))
+            .focusEffectDisabled()
+            .focused($settingsFocus, equals: .subtitleLanguage)
+            .accessibilityIdentifier("device.settings.subtitle-language")
+            .accessibilityValue(languageLabel(subtitleLanguage))
+            .accessibilityHint("Cycles the preferred subtitle track language")
             Text("About")
                 .font(.headline).foregroundStyle(Color.tvAccent)
                 .accessibilityAddTraits(.isHeader)
@@ -846,6 +871,30 @@ struct LiveLibraryScreen: View {
     private var episodeGrid: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Episodes").font(.title2.bold()).accessibilityAddTraits(.isHeader)
+            if kind == .tv, let seasons = episodes?.availability?.seasons, seasons.count > 1 {
+                let activeSeason = selectedSeason ?? seasons.first
+                ScrollView(.horizontal) {
+                    HStack(spacing: 14) {
+                        ForEach(seasons, id: \.self) { season in
+                            control(
+                                season == 0 ? "Specials" : "Season \(season)",
+                                key: "season-\(season)",
+                                compact: true,
+                                selected: activeSeason == season
+                            ) {
+                                guard selectedSeason != season, !busy else { return }
+                                selectedSeason = season
+                                episodeOffset = 0
+                                Task { await load(0) }
+                            }
+                            .accessibilityIdentifier("library.season-\(season)")
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .scrollIndicators(.hidden)
+                .focusSection()
+            }
             if episodes?.hasUncheckedEpisodes == true {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Some episodes have not been checked yet.")
@@ -1187,6 +1236,7 @@ struct LiveLibraryScreen: View {
         title = entry
         episodes = nil
         episodeOffset = 0
+        selectedSeason = nil
         focus = entry.featuredPath != nil || entry.watchPath != nil ? "detail-play" : "details-secondary"
         if kind != .movie && (kind != .cloud || entry.isFolder == true) { Task { await load(0) } }
     }
@@ -1268,7 +1318,13 @@ struct LiveLibraryScreen: View {
             if !expired, focus == nil { focus = previousFocus ?? kind.id }
         }
         do {
-            let page = try await client.page(kind: kind, title: title, offset: offset, query: query)
+            let page = try await client.page(
+                kind: kind,
+                title: title,
+                offset: offset,
+                query: query,
+                season: title == nil ? nil : selectedSeason
+            )
             if title == nil {
                 catalog = page
                 catalogOffset = offset
@@ -1519,15 +1575,36 @@ struct TVLibraryArtwork: View {
                        entry.backdropURL?.absoluteString, banner ? "banner" : "poster"]) {
                 image = nil
                 portraitFallback = false
-                if let data = try? await client.artwork(entry, banner: banner),
-                   !Task.isCancelled {
-                    image = UIImage(data: data)
+                let primaryKey = "lib:\(entry.id):\(entry.episodeArtwork ?? ""):\(entry.artworkID ?? ""):\(banner ? "banner" : "poster")"
+                if let cached = TVArtworkCache.shared.cached(for: primaryKey) {
+                    image = cached
+                    return
                 }
-                if banner, entry.episodeArtwork == nil, image == nil, !Task.isCancelled,
-                   let data = try? await client.artwork(entry, banner: false),
+                if let data = try? await client.artwork(entry, banner: banner),
+                   !Task.isCancelled,
+                   let decoded = await TVArtworkCache.shared.decodeAndStore(
+                    data, key: primaryKey, maxPixelSize: banner ? 960 : 640
+                   ),
                    !Task.isCancelled {
-                    portraitFallback = true
-                    image = UIImage(data: data)
+                    image = decoded
+                    return
+                }
+                if banner, entry.episodeArtwork == nil, image == nil, !Task.isCancelled {
+                    let fallbackKey = "lib:\(entry.id)::\(entry.artworkID ?? ""):poster"
+                    if let cachedFallback = TVArtworkCache.shared.cached(for: fallbackKey) {
+                        portraitFallback = true
+                        image = cachedFallback
+                        return
+                    }
+                    if let data = try? await client.artwork(entry, banner: false),
+                       !Task.isCancelled,
+                       let decoded = await TVArtworkCache.shared.decodeAndStore(
+                        data, key: fallbackKey, maxPixelSize: 640
+                       ),
+                       !Task.isCancelled {
+                        portraitFallback = true
+                        image = decoded
+                    }
                 }
             }
     }
@@ -1672,7 +1749,14 @@ private struct DetailsArtwork: View {
         }
         .task(id: path) {
             failed = false
-            image = (try? await client.detailsArtwork(path: path)).flatMap { UIImage(data: $0) }
+            let key = "details:\(path)"
+            if let cached = TVArtworkCache.shared.cached(for: key) {
+                image = cached
+                return
+            }
+            if let data = try? await client.detailsArtwork(path: path), !Task.isCancelled {
+                image = await TVArtworkCache.shared.decodeAndStore(data, key: key, maxPixelSize: 960)
+            }
             failed = image == nil
         }
     }
@@ -1968,8 +2052,13 @@ private struct TVRecommendationPoster: View {
         .accessibilityHidden(true)
         .task(id: card.posterURL) {
             image = nil
+            let key = "rec:\(card.key):\(card.posterURL?.absoluteString ?? "")"
+            if let cached = TVArtworkCache.shared.cached(for: key) {
+                image = cached
+                return
+            }
             if let bytes = try? await client.recommendationArtwork(card), !Task.isCancelled {
-                image = UIImage(data: bytes)
+                image = await TVArtworkCache.shared.decodeAndStore(bytes, key: key, maxPixelSize: 640)
             }
         }
     }

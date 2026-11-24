@@ -437,7 +437,13 @@ private struct NativeHomeArtwork: View {
             image = nil
             for path in paths.compactMap({ $0 }) {
                 guard !Task.isCancelled else { return }
-                if let data = try? await client.homeArtwork(path), let loaded = UIImage(data: data) {
+                let key = "home:\(path)"
+                if let cached = TVArtworkCache.shared.cached(for: key) {
+                    image = cached
+                    return
+                }
+                if let data = try? await client.homeArtwork(path),
+                   let loaded = await TVArtworkCache.shared.decodeAndStore(data, key: key, maxPixelSize: 640) {
                     if !Task.isCancelled { image = loaded }
                     return
                 }
@@ -445,8 +451,16 @@ private struct NativeHomeArtwork: View {
         }
         .task(id: episodePath) {
             episodeImage = nil
-            guard let path = episodePath, let data = try? await client.detailsArtwork(path: path),
-                  !Task.isCancelled, let still = UIImage(data: data) else { return }
+            guard let path = episodePath else { return }
+            let key = "details:\(path)"
+            if let cached = TVArtworkCache.shared.cached(for: key) {
+                episodeImage = (path, cached)
+                return
+            }
+            guard let data = try? await client.detailsArtwork(path: path),
+                  !Task.isCancelled,
+                  let still = await TVArtworkCache.shared.decodeAndStore(data, key: key, maxPixelSize: 960),
+                  !Task.isCancelled else { return }
             episodeImage = (path, still)
         }
     }

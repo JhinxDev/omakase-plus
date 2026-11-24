@@ -286,4 +286,21 @@ final class FixtureClientTests: XCTestCase {
             // Expected.
         }
     }
+
+    func testPageRequestURLIncludesSeasonOnlyForTitleEpisodes() throws {
+        let origin = try FixtureOrigin("https://fixture.example.invalid")
+        let entry = LiveLibraryEntry(homeTitleID: "123", title: "Show", note: "", watchPath: nil)
+        let catalog = try XCTUnwrap(
+            LiveLibraryClient.pageRequestURL(origin: origin, kind: .tv, title: nil, offset: 0, query: "abc", season: 2)
+        )
+        XCTAssertFalse(catalog.absoluteString.contains("season=2"))
+        XCTAssertTrue(catalog.absoluteString.contains("q=abc"))
+
+        let episodes = try XCTUnwrap(
+            LiveLibraryClient.pageRequestURL(origin: origin, kind: .tv, title: entry, offset: 30, season: 2)
+        )
+        XCTAssertTrue(episodes.absoluteString.contains("/episodes"))
+        XCTAssertTrue(episodes.absoluteString.contains("season=2"))
+        XCTAssertTrue(episodes.absoluteString.contains("title_id=123"))
+    }
 }

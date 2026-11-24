@@ -544,9 +544,8 @@ struct TitleScreen: View {
         }
         .fullScreenCover(isPresented: $showingPlayer, onDismiss: {
             session.stop()
-            let leave = dismissedByPlayer || (
-                session.errorMessage == nil && externalError == nil && !needsReload && !isSaving
-            )
+            let hasFailure = session.errorMessage != nil || externalError != nil || needsReload
+            let leave = !hasFailure && (dismissedByPlayer || !isSaving)
             dismissedByPlayer = false
             guard !passClosed else { return }
             if leave {
@@ -558,7 +557,9 @@ struct TitleScreen: View {
         }) {
             PlayerScreen(session: session, showsDiagnostics: false, playNext: playNext,
                          mediaInformation: mediaInformation) {
-                dismissedByPlayer = true
+                if session.errorMessage == nil && externalError == nil && !needsReload {
+                    dismissedByPlayer = true
+                }
                 showingPlayer = false
             }
         }
@@ -685,6 +686,7 @@ struct TitleScreen: View {
         launch = Task { @MainActor in
             let started = await startPlayback(resume)
             if started && !Task.isCancelled && scenePhase != .background {
+                TVArtworkCache.shared.clear()
                 showingPlayer = true
             } else if started {
                 session.stop()

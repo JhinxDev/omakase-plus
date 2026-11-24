@@ -2,16 +2,23 @@ import AVFoundation
 import QualificationCore
 import SwiftUI
 
+@MainActor
+final class PlaybackClock: ObservableObject {
+    @Published var position: Double = 32
+    @Published var duration: Double = 150
+}
+
 /// Drives production PlayerScreen without a media decoder in simulator-only builds.
 @MainActor
 final class PlaybackSession: ObservableObject {
     @Published var isPresenting = true
     @Published var status = "Playing"
-    @Published var position: Double = 32
+    let clock = PlaybackClock()
+    var position: Double { clock.position }
+    var duration: Double { clock.duration }
     @Published var isDirectPlaybackRequested = true
     @Published var directTracks: [EngineTrack] = VLCPlayerEngine.tracks
 
-    let duration: Double = 150
     let canPlayNext = true
     let directEngine: VLCPlayerEngine? = VLCPlayerEngine()
     let player: AVPlayer? = nil
@@ -22,7 +29,7 @@ final class PlaybackSession: ObservableObject {
     }
 
     func skip(by delta: Double) {
-        position = min(duration, max(0, position + delta))
+        clock.position = min(duration, max(0, position + delta))
     }
 
     func stop() {

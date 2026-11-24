@@ -791,24 +791,7 @@ struct LiveTestScreen: View {
 
     private func makeResumeWriter(for pass: LiveTestPass, client: LiveLibraryClient) -> LiveResumeWriter? {
         let mediaID = pass.mediaID
-        let version = libraryVersion
-        var refreshedAt = Date.distantPast
-        var complete = false
-        return client.resumeWriter(for: pass, onSaved: { position in
-            guard scenePhase == .active, libraryVersion == version, self.pass?.mediaID == mediaID,
-                  !openingProfile, !showingProfiles, client.selectedLibrary == nil,
-                  let profile = roster.selected else { return }
-            let completedNow = pass.duration > 0 && position >= pass.duration * 0.85
-            let now = Date()
-            guard now.timeIntervalSince(refreshedAt) >= 60 || complete != completedNow else { return }
-            refreshedAt = now
-            complete = completedNow
-            Task {
-                await TVTopShelfLibrary.refresh(client: client, profile: profile, fetchArtwork: false) {
-                    scenePhase == .active && libraryVersion == version && self.pass?.mediaID == mediaID
-                }
-            }
-        }) { loss in
+        return client.resumeWriter(for: pass, onSaved: { _ in }) { loss in
             guard self.pass?.mediaID == mediaID, !self.closingPass else { return }
             self.playbackAccessLost(loss)
         }
@@ -865,8 +848,9 @@ struct LiveTestScreen: View {
     /// ends the presentation.
     private func expiredPlan(keepPaused: Bool) {
         guard let current = pass, let library else { return }
+        let livePosition = player.position > 0 && player.position < current.duration ? player.position : nil
         switch planRecovery.action(mediaID: current.mediaID,
-                                   lastReliablePosition: savedPosition(current),
+                                   lastReliablePosition: livePosition ?? savedPosition(current),
                                    keepPaused: keepPaused) {
         case .report(let message):
             // Second expiry for this pass: do not reopen it again automatically.
@@ -1046,6 +1030,8 @@ struct LiveTestScreen: View {
         player.onResumeRequested = nil
         let writer = resumeWriter
         let client = library
+        let profile = roster.selected
+        let version = libraryVersion
         // Leave the pre-play page first. The resume flush is a network call and
         // used to hold the player page open for its whole duration.
         pendingReturnSeries = returnSeries
@@ -1059,8 +1045,14 @@ struct LiveTestScreen: View {
         error = nil
         Task {
             defer { closingPass = false }
-            await writer?.flush()
+            await writer?.flush(retryUnsaved: true)
             await client?.release(closing)
+            if scenePhase == .active, libraryVersion == version, let client, let profile,
+               client.selectedLibrary == nil, !openingProfile, !showingProfiles {
+                await TVTopShelfLibrary.refresh(client: client, profile: profile, fetchArtwork: false) {
+                    scenePhase == .active && libraryVersion == version && self.pass == nil
+                }
+            }
         }
     }
 
@@ -1088,7 +1080,7 @@ struct LiveTestScreen: View {
         resumeWriter = nextWriter
         player.canPlayNext = next.nextWatchPath != nil
         Task {
-            await previousWriter?.flush()
+            await previousWriter?.flush(retryUnsaved: true)
             await library.release(current)
         }
     }

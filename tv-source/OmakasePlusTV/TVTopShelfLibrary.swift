@@ -113,12 +113,18 @@ enum TVTopShelfLibrary {
                 let end = min(start + 4, tiles.count)
                 let fetched = await withTaskGroup(of: (UUID, Data?).self) { tasks in
                     for (card, candidate) in tiles[start..<end] {
+                        let isResume = card.action == .resume
+                        let title = card.title
                         tasks.addTask {
-                            if card.action == .resume,
+                            let raw: Data?
+                            if isResume,
                                let banner = try? await client.artwork(candidate.entry, banner: true) {
-                                return (card.id, banner)
+                                raw = banner
+                            } else {
+                                raw = try? await client.artwork(candidate.entry, banner: false)
                             }
-                            return (card.id, try? await client.artwork(candidate.entry, banner: false))
+                            guard !Task.isCancelled else { return (card.id, nil) }
+                            return (card.id, renderedArtwork(raw, isResume: isResume, title: title))
                         }
                     }
                     var results: [UUID: Data] = [:]
@@ -126,7 +132,7 @@ enum TVTopShelfLibrary {
                     return results
                 }
                 for (card, _) in tiles[start..<end] {
-                    if let data = fetched[card.id] { images[card.id] = renderedArtwork(data, card: card) }
+                    if let data = fetched[card.id] { images[card.id] = data }
                 }
             }
             try Task.checkCancellation()
@@ -190,8 +196,7 @@ enum TVTopShelfLibrary {
         return Data(HMAC<SHA256>.authenticationCode(for: data, using: key)).base64EncodedString()
     }
 
-    private static func renderedArtwork(_ data: Data?, card: TVTopShelfCard) -> Data? {
-        let isResume = card.action == .resume
+    nonisolated private static func renderedArtwork(_ data: Data?, isResume: Bool, title: String) -> Data? {
         let size = isResume ? CGSize(width: 960, height: 540) : CGSize(width: 404, height: 606)
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
@@ -228,7 +233,7 @@ enum TVTopShelfLibrary {
             context.fill(line)
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byTruncatingTail
-            let text = NSAttributedString(string: card.title, attributes: [
+            let text = NSAttributedString(string: title, attributes: [
                 .font: UIFont.systemFont(ofSize: 36, weight: .semibold),
                 .foregroundColor: UIColor.white,
                 .paragraphStyle: paragraph,
