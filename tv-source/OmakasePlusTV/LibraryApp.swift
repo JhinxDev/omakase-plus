@@ -94,7 +94,7 @@ struct TVActionStyle: PrimitiveButtonStyle {
         let isPressed: Bool
 
         var body: some View {
-            let focused = focusOverride ?? isFocused
+            let focused = (focusOverride ?? false) || isFocused
             label
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(focused || selected ? Color.tvFocus : Color.tvText)

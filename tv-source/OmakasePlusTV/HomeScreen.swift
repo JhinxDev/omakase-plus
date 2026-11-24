@@ -91,7 +91,7 @@ struct HomeProjection: Decodable {
     }
 
     struct Layout: Decodable {
-        struct Row: Decodable, Identifiable {
+        struct Row: Decodable, Identifiable, Equatable {
             let id: String
             let label: String
             let hidden: Bool
@@ -124,7 +124,6 @@ struct HomeScreen: View {
     @State private var editing = false
     @State private var saving = false
     @State private var editError = false
-    @FocusState private var editFocus: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -165,7 +164,13 @@ struct HomeScreen: View {
         .task(id: refreshID) { await load() }
         .task(id: focus.wrappedValue) { await settleArtwork() }
         .fullScreenCover(isPresented: $editing, onDismiss: { focus.wrappedValue = "home-edit" }) {
-            layoutEditor
+            HomeLayoutEditor(
+                rows: projection?.layout.rows ?? [],
+                saving: saving,
+                editError: editError,
+                onAction: { action, row in save(action, row) },
+                onDismiss: { editing = false }
+            )
         }
         .accessibilityIdentifier("native-home")
     }
@@ -197,13 +202,22 @@ struct HomeScreen: View {
                 if !metadata.isEmpty {
                     Text(metadata).font(.title3).foregroundStyle(Color.tvMuted).lineLimit(1)
                 }
-                if let selected, selected.entry.watchPath != nil {
-                    Label(selected.playLabel, systemImage: "play.fill")
-                        .font(.callout.weight(.semibold)).foregroundStyle(Color.tvAccent)
-                }
-                action("Edit Home", key: "home-edit") {
-                    editError = false
-                    editing = true
+                HStack(spacing: 18) {
+                    if let selected, selected.entry.watchPath != nil {
+                        Button {
+                            onSelect(selected, "home-hero-play")
+                        } label: {
+                            Label(selected.playLabel, systemImage: "play.fill")
+                        }
+                        .buttonStyle(TVActionStyle(focused: focus.wrappedValue == "home-hero-play", tint: .tvFocus, compact: true))
+                        .focusEffectDisabled()
+                        .focused(focus, equals: "home-hero-play")
+                        .accessibilityIdentifier("home-hero-play")
+                    }
+                    action("Edit Home", key: "home-edit") {
+                        editError = false
+                        editing = true
+                    }
                 }
             }
             .padding(.horizontal, 88)
@@ -278,49 +292,6 @@ struct HomeScreen: View {
         .focusSection()
     }
 
-    private var layoutEditor: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            HStack {
-                Text("Edit Home").font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
-                Spacer()
-                editAction("Reset", key: "reset") { save("reset") }
-                editAction("Done", key: "done") { editing = false }
-            }
-            if editError { Text("Couldn’t save this Home layout.").foregroundStyle(Color.tvWarning) }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(projection?.layout.rows ?? []) { row in
-                        HStack(spacing: 18) {
-                            Text(row.label).font(.callout.weight(.semibold))
-                            Spacer()
-                            editAction("Move up", key: "up-\(row.id)") { save("move-up", row.id) }
-                                .disabled(row.first)
-                            editAction("Move down", key: "down-\(row.id)") { save("move-down", row.id) }
-                                .disabled(row.last)
-                            editAction(row.hidden ? "Show" : "Hide", key: "toggle-\(row.id)") {
-                                save(row.hidden ? "add" : "remove", row.id)
-                            }
-                        }
-                        .padding(18)
-                        .background(Color.tvSurface, in: RoundedRectangle(cornerRadius: 14))
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 88).padding(.vertical, 54)
-        .background(Color.tvBackground.ignoresSafeArea())
-        .defaultFocus($editFocus, "done")
-        .onExitCommand { editing = false }
-    }
-
-    private func editAction(_ label: String, key: String, run: @escaping () -> Void) -> some View {
-        Button(label, action: run)
-            .buttonStyle(TVActionStyle(focused: editFocus == key, compact: true))
-            .focusEffectDisabled()
-            .focused($editFocus, equals: key)
-            .disabled(saving)
-    }
-
     private func save(_ action: String, _ row: String = "") {
         Task {
             guard !saving else { return }
@@ -361,7 +332,8 @@ struct HomeScreen: View {
                 }
             }.first
             settled = first?.card
-            if focus.wrappedValue == nil || focus.wrappedValue == "home-entry" {
+            if focus.wrappedValue == nil || focus.wrappedValue == "home-entry"
+                || (focus.wrappedValue == "home-hero-play" && first == nil) {
                 await Task.yield()
                 guard !Task.isCancelled else { return }
                 focus.wrappedValue = first?.key ?? "home-edit"
@@ -393,6 +365,81 @@ struct HomeScreen: View {
         do { try await Task.sleep(for: .milliseconds(220)) }
         catch { return }
         if !Task.isCancelled, focus.wrappedValue == key { settled = card }
+    }
+}
+
+@MainActor
+private struct HomeLayoutEditor: View {
+    let rows: [HomeProjection.Layout.Row]
+    let saving: Bool
+    let editError: Bool
+    let onAction: (String, String) -> Void
+    let onDismiss: () -> Void
+    @FocusState private var editFocus: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            HStack(spacing: 18) {
+                Text("Edit Home").font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
+                if saving { ProgressView().tint(Color.tvAccent) }
+                Spacer()
+                editAction("Reset", key: "reset") { onAction("reset", "") }
+                editAction("Done", key: "done", run: onDismiss)
+            }
+            .focusSection()
+            if editError { Text("Couldn’t save this Home layout.").foregroundStyle(Color.tvWarning) }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(rows) { row in
+                        HStack(spacing: 18) {
+                            Text(row.label).font(.callout.weight(.semibold))
+                            Spacer()
+                            editAction("Move up", key: "up-\(row.id)", disabled: row.first) {
+                                onAction("move-up", row.id)
+                            }
+                            editAction("Move down", key: "down-\(row.id)", disabled: row.last) {
+                                onAction("move-down", row.id)
+                            }
+                            editAction(row.hidden ? "Show" : "Hide", key: "toggle-\(row.id)") {
+                                onAction(row.hidden ? "add" : "remove", row.id)
+                            }
+                        }
+                        .padding(18)
+                        .background(Color.tvSurface, in: RoundedRectangle(cornerRadius: 14))
+                        .focusSection()
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 88).padding(.vertical, 54)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .foregroundStyle(Color.tvText)
+        .background(Color.tvBackground.ignoresSafeArea())
+        .accessibilityIdentifier("native-home-editor")
+        .defaultFocus($editFocus, "done")
+        .task {
+            await Task.yield()
+            if editFocus == nil { editFocus = "done" }
+        }
+        .onChange(of: rows) { _, updated in
+            guard let current = editFocus else { return }
+            if current.hasPrefix("up-"), let row = updated.first(where: { "up-\($0.id)" == current }), row.first {
+                editFocus = row.last ? "toggle-\(row.id)" : "down-\(row.id)"
+            } else if current.hasPrefix("down-"), let row = updated.first(where: { "down-\($0.id)" == current }), row.last {
+                editFocus = row.first ? "toggle-\(row.id)" : "up-\(row.id)"
+            }
+        }
+        .onExitCommand(perform: onDismiss)
+    }
+
+    private func editAction(_ label: String, key: String, disabled: Bool = false,
+                            run: @escaping () -> Void) -> some View {
+        Button(label, action: run)
+            .buttonStyle(TVActionStyle(focused: editFocus == key, compact: true))
+            .focusEffectDisabled()
+            .focused($editFocus, equals: key)
+            .disabled(disabled)
+            .accessibilityIdentifier("home-edit-\(key)")
     }
 }
 
