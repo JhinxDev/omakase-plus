@@ -267,6 +267,12 @@
   function playbackRateConfiguration() {
     return { playbackRates: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2], playbackRateSliderMin: 0.25, playbackRateSliderMax: 2, playbackRateSliderStep: 0.05 };
   }
+  function eventPlaybackRate(rate, fallback = 1) {
+    const value = Number(rate);
+    if (Number.isFinite(value) && value >= 0.25 && value <= 2) return value;
+    const fallbackValue = Number(fallback);
+    return Number.isFinite(fallbackValue) && fallbackValue >= 0.25 && fallbackValue <= 2 ? fallbackValue : 1;
+  }
   function styledSubtitleTracks(subtitles) {
     return subtitles.filter(track => ['ass', 'ssa'].includes(String(track.codec).toLowerCase()) && track.plex_stream_id != null);
   }
@@ -702,7 +708,7 @@
     }
     return { QualityMenu, AudioMenu, SubtitlesMenu, StreamInfoMenu };
   }
-  if (typeof module !== 'undefined' && module.exports) module.exports = { failureMessage, normalizeUnknownTrackLanguage, trackLanguage, episodePresentation, relativeSeekTarget, playbackTime, settingsMenuTypes, playerControlsConfiguration, qualityChoices, streamInfo, waitForSeek, shouldReloadOnSeek, SmoothTimeline, validatedSkipSegments, activeSkipSegment, EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
+  if (typeof module !== 'undefined' && module.exports) module.exports = { failureMessage, normalizeUnknownTrackLanguage, trackLanguage, episodePresentation, relativeSeekTarget, playbackTime, settingsMenuTypes, playerControlsConfiguration, qualityChoices, streamInfo, waitForSeek, shouldReloadOnSeek, SmoothTimeline, validatedSkipSegments, activeSkipSegment, EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, eventPlaybackRate, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
   if (typeof document === 'undefined') return;
   const root = document.querySelector('[data-web-player]');
   if (!root) return;
@@ -786,6 +792,7 @@
   let subtitleOverride = null;
   let captionLoading = false;
   let subtitlePending = false;
+  let lastPlaybackRate = 1;
   let samplingEpoch = 0;
   let preparation = null;
   let attempt = 0;
@@ -920,10 +927,13 @@
   function playbackSnapshot(event) {
     const position = eventPosition(video.currentTime, session?.duration_seconds);
     if (position === null) return null;
+    const playbackRate = eventPlaybackRate(video.playbackRate, lastPlaybackRate);
+    const rawRate = Number(video.playbackRate);
+    if (Number.isFinite(rawRate) && rawRate >= 0.25 && rawRate <= 2) lastPlaybackRate = playbackRate;
     return {
       event, position_seconds: position,
       playing: !['pause', 'ended'].includes(event) && !video.paused && !video.ended && !video.seeking && video.readyState >= 3,
-      playback_rate: video.playbackRate, ...tracks(),
+      playback_rate: playbackRate, ...tracks(),
     };
   }
   function capture(event, keepalive = false, resample = true) {
@@ -1438,6 +1448,7 @@
     customTextId = null;
     subtitleOverride = null;
     subtitlePending = false;
+    lastPlaybackRate = 1;
     video.disablePictureInPicture = true;
     if (overlay) await overlay.destroy();
     if (player) await player.destroy();
@@ -1877,9 +1888,12 @@
   video.addEventListener('seeking', () => capture('seek'));
   video.addEventListener('seeked', () => capture(video.paused ? 'seek' : 'play'));
   video.addEventListener('ratechange', () => {
+    const rate = Number(video.playbackRate);
+    if (!Number.isFinite(rate) || rate < 0.25 || rate > 2) return;
+    lastPlaybackRate = rate;
     capture('progress', false, false);
     // Preset buttons and shortcuts also update the slider without native input.
-    container.querySelectorAll('.shaka-playback-rate-slider').forEach(range => range.setAttribute('aria-valuetext', `${video.playbackRate} times normal speed`));
+    container.querySelectorAll('.shaka-playback-rate-slider').forEach(range => range.setAttribute('aria-valuetext', `${rate} times normal speed`));
   });
   video.addEventListener('ended', () => { if (ready) { status.textContent = 'Playback finished. Saving your position…'; capture('ended'); } });
   // Navigation to another episode still requires a viewer action.

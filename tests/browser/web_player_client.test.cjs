@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer } = require('../../src/omakase/plus/static/web-player.js');
+const { EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, eventPlaybackRate, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer } = require('../../src/omakase/plus/static/web-player.js');
 
 test('supplied and native playback remain stopped after failure until a qualified explicit recovery', async () => {
   let pauses=0, plays=0;
@@ -623,4 +623,14 @@ test('switchSubtitleRenderer toggles native track off and back on without losing
   assert.equal(await switchSubtitleRenderer('native:1', options()), true);
   assert.equal(custom, null);
   assert.deepEqual(selected, [english, null, english]);
+});
+
+test('eventPlaybackRate preserves valid playback speeds and falls back when video reports zero', () => {
+  assert.equal(eventPlaybackRate(0, 1.25), 1.25);
+  assert.equal(eventPlaybackRate(0), 1);
+  assert.equal(eventPlaybackRate(Number.NaN, 0), 1);
+  assert.equal(eventPlaybackRate(1.5, 1), 1.5);
+  assert.equal(eventPlaybackRate(0.25, 1), 0.25);
+  assert.equal(eventPlaybackRate(2, 1), 2);
+  assert.equal(eventPlaybackRate(3, 1.25), 1.25);
 });

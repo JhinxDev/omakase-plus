@@ -187,6 +187,8 @@ assert shelf["CFBundleIdentifier"] == app["CFBundleIdentifier"] + ".TopShelf"
 assert shelf["CFBundleVersion"] == app["CFBundleVersion"]
 assert shelf["CFBundleShortVersionString"] == app["CFBundleShortVersionString"]
 assert shelf["NSExtension"]["NSExtensionPointIdentifier"] == "com.apple.tv-top-shelf"
+assert "arm64" in (app.get("UIRequiredDeviceCapabilities") or []), "app Info.plist must require arm64"
+assert "arm64" in (shelf.get("UIRequiredDeviceCapabilities") or []), "TopShelf Info.plist must require arm64"
 PY
 
 destination="upload"
