@@ -611,4 +611,21 @@ curator publication lookups by receipt JSON. Live latency and headless Edge
 Web Vitals regressions are measured via `ops/benchmark_live.py` with
 before/after diffs recorded during release cutover.
 
+## Web player subtitle sync & Settings validation, November 24
+
+- **Web player HLS VOD tracks & controls:** Complete VOD HLS sessions keep native
+  Shaka seeking within finite `seekRange()` instead of reloading `index.m3u8` on
+  unbuffered seeks, disable Shaka CEA-608 far-segment probing, start cloud
+  subtitle discovery in parallel with playback setup inside the 2.5s startup grace
+  window, and keep `ass-select` plus `SubtitlesMenu` (`aria-checked`, track mode,
+  and re-attachment on rare reloads) synchronized across `Off`, track switches,
+  and seeks.
+- **Settings error feedback & non-validating resets:** Invalid download policies
+  and malformed `prowlarr_indexer_ids` / `prowlarr_categories` entries redirect
+  with `?error=...` so the `role="alert"` banner renders cleanly (and opens
+  **Advanced download rules** on Downloads). Secondary `Restore tested defaults`,
+  `Forget`, and language reset controls carry `formnovalidate` and evaluate reset
+  before strict rule parsing so recovery always works even alongside unsaved edits.
+
+
 

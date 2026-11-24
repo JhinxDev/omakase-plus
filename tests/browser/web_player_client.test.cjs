@@ -586,3 +586,41 @@ test('a failed start shows the reason the server gave, not a connection guess', 
     failureMessage({ status: 409, detail: 'Progress could not be saved' }, { saving: true }),
     'Progress could not be saved. Reload to continue with your last confirmed save.');
 });
+
+test('shouldReloadOnSeek avoids reloading complete VOD HLS streams on unbuffered seeks', () => {
+  const { shouldReloadOnSeek } = require('../../src/omakase/plus/static/web-player.js');
+  const vodPlayer = { isLive: () => false, seekRange: () => ({ start: 0, end: 1420 }) };
+  const livePlayer = { isLive: () => true, seekRange: () => ({ start: 0, end: 1420 }) };
+
+  assert.equal(shouldReloadOnSeek({ streaming: true }, vodPlayer, false, 300), false);
+  assert.equal(shouldReloadOnSeek({ streaming: true }, vodPlayer, true, 300), false);
+  assert.equal(shouldReloadOnSeek({ streaming: true }, vodPlayer, false, 1450), true);
+  assert.equal(shouldReloadOnSeek({ streaming: true }, livePlayer, false, 300), true);
+  assert.equal(shouldReloadOnSeek({ streaming: true }, livePlayer, true, 300), false);
+  assert.equal(shouldReloadOnSeek({ streaming: false }, livePlayer, false, 300), false);
+});
+
+test('switchSubtitleRenderer toggles native track off and back on without losing track state', async () => {
+  const { switchSubtitleRenderer } = require('../../src/omakase/plus/static/web-player.js');
+  const english = { id: 1, language: 'en', label: 'English' };
+  const french = { id: 2, language: 'fr', label: 'French' };
+  const selected = [];
+  let custom = null;
+  const options = value => ({
+    nativeTracks: [english, french],
+    styledTracks: [],
+    clearStyled: async () => {},
+    selectNative: track => selected.push(track),
+    setCustom: next => { custom = next; },
+    current: () => true,
+    loadStyled: async () => false,
+  });
+
+  assert.equal(await switchSubtitleRenderer('native:1', options()), true);
+  assert.equal(custom, null);
+  assert.equal(await switchSubtitleRenderer('off', options()), true);
+  assert.equal(custom, 'off');
+  assert.equal(await switchSubtitleRenderer('native:1', options()), true);
+  assert.equal(custom, null);
+  assert.deepEqual(selected, [english, null, english]);
+});

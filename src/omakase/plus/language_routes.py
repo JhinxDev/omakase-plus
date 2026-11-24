@@ -218,7 +218,6 @@ def create_language_router(templates, context_factory=None, *, enabled=feature_e
                 403, "These language settings are controlled by the library owner", headers=HEADERS
             )
         try:
-            rule = parse_rule(form)
             action = form.get("action")
             if target == "personal" and any(
                 k in form for k in ("allow_member_preferences", "allow_request_overrides")
@@ -226,6 +225,7 @@ def create_language_router(templates, context_factory=None, *, enabled=feature_e
                 raise ValueError("Personal preferences cannot change library permissions.")
             if action not in {"preview", "save", "reset"}:
                 raise ValueError("Choose preview, save or reset.")
+            rule = None if action == "reset" else parse_rule(form)
             if action == "preview":
                 return render(
                     request,

@@ -286,3 +286,45 @@ def test_corrupted_preferences_fail_closed_and_variant_names_roundtrip(web):
     db.commit()
     with pytest.raises(ValueError, match="revision validation"):
         effective_language(db, scope, "movie")
+
+
+def test_language_reset_succeeds_alongside_invalid_rule_fields_and_has_formnovalidate(web):
+    c, token = client(web)
+    page = c.get("/plus/settings/languages?domain=movie&target=library")
+    assert page.status_code == 200
+    assert 'name="action" value="reset" type="submit" formnovalidate' in page.text
+
+    assert (
+        post(
+            c,
+            token,
+            payload(
+                web,
+                target="library",
+                audio_required=["fr"],
+                allow_member_preferences="1",
+            ),
+        ).status_code
+        == 200
+    )
+    scope = core.selected_scope(web[1], viewer_id=1)
+    assert library_defaults(web[1], scope)[0].movie.audio_required == ("fr",)
+
+    # Reset must still succeed even if unsaved form fields violate save validation.
+    reset_resp = post(
+        c,
+        token,
+        payload(
+            web,
+            target="library",
+            action="reset",
+            subtitles_mode="required",
+            subtitle_required=[],
+        ),
+    )
+    assert reset_resp.status_code == 200
+    assert "Library defaults restored for this media type." in reset_resp.text
+    scope = core.selected_scope(web[1], viewer_id=1)
+    assert (
+        library_defaults(web[1], scope)[0].movie == DomainLanguagePolicies.legacy_defaults().movie
+    )

@@ -2,7 +2,7 @@
     <input type="hidden" name="acquisition_policy_present" value="1">
     <header class="panel-heading">
       <div><h2>Picture quality</h2></div>
-      <span class="privacy-stamp">Anime</span>
+      <span class="privacy-stamp">All media</span>
     </header>
     {% if language_settings_enabled | default(false) %}<p class="settings-language-link"><a href="/plus/settings/languages">Audio & subtitle languages</a></p>{% endif %}
     <p class="settings-download-help">Omakase looks for your first choice, then tries the fallback qualities in order. Changes apply to future searches. Existing copies stay as they are.</p>
@@ -59,6 +59,6 @@
     </div>
     </details>
     <div class="settings-inline-actions">
-      <button type="submit" name="reset_acquisition_policy" value="1" class="button button-secondary">Restore tested defaults</button>
+      <button type="submit" name="reset_acquisition_policy" value="1" formnovalidate class="button button-secondary">Restore tested defaults</button>
     </div>
   </section>
