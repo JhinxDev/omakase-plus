@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import time
+from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
 
@@ -41,11 +42,10 @@ def _database_path(data_dir):
 
 
 def _applied_names(conn):
-    if not conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='_migrations'"
-    ).fetchone():
+    try:
+        return frozenset(row[0] for row in conn.execute("SELECT name FROM _migrations"))
+    except sqlite3.OperationalError:
         return frozenset()
-    return frozenset(row[0] for row in conn.execute("SELECT name FROM _migrations"))
 
 
 def _migration_files(directory):
@@ -84,21 +84,58 @@ def _check_schema(conn):
         raise IncompatibleSchemaError("Omakase Plus database schema is incompatible.")
 
 
-def _connect_runtime(data_dir: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
-    """Open an existing, fully migrated database without migration writer locks."""
-    uri = _database_path(data_dir).as_uri() + "?mode=rw"
+def _configure_connection(conn: sqlite3.Connection) -> None:
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA synchronous = NORMAL")
+
+
+def _connect_runtime_file(path: Path) -> sqlite3.Connection:
+    """Open an existing, fully migrated database file without migration locks."""
+    uri = path.resolve().as_uri() + "?mode=rw"
     try:
         conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
     except sqlite3.OperationalError as error:
         raise IncompatibleSchemaError("Omakase Plus database is unavailable.") from error
     try:
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
+        _configure_connection(conn)
         _check_schema(conn)
     except BaseException:
         conn.close()
         raise
     return conn
+
+
+def _connect_runtime(data_dir: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
+    """Open an existing, fully migrated database without migration writer locks."""
+    return _connect_runtime_file(_database_path(data_dir))
+
+
+@contextmanager
+def worker_connection(db: sqlite3.Connection):
+    """Yield an independent connection for threadpool workers when file-backed.
+
+    If a client disconnects while an endpoint offloads work to a thread, FastAPI's
+    request dependency tears down the request connection; opening a fresh handle
+    for file-backed databases avoids ``ProgrammingError`` while keeping
+    in-memory/transactional test fixtures working on the caller connection.
+    """
+    file_path = ""
+    if not db.in_transaction:
+        try:
+            row = db.execute("PRAGMA database_list").fetchone()
+            file_path = row[2] if row and len(row) >= 3 else ""
+        except sqlite3.Error:
+            file_path = ""
+    if file_path and file_path != ":memory:":
+        worker = _connect_runtime_file(Path(file_path))
+        try:
+            yield worker
+        finally:
+            worker.close()
+    else:
+        yield db
 
 
 def _enable_wal(conn):
@@ -122,8 +159,7 @@ def _connect(data_dir: str | os.PathLike[str] | None = None) -> sqlite3.Connecti
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=False)
     try:
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
+        _configure_connection(conn)
         expected = _expected_names()
         applied = _applied_names(conn)
         if not expected or applied - expected:

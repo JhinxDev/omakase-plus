@@ -13,7 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -21,7 +21,6 @@ from fastapi.testclient import TestClient
 
 from omakase.plus.db import _db, run_migrations
 from omakase.plus.deps import get_db as _deps_get_db
-from omakase.plus.feedback import save_feedback
 from omakase.plus.media_store import (
     ensure_media_provider,
     record_sync_run,
@@ -32,7 +31,6 @@ from omakase.plus.media_types import MediaTarget
 from omakase.plus.routes import _login_attempts
 from omakase.plus.watch.models import WatchEvent
 from omakase.plus.watch.service import ingest_watch_event
-from omakase.types import Recommendation
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -248,50 +246,19 @@ class TestDashboardAccess:
         resp = client.get("/plus/dashboard", follow_redirects=False)
         assert resp.status_code in (302, 401)
 
-    def test_dashboard_renders_for_logged_in_user(self, client):
-        """After login the dashboard returns 200 with all expected sections."""
+    def test_dashboard_redirects_to_home_for_logged_in_user(self, client):
+        """Logged-in GET /plus/dashboard redirects cleanly to /plus/home."""
         try:
             _signup_and_login(client)
 
-            resp = client.get("/plus/dashboard")
-            assert resp.status_code == 200
-            html = resp.text
-
-            # Header
-            assert "Omakase Plus" in html
-            assert "alice@example.com" in html
-            assert "Settings" in html
-            assert "Log out" in html
-
-            # Sections
-            assert "Taste Profile" in html
-            assert "Add Anime" in html
-            assert "Run Recommendation" in html
-            assert "Recent Runs" in html
-            assert "Planning Queue" in html
-
-            # Form elements
-            assert 'name="profile"' in html
-            assert 'name="query"' in html
-            assert 'name="season"' in html
-            assert 'name="source"' in html
-            assert 'name="username"' in html
-            assert 'name="mode"' in html
-            assert 'name="count"' in html
-            assert 'name="temperature"' in html
-            assert 'name="skip_profile"' in html
-            assert 'name="use_planning"' in html
-            assert 'name="model"' in html
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_dashboard_references_external_assets(self, client):
-        """Dashboard CSS/JS is served as Plus static assets, not inline blocks."""
-        try:
-            _signup_and_login(client)
+            redirect = client.get("/plus/dashboard", follow_redirects=False)
+            assert redirect.status_code == 307
+            assert redirect.headers["location"] == "/plus/home"
 
             html = client.get("/plus/dashboard").text
-
+            assert "Omakase Plus" in html
+            assert "Settings" in html
+            assert "Sign out" in html
             assert 'href="/plus/static/dashboard.css?v=' in html
             assert 'src="/plus/static/dashboard.js?v=' in html
             assert "<style>" not in html
@@ -327,60 +294,14 @@ class TestDashboardAccess:
         assert response.headers["content-type"].startswith("application/javascript")
         assert "export class BitmapSubtitles" in response.text
 
-    def test_dashboard_renders_direct_download_card(self, client):
-        """The dashboard exposes a phone-friendly direct auto-download form."""
-        try:
-            _signup_and_login(client)
-
-            html = client.get("/plus/dashboard").text
-
-            assert "Add Anime" in html
-            assert 'action="/plus/dashboard/direct-download"' in html
-            assert 'name="query"' in html
-            assert 'name="season"' in html
-            assert "Add + Download" in html
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_dashboard_has_mobile_first_shell_and_priority_order(self, client):
-        """Dashboard markup exposes the new shell and phone-first section order."""
-        try:
-            _signup_and_login(client)
-
-            html = client.get("/plus/dashboard").text
-
-            assert 'class="dashboard-shell"' in html
-            assert 'class="hero-panel"' in html
-            assert 'class="quick-stats"' in html
-            assert html.index("Add Anime") < html.index("Run Recommendation")
-            assert html.index("Run Recommendation") < html.index("Tonight's Tasting Menu")
-            assert html.index("Planning Queue") < html.index("Taste Profile")
-            assert html.index("Taste Profile") < html.index("Recent Runs")
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_dashboard_renders_lane_control(self, client):
-        """The run form exposes all recommendation lanes to authenticated users."""
-        try:
-            _signup_and_login(client)
-
-            html = client.get("/plus/dashboard").text
-            assert 'name="lane"' in html
-            assert 'value="best_match"' in html
-            assert 'value="new_seasons"' in html
-            assert 'value="hidden_gems"' in html
-            assert 'value="plan_list"' in html
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
 
 class TestTasteProfile:
     def test_profile_form_includes_csrf_token(self, client):
-        """The profile form carries the authenticated session's CSRF token."""
+        """The discover taste editor form carries the authenticated session's CSRF token."""
         try:
             _signup_and_login(client)
 
-            html = client.get("/plus/dashboard").text
+            html = client.get("/plus/discover?mode=recommend").text
             form_match = re.search(
                 r'<form[^>]+action="/plus/dashboard/profile"[^>]*>(.*?)</form>',
                 html,
@@ -398,18 +319,18 @@ class TestTasteProfile:
 
             resp = client.post(
                 "/plus/dashboard/profile",
-                data={"profile": "Untrusted overwrite."},
+                data={"profile": "Untrusted overwrite.", "return_to": "/plus/discover"},
                 follow_redirects=False,
             )
             assert resp.status_code == 403
 
-            dashboard = client.get("/plus/dashboard")
-            assert "Untrusted overwrite." not in dashboard.text
+            discover = client.get("/plus/discover?mode=recommend")
+            assert "Untrusted overwrite." not in discover.text
         finally:
             os.environ.pop("OMAKASE_PLUS_INVITE", None)
 
     def test_save_taste_profile(self, client):
-        """POST /plus/dashboard/profile saves content and dashboard shows it."""
+        """POST /plus/dashboard/profile saves content and discover shows it."""
         try:
             _signup_and_login(client)
             token = _csrf_token(client)
@@ -419,13 +340,14 @@ class TestTasteProfile:
                 data={
                     "profile": "I love slice of life and romance anime.",
                     "csrf_token": token,
+                    "return_to": "/plus/discover?mode=recommend",
                 },
                 follow_redirects=False,
             )
             assert resp.status_code == 302
-            assert resp.headers["location"] == "/plus/dashboard"
+            assert resp.headers["location"] == "/plus/discover?mode=recommend"
 
-            resp2 = client.get("/plus/dashboard")
+            resp2 = client.get("/plus/discover?mode=recommend")
             assert "I love slice of life and romance anime." in resp2.text
         finally:
             os.environ.pop("OMAKASE_PLUS_INVITE", None)
@@ -436,17 +358,16 @@ class TestTasteProfile:
             _signup_and_login(client)
             token = _csrf_token(client)
 
-            # Save a profile
             client.post(
                 "/plus/dashboard/profile",
                 data={
                     "profile": "Prefer dark fantasy and psychological thrillers.",
                     "csrf_token": token,
+                    "return_to": "/plus/discover",
                 },
             )
 
-            # Verify it shows up
-            resp = client.get("/plus/dashboard")
+            resp = client.get("/plus/discover?mode=recommend")
             assert "Prefer dark fantasy and psychological thrillers." in resp.text
             assert 'name="profile"' in resp.text
         finally:
@@ -458,179 +379,24 @@ class TestTasteProfile:
             _signup_and_login(client)
             token = _csrf_token(client)
 
-            # First save something
             client.post(
                 "/plus/dashboard/profile",
-                data={"profile": "Some profile text.", "csrf_token": token},
+                data={
+                    "profile": "Some profile text.",
+                    "csrf_token": token,
+                    "return_to": "/plus/discover",
+                },
             )
 
-            # Then clear it
             resp = client.post(
                 "/plus/dashboard/profile",
-                data={"profile": "", "csrf_token": token},
+                data={"profile": "", "csrf_token": token, "return_to": "/plus/discover"},
                 follow_redirects=False,
             )
             assert resp.status_code == 302
 
-            resp2 = client.get("/plus/dashboard")
-            # textarea should be present (empty is fine)
+            resp2 = client.get("/plus/discover?mode=recommend")
             assert 'name="profile"' in resp2.text
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-
-class TestRunRecommendation:
-    def test_run_recommendation_endpoint(self, client):
-        """POST /plus/dashboard/run with mocked pipeline creates a run_history row."""
-        mock_recs = [
-            Recommendation(
-                title="One Piece",
-                predicted_score=9.2,
-                reasoning="Matches your love for long-running shonen.",
-                best_match_from_history="Naruto",
-                url="https://anilist.co/anime/21/",
-                source="anilist",
-            ),
-            Recommendation(
-                title="Attack on Titan",
-                predicted_score=8.7,
-                reasoning="Dark fantasy with complex characters.",
-                best_match_from_history="Death Note",
-                url="https://anilist.co/anime/16498/",
-                source="anilist",
-            ),
-        ]
-        try:
-            _signup_and_login(client)
-
-            with patch("omakase.plus.routes.run_pipeline", return_value=mock_recs):
-                resp = client.post(
-                    "/plus/dashboard/run",
-                    data={
-                        "source": "anilist",
-                        "mode": "fast",
-                        "count": "5",
-                        "temperature": "0.5",
-                        "username": "testuser",
-                        "skip_profile": "true",
-                    },
-                    follow_redirects=False,
-                )
-
-            assert resp.status_code == 302
-            assert "?run=" in resp.headers["location"]
-
-            # Follow the redirect to the run results
-            resp2 = client.get(resp.headers["location"])
-            assert resp2.status_code == 200
-            html = resp2.text
-            assert "One Piece" in html
-            assert "Attack on Titan" in html
-            assert "9.2" in html
-            assert "8.7" in html
-            assert "Recent Runs" in html
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_run_with_missing_username_uses_email(self, client):
-        """When username is empty, the route falls back to the email local part."""
-        mock_recs = [
-            Recommendation(
-                title="Test Anime",
-                predicted_score=7.5,
-                reasoning="Good show.",
-                best_match_from_history="",
-                url=None,
-                source="anilist",
-            ),
-        ]
-        try:
-            _signup_and_login(client)
-
-            with patch("omakase.plus.routes.run_pipeline", return_value=mock_recs):
-                resp = client.post(
-                    "/plus/dashboard/run",
-                    data={
-                        "source": "anilist",
-                        "mode": "fast",
-                        "count": "5",
-                        "username": "",
-                        "skip_profile": "true",
-                    },
-                    follow_redirects=False,
-                )
-
-            assert resp.status_code == 302
-            assert "?run=" in resp.headers["location"]
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_run_requires_auth(self, client):
-        """POST /plus/dashboard/run without login is rejected."""
-        resp = client.post(
-            "/plus/dashboard/run",
-            data={"source": "anilist", "mode": "fast", "count": "5"},
-            follow_redirects=False,
-        )
-        assert resp.status_code in (302, 401)
-
-    def test_dashboard_run_passes_lane_feedback_and_persists_lane(self, client):
-        """Form runs pass lane/feedback into the engine and persist the selected lane."""
-        captured = {}
-        mock_recs = [
-            Recommendation(
-                title="Base 2",
-                predicted_score=8.4,
-                reasoning="Direct continuation of a liked series.",
-                best_match_from_history="Base",
-                url="https://anilist.co/anime/123/",
-                source="anilist",
-            ),
-        ]
-
-        def _capture(cfg):
-            captured["lane"] = cfg.recommendation_lane
-            captured["use_planning"] = cfg.use_planning
-            captured["feedback_types"] = [f.feedback_type for f in cfg.feedback]
-            return mock_recs
-
-        try:
-            _signup_and_login(client)
-            with _connect_client_db(client) as conn:
-                user_id = conn.execute(
-                    "SELECT id FROM users WHERE email = ?",
-                    ("alice@example.com",),
-                ).fetchone()["id"]
-                save_feedback(conn, user_id, "anilist", 123, "Base 2", "interested", None)
-
-            with patch("omakase.plus.routes.run_pipeline", side_effect=_capture):
-                resp = client.post(
-                    "/plus/dashboard/run",
-                    data={
-                        "source": "anilist",
-                        "mode": "fast",
-                        "count": "5",
-                        "temperature": "0.5",
-                        "username": "testuser",
-                        "skip_profile": "true",
-                        "lane": "plan_list",
-                    },
-                    follow_redirects=False,
-                )
-
-            assert resp.status_code == 302
-            run_id = int(resp.headers["location"].split("run=")[1])
-            assert captured == {
-                "lane": "plan_list",
-                "use_planning": True,
-                "feedback_types": ["interested"],
-            }
-            with _connect_client_db(client) as conn:
-                row = conn.execute(
-                    "SELECT lane FROM run_history WHERE id = ?",
-                    (run_id,),
-                ).fetchone()
-            assert row["lane"] == "plan_list"
         finally:
             os.environ.pop("OMAKASE_PLUS_INVITE", None)
 
@@ -651,7 +417,7 @@ class TestDefaultAniListUsername:
             )
             assert resp.status_code == 302
 
-            html = client.get("/plus/dashboard").text
+            html = client.get("/plus/discover?mode=recommend").text
             assert 'name="username"' in html
             assert 'value="HeyiTzSenpai"' in html
         finally:
@@ -720,271 +486,7 @@ class TestDefaultAniListUsername:
             os.environ.pop("OMAKASE_PLUS_INVITE", None)
 
 
-class TestLibraryOperations:
-    @staticmethod
-    def _target(anilist_id: int, title: str, *, status: str = "FINISHED") -> MediaTarget:
-        return MediaTarget(
-            anilist_id=anilist_id,
-            title=title,
-            search_titles=(title, f"{title} alias"),
-            format="TV",
-            status=status,
-            episodes=12,
-            aired_episodes=3 if status == "RELEASING" else 12,
-            season_number=1,
-            season="SUMMER",
-            season_year=2026,
-            genres=("Action",),
-            next_airing_at=1783900000 if status == "RELEASING" else None,
-        )
-
-    def test_dashboard_has_bulk_add_and_monitor_status(self, client):
-        try:
-            _signup_and_login(client)
-            user_id = _user_id(client)
-            with _connect_client_db(client) as db:
-                monitor_id = upsert_monitor(
-                    db,
-                    user_id=user_id,
-                    anilist_id=178789,
-                    title="Mushoku Tensei Season 3",
-                    search_titles=("Mushoku Tensei III",),
-                    genres=("Adventure", "Fantasy"),
-                    format="TV",
-                    release_status="RELEASING",
-                    season_number=3,
-                    expected_episodes=14,
-                    aired_episodes=3,
-                    next_check_at="2026-07-16T02:00:00Z",
-                    last_result="Coverage incomplete",
-                )
-                db.commit()
-
-            html = client.get("/plus/dashboard").text
-            assert 'name="bulk_query"' in html
-            assert 'action="/plus/dashboard/bulk-preview"' in html
-            assert 'id="library-jobs"' in html
-            assert "Airing monitors" in html
-            assert "Mushoku Tensei Season 3" in html
-            assert "0 / 3 usable" in html
-            assert f'value="{monitor_id}"' in html
-            assert 'name="csrf_token"' in html
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_bulk_preview_mutates_nothing_and_disambiguates_only_ambiguous_rows(self, client):
-        try:
-            _signup_and_login(client)
-            ready = self._target(178789, "Mushoku Tensei Season 3", status="RELEASING")
-            ambiguous = (
-                self._target(1001, "Ambiguous Hero"),
-                self._target(1002, "Ambiguous Hero: Reborn"),
-            )
-
-            def resolve(value: str, season: str = ""):
-                assert season == ""
-                if value == "178789":
-                    return ready
-                from omakase.plus.direct import AmbiguousMediaError
-
-                raise AmbiguousMediaError(ambiguous)
-
-            with patch("omakase.plus.direct.resolve_direct_request", side_effect=resolve):
-                response = client.post(
-                    "/plus/dashboard/bulk-preview",
-                    data={"bulk_query": "178789\nAmbiguous Hero"},
-                )
-
-            assert response.status_code == 200
-            assert "Ready" in response.text
-            assert "Choose the intended title" in response.text
-            assert "Mushoku Tensei Season 3" in response.text
-            assert "Ambiguous Hero: Reborn" in response.text
-            assert 'name="choice_1"' in response.text
-            with _connect_client_db(client) as db:
-                assert db.execute("SELECT COUNT(*) FROM media_monitors").fetchone()[0] == 0
-                assert db.execute("SELECT COUNT(*) FROM anilist_plannings").fetchone()[0] == 0
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_bulk_preview_rejects_more_than_25_nonblank_lines(self, client):
-        try:
-            _signup_and_login(client)
-            response = client.post(
-                "/plus/dashboard/bulk-preview",
-                data={"bulk_query": "\n".join(str(value) for value in range(1, 27))},
-            )
-            assert response.status_code == 422
-            assert "25" in response.text
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_bulk_confirm_requires_csrf_and_uses_shared_scheduler_once(self, client):
-        try:
-            _signup_and_login(client)
-            target = self._target(178789, "Mushoku Tensei Season 3", status="RELEASING")
-            sync = AsyncMock(return_value=SimpleNamespace(outcome="degraded"))
-
-            with patch("omakase.plus.direct.resolve_direct_request", return_value=target):
-                rejected = client.post(
-                    "/plus/dashboard/bulk-confirm",
-                    data={"ready_id": "178789"},
-                    follow_redirects=False,
-                )
-            assert rejected.status_code == 403
-
-            token = _csrf_token(client)
-            with (
-                patch("omakase.plus.direct.resolve_direct_request", return_value=target),
-                patch("omakase.plus.routes.run_media_sync", new=sync),
-                patch("omakase.plus.routes.with_valid_token", side_effect=ValueError),
-            ):
-                accepted = client.post(
-                    "/plus/dashboard/bulk-confirm",
-                    data={"ready_id": "178789", "csrf_token": token},
-                    follow_redirects=False,
-                )
-
-            assert accepted.status_code == 302
-            with _connect_client_db(client) as db:
-                monitor = db.execute(
-                    "SELECT id, anilist_id FROM media_monitors WHERE anilist_id = 178789"
-                ).fetchone()
-                planning_count = db.execute(
-                    "SELECT COUNT(*) FROM anilist_plannings WHERE anilist_id = 178789"
-                ).fetchone()[0]
-            assert monitor["anilist_id"] == 178789
-            assert planning_count == 1
-            sync.assert_awaited_once()
-            assert sync.await_args.kwargs == {
-                "entrypoint": "bulk_confirmation",
-                "monitor_ids": (monitor["id"],),
-            }
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_sync_now_and_monitor_change_enforce_owner_and_csrf(self, client):
-        try:
-            _signup_and_login(client)
-            own_user = _user_id(client)
-            with _connect_client_db(client) as db:
-                own_monitor = upsert_monitor(
-                    db,
-                    user_id=own_user,
-                    anilist_id=1,
-                    title="Owned Show",
-                    search_titles=("Owned Show",),
-                    release_status="RELEASING",
-                    season_number=1,
-                    expected_episodes=12,
-                    aired_episodes=1,
-                )
-                other_user = db.execute(
-                    "INSERT INTO users (email, password_hash) VALUES (?, ?)",
-                    ("other-owner@example.com", "hash"),
-                ).lastrowid
-                other_monitor = upsert_monitor(
-                    db,
-                    user_id=int(other_user),
-                    anilist_id=2,
-                    title="Other Show",
-                    search_titles=("Other Show",),
-                )
-                db.commit()
-            token = _csrf_token(client)
-            sync = AsyncMock(return_value=SimpleNamespace(outcome="complete"))
-
-            missing_csrf = client.post(
-                "/plus/dashboard/sync-monitor",
-                data={"monitor_id": own_monitor},
-                follow_redirects=False,
-            )
-            assert missing_csrf.status_code == 403
-            with patch("omakase.plus.routes.run_media_sync", new=sync):
-                not_owned = client.post(
-                    "/plus/dashboard/sync-monitor",
-                    data={"monitor_id": other_monitor, "csrf_token": token},
-                    follow_redirects=False,
-                )
-                accepted = client.post(
-                    "/plus/dashboard/sync-monitor",
-                    data={"monitor_id": own_monitor, "csrf_token": token},
-                    follow_redirects=False,
-                )
-            assert not_owned.status_code == 404
-            assert accepted.status_code == 302
-            sync.assert_awaited_once()
-            assert sync.await_args.kwargs == {
-                "entrypoint": "dashboard_sync",
-                "monitor_ids": (own_monitor,),
-            }
-
-            paused = client.post(
-                "/plus/dashboard/monitor",
-                data={
-                    "monitor_id": own_monitor,
-                    "action": "pause",
-                    "csrf_token": token,
-                },
-                follow_redirects=False,
-            )
-            assert paused.status_code == 302
-            with _connect_client_db(client) as db:
-                assert (
-                    db.execute(
-                        "SELECT active FROM media_monitors WHERE id = ?", (own_monitor,)
-                    ).fetchone()[0]
-                    == 0
-                )
-                assert (
-                    db.execute(
-                        "SELECT active FROM media_monitors WHERE id = ?", (other_monitor,)
-                    ).fetchone()[0]
-                    == 1
-                )
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-
-class TestPlanButton:
-    def test_remove_local_completed_entry_never_deletes_remote_anilist_history(self, client):
-        try:
-            _signup_and_login(client)
-            user_id = _user_id(client)
-            with _connect_client_db(client) as conn:
-                conn.execute(
-                    """INSERT INTO anilist_plannings
-                       (user_id, anilist_id, title, status)
-                       VALUES (?, 151807, 'Solo Leveling', 'COMPLETED')""",
-                    (user_id,),
-                )
-                conn.commit()
-            token_context = MagicMock()
-            token_context.__enter__.return_value = "anilist-token"
-            token_context.__exit__.return_value = False
-
-            with (
-                patch("omakase.plus.routes.with_valid_token", return_value=token_context),
-                patch("omakase.plus.anilist.remove_from_planning") as remote_remove,
-            ):
-                response = client.post(
-                    "/plus/dashboard/remove-plan",
-                    data={"anilist_id": 151807},
-                    follow_redirects=False,
-                )
-
-            assert response.status_code == 302
-            remote_remove.assert_not_called()
-            with _connect_client_db(client) as conn:
-                local = conn.execute(
-                    """SELECT COUNT(*) FROM anilist_plannings
-                       WHERE user_id = ? AND anilist_id = 151807""",
-                    (user_id,),
-                ).fetchone()[0]
-            assert local == 0
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
+class TestAddRoutes:
     def test_add_anime_is_a_first_class_preview_before_acquisition(self, client):
         try:
             _signup_and_login(client)
@@ -1080,855 +582,6 @@ class TestPlanButton:
             assert monitor["next_airing_at"] == 1783900000
         finally:
             os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_direct_download_rejects_empty_query(self, client):
-        """Direct auto-download needs a title, AniList URL, or AniList ID."""
-        try:
-            _signup_and_login(client)
-            csrf_token = _csrf_token(client)
-
-            resp = client.post(
-                "/plus/dashboard/direct-download",
-                data={"query": "", "season": "", "csrf_token": csrf_token},
-                follow_redirects=False,
-            )
-
-            assert resp.status_code == 302
-            assert "Enter%20an%20anime%20title%20or%20AniList%20URL" in resp.headers["location"]
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_direct_download_creates_planning_monitor_and_runs_sync(self, client):
-        """Direct requests persist rich identity and use the shared sync lease."""
-        try:
-            _signup_and_login(client)
-            csrf_token = _csrf_token(client)
-            target = MediaTarget(
-                anilist_id=99699,
-                title="Golden Kamuy Season 3",
-                search_titles=("Golden Kamuy Season 3", "Golden Kamuy 3rd Season"),
-                format="TV",
-                status="FINISHED",
-                episodes=12,
-                aired_episodes=12,
-                season_number=3,
-                season="FALL",
-                season_year=2020,
-                genres=("Action", "Adventure"),
-                next_airing_at=None,
-            )
-            token_context = MagicMock()
-            token_context.__enter__.return_value = "token"
-            sync = AsyncMock(return_value=SimpleNamespace(outcome="degraded", monitor_results=()))
-
-            with (
-                patch(
-                    "omakase.plus.direct.resolve_direct_request", return_value=target
-                ) as resolve_mock,
-                patch("omakase.plus.routes.with_valid_token", return_value=token_context),
-                patch(
-                    "omakase.plus.routes.ensure_in_planning",
-                    return_value={
-                        "created": True,
-                        "entry": {
-                            "id": 10,
-                            "mediaId": 99699,
-                            "status": "PLANNING",
-                        },
-                    },
-                ) as ensure_mock,
-                patch("omakase.plus.routes.run_media_sync", new=sync),
-            ):
-                resp = client.post(
-                    "/plus/dashboard/direct-download",
-                    data={
-                        "query": "Golden Kamuy",
-                        "season": "3",
-                        "csrf_token": csrf_token,
-                    },
-                    follow_redirects=False,
-                )
-
-            assert resp.status_code == 302
-            assert "Media%20monitor%20enrolled%3B%20sync%20degraded" in resp.headers["location"]
-            resolve_mock.assert_called_once_with("Golden Kamuy", season="3")
-            ensure_mock.assert_called_once_with("token", 99699)
-
-            with _connect_client_db(client) as conn:
-                row = conn.execute(
-                    """SELECT id, title, status
-                       FROM anilist_plannings
-                       WHERE user_id = ? AND anilist_id = ?""",
-                    (_user_id(client), 99699),
-                ).fetchone()
-                monitor = conn.execute(
-                    """SELECT id, search_titles_json, genres_json, release_status,
-                              expected_episodes, aired_episodes
-                       FROM media_monitors WHERE anilist_id = 99699"""
-                ).fetchone()
-
-            assert {key: row[key] for key in ("title", "status")} == {
-                "title": "Golden Kamuy Season 3",
-                "status": "PLANNING",
-            }
-            assert monitor["search_titles_json"] == (
-                '["Golden Kamuy Season 3","Golden Kamuy 3rd Season"]'
-            )
-            assert monitor["genres_json"] == '["Action","Adventure"]'
-            assert tuple(monitor)[3:] == ("FINISHED", 12, 12)
-            sync.assert_awaited_once()
-            assert sync.await_args.kwargs == {
-                "entrypoint": "direct_request",
-                "monitor_ids": (monitor["id"],),
-            }
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_releasing_direct_request_auto_enrolls_and_uses_shared_lease(self, client):
-        try:
-            _signup_and_login(client)
-            csrf_token = _csrf_token(client)
-            target = MediaTarget(
-                anilist_id=178789,
-                title="Mushoku Tensei: Jobless Reincarnation Season 3",
-                search_titles=("Mushoku Tensei III", "無職転生Ⅲ"),
-                format="TV",
-                status="RELEASING",
-                episodes=14,
-                aired_episodes=3,
-                season_number=3,
-                season="SUMMER",
-                season_year=2026,
-                genres=("Adventure", "Fantasy"),
-                next_airing_at=1783900000,
-            )
-            sync = AsyncMock(return_value=SimpleNamespace(outcome="degraded", monitor_results=()))
-
-            with (
-                patch("omakase.plus.direct.resolve_direct_request", return_value=target),
-                patch("omakase.plus.routes.run_media_sync", new=sync),
-                patch("omakase.plus.routes.with_valid_token", side_effect=ValueError),
-            ):
-                response = client.post(
-                    "/plus/dashboard/direct-download",
-                    data={
-                        "query": "178789",
-                        "season": "Season 3",
-                        "csrf_token": csrf_token,
-                    },
-                    follow_redirects=False,
-                )
-
-            assert response.status_code == 302
-            with _connect_client_db(client) as conn:
-                monitor = conn.execute(
-                    """SELECT id, anilist_id, release_status, season_number,
-                              aired_episodes, active
-                       FROM media_monitors WHERE anilist_id = 178789"""
-                ).fetchone()
-                planning_count = conn.execute(
-                    "SELECT COUNT(*) FROM anilist_plannings WHERE anilist_id = 178789"
-                ).fetchone()[0]
-            assert tuple(monitor)[1:] == (178789, "RELEASING", 3, 3, 1)
-            assert planning_count == 1
-            sync.assert_awaited_once()
-            assert sync.await_args.kwargs == {
-                "entrypoint": "direct_request",
-                "monitor_ids": (monitor["id"],),
-            }
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_direct_download_reuses_existing_planning_row(self, client):
-        """Retrying a direct request should not duplicate the local queue row."""
-        try:
-            _signup_and_login(client)
-            csrf_token = _csrf_token(client)
-            user_id = _user_id(client)
-            with _connect_client_db(client) as conn:
-                conn.execute(
-                    """INSERT INTO anilist_plannings
-                       (user_id, anilist_id, title, status)
-                       VALUES (?, ?, ?, ?)""",
-                    (user_id, 21, "Cowboy Bebop", "PLANNING"),
-                )
-                conn.commit()
-
-            target = MediaTarget(
-                anilist_id=21,
-                title="Cowboy Bebop",
-                search_titles=("Cowboy Bebop",),
-                format="TV",
-                status="FINISHED",
-                episodes=26,
-                aired_episodes=26,
-                season_number=1,
-                season="SPRING",
-                season_year=1998,
-                genres=("Action", "Sci-Fi"),
-                next_airing_at=None,
-            )
-            sync = AsyncMock(return_value=SimpleNamespace(outcome="complete", monitor_results=()))
-
-            with (
-                patch("omakase.plus.direct.resolve_direct_request", return_value=target),
-                patch("omakase.plus.routes.add_to_planning") as add_mock,
-                patch("omakase.plus.routes.run_media_sync", new=sync),
-            ):
-                resp = client.post(
-                    "/plus/dashboard/direct-download",
-                    data={
-                        "query": "https://anilist.co/anime/21/Cowboy-Bebop/",
-                        "csrf_token": csrf_token,
-                    },
-                    follow_redirects=False,
-                )
-
-            assert resp.status_code == 302
-            add_mock.assert_not_called()
-            with _connect_client_db(client) as conn:
-                count = conn.execute(
-                    """SELECT COUNT(*) AS count
-                       FROM anilist_plannings
-                       WHERE user_id = ? AND anilist_id = ?""",
-                    (user_id, 21),
-                ).fetchone()["count"]
-
-            assert count == 1
-            sync.assert_awaited_once()
-            with _connect_client_db(client) as conn:
-                monitor = conn.execute(
-                    "SELECT id, search_titles_json FROM media_monitors WHERE anilist_id = 21"
-                ).fetchone()
-            assert monitor["search_titles_json"] == '["Cowboy Bebop"]'
-            assert sync.await_args.kwargs == {
-                "entrypoint": "direct_request",
-                "monitor_ids": (monitor["id"],),
-            }
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_direct_download_preserves_an_existing_completed_anilist_entry(self, client):
-        """Calling the blind save mutation here would downgrade completed anime."""
-        try:
-            _signup_and_login(client)
-            target = MediaTarget(
-                anilist_id=151807,
-                title="Solo Leveling",
-                search_titles=("Ore dake Level Up na Ken",),
-                format="TV",
-                status="FINISHED",
-                episodes=12,
-                aired_episodes=12,
-                season_number=1,
-                season="WINTER",
-                season_year=2024,
-                genres=("Action", "Fantasy"),
-                next_airing_at=None,
-            )
-            token_context = MagicMock()
-            token_context.__enter__.return_value = "anilist-token"
-            token_context.__exit__.return_value = False
-            sync = AsyncMock(return_value=SimpleNamespace(outcome="complete", monitor_results=()))
-            completed = {
-                "created": False,
-                "entry": {
-                    "id": 91,
-                    "mediaId": 151807,
-                    "status": "COMPLETED",
-                    "score": 9,
-                    "progress": 12,
-                },
-            }
-
-            with (
-                patch("omakase.plus.direct.resolve_direct_request", return_value=target),
-                patch("omakase.plus.routes.run_media_sync", new=sync),
-                patch("omakase.plus.routes.with_valid_token", return_value=token_context),
-                patch("omakase.plus.routes.add_to_planning") as blind_save,
-                patch(
-                    "omakase.plus.routes.ensure_in_planning",
-                    return_value=completed,
-                    create=True,
-                ) as ensure,
-            ):
-                response = client.post(
-                    "/plus/dashboard/direct-download",
-                    data={
-                        "query": "Solo Leveling",
-                        "csrf_token": _csrf_token(client),
-                    },
-                    follow_redirects=False,
-                )
-
-            assert response.status_code == 302
-            ensure.assert_called_once_with("anilist-token", 151807)
-            blind_save.assert_not_called()
-            with _connect_client_db(client) as conn:
-                planning = conn.execute(
-                    """SELECT status FROM anilist_plannings
-                       WHERE user_id = ? AND anilist_id = ?""",
-                    (_user_id(client), 151807),
-                ).fetchone()
-            assert planning["status"] == "COMPLETED"
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_manual_rd_removal_refuses_unguarded_deletion(self, client):
-        """Human routes cannot bypass the durable replacement and lease guards."""
-        try:
-            _signup_and_login(client)
-            user_id = _user_id(client)
-            with _connect_client_db(client) as conn:
-                conn.execute(
-                    """INSERT INTO anilist_plannings
-                       (user_id, anilist_id, title, status, rd_torrent_id)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (user_id, 21, "Cowboy Bebop", "PLANNING", "rd-existing"),
-                )
-                conn.commit()
-            rd_client = MagicMock()
-            rd_client.delete_torrent = AsyncMock(return_value=True)
-
-            with (
-                patch("omakase.plus.routes.read_secret", return_value="rd-key"),
-                patch(
-                    "omakase.plus.realdebrid.RealDebridClient",
-                    return_value=rd_client,
-                ),
-            ):
-                response = client.post(
-                    "/plus/dashboard/remove-from-rd",
-                    data={"anilist_id": 21},
-                    follow_redirects=False,
-                )
-
-            assert response.status_code == 302
-            assert "guarded" in response.headers["location"].lower()
-            rd_client.delete_torrent.assert_not_awaited()
-            with _connect_client_db(client) as conn:
-                rd_id = conn.execute(
-                    "SELECT rd_torrent_id FROM anilist_plannings WHERE anilist_id = 21"
-                ).fetchone()[0]
-            assert rd_id == "rd-existing"
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_dashboard_cards_have_split_plan_and_download_actions(self, client):
-        """Recommendation cards render separate Plan and Download form actions."""
-        try:
-            _signup_and_login(client)
-            run_id = _seed_run(
-                client,
-                [
-                    {
-                        "title": "One Piece",
-                        "predicted_score": 9.2,
-                        "reasoning": "Matches your love for long-running shonen.",
-                        "best_match_from_history": "Naruto",
-                        "url": "https://anilist.co/anime/21/",
-                        "source": "anilist",
-                        "anilist_id": 21,
-                        "media_id": 21,
-                    }
-                ],
-            )
-
-            html = client.get(f"/plus/dashboard?run={run_id}").text
-            assert "Plan &amp; Download" not in html
-            assert ">Plan<" in html
-            assert ">Download<" in html
-            assert 'action="/plus/dashboard/plan"' in html
-            assert 'action="/plus/dashboard/download"' in html
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_dashboard_cards_have_clear_feedback_and_watched_score_actions(self, client):
-        """Recommendation actions avoid overlap and can update the anime list."""
-        try:
-            _signup_and_login(client)
-            run_id = _seed_run(
-                client,
-                [
-                    {
-                        "title": "One Piece",
-                        "predicted_score": 9.2,
-                        "reasoning": "Matches your love for long-running shonen.",
-                        "best_match_from_history": "Naruto",
-                        "url": "https://anilist.co/anime/21/",
-                        "source": "anilist",
-                        "anilist_id": 21,
-                        "media_id": 21,
-                    }
-                ],
-            )
-
-            html = client.get(f"/plus/dashboard?run={run_id}").text
-            assert 'data-feedback="interested"' not in html
-            assert 'data-feedback="not_for_me"' in html
-            assert 'data-feedback="wrong_sequel"' in html
-            assert 'data-feedback="already_watched"' in html
-            assert "Save to my anime list" in html
-            assert "Score (optional)" in html
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_dashboard_cards_link_titles_show_chips_and_preserve_stored_anilist_id(self, client):
-        """Stored recommendation metadata drives card links, chips, and actions."""
-        try:
-            _signup_and_login(client)
-            run_id = _seed_run(
-                client,
-                [
-                    {
-                        "title": "Preserved ID",
-                        "predicted_score": 8.5,
-                        "reasoning": "A good sequel candidate.",
-                        "best_match_from_history": "Base Show",
-                        "url": "https://anilist.co/anime/999/",
-                        "source": "anilist",
-                        "anilist_id": 777,
-                        "media_id": 888,
-                        "airing_status": "RELEASING",
-                        "franchise_note": "Loved franchise continuation.",
-                        "sequence_warning": "Start with season 1.",
-                    }
-                ],
-            )
-
-            html = client.get(f"/plus/dashboard?run={run_id}").text
-            assert 'href="https://anilist.co/anime/999/"' in html
-            assert ">Preserved ID</a>" in html
-            assert 'value="777"' in html
-            assert 'value="999"' not in html
-            assert "Currently airing" in html
-            assert "Loved franchise continuation." in html
-            assert "Start with season 1." in html
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_dashboard_uses_media_id_for_anilist_actions_when_anilist_id_missing(self, client):
-        """AniList run cards can fall back to media_id when anilist_id is absent."""
-        try:
-            _signup_and_login(client)
-            run_id = _seed_run(
-                client,
-                [
-                    {
-                        "title": "Media ID Pick",
-                        "predicted_score": 8.2,
-                        "reasoning": "A solid candidate.",
-                        "best_match_from_history": "Base Show",
-                        "url": None,
-                        "source": "anilist",
-                        "anilist_id": None,
-                        "media_id": 4242,
-                    }
-                ],
-            )
-
-            html = client.get(f"/plus/dashboard?run={run_id}").text
-            assert 'value="4242"' in html
-            assert ">Plan<" in html
-            assert ">Download<" in html
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_download_route_creates_local_planning_without_anilist_write(self, client):
-        """The dashboard Download action does not mutate AniList remotely."""
-        try:
-            _signup_and_login(client)
-            download_mock = AsyncMock(
-                return_value={
-                    "status": "no_rd_key",
-                    "detail": "Real-Debrid API key not configured",
-                }
-            )
-
-            with (
-                patch("omakase.plus.routes.with_valid_token") as token_mock,
-                patch("omakase.plus.routes.add_to_planning") as add_mock,
-                patch("omakase.plus.automation.search_and_download", new=download_mock),
-            ):
-                resp = client.post(
-                    "/plus/dashboard/download",
-                    data={"anilist_id": "21", "title": "One Piece"},
-                    follow_redirects=False,
-                )
-
-            assert resp.status_code == 302
-            token_mock.assert_not_called()
-            add_mock.assert_not_called()
-            download_mock.assert_awaited_once()
-            with _connect_client_db(client) as conn:
-                row = conn.execute(
-                    """SELECT id, title, status, download_status
-                       FROM anilist_plannings
-                       WHERE user_id = ? AND anilist_id = ?""",
-                    (_user_id(client), 21),
-                ).fetchone()
-            assert download_mock.await_args.kwargs["planning_id"] == row["id"]
-            assert {key: row[key] for key in ("title", "status", "download_status")} == {
-                "title": "One Piece",
-                "status": "PLANNING",
-                "download_status": "no_rd_key",
-            }
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_download_route_persists_rd_provider_block_detail(self, client):
-        """Provider-blocked RD batches are persisted distinctly from generic errors."""
-        try:
-            _signup_and_login(client)
-            download_mock = AsyncMock(
-                return_value={
-                    "status": "rd_provider_block",
-                    "detail": "Provider blocked this batch (451 infringing_file).",
-                    "http_status": 451,
-                    "error_code": "infringing_file",
-                }
-            )
-
-            with patch("omakase.plus.automation.search_and_download", new=download_mock):
-                resp = client.post(
-                    "/plus/dashboard/download",
-                    data={
-                        "anilist_id": "170732",
-                        "title": "BLEACH: Thousand-Year Blood War - The Conflict",
-                    },
-                    follow_redirects=False,
-                )
-
-            assert resp.status_code == 302
-            download_mock.assert_awaited_once()
-            with _connect_client_db(client) as conn:
-                row = conn.execute(
-                    """SELECT title, download_status, download_info
-                       FROM anilist_plannings
-                       WHERE user_id = ? AND anilist_id = ?""",
-                    (_user_id(client), 170732),
-                ).fetchone()
-            assert dict(row) == {
-                "title": "BLEACH: Thousand-Year Blood War - The Conflict",
-                "download_status": "rd_provider_block",
-                "download_info": "Provider blocked this batch (451 infringing_file).",
-            }
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_download_route_caps_rd_provider_block_detail(self, client):
-        """Provider-block detail is bounded before DB persistence and redirects."""
-        try:
-            _signup_and_login(client)
-            huge_detail = "Provider blocked " + ("X" * 1200)
-            download_mock = AsyncMock(
-                return_value={
-                    "status": "rd_provider_block",
-                    "detail": huge_detail,
-                    "http_status": 451,
-                    "error_code": "infringing_file",
-                }
-            )
-
-            with patch("omakase.plus.automation.search_and_download", new=download_mock):
-                resp = client.post(
-                    "/plus/dashboard/download",
-                    data={"anilist_id": "170733", "title": "Blocked Long Detail"},
-                    follow_redirects=False,
-                )
-
-            assert resp.status_code == 302
-            assert len(resp.headers["location"]) < 800
-            with _connect_client_db(client) as conn:
-                row = conn.execute(
-                    """SELECT download_status, download_info
-                       FROM anilist_plannings
-                       WHERE user_id = ? AND anilist_id = ?""",
-                    (_user_id(client), 170733),
-                ).fetchone()
-
-            assert row["download_status"] == "rd_provider_block"
-            assert len(row["download_info"]) <= 240
-            assert row["download_info"].endswith("...")
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_download_route_caps_rd_error_detail_redirect(self, client):
-        """Generic RD errors are bounded before redirect when provider detail is included."""
-        try:
-            _signup_and_login(client)
-            huge_detail = "Real-Debrid rejected all candidates; last RD response: " + ("Y" * 1200)
-            download_mock = AsyncMock(
-                return_value={
-                    "status": "rd_error",
-                    "detail": huge_detail,
-                }
-            )
-
-            with patch("omakase.plus.automation.search_and_download", new=download_mock):
-                resp = client.post(
-                    "/plus/dashboard/download",
-                    data={"anilist_id": "170734", "title": "Mixed RD Failure"},
-                    follow_redirects=False,
-                )
-
-            assert resp.status_code == 302
-            assert len(resp.headers["location"]) < 800
-            with _connect_client_db(client) as conn:
-                row = conn.execute(
-                    """SELECT download_status
-                       FROM anilist_plannings
-                       WHERE user_id = ? AND anilist_id = ?""",
-                    (_user_id(client), 170734),
-                ).fetchone()
-            assert row["download_status"] == "error"
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_download_route_overwrites_stale_rd_info_on_retry(self, client):
-        """Retry results should replace old provider-block details and RD ids."""
-        try:
-            _signup_and_login(client)
-            user_id = _user_id(client)
-            with _connect_client_db(client) as conn:
-                conn.execute(
-                    """INSERT INTO anilist_plannings
-                       (user_id, anilist_id, title, status, download_status,
-                        download_info, rd_torrent_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        user_id,
-                        170735,
-                        "Retry Target",
-                        "PLANNING",
-                        "rd_provider_block",
-                        "old provider-block detail",
-                        "old-rd-id",
-                    ),
-                )
-                conn.commit()
-
-            download_mock = AsyncMock(
-                return_value={
-                    "status": "rd_error",
-                    "detail": "Real-Debrid rejected all retry candidates",
-                }
-            )
-
-            with patch("omakase.plus.automation.search_and_download", new=download_mock):
-                resp = client.post(
-                    "/plus/dashboard/download",
-                    data={"anilist_id": "170735", "title": "Retry Target"},
-                    follow_redirects=False,
-                )
-
-            assert resp.status_code == 302
-            with _connect_client_db(client) as conn:
-                row = conn.execute(
-                    """SELECT download_status, download_info, rd_torrent_id
-                       FROM anilist_plannings
-                       WHERE user_id = ? AND anilist_id = ?""",
-                    (user_id, 170735),
-                ).fetchone()
-
-            assert row["download_status"] == "error"
-            assert row["download_info"] == "Real-Debrid rejected all retry candidates"
-            assert row["rd_torrent_id"] == ""
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_plan_button_creates_planning_and_request(self, client):
-        """POST /plus/dashboard/plan inserts planning row."""
-        try:
-            _signup_and_login(client)
-
-            resp = client.post(
-                "/plus/dashboard/plan",
-                data={"anilist_id": "21", "title": "One Piece"},
-                follow_redirects=False,
-            )
-            assert resp.status_code == 302
-            assert resp.headers["location"] == "/plus/dashboard"
-
-            # Dashboard should now show the planned entry
-            resp2 = client.get("/plus/dashboard")
-            html = resp2.text
-            assert "One Piece" in html
-            # The AniList status badge should show "Planned"
-            assert "Planned" in html
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_dashboard_shows_planning_queue(self, client):
-        """Multiple planned entries appear in the planning queue table."""
-        try:
-            _signup_and_login(client)
-
-            # Plan two anime
-            client.post(
-                "/plus/dashboard/plan",
-                data={"anilist_id": "1", "title": "Cowboy Bebop"},
-            )
-            client.post(
-                "/plus/dashboard/plan",
-                data={"anilist_id": "5", "title": "Samurai Champloo"},
-            )
-
-            resp = client.get("/plus/dashboard")
-            html = resp.text
-            assert "Cowboy Bebop" in html
-            assert "Samurai Champloo" in html
-            # AniList links should use the correct IDs
-            assert "https://anilist.co/anime/1/" in html
-            assert "https://anilist.co/anime/5/" in html
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_dashboard_shows_rd_provider_block_badge(self, client):
-        """Planning queue shows provider-blocked RD batches as their own state."""
-        try:
-            _signup_and_login(client)
-            with _connect_client_db(client) as conn:
-                conn.execute(
-                    """INSERT INTO anilist_plannings
-                       (user_id, anilist_id, title, status, download_status, download_info)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (
-                        _user_id(client),
-                        170732,
-                        "BLEACH: Thousand-Year Blood War - The Conflict",
-                        "PLANNING",
-                        "rd_provider_block",
-                        "Provider blocked this batch (451 infringing_file).",
-                    ),
-                )
-                conn.commit()
-
-            html = client.get("/plus/dashboard").text
-
-            assert "RD blocked" in html
-            assert "Provider blocked this batch (451 infringing_file)." in html
-            assert "planning-queue-card" in html
-            assert 'data-label="RD"' in html
-            assert 'data-label="Title"' in html
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_dashboard_shows_rd_attempts_and_retry_for_blocked_rows(self, client):
-        """Blocked queue rows expose safe attempt telemetry plus a retry affordance."""
-        try:
-            _signup_and_login(client)
-            user_id = _user_id(client)
-            with _connect_client_db(client) as conn:
-                planning_id = conn.execute(
-                    """INSERT INTO anilist_plannings
-                       (user_id, anilist_id, title, status, download_status, download_info)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (
-                        user_id,
-                        170732,
-                        "BLEACH: Thousand-Year Blood War - The Conflict",
-                        "PLANNING",
-                        "rd_provider_block",
-                        "Provider blocked this batch (451 infringing_file).",
-                    ),
-                ).lastrowid
-                conn.execute(
-                    """INSERT INTO download_attempts
-                       (user_id, anilist_planning_id, request_id, candidate_rank,
-                        total_candidates, torrent_title, torrent_hash, seeders,
-                        size_display, is_batch, status, http_status, error_code, detail)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        user_id,
-                        planning_id,
-                        "req-ui",
-                        1,
-                        2,
-                        "[Group] BLEACH - 451 [1080p][HEVC]",
-                        "ABCDEF1234567890",
-                        44,
-                        "1.4 GiB",
-                        0,
-                        "provider_block",
-                        451,
-                        "infringing_file",
-                        "Provider blocked this file",
-                    ),
-                )
-                conn.commit()
-
-            html = client.get("/plus/dashboard").text
-
-            assert "RD attempts" in html
-            assert "[Group] BLEACH - 451 [1080p][HEVC]" in html
-            assert "ABCDEF1234567890" in html
-            assert "451 infringing_file" in html
-            assert "Provider blocked this file" in html
-            assert ">Retry<" in html
-            assert 'action="/plus/dashboard/download"' in html
-            assert "magnet:" not in html
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_dashboard_hides_retry_for_requested_download(self, client):
-        """Rows already handed to Real-Debrid should not show a retry button."""
-        try:
-            _signup_and_login(client)
-            with _connect_client_db(client) as conn:
-                conn.execute(
-                    """INSERT INTO anilist_plannings
-                       (user_id, anilist_id, title, status, download_status, download_info)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (
-                        _user_id(client),
-                        21,
-                        "One Piece",
-                        "PLANNING",
-                        "requested",
-                        "One Piece batch (26 GiB, 200s)",
-                    ),
-                )
-                conn.commit()
-
-            html = client.get("/plus/dashboard").text
-
-            assert "Downloading" in html
-            assert ">Retry<" not in html
-            assert ">Remove<" in html
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_double_plan_is_idempotent(self, client):
-        """Planning the same anime twice does not create duplicate rows."""
-        try:
-            _signup_and_login(client)
-
-            client.post(
-                "/plus/dashboard/plan",
-                data={"anilist_id": "21", "title": "One Piece"},
-            )
-            resp = client.post(
-                "/plus/dashboard/plan",
-                data={"anilist_id": "21", "title": "One Piece"},
-                follow_redirects=False,
-            )
-            assert resp.status_code == 302
-
-            # Dashboard should show the title exactly once
-            resp2 = client.get("/plus/dashboard")
-            assert resp2.text.count("One Piece") >= 1
-        finally:
-            os.environ.pop("OMAKASE_PLUS_INVITE", None)
-
-    def test_plan_requires_auth(self, client):
-        """POST /plus/dashboard/plan without login is rejected."""
-        resp = client.post(
-            "/plus/dashboard/plan",
-            data={"anilist_id": "1", "title": "Test"},
-            follow_redirects=False,
-        )
-        assert resp.status_code in (302, 401)
 
 
 class TestProductShell:

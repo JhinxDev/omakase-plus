@@ -1127,7 +1127,15 @@
           player.selectTextTrack(null);
           const { BitmapSubtitles } = await import('/plus/static/web-bitmap.js' + assetVersion);
           if (intent !== captionIntent || source !== session || leaving) return;
-          bitmapRenderer = new BitmapSubtitles({ video, container, url: track.url });
+          bitmapRenderer = new BitmapSubtitles({
+            video,
+            container,
+            url: track.url,
+            onStatus: ({ state, message }) => {
+              if (intent !== captionIntent || source !== session || leaving || customTextId !== id) return;
+              find('ass-status').textContent = message || (state === 'ready' ? 'Image subtitles ready.' : 'Preparing image subtitles…');
+            },
+          });
           customTextId = id;
         } else if (!await switchSubtitleRenderer(id, {
           nativeTracks: player.getTextTracks(), styledTracks: assTracks,
@@ -1137,7 +1145,7 @@
           loadStyled: async track => {
           if (!browserCapabilities(window, video).ass_supported) throw Object.assign(new Error('Styled subtitles unavailable'), { code: 'ass_display' });
           if (!captions) {
-            const { OmakaseASS } = await import('/plus/static/web-ass.js');
+            const { OmakaseASS } = await import('/plus/static/web-ass.js' + assetVersion);
             if (intent !== captionIntent || source !== session || leaving) return;
             const controller = new OmakaseASS({ video, container, onError: () => {
               if (captions === controller && source === session && !leaving) captionUnavailable();
@@ -1600,8 +1608,8 @@
       status.textContent = session.source?.mode === 'direct' ? 'Ready to play · Direct stream' : 'Ready to play';
       capture('seek');
       periodic = window.setInterval(() => { if (!video.paused && !video.ended) capture('progress'); }, 5000);
-      await playReady();
       if (currentAttempt === attempt && !leaving && session) void discoverCloudSubtitles(session);
+      await playReady();
     } catch (error) {
       if (currentAttempt === attempt && !leaving) {
         const version = session?.source?.media_version;

@@ -13,6 +13,7 @@ import httpx
 
 from omakase.plus.anilist import API_URL, USER_AGENT
 from omakase.plus.connections import movie_connections
+from omakase.plus.http_pool import client_scope
 from omakase.plus.movie_discovery import MovieDiscoveryService
 from omakase.plus.movies import MovieError, MovieService, _art
 from omakase.plus.product_views import plex_visible_counts
@@ -264,7 +265,10 @@ async def _anilist_query(client, query, variables=None, token=None):
 
 
 async def _read_watch_history(token, username):
-    async with asyncio.timeout(7), httpx.AsyncClient(timeout=5) as client:
+    async with (
+        asyncio.timeout(7),
+        client_scope(key="discover-hub", timeout=5, client_cls=httpx.AsyncClient) as client,
+    ):
         variables = {"name": username}
         if token:
             identity = await _anilist_query(client, "query { Viewer { id } }", token=token)
@@ -334,7 +338,10 @@ async def _refresh_catalog():
     global _catalog, _catalog_due
     _catalog_due = time.monotonic() + 60
     try:
-        async with asyncio.timeout(6), httpx.AsyncClient(timeout=5) as client:
+        async with (
+            asyncio.timeout(6),
+            client_scope(key="discover-hub", timeout=5, client_cls=httpx.AsyncClient) as client,
+        ):
             pages = await _anilist_query(client, _QUERY)
         cards = {}
         for name in ("trending", "finishedPopular", "finishedRated", "airing", "films"):

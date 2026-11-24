@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections import defaultdict
 from datetime import UTC, datetime
 from functools import cache
 from typing import Any
@@ -55,111 +54,6 @@ def clean_detail(value: object) -> str:
 
 def normalize_lane(value: str | None) -> str:
     return value if isinstance(value, str) and value in _LANES else "best_match"
-
-
-def dashboard_view(db, *, user_id: int, run: str = "") -> dict[str, Any]:
-    """Build the legacy dashboard context without HTTP or template concerns."""
-    profile = db.execute(
-        "SELECT content, updated_at FROM taste_profiles WHERE user_id = ?",
-        (user_id,),
-    ).fetchone()
-    recent_rows = db.execute(
-        """SELECT id, source, model, picks, lane, created_at
-           FROM run_history WHERE user_id = ?
-           ORDER BY id DESC LIMIT 10""",
-        (user_id,),
-    ).fetchall()
-    runs = [
-        {
-            "id": row["id"],
-            "source": row["source"],
-            "model": row["model"],
-            "lane": row["lane"],
-            "picks": _json_list(row["picks"]),
-            "created_at": row["created_at"],
-        }
-        for row in recent_rows
-    ]
-
-    current_run_picks: list[dict] = []
-    current_run_id = 0
-    current_run_source = ""
-    current_run_lane = "best_match"
-    if run:
-        try:
-            run_id = int(run)
-        except (TypeError, ValueError):
-            run_id = 0
-        if run_id > 0:
-            row = db.execute(
-                """SELECT id, source, model, picks, lane
-                   FROM run_history WHERE id = ? AND user_id = ?""",
-                (run_id, user_id),
-            ).fetchone()
-            if row is not None:
-                current_run_id = int(row["id"])
-                current_run_source = str(row["source"])
-                current_run_lane = normalize_lane(row["lane"])
-                for raw in _json_list(row["picks"]):
-                    if not isinstance(raw, dict):
-                        continue
-                    pick = dict(raw)
-                    anilist_id = recommendation_anilist_id(pick, current_run_source)
-                    pick["anilist_id"] = anilist_id
-                    pick["media_id"] = _positive_int(pick.get("media_id")) or anilist_id
-                    current_run_picks.append(pick)
-
-    planning_rows = db.execute(
-        """SELECT id, anilist_id, title, added_at, status AS planning_status,
-                  download_status, download_info, rd_torrent_id
-           FROM anilist_plannings
-           WHERE user_id = ?
-           ORDER BY added_at DESC
-           LIMIT 50""",
-        (user_id,),
-    ).fetchall()
-    plannings = [
-        {
-            "id": int(row["id"]),
-            "anilist_id": int(row["anilist_id"]),
-            "title": row["title"],
-            "added_at": row["added_at"],
-            "planning_status": row["planning_status"],
-            "download_status": row["download_status"] or "",
-            "download_info": row["download_info"] or "",
-            "rd_torrent_id": row["rd_torrent_id"] or "",
-            "download_attempts": [],
-        }
-        for row in planning_rows
-    ]
-    planned_ids = {item["anilist_id"] for item in plannings}
-    _attach_download_attempts(db, user_id=user_id, plannings=plannings)
-    monitor_jobs = library_jobs(db, user_id)
-    summary = {
-        "queue_total": len(plannings),
-        "queue_active": sum(item["download_status"] == "requested" for item in plannings),
-        "queue_attention": sum(
-            item["download_status"] in {"not_found", "error", "rd_provider_block", "no_rd_key"}
-            for item in plannings
-        ),
-        "runs_total": len(runs),
-        "profile_saved": bool(profile and str(profile["content"]).strip()),
-        "monitor_total": len(monitor_jobs),
-        "monitor_active": sum(item["active"] for item in monitor_jobs),
-    }
-    return {
-        "taste_profile": profile["content"] if profile else "",
-        "taste_profile_updated": profile["updated_at"] if profile else "",
-        "runs": runs,
-        "current_run_picks": current_run_picks,
-        "current_run_id": current_run_id,
-        "current_run_source": current_run_source,
-        "current_run_lane": current_run_lane,
-        "plannings": plannings,
-        "planned_ids": planned_ids,
-        "dashboard_summary": summary,
-        "monitor_jobs": monitor_jobs,
-    }
 
 
 def cached_title_languages(title):
@@ -252,6 +146,7 @@ def library_titles(
     query: str = "",
     include_removed: bool = False,
     library_scope=None,
+    monitor_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """Return stable per-title readiness cards with explicit filters."""
     from omakase.plus.language_publication import LANGUAGE_PUBLICATION_QUALIFIED
@@ -326,12 +221,57 @@ def library_titles(
             (user_id,),
         )
     }
-    monitors = db.execute(
-        """SELECT * FROM media_monitors
-           WHERE user_id = ?
-           ORDER BY active DESC, title COLLATE NOCASE, id""",
-        (user_id,),
-    ).fetchall()
+    if monitor_id is not None:
+        monitors = db.execute(
+            """SELECT * FROM media_monitors
+               WHERE user_id = ? AND id = ?
+               ORDER BY active DESC, title COLLATE NOCASE, id""",
+            (user_id, monitor_id),
+        ).fetchall()
+    else:
+        monitors = db.execute(
+            """SELECT * FROM media_monitors
+               WHERE user_id = ?
+               ORDER BY active DESC, title COLLATE NOCASE, id""",
+            (user_id,),
+        ).fetchall()
+
+    monitor_ids = [int(m["id"]) for m in monitors]
+    assets_by_monitor: dict[int, list] = {}
+    removals_by_monitor: dict[int, Any] = {}
+    cleanup_blocked_ids: set[int] = set()
+    for offset in range(0, len(monitor_ids), 200):
+        chunk = monitor_ids[offset : offset + 200]
+        placeholders = ",".join("?" for _ in chunk)
+        for asset in db.execute(
+            f"""SELECT asset.*, COALESCE(provider.kind, 'realdebrid') AS provider_kind,
+                       COALESCE(provider.label, 'Real-Debrid') AS provider_label
+                FROM media_assets AS asset
+                LEFT JOIN media_providers AS provider ON provider.id = asset.provider_id
+                WHERE asset.monitor_id IN ({placeholders})
+                ORDER BY asset.monitor_id, CASE asset.status
+                    WHEN 'downloaded' THEN 0
+                    WHEN 'downloading' THEN 1
+                    WHEN 'queued' THEN 2
+                    WHEN 'quarantined' THEN 3
+                    ELSE 4 END,
+                    asset.id DESC""",
+            chunk,
+        ).fetchall():
+            assets_by_monitor.setdefault(int(asset["monitor_id"]), []).append(asset)
+        for removal_row in db.execute(
+            f"""SELECT monitor_id, status, detail, scope
+                FROM media_title_removals
+                WHERE monitor_id IN ({placeholders})
+                ORDER BY monitor_id, id DESC""",
+            chunk,
+        ).fetchall():
+            removals_by_monitor.setdefault(int(removal_row["monitor_id"]), removal_row)
+        for block_row in db.execute(
+            f"SELECT monitor_id FROM completion_plex_cleanup_blocks WHERE monitor_id IN ({placeholders})",
+            chunk,
+        ).fetchall():
+            cleanup_blocked_ids.add(int(block_row["monitor_id"]))
 
     @cache
     def read_receipt():
@@ -349,21 +289,7 @@ def library_titles(
             continue
         if content_type == "series" and is_movie:
             continue
-        assets = db.execute(
-            """SELECT asset.*, COALESCE(provider.kind, 'realdebrid') AS provider_kind,
-                      COALESCE(provider.label, 'Real-Debrid') AS provider_label
-               FROM media_assets AS asset
-               LEFT JOIN media_providers AS provider ON provider.id = asset.provider_id
-               WHERE asset.monitor_id = ?
-               ORDER BY CASE asset.status
-                   WHEN 'downloaded' THEN 0
-                   WHEN 'downloading' THEN 1
-                   WHEN 'queued' THEN 2
-                   WHEN 'quarantined' THEN 3
-                   ELSE 4 END,
-                   asset.id DESC""",
-            (monitor["id"],),
-        ).fetchall()
+        assets = assets_by_monitor.get(int(monitor["id"]), [])
         provider_kinds = {str(asset["provider_kind"]) for asset in assets}
         if provider != "all" and provider not in provider_kinds:
             continue
@@ -418,13 +344,7 @@ def library_titles(
         if publication_pending:
             readiness = "acquiring"
             status_label = f"Publishing to Plex · {plex_visible} of {required} visible"
-        removal_row = db.execute(
-            """SELECT status, detail, scope
-               FROM media_title_removals
-               WHERE monitor_id = ?
-               ORDER BY id DESC LIMIT 1""",
-            (monitor["id"],),
-        ).fetchone()
+        removal_row = removals_by_monitor.get(int(monitor["id"]))
         removal_status = str(removal_row["status"]) if removal_row is not None else ""
         # Full media cleanup retains its existing Activity-only behavior. Plex-only
         # withdrawals remain in Completed so watched history and ratings are usable.
@@ -467,12 +387,7 @@ def library_titles(
         )
         monitor_total = int(monitor["expected_episodes"] or 0)
         episode_total = max(stored_total or 0, monitor_total, required) or None
-        cleanup_blocked = (
-            db.execute(
-                "SELECT 1 FROM completion_plex_cleanup_blocks WHERE monitor_id=?", (monitor["id"],)
-            ).fetchone()
-            is not None
-        )
+        cleanup_blocked = int(monitor["id"]) in cleanup_blocked_ids
         resurfaced = bool(
             watch_status == "completed"
             and stored_total
@@ -706,7 +621,9 @@ def title_detail(db, *, user_id: int, monitor_id: int) -> dict[str, Any] | None:
     summary = next(
         (
             item
-            for item in library_titles(db, user_id=user_id, lifecycle="all", include_removed=True)
+            for item in library_titles(
+                db, user_id=user_id, lifecycle="all", include_removed=True, monitor_id=monitor_id
+            )
             if item["id"] == monitor_id
         ),
         None,
@@ -1661,75 +1578,6 @@ def recommendation_anilist_id(pick: dict, source: str) -> int | None:
         return None
     match = _ANILIST_ID_RE.search(url)
     return int(match.group(1)) if match else None
-
-
-def _attach_download_attempts(db, *, user_id: int, plannings: list[dict]) -> None:
-    planning_ids = [item["id"] for item in plannings]
-    if not planning_ids:
-        return
-    placeholders = ",".join("?" for _ in planning_ids)
-    rows = db.execute(
-        f"""SELECT anilist_planning_id, request_id, candidate_rank, total_candidates,
-                   torrent_title, torrent_hash, seeders, size_display, is_batch,
-                   status, http_status, error_code, detail, rd_torrent_id, created_at
-            FROM download_attempts
-            WHERE user_id = ? AND anilist_planning_id IN ({placeholders})
-            ORDER BY anilist_planning_id, created_at DESC, id DESC""",
-        (user_id, *planning_ids),
-    ).fetchall()
-    attempts: dict[int, list[dict]] = defaultdict(list)
-    for row in rows:
-        items = attempts[int(row["anilist_planning_id"])]
-        if len(items) >= 5:
-            continue
-        items.append(
-            {
-                "request_id": row["request_id"],
-                "candidate_rank": row["candidate_rank"],
-                "total_candidates": row["total_candidates"],
-                "torrent_title": row["torrent_title"],
-                "torrent_hash": row["torrent_hash"],
-                "seeders": row["seeders"],
-                "size_display": row["size_display"],
-                "is_batch": bool(row["is_batch"]),
-                "status": row["status"],
-                "status_label": _attempt_status_label(row["status"]),
-                "badge_class": _attempt_badge(row["status"]),
-                "response_label": _attempt_response(row),
-                "detail": row["detail"],
-                "rd_torrent_id": row["rd_torrent_id"],
-                "created_at": row["created_at"],
-            }
-        )
-    for planning in plannings:
-        planning["download_attempts"] = attempts[planning["id"]]
-
-
-def _attempt_status_label(status: str) -> str:
-    return {
-        "provider_block": "Provider blocked",
-        "rd_add_failed": "Add failed",
-        "select_failed": "Select failed",
-        "selected": "Selected",
-    }.get(status, status.replace("_", " ").title())
-
-
-def _attempt_badge(status: str) -> str:
-    return {
-        "provider_block": "badge-yellow",
-        "rd_add_failed": "badge-red",
-        "select_failed": "badge-red",
-        "selected": "badge-green",
-    }.get(status, "badge-gray")
-
-
-def _attempt_response(row) -> str:
-    parts = []
-    if row["http_status"] is not None:
-        parts.append(str(row["http_status"]))
-    if row["error_code"]:
-        parts.append(str(row["error_code"]))
-    return " ".join(parts)
 
 
 def _readiness_state(

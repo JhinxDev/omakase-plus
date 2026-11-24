@@ -1,4 +1,5 @@
 import AVKit
+import Combine
 import CoreMedia
 import QualificationCore
 import SwiftUI
@@ -31,19 +32,22 @@ struct PlayerScreen: View {
                              dismiss: dismiss).ignoresSafeArea()
             }
             if showsDiagnostics {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(session.directEngine == nil ? "QUALIFICATION | AVKit only" : "QUALIFICATION | VLCKit direct")
-                        .font(.caption.bold())
-                    Text(session.status).font(.caption)
-                    Text("\(PlaybackSession.clock(session.position)) / \(PlaybackSession.clock(session.duration))")
-                        .font(.caption.monospacedDigit())
-                }
-                .padding(16)
-                .background(Color.black.opacity(0.7))
-                .padding(40)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+                PlayerDiagnosticsOverlay(
+                    direct: session.directEngine != nil,
+                    status: session.status,
+                    clock: session.clock
+                )
             }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            UpNextCountdownOverlay(
+                clock: session.clock,
+                canPlayNext: session.canPlayNext,
+                hasNextAction: playNext != nil,
+                openingNext: nextTask != nil,
+                nextError: nextError,
+                playNext: openNext
+            )
         }
         .overlay(alignment: .topTrailing) {
             if nextTask != nil || nextError {
@@ -85,6 +89,130 @@ struct PlayerScreen: View {
             } catch {
                 if !Task.isCancelled && !(error is CancellationError) { nextError = true }
             }
+        }
+    }
+}
+
+@MainActor
+private struct PlayerDiagnosticsOverlay: View {
+    let direct: Bool
+    let status: String
+    @ObservedObject var clock: PlaybackClock
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(direct ? "QUALIFICATION | VLCKit direct" : "QUALIFICATION | AVKit only")
+                .font(.caption.bold())
+            Text(status).font(.caption)
+            Text("\(PlaybackSession.clock(clock.position)) / \(PlaybackSession.clock(clock.duration))")
+                .font(.caption.monospacedDigit())
+        }
+        .padding(16)
+        .background(Color.black.opacity(0.7))
+        .padding(40)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+@MainActor
+private struct UpNextCountdownOverlay: View {
+    @ObservedObject var clock: PlaybackClock
+    let canPlayNext: Bool
+    let hasNextAction: Bool
+    let openingNext: Bool
+    let nextError: Bool
+    let playNext: () -> Void
+
+    @State private var dismissed = false
+    @State private var remaining: Int?
+    @FocusState private var focused: Action?
+
+    private enum Action: Hashable { case next, cancel }
+
+    private var active: Bool {
+        canPlayNext && hasNextAction && !openingNext && !nextError && !dismissed
+            && PlaybackSession.shouldSuggestNext(position: clock.position, duration: clock.duration)
+    }
+
+    var body: some View {
+        Group {
+            if active, let remaining {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Up Next in \(remaining)s")
+                        .font(.headline.monospacedDigit())
+                        .foregroundStyle(.white)
+                    HStack(spacing: 14) {
+                        Button("Play Next") {
+                            self.remaining = nil
+                            dismissed = true
+                            playNext()
+                        }
+                        .buttonStyle(PlayerControlStyle(focused: focused == .next))
+                        .focusEffectDisabled()
+                        .focused($focused, equals: .next)
+                        .accessibilityIdentifier("player.up-next.play")
+
+                        Button("Cancel") {
+                            self.remaining = nil
+                            dismissed = true
+                        }
+                        .buttonStyle(PlayerControlStyle(focused: focused == .cancel))
+                        .focusEffectDisabled()
+                        .focused($focused, equals: .cancel)
+                        .accessibilityIdentifier("player.up-next.cancel")
+                    }
+                }
+                .padding(24)
+                .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 18))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18).strokeBorder(.white.opacity(0.18), lineWidth: 1)
+                }
+                .padding(48)
+                .focusSection()
+            }
+        }
+        .onChange(of: clock.duration) { _, _ in
+            dismissed = false
+            remaining = nil
+        }
+        .task(id: active) {
+            guard active else {
+                remaining = nil
+                return
+            }
+            for step in stride(from: 10, through: 1, by: -1) {
+                guard !Task.isCancelled, active else {
+                    remaining = nil
+                    return
+                }
+                remaining = step
+                try? await Task.sleep(for: .seconds(1))
+            }
+            guard !Task.isCancelled, active else { return }
+            remaining = nil
+            dismissed = true
+            playNext()
+        }
+    }
+}
+
+@MainActor
+private struct DirectTransportProgressView: View {
+    @ObservedObject var clock: PlaybackClock
+
+    var body: some View {
+        if clock.duration > 0 {
+            HStack(spacing: 16) {
+                Text(PlaybackSession.clock(clock.position))
+                ProgressView(value: min(max(0, clock.position), clock.duration),
+                             total: clock.duration)
+                    .tint(.white)
+                    .accessibilityLabel("Playback progress")
+                Text(PlaybackSession.clock(clock.duration))
+            }
+            .font(.system(size: 22, weight: .medium).monospacedDigit())
+            .foregroundStyle(.white.opacity(0.86))
         }
     }
 }
@@ -164,18 +292,7 @@ private struct DirectPlayerControls: View {
 
     private var transport: some View {
         VStack(spacing: 16) {
-            if session.duration > 0 {
-                HStack(spacing: 16) {
-                    Text(PlaybackSession.clock(session.position))
-                    ProgressView(value: min(max(0, session.position), session.duration),
-                                 total: session.duration)
-                        .tint(.white)
-                        .accessibilityLabel("Playback progress")
-                    Text(PlaybackSession.clock(session.duration))
-                }
-                .font(.system(size: 22, weight: .medium).monospacedDigit())
-                .foregroundStyle(.white.opacity(0.86))
-            }
+            DirectTransportProgressView(clock: session.clock)
 
             HStack(spacing: 14) {
                 control(.back, "Back 10 seconds", icon: "gobackward.10", width: 70) {
@@ -446,6 +563,7 @@ struct NativePlayer: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         if controller.player !== session.player { controller.player = session.player }
+        context.coordinator.observe(clock: session.clock, session: session, on: controller)
         let nearEnd = PlaybackSession.shouldSuggestNext(position: session.position, duration: session.duration)
         context.coordinator.updateNext(on: controller, action: nextAction, opening: openingNext)
         context.coordinator.updateContext(on: controller, session: session, nearEnd: nearEnd)
@@ -455,6 +573,7 @@ struct NativePlayer: UIViewControllerRepresentable {
 
     static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
         coordinator.cancelSubtitleDiscovery()
+        coordinator.cancelClockObservation()
         controller.player?.pause()
         controller.player = nil
         controller.delegate = nil
@@ -473,6 +592,29 @@ struct NativePlayer: UIViewControllerRepresentable {
         private var originalTextStyleRules: [AVTextStyleRule]?
         private var subtitlePosition = SubtitlePosition.saved
         private var mediaInformation: LiveMediaInformation?
+        private var clockCancellable: AnyCancellable?
+        private weak var observedClock: PlaybackClock?
+        private weak var observedController: AVPlayerViewController?
+
+        func observe(clock: PlaybackClock, session: PlaybackSession, on controller: AVPlayerViewController) {
+            guard observedClock !== clock || observedController !== controller else { return }
+            observedClock = clock
+            observedController = controller
+            clockCancellable = clock.$position
+                .receive(on: RunLoop.main)
+                .sink { [weak self, weak controller, weak session] pos in
+                    guard let self, let controller, let session else { return }
+                    let nearEnd = PlaybackSession.shouldSuggestNext(position: pos, duration: clock.duration)
+                    self.updateContext(on: controller, session: session, nearEnd: nearEnd)
+                }
+        }
+
+        func cancelClockObservation() {
+            clockCancellable?.cancel()
+            clockCancellable = nil
+            observedClock = nil
+            observedController = nil
+        }
 
         func updateMediaInformation(_ info: LiveMediaInformation?, on controller: AVPlayerViewController) {
             guard info != mediaInformation else { return }

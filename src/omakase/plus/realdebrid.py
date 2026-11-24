@@ -15,6 +15,7 @@ from pathlib import PurePosixPath
 
 import httpx
 
+from omakase.plus.http_pool import client_scope
 from omakase.plus.provider_limits import ProviderRateLimit, retry_delay
 
 RD_API = "https://api.real-debrid.com/rest/1.0"
@@ -105,7 +106,9 @@ class RealDebridClient:
         Returns the torrent ID on success, or ``None`` on failure.
         Raises ``RealDebridProviderBlock`` for known provider-blocked hashes.
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with client_scope(
+            key="realdebrid", timeout=self.timeout, client_cls=httpx.AsyncClient
+        ) as client:
             self._before_request()
             resp = await client.post(
                 f"{RD_API}/torrents/addMagnet",
@@ -123,7 +126,9 @@ class RealDebridClient:
 
     async def select_files(self, torrent_id: str, files: str = "all") -> bool:
         """Select files to download from a torrent. Default: all files."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with client_scope(
+            key="realdebrid", timeout=self.timeout, client_cls=httpx.AsyncClient
+        ) as client:
             self._before_request()
             resp = await client.post(
                 f"{RD_API}/torrents/selectFiles/{torrent_id}",
@@ -153,7 +158,9 @@ class RealDebridClient:
         ]
         if not links:
             return False
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with client_scope(
+            key="realdebrid", timeout=self.timeout, client_cls=httpx.AsyncClient
+        ) as client:
             for link in links:
                 # Leave API-rate headroom for inventory calls and other consumers.
                 await asyncio.sleep(0.4)
@@ -189,7 +196,9 @@ class RealDebridClient:
         """Get one torrent. Removal callers can require a definite 404 for absence."""
         if require_definite_absence:
             return await self._exact_torrent(torrent_id)
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with client_scope(
+            key="realdebrid", timeout=self.timeout, client_cls=httpx.AsyncClient
+        ) as client:
             self._before_request()
             resp = await client.get(
                 f"{RD_API}/torrents/info/{torrent_id}",
@@ -205,8 +214,13 @@ class RealDebridClient:
             raise ValueError("Invalid Real-Debrid item ID")
         url = f"{RD_API}/torrents/info/{torrent_id}"
         self._before_request()
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=False, trust_env=False
+        async with client_scope(
+            key="realdebrid",
+            timeout=self.timeout,
+            follow_redirects=False,
+            trust_env=False,
+            client_cls=httpx.AsyncClient,
+            client_kwargs={"follow_redirects": False, "trust_env": False},
         ) as client:
             async with client.stream("GET", url, headers=self._headers()) as response:
                 self._check_response(response)
@@ -228,7 +242,9 @@ class RealDebridClient:
     async def instant_available(self, torrent_hash: str) -> bool | None:
         """Check RD cache state without creating or selecting a torrent."""
         normalized_hash = (torrent_hash or "").strip().upper()
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with client_scope(
+            key="realdebrid", timeout=self.timeout, client_cls=httpx.AsyncClient
+        ) as client:
             self._before_request()
             resp = await client.get(
                 f"{RD_API}/torrents/instantAvailability/{normalized_hash}",
@@ -248,7 +264,9 @@ class RealDebridClient:
 
     async def list_torrents(self) -> list[RDTorrent]:
         """List all active torrents."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with client_scope(
+            key="realdebrid", timeout=self.timeout, client_cls=httpx.AsyncClient
+        ) as client:
             self._before_request()
             resp = await client.get(
                 f"{RD_API}/torrents",
@@ -271,7 +289,14 @@ class RealDebridClient:
             if not re.fullmatch(r"[A-Za-z0-9]{3,64}", torrent_id):
                 raise ValueError("Invalid Real-Debrid item ID")
             options = {"follow_redirects": False, "trust_env": False}
-        async with httpx.AsyncClient(timeout=self.timeout, **options) as client:
+        async with client_scope(
+            key="realdebrid",
+            timeout=self.timeout,
+            follow_redirects=not require_exact_id,
+            trust_env=not require_exact_id,
+            client_cls=httpx.AsyncClient,
+            client_kwargs=options or None,
+        ) as client:
             self._before_request()
             resp = await client.delete(
                 f"{RD_API}/torrents/delete/{torrent_id}",

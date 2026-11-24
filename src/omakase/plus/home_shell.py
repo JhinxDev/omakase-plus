@@ -800,13 +800,17 @@ def tv_signals(
            LIMIT 200""",
         (user_id, library_id, library_id),
     ).fetchall()
+    tmdb_ids = [
+        int(str(row["canonical_id"])) for row in rows if str(row["canonical_id"] or "").isdigit()
+    ]
+    states = _tv_episode_states(db, user_id=user_id, tmdb_ids=tmdb_ids)
     signals: list[ContinueSignal] = []
     for row in rows:
         tmdb_id = str(row["canonical_id"] or "")
         if not tmdb_id.isdigit():
             continue
         metadata = _json_dict(row["metadata_json"])
-        watched, lineup = _tv_episode_state(db, user_id=user_id, tmdb_id=int(tmdb_id))
+        watched, lineup = states.get(int(tmdb_id), ({}, []))
         season, episode = int(row["season_number"]), int(row["episode_number"])
         resume = _resumable(row["position_seconds"], row["duration_seconds"])
         completed = not resume and bool(watched.get((season, episode)))
@@ -860,6 +864,8 @@ def _tv_watched_signals(db, *, user_id: int, moment: str) -> list[ContinueSignal
            LIMIT 100""",
         (user_id,),
     ).fetchall()
+    tmdb_ids = [int(row["tmdb_id"]) for row in rows]
+    states = _tv_episode_states(db, user_id=user_id, tmdb_ids=tmdb_ids)
     signals: list[ContinueSignal] = []
     for row in rows:
         tmdb_id = int(row["tmdb_id"])
@@ -867,7 +873,7 @@ def _tv_watched_signals(db, *, user_id: int, moment: str) -> list[ContinueSignal
         season, episode = divmod(high, 10000)
         if episode < 1 or season < 1:
             continue
-        watched, lineup = _tv_episode_state(db, user_id=user_id, tmdb_id=tmdb_id)
+        watched, lineup = states.get(tmdb_id, ({}, []))
         next_episode = _next_episode(lineup, season, episode, moment=moment)
         if next_episode is None:
             # Caught up: the show is hidden until the next episode is playable.
@@ -914,25 +920,37 @@ def _tv_watched_signals(db, *, user_id: int, moment: str) -> list[ContinueSignal
     return signals
 
 
+def _tv_episode_states(db, *, user_id: int, tmdb_ids: list[int]) -> dict[int, tuple[dict, list]]:
+    """Batch-load watched flags and playable lineups for many TV shows."""
+    unique_ids = sorted(set(tmdb_ids))
+    if not unique_ids:
+        return {}
+    result: dict[int, tuple[dict[tuple[int, int], bool], list[tuple[int, int, str]]]] = {}
+    for offset in range(0, len(unique_ids), 200):
+        chunk = unique_ids[offset : offset + 200]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = db.execute(
+            f"""SELECT tmdb_id, season_number, episode_number, watched, plex_present, metadata_json
+               FROM tv_episodes WHERE user_id = ? AND tmdb_id IN ({placeholders})
+               ORDER BY tmdb_id, season_number, episode_number""",
+            (user_id, *chunk),
+        ).fetchall()
+        for row in rows:
+            show_id = int(row["tmdb_id"])
+            watched, lineup = result.setdefault(show_id, ({}, []))
+            key = (int(row["season_number"]), int(row["episode_number"]))
+            watched[key] = bool(row["watched"])
+            metadata = _json_dict(row["metadata_json"])
+            air_date = str(metadata.get("air_date") or "")
+            lineup.append(
+                (key[0], key[1], air_date if bool(row["plex_present"]) and not watched[key] else "")
+            )
+    return result
+
+
 def _tv_episode_state(db, *, user_id: int, tmdb_id: int):
     """Watched flags plus the playable lineup, ordered by season and episode."""
-    rows = db.execute(
-        """SELECT season_number, episode_number, watched, plex_present, metadata_json
-           FROM tv_episodes WHERE user_id = ? AND tmdb_id = ?
-           ORDER BY season_number, episode_number""",
-        (user_id, tmdb_id),
-    ).fetchall()
-    watched: dict[tuple[int, int], bool] = {}
-    lineup: list[tuple[int, int, str]] = []
-    for row in rows:
-        key = (int(row["season_number"]), int(row["episode_number"]))
-        watched[key] = bool(row["watched"])
-        metadata = _json_dict(row["metadata_json"])
-        air_date = str(metadata.get("air_date") or "")
-        lineup.append(
-            (key[0], key[1], air_date if bool(row["plex_present"]) and not watched[key] else "")
-        )
-    return watched, lineup
+    return _tv_episode_states(db, user_id=user_id, tmdb_ids=[tmdb_id]).get(tmdb_id, ({}, []))
 
 
 def _next_episode(

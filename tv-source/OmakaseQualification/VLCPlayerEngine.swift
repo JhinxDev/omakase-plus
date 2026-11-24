@@ -139,14 +139,23 @@ final class VLCPlayerEngine: NSObject, PlayerEngine, VLCMediaPlayerDelegate {
     func play() {
         // libVLC reports transport changes through the delegate; state is not
         // invented here.
+        #if canImport(UIKit)
+        UIApplication.shared.isIdleTimerDisabled = true
+        #endif
         player.play()
     }
 
     func pause() {
+        #if canImport(UIKit)
+        UIApplication.shared.isIdleTimerDisabled = false
+        #endif
         player.pause()
     }
 
     func stop() {
+        #if canImport(UIKit)
+        UIApplication.shared.isIdleTimerDisabled = false
+        #endif
         finishPendingSeek()
         player.stop()
         player.delegate = nil

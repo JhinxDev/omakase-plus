@@ -23,6 +23,7 @@ from xml.etree import ElementTree
 import httpx
 
 from omakase.plus import movies_store as store
+from omakase.plus.http_pool import client_scope
 from omakase.plus.outbound import OutboundError, Resolver, pin_destination
 
 _OPERATION_TIMEOUT = 20.0
@@ -431,7 +432,9 @@ class MovieService:
             url += "?" + urlencode(params, doseq=True, quote_via=quote)
             params = None
         try:
-            async with httpx.AsyncClient(
+            async with client_scope(
+                key="movies",
+                sni_hostname=destination.sni_hostname,
                 timeout=httpx.Timeout(10.0, connect=5.0),
                 follow_redirects=False,
                 trust_env=False,
@@ -1404,7 +1407,9 @@ class MovieService:
         headers["Range"] = "bytes=0-65535"
         headers["Accept-Encoding"] = "identity"
         try:
-            async with httpx.AsyncClient(
+            async with client_scope(
+                key="movies-probe",
+                sni_hostname=destination.sni_hostname,
                 timeout=httpx.Timeout(15.0, connect=5.0),
                 trust_env=False,
                 follow_redirects=False,

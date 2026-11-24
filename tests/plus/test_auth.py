@@ -196,12 +196,12 @@ class TestSignupAndLogin:
             assert resp2.headers["location"] == "/plus/home"
             assert "omakase_session" in resp2.cookies
 
-            # Dashboard should be accessible and show real content
+            # Dashboard route redirects to Home with real authenticated shell
             resp3 = client.get("/plus/dashboard")
             assert resp3.status_code == 200
             assert "Omakase Plus" in resp3.text
             assert "newuser@example.com" in resp3.text
-            assert "Taste Profile" in resp3.text
+            assert "Continue Watching" in resp3.text
         finally:
             os.environ.pop("OMAKASE_PLUS_INVITE", None)
 

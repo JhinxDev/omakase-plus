@@ -352,12 +352,15 @@ def test_discover_recommendation_grid_keeps_order_copy_and_score_in_their_column
     assert any("min-width: 0" in rule for rule in copy_rules)
 
 
-def test_legacy_dashboard_remains_a_hidden_compatibility_surface(client):
+def test_legacy_dashboard_redirects_to_home_and_is_not_linked(client):
     _signup(client)
 
+    redirect = client.get("/plus/dashboard", follow_redirects=False)
     dashboard = client.get("/plus/dashboard")
     home = client.get("/plus/home")
 
+    assert redirect.status_code == 307
+    assert redirect.headers["location"] == "/plus/home"
     assert dashboard.status_code == 200
     assert 'href="/plus/dashboard"' not in home.text
     assert 'href="/plus/add"' not in home.text

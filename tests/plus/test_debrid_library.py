@@ -666,3 +666,138 @@ def test_warm_text_subtitles_load_without_waiting_for_the_playback_pause(tmp_pat
         subs.SubtitleTrack(4, "fr", "French"),
     ]
     assert subs.SubtitleCache._load_cached(empty, workdir) is False
+
+
+def test_downloads_cache_ttl_and_unrestrict_invalidation_plus_lazy_transcode():
+    now = 100.0
+    downloads_calls = 0
+    transcode_calls = 0
+
+    def clock():
+        return now
+
+    def handler(request):
+        nonlocal downloads_calls, transcode_calls
+        path = request.url.path.removeprefix("/rest/1.0/")
+        if path == "downloads":
+            downloads_calls += 1
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "dl1",
+                        "link": "https://real-debrid.com/d/secret1",
+                        "filename": "Episode.mkv",
+                        "filesize": 120,
+                        "streamable": 1,
+                        "download": "https://3.stream.real-debrid.com/d/secret1/Episode.mkv",
+                    }
+                ],
+                headers={"X-Total-Count": "1"},
+            )
+        if path == "torrents/info/tor1":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "tor1",
+                    "status": "downloaded",
+                    "files": [{"id": 1, "path": "/Episode.mkv", "bytes": 120, "selected": 1}],
+                    "links": ["https://real-debrid.com/d/secret1"],
+                },
+            )
+        if path == "streaming/mediaInfos/dl1":
+            return httpx.Response(200, json={"duration": 1440, "size": 120})
+        if path == "streaming/transcode/dl1":
+            transcode_calls += 1
+            return httpx.Response(
+                200,
+                json={
+                    "apple": {
+                        "high": "https://3.stream.real-debrid.com/high.m3u8",
+                        "original": "https://3.stream.real-debrid.com/orig.m3u8",
+                    }
+                },
+            )
+        if path == "unrestrict/link":
+            return httpx.Response(200, json={"filename": "Episode.mkv", "filesize": 120})
+        return httpx.Response(404)
+
+    async def run():
+        nonlocal now
+        library = DebridLibrary(httpx.MockTransport(handler), clock=clock)
+        first = await library.source("owner-token", "t-tor1-1", need_transcode=False)
+        assert first.download_id == "dl1"
+        assert first.playlist == "" and first.playlist_alt == ""
+        assert downloads_calls == 1 and transcode_calls == 0
+
+        # Within 20s TTL, _recent_downloads hits cache.
+        now = 115.0
+        second = await library.source("owner-token", "t-tor1-1", need_transcode=False)
+        assert second.download_id == "dl1"
+        assert downloads_calls == 1 and transcode_calls == 0
+
+        # Lazy transcode resolution fills playlists without calling /downloads again.
+        resolved = await library.resolve_playlists("owner-token", first)
+        assert resolved.playlist == "https://3.stream.real-debrid.com/high.m3u8"
+        assert resolved.playlist_alt == "https://3.stream.real-debrid.com/orig.m3u8"
+        assert transcode_calls == 1
+
+        # Expiry (>20s) refreshes /downloads, and unrestrict/link invalidates cache.
+        now = 125.0
+        await library._recent_downloads("owner-token")
+        assert downloads_calls == 2
+        await library._api("owner-token", "unrestrict/link", data={"link": "x"})
+        await library._recent_downloads("owner-token")
+        assert downloads_calls == 3
+
+    asyncio.run(run())
+
+
+def test_debrid_streams_isolates_concurrent_pumps_and_cancels_evicted_warm(monkeypatch):
+    def handler(_request):
+        return httpx.Response(200, content=b"segment-bytes")
+
+    async def slow_read(*args, **kwargs):
+        await asyncio.sleep(10)
+        return b"seg", 200, None
+
+    async def run():
+        streams = DebridStreams(httpx.MockTransport(handler))
+        monkeypatch.setattr(streams, "_read", slow_read)
+
+        # Bounded warm eviction cancels the oldest pending task instead of leaking it.
+        tasks = []
+        for idx in range(9):
+            media = DebridMedia(b"", (f"https://3.stream.real-debrid.com/warm-{idx}.ts",))
+            streams._start_warm(media)
+            tasks.append((idx, list(streams.warm.values())[-1]))
+        await asyncio.sleep(0)
+        assert len(streams.warm) == 8
+        assert tasks[0][1].cancelled() or tasks[0][1].cancelling()
+        for _, task in list(streams.warm.items()):
+            task.cancel()
+        await asyncio.gather(*(t for _, t in tasks), return_exceptions=True)
+
+        # Concurrent sessions get distinct bounded pump entries instead of clobbering one global.
+        media_a = DebridMedia(
+            b"",
+            tuple(f"https://3.stream.real-debrid.com/a-{i}.ts" for i in range(4)),
+        )
+        media_b = DebridMedia(
+            b"",
+            tuple(f"https://3.stream.real-debrid.com/b-{i}.ts" for i in range(4)),
+        )
+        streams._advance(media_a, 0)
+        streams._advance(media_b, 0)
+        assert len(streams.pumps) == 2
+        assert streams.pumps[media_a.segments[0]]["segments"] is media_a.segments
+        assert streams.pumps[media_b.segments[0]]["segments"] is media_b.segments
+        for state in list(streams.pumps.values()):
+            if state["task"] is not None:
+                state["task"].cancel()
+        await asyncio.gather(
+            *(s["task"] for s in streams.pumps.values() if s["task"] is not None),
+            return_exceptions=True,
+        )
+
+    asyncio.run(run())

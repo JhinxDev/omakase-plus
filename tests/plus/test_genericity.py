@@ -99,7 +99,6 @@ TITLE_DEBT_CEILING: Mapping[tuple[str, str], int] = {
     ("omakase/plus/publication_episodes.py", "slime"): 8,
     ("omakase/plus/publication_episodes.py", "tensei shitara"): 1,
     ("omakase/plus/publication_episodes.py", "tybw"): 6,
-    ("omakase/plus/templates/dashboard.html", "my hero academia"): 1,
     ("omakase/plus/templates/discover.html", "frieren"): 1,
 }
 
@@ -129,7 +128,6 @@ DECLARED_PROVIDER_DOMAINS: Mapping[str, Mapping[str, str]] = {
         "omakase/plus/product_views.py": "user facing AniList link",
         "omakase/plus/templates/_discover_rows.html": "user facing AniList link",
         "omakase/plus/templates/catalog_anime.html": "user facing AniList links",
-        "omakase/plus/templates/dashboard.html": "user facing AniList link",
         "omakase/plus/templates/discover.html": "user facing AniList link",
         "omakase/plus/templates/library.html": "user facing AniList link",
         "omakase/plus/templates/recommendation.html": "user facing AniList link",

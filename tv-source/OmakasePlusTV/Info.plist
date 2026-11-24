@@ -4,6 +4,8 @@
 <dict>
     <key>OmakaseServerOrigin</key>
     <string>$(OMAKASE_SERVER_ORIGIN)</string>
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
     <key>OmakaseTopShelfAppGroup</key>
     <string>$(OMAKASE_TOP_SHELF_APP_GROUP)</string>
     <key>CFBundleURLTypes</key>

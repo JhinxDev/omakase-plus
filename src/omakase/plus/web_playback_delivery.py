@@ -15,6 +15,7 @@ from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response, StreamingResponse
 
+from omakase.plus.http_pool import acquire_client
 from omakase.plus.outbound import pin_destination
 
 HEADERS = {
@@ -229,8 +230,10 @@ async def open_part(
     }
     if bounds:
         upstream_headers["Range"] = f"bytes={left}-{right}"
-    client = httpx.AsyncClient(
+    client, owns_client = acquire_client(
+        key="web-delivery",
         transport=transport,
+        sni_hostname=destination.sni_hostname,
         timeout=httpx.Timeout(15, connect=5),
         trust_env=False,
         follow_redirects=False,
@@ -262,7 +265,8 @@ async def open_part(
     except BaseException as error:
         if "upstream" in locals():
             await upstream.aclose()
-        await client.aclose()
+        if owns_client:
+            await client.aclose()
         if isinstance(error, httpx.HTTPError):
             raise DeliveryError() from None
         raise
@@ -275,7 +279,8 @@ async def open_part(
             closed = True
             try:
                 await upstream.aclose()
-                await client.aclose()
+                if owns_client:
+                    await client.aclose()
             finally:
                 on_close()
 

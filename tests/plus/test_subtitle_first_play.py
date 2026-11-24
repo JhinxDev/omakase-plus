@@ -92,12 +92,13 @@ def test_readahead_keeps_a_forward_window_warm():
         media = DebridMedia(_playlist(40)[0], segments)
         streams._advance(media, 5)
         await asyncio.sleep(0.05)
-        return fetched, streams.pump
+        return fetched, next(iter(streams.pumps.values()), None)
 
     fetched, pump = asyncio.run(scenario())
     assert fetched, "readahead fetched nothing"
     assert fetched[0].endswith("00006.ts")
     assert fetched[-1].endswith("00013.ts")
+    assert pump is not None
     assert pump["next"] == 14
 
 
@@ -106,9 +107,10 @@ def test_warm_position_starts_at_the_saved_point():
     body, segments = _playlist(100)
     media = DebridMedia(body, segments)
     streams.warm_position(media, 106.4)
-    assert streams.pump is not None
-    assert streams.pump["next"] == 21
-    assert streams.pump["target"] == 29
+    pump = next(iter(streams.pumps.values()), None)
+    assert pump is not None
+    assert pump["next"] == 21
+    assert pump["target"] == 29
 
 
 def test_warm_position_ignores_play_from_start():
@@ -116,7 +118,7 @@ def test_warm_position_ignores_play_from_start():
     body, segments = _playlist(100)
     media = DebridMedia(body, segments)
     streams.warm_position(media, 0)
-    assert streams.pump is None
+    assert not streams.pumps
 
 
 def test_segment_cache_respects_its_entry_budget():

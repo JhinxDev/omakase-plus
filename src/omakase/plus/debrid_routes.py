@@ -250,10 +250,16 @@ def create_debrid_router(
         ).hexdigest()
         saved = cloud_progress.get_position(db, user.id, file_key) if resume else None
         release = reserve_start(user.id)
+        want_on_demand = (
+            bool(named)
+            and isinstance(body, dict)
+            and body.get("prefer_on_demand") is not False
+            and isinstance(body.get("codecs"), list)
+        )
         try:
             async with asyncio.timeout(90):
                 source = (
-                    await resolve_named(db, scope, *named)
+                    await resolve_named(db, scope, *named, need_transcode=not want_on_demand)
                     if named
                     else await library.source(token, file_key)
                 )
@@ -266,6 +272,8 @@ def create_debrid_router(
                     and 0 <= position < source.duration
                     else None
                 )
+                if direct is None and not source.playlist:
+                    source = await library.resolve_playlists(token, source)
                 key, cookie = direct or await streams.issue(source, user.id, binding, ttl)
         except DebridLibraryError as error:
             raise HTTPException(error.status, str(error), headers=HEADERS) from None
@@ -412,11 +420,15 @@ def create_debrid_router(
             raise HTTPException(404, "Title unavailable in your personal library", headers=HEADERS)
         return title
 
-    async def resolve_named(db, scope, domain, key, season, episode):
+    async def resolve_named(
+        db, scope, domain, key, season, episode, *, need_transcode: bool = True
+    ):
         candidate = (
-            await resolve_anime(db, scope, key, episode, library)
+            await resolve_anime(db, scope, key, episode, library, need_transcode=need_transcode)
             if domain == "anime"
-            else await resolve_catalog(db, scope, domain, key, season, episode, library)
+            else await resolve_catalog(
+                db, scope, domain, key, season, episode, library, need_transcode=need_transcode
+            )
         )
         if candidate is None:
             raise DebridLibraryError("No matching Real-Debrid file for this title.", 404)
@@ -466,7 +478,7 @@ def create_debrid_router(
             **navigation,
         }
 
-    @router.api_route("/cloud/title/{domain}/{key}/{season}/{episode}", methods=["GET", "POST"])
+    @router.get("/cloud/title/{domain}/{key}/{season}/{episode}")
     async def named_play(
         request: Request,
         domain: str,
@@ -483,91 +495,26 @@ def create_debrid_router(
         scope = personal_scope(db, user.id)
         title = verify_named_target(db, user, scope, domain, key, season, episode)
         file_key = f"named:{domain}:{key}:{season}:{episode}"
-        if request.method == "GET":
-            if domain == "anime":
-                overview = f"/plus/library/{key}?library_id={scope.library_id}"
-                native_path = f"/plus/watch/{key}/{episode}"
-            elif domain == "movie":
-                overview = f"/plus/movies/{key}"
-                native_path = f"/plus/watch/title/movie/{key}"
-            else:
-                overview = f"/plus/tv/{key}?season={season}#tv-seasons"
-                native_path = f"/plus/watch/title/tv/{key}/{season}/{episode}"
-            return watch_page(
-                request,
-                user,
-                scope,
-                file_key,
-                title,
-                play,
-                overview,
-                episode_number=episode,
-                player_native_watch_path=native_path,
-                **named_watch_context(db, scope, domain, key, season, episode),
-            )
-
-        return await open_player(
-            request,
-            db,
-            user,
-            token,
-            lambda: resolve_named(db, scope, domain, key, season, episode),
-            file_key=file_key,
-        )
-
-    async def open_player(request, db, user, token, resolve, *, file_key=""):
-        form = await request.form()
-        require_csrf(request, form.get("csrf_token", ""))
-        release = reserve_start(user.id)
-        try:
-            async with asyncio.timeout(60):
-                source = await resolve()
-                ttl = min(43200, max(1200, int(source.duration) + 600))
-                key, cookie = await streams.issue(
-                    source, user.id, browser_binding(request, user), ttl
-                )
-        except (DebridLibraryError, TimeoutError) as error:
-            message = (
-                str(error)
-                if isinstance(error, DebridLibraryError)
-                else "Real-Debrid took too long to open this file."
-            )
-            return render(request, user, error=message)
-        finally:
-            release()
-        if not secrets.compare_digest(token, account_token(db, user.id)):
-            streams.passes.pop(key, None)
-            raise HTTPException(403, "Real-Debrid connection changed", headers=HEADERS)
-        target = f"/plus/cloud/player/{key}"
-        if cloud_progress.valid_key(file_key):
-            target += "?file=" + quote(file_key, safe="")
-        response = RedirectResponse(target, status_code=303, headers=HEADERS)
-        response.set_cookie(
-            _COOKIE,
-            cookie,
-            max_age=ttl,
-            path=f"/plus/cloud/media/{key}",
-            secure=request.url.scheme == "https",
-            httponly=True,
-            samesite="strict",
-        )
-        return response
-
-    @router.get("/cloud/player/{key}")
-    async def player(request: Request, key: str, user=Depends(require_user), db=Depends(get_db)):
-        entry = streams.for_client(key, browser_binding(request, user))
-        if entry is None or account_binding(account_token(db, user.id)) != entry.source.account:
-            raise HTTPException(404, "Cloud playback expired", headers=HEADERS)
-        file_key = request.query_params.get("file", "")
-        resume = cloud_progress.get_position(db, user.id, file_key) if file_key else None
-        return render(
+        if domain == "anime":
+            overview = f"/plus/library/{key}?library_id={scope.library_id}"
+            native_path = f"/plus/watch/{key}/{episode}"
+        elif domain == "movie":
+            overview = f"/plus/movies/{key}"
+            native_path = f"/plus/watch/title/movie/{key}"
+        else:
+            overview = f"/plus/tv/{key}?season={season}#tv-seasons"
+            native_path = f"/plus/watch/title/tv/{key}/{season}/{episode}"
+        return watch_page(
             request,
             user,
-            playing=entry.source.title,
-            media_path=f"/plus/cloud/media/{key}/index.m3u8",
-            cloud_file_key=file_key if cloud_progress.valid_key(file_key) else "",
-            resume_position=resume["position_seconds"] if resume else 0,
-            cloud_title=entry.source.title,
+            scope,
+            file_key,
+            title,
+            play,
+            overview,
+            episode_number=episode,
+            player_native_watch_path=native_path,
+            **named_watch_context(db, scope, domain, key, season, episode),
         )
 
     @router.api_route("/cloud/media/{key}/{asset}", methods=["GET", "HEAD"])

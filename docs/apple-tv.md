@@ -16,9 +16,11 @@ connected Real-Debrid account.
   landscape artwork when available and fits alternate artwork within the card.
 - Pair a device with a one-time code from the web app; the device stays linked
   until you remove it in **Settings → Devices**.
-- Play episodes and films with resume sync and a next-episode control. The
-  AVPlayer path uses native controls. The direct-original candidate uses the
-  TVVLCKit player with its own controls.
+- Play episodes and films with resume sync, a season selector for multi-season TV
+  series, a 10-second **Up Next** auto-play countdown between episodes, and a
+  **Next** control. Production builds (`OmakasePlusTV`) use native AVPlayer and do
+  not bundle `TVVLCKit`; `OmakaseQualification` keeps `TVVLCKit` for
+  qualification testing.
 - **Skip Intro** appears while an episode is within a verified opening interval
   on the AVPlayer path. It jumps to the end of the opening when selected.
   Availability depends on the specific copy’s chapter or Plex marker metadata.
@@ -29,12 +31,13 @@ connected Real-Debrid account.
   and queues the AniList sync through the durable tracker outbox for anime.
 - TV and movie completions are stored with an Apple TV source detail, so History
   distinguishes them from Plex and manual records.
-- Show subtitle tracks with an always-on preference in Settings. Available
-  tracks depend on the media and playback transport.
+- Configure preferred Audio and Subtitle languages alongside the always-on
+  subtitle preference in **Settings**. Available tracks depend on the media and
+  playback transport.
 - Open **Media Info** from the player controls on supported builds. When available,
   it shows resolution, video and audio codecs, container and file size.
-- Prepare the next episode on the AVPlayer path so Next can start quickly.
-  The direct-original candidate opens a new TVVLCKit item on Next.
+- Prepare the next episode on the AVPlayer path so **Up Next** can start cleanly.
+  The artwork cache uses a bounded memory store decoded off the main thread.
 - Refresh the current shelf with the circular-arrow button. Back returns from an
   episode to the series page before the shelf.
 - After about ten seconds of waiting, the loading screen switches to a subtle
@@ -86,12 +89,33 @@ bash scripts/build-tvos.sh /absolute/empty-output-directory
 ```
 
 The script builds the committed tvOS source, runs the portable Swift package
-tests, and compiles both app schemes for arm64 Apple TV. It verifies that each
-executable links its embedded TVVLCKit framework before packaging the
-production app. The output directory contains the unsigned IPA, the dependency
-license, and a JSON receipt with the source commit, Git tree, toolchain,
-dependency digest, app version and IPA digest. The manual **Unsigned tvOS
-build** GitHub workflow uses the same script with Xcode 26.3 on macOS 15.
+tests, and compiles both app schemes for arm64 Apple TV. It verifies that
+`OmakasePlusTV` ships without `TVVLCKit` or qualification test video fixtures,
+while `OmakaseQualification` still links and embeds its arm64 `TVVLCKit`
+framework. The output directory contains the unsigned IPA, the qualification
+dependency license, and a JSON receipt with the source commit, Git tree,
+toolchain, dependency digest, app version and IPA digest. The manual **Unsigned
+tvOS build** GitHub workflow uses the same script with Xcode 26.3 on macOS 15.
+
+### Internal TestFlight via Xcode Cloud Signing
+
+To publish signed internal builds to Apple TV via TestFlight without `tvsign`:
+
+1. Set `APPLE_TEAM_ID`, `ASC_KEY_ID`, `ASC_ISSUER_ID`, and `ASC_KEY_P8_BASE64`
+   as GitHub repository secrets (plus optional `OMAKASE_SERVER_ORIGIN` HTTPS URL).
+2. Trigger the manual **TestFlight tvOS build** workflow
+   (`.github/workflows/tvos-testflight.yml`) with `mode=upload` (or
+   `mode=export-only` to download and inspect the signed IPA locally).
+3. On macOS directly, run:
+
+```bash
+bash scripts/deploy-testflight-tvos.sh --output /absolute/empty-output-directory
+```
+
+`OmakasePlusTV` declares `ITSAppUsesNonExemptEncryption = false` in
+`tv-source/OmakasePlusTV/Info.plist` for App Store Connect export compliance and
+does not embed `TVVLCKit`. Once the first internal TestFlight build installs and
+verifies cleanly on the Apple TV, the temporary `tvsign` workflow can be retired.
 
 A builder without a Git checkout can use a verified source snapshot. Create
 the archive from the commit you intend to build:

@@ -83,8 +83,8 @@ mv "$work/TVVLCKit-binary" "$source_dir/Vendor"
 
 xcrun swift test --package-path "$source_dir/QualificationCore" --scratch-path "$work/swift-test"
 
-# The XCFramework resolves the device slice. Each app must use the import and
-# embed that slice as a dynamic library at its declared install name.
+# OmakasePlusTV uses native AVPlayer without TVVLCKit or qualification media fixtures.
+# OmakaseQualification retains TVVLCKit and embeds its arm64 slice as a dynamic framework.
 for target in OmakasePlusTV OmakaseQualification; do
     xcodebuild -project "$source_dir/OmakaseQualification.xcodeproj" \
         -scheme "$target" -configuration Release -sdk appletvos -destination 'generic/platform=tvOS' \
@@ -93,15 +93,23 @@ for target in OmakasePlusTV OmakaseQualification; do
         OMAKASE_SERVER_ORIGIN= build
 
     app="$work/DerivedData/Build/Products/Release-appletvos/$target.app"
-    framework="$app/Frameworks/TVVLCKit.framework/TVVLCKit"
-    [[ -x "$app/$target" && -f "$framework" ]] || fail "$target app or embedded framework missing."
-    [[ $(xcrun lipo -archs "$app/$target") == arm64 &&
-        $(xcrun lipo -archs "$framework") == arm64 ]] || fail "$target or TVVLCKit is not arm64."
+    [[ -x "$app/$target" ]] || fail "$target app executable missing."
+    [[ $(xcrun lipo -archs "$app/$target") == arm64 ]] || fail "$target is not arm64."
     app_links=$(xcrun otool -L "$app/$target")
-    framework_id=$(xcrun otool -D "$framework")
-    [[ $app_links == *'@rpath/TVVLCKit.framework/TVVLCKit '* &&
-        $framework_id == *'@rpath/TVVLCKit.framework/TVVLCKit' ]] ||
-        fail "$target does not dynamically link its embedded TVVLCKit."
+    framework="$app/Frameworks/TVVLCKit.framework/TVVLCKit"
+    if [[ $target == OmakasePlusTV ]]; then
+        [[ ! -e "$app/Frameworks/TVVLCKit.framework" ]] || fail "$target unexpectedly embeds TVVLCKit."
+        [[ $app_links != *TVVLCKit* ]] || fail "$target unexpectedly links TVVLCKit."
+        [[ ! -e "$app/baseline.mp4" && ! -e "$app/track-check.mp4" ]] ||
+            fail "$target unexpectedly bundles qualification video fixtures."
+    else
+        [[ -f "$framework" ]] || fail "$target embedded TVVLCKit framework missing."
+        [[ $(xcrun lipo -archs "$framework") == arm64 ]] || fail "$target TVVLCKit is not arm64."
+        framework_id=$(xcrun otool -D "$framework")
+        [[ $app_links == *'@rpath/TVVLCKit.framework/TVVLCKit '* &&
+            $framework_id == *'@rpath/TVVLCKit.framework/TVVLCKit' ]] ||
+            fail "$target does not dynamically link its embedded TVVLCKit."
+    fi
     [[ ! -e "$app/embedded.mobileprovision" && ! -e "$app/_CodeSignature" ]] ||
         fail "$target unexpectedly contains provisioning or an app signature."
 done
@@ -195,6 +203,8 @@ receipt = {
     "server_origin_configured": bool(info.get("OmakaseServerOrigin")),
     "portable_swift_tests": "passed",
     "device_targets_built_and_link_verified": ["OmakasePlusTV", "OmakaseQualification"],
+    "production_embeds_tvvlckit": False,
+    "qualification_embeds_tvvlckit": True,
     "tvvlckit": {"version": "3.7.3", "url": vendor_url, "sha256": vendor_sha256, "bytes": 121449476},
     "ipa": {
         "file": "OmakasePlusTV-unsigned.ipa",

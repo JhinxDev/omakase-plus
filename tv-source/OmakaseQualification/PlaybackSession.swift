@@ -4,6 +4,12 @@ import Foundation
 import QualificationCore
 import SwiftUI
 
+@MainActor
+final class PlaybackClock: ObservableObject {
+    @Published var position: Double = 0
+    @Published var duration: Double = 0
+}
+
 /// Owns the current playback item and decides what may start playing.
 ///
 /// Transport is delegated to a `PlayerEngine`: `AVPlayerEngine` keeps the existing
@@ -28,8 +34,9 @@ final class PlaybackSession: ObservableObject {
     @Published private(set) var player: AVPlayer?
     @Published private(set) var status = "Idle"
     @Published private(set) var errorMessage: String?
-    @Published private(set) var position: Double = 0
-    @Published private(set) var duration: Double = 0
+    let clock = PlaybackClock()
+    var position: Double { clock.position }
+    var duration: Double { clock.duration }
     @Published private(set) var intro: LiveIntro?
     @Published private(set) var openingTimedOut = false
     /// True while an item is installed on either engine. Replaces "player != nil"
@@ -81,6 +88,8 @@ final class PlaybackSession: ObservableObject {
     private var resumeTarget: Double?
     private var seekReadiness: Task<Void, Never>?
     private var playbackWait: Task<Void, Never>?
+    private var trackPreferenceTask: Task<Void, Never>?
+    private var pendingSkipTarget: (target: Double, at: ContinuousClock.Instant)?
     private var mediaCookies: [HTTPCookie] = []
     /// True while the app's own default track selection is running, so an
     /// AVKit selection notification from that selection is not recorded as a
@@ -422,8 +431,9 @@ final class PlaybackSession: ObservableObject {
         itemCarriedSelections = carried
         self.expectedDuration = expectedDuration
         resumeTarget = resumePosition
-        position = 0
-        duration = 0
+        pendingSkipTarget = nil
+        clock.position = 0
+        clock.duration = 0
         self.intro = intro
         reachedEnd = false
         started = false
@@ -469,9 +479,15 @@ final class PlaybackSession: ObservableObject {
             if let av = engine as? AVPlayerEngine {
                 let carried = itemCarriedSelections
                 applyingDefaults = carried != [.audible, .legible]
-                Task { @MainActor [weak self] in
-                    defer { self?.applyingDefaults = false }
-                    await self?.applyTrackPreferences(av.item, token: token, carried: carried)
+                trackPreferenceTask?.cancel()
+                let item = av.item
+                trackPreferenceTask = Task { @MainActor [weak self] in
+                    defer {
+                        if let self, self.isCurrent(token) {
+                            self.applyingDefaults = false
+                        }
+                    }
+                    await self?.applyTrackPreferences(item, token: token, carried: carried)
                 }
             } else {
                 applyingDefaults = true
@@ -819,10 +835,10 @@ final class PlaybackSession: ObservableObject {
         let current = engine.currentTime
         let length = expectedDuration ?? engine.duration
         guard current.isFinite, current >= 0, length.isFinite, length > 0 else { return }
-        duration = length
-        position = min(current, length)
-        // An unopened or still-buffering restart must not replace a good resume with zero.
-        canCheckpoint = canCheckpoint || position > 0
+        clock.duration = length
+        clock.position = min(current, length)
+        // An unopened, mid-resume, or still-buffering restart must not replace a good resume with zero.
+        canCheckpoint = canCheckpoint || (resumeTarget == nil && position > 0)
         if reachedEnd, duration > 0, position < duration - 2 { reachedEnd = false }
     }
 
@@ -906,7 +922,16 @@ final class PlaybackSession: ObservableObject {
     /// Relative seek from a remote command. Validated by the same landing rules.
     func skip(by delta: Double) {
         guard let engine, isPresenting, duration.isFinite, duration > 0 else { return }
-        let target = min(max(position + delta, 0), max(duration - 1, 0))
+        let now = ContinuousClock.now
+        let base: Double
+        if let pendingSkipTarget, now - pendingSkipTarget.at < .seconds(1.5) {
+            base = pendingSkipTarget.target
+        } else {
+            base = position
+        }
+        let target = min(max(base + delta, 0), max(duration - 1, 0))
+        pendingSkipTarget = (target, now)
+        clock.position = target
         engine.seek(to: target, tolerance: .keyframe) { [weak self] landing in
             guard let self, self.engine === engine, landing.landed != nil else { return }
             self.updateProgress()
@@ -917,7 +942,9 @@ final class PlaybackSession: ObservableObject {
         guard self.player === player, started, marker == intro,
               marker.contains(player.currentTime().seconds), marker.end < duration else { return }
         let target = CMTime(seconds: marker.end, preferredTimescale: 1_000)
-        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        let tolerance = CMTime(seconds: 0.25, preferredTimescale: 600)
+        clock.position = marker.end
+        player.seek(to: target, toleranceBefore: tolerance, toleranceAfter: tolerance)
     }
 
     func stop(preserveStatus: Bool = false) {
@@ -953,6 +980,9 @@ final class PlaybackSession: ObservableObject {
         cancelPlaybackWait()
         seekReadiness?.cancel()
         seekReadiness = nil
+        trackPreferenceTask?.cancel()
+        trackPreferenceTask = nil
+        pendingSkipTarget = nil
         progressTask?.cancel()
         progressTask = nil
         engine?.onEvent = nil

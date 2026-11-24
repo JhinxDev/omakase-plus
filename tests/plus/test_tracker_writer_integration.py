@@ -335,9 +335,26 @@ def test_actual_add_and_remove_planning_routes_do_not_dispatch_through_held_leas
         "INSERT INTO anilist_plannings(user_id,anilist_id,title,status) VALUES(1,11,'Synthetic anime','PLANNING')"
     )
     db.commit()
+    remove_request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/plus/watchlist/11/remove",
+            "headers": [(b"cookie", b"omakase_session=test-session")],
+        }
+    )
+    remove_csrf = routes._csrf_token(remove_request)
     with writer_lease(db, 1):
-        response = asyncio.run(routes.dashboard_remove_plan(db=db, user=user, anilist_id=11))
-    assert response.status_code == 302 and not remove.called and not valid.called
+        response = asyncio.run(
+            routes.remove_saved_pick(
+                remove_request,
+                anilist_id=11,
+                csrf_token=remove_csrf,
+                user=user,
+                db=db,
+            )
+        )
+    assert response.status_code == 303 and not remove.called and not valid.called
     assert db.execute("SELECT count(*) FROM anilist_plannings WHERE user_id=1").fetchone()[0] == 0
 
 

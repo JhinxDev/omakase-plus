@@ -17,11 +17,15 @@ function validWindow(window, position) {
     });
 }
 
+const BACKOFF_MS = [2000, 4000, 8000, 15000];
+
 export class BitmapSubtitles {
-  constructor({ video, container, url }) {
+  constructor({ video, container, url, onStatus = null }) {
     this.video = video;
     this.container = container;
     this.url = url;
+    this.onStatus = typeof onStatus === 'function' ? onStatus : null;
+    this.status = 'idle';
     this.image = document.createElement('img');
     this.image.className = 'web-bitmap-overlay';
     this.image.alt = '';
@@ -30,7 +34,7 @@ export class BitmapSubtitles {
     this.windows = [];
     this.pending = null;
     this.retryAt = 0;
-    this.retry = null;
+    this.retryTimer = null;
     this.failures = 0;
     this.frame = null;
     this.cue = null;
@@ -38,8 +42,8 @@ export class BitmapSubtitles {
     this.seek = () => {
       this.pending?.abort();
       this.pending = null;
-      clearTimeout(this.retry);
-      this.retry = null;
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
       this.failures = 0;
       this.retryAt = 0;
       this.hide();
@@ -101,15 +105,33 @@ export class BitmapSubtitles {
     void this.load(next);
   }
 
+  setStatus(state, message = '') {
+    this.status = state;
+    this.onStatus?.({ state, message, failures: this.failures });
+  }
+
+  retry() {
+    if (this.closed) return;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.failures = 0;
+    this.retryAt = 0;
+    this.setStatus('loading', 'Retrying image subtitles…');
+    this.update();
+  }
+
   async load(position) {
     const url = new URL(this.url, window.location.origin);
     url.searchParams.set('position', position.toFixed(6));
     const controller = new AbortController();
     this.pending = controller;
+    if (this.failures === 0 && this.windows.length === 0) {
+      this.setStatus('loading', 'Loading image subtitles…');
+    }
     try {
       const response = await fetch(url, {
         credentials: 'same-origin', redirect: 'error', cache: 'no-store',
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(12000)]),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(22000)]),
       });
       if (!response.ok || Number(response.headers.get('content-length')) > MAX_WINDOW_BYTES) throw new Error('Image subtitle window unavailable');
       const data = await response.text();
@@ -119,10 +141,21 @@ export class BitmapSubtitles {
       if (this.pending !== controller) return;
       this.windows = [...this.windows.filter(previous => previous.start !== window.start), window].slice(-2);
       this.failures = 0;
+      this.retryAt = 0;
+      this.setStatus('ready', 'Image subtitles ready.');
     } catch {
       if (this.pending === controller) {
-        this.retryAt = ++this.failures < 3 ? performance.now() + 1800 : Infinity;
-        if (Number.isFinite(this.retryAt)) this.retry = setTimeout(this.update, 1800);
+        const index = Math.min(this.failures, BACKOFF_MS.length - 1);
+        const delay = BACKOFF_MS[index];
+        this.failures += 1;
+        this.retryAt = performance.now() + delay;
+        this.setStatus(
+          this.failures >= BACKOFF_MS.length ? 'error' : 'retrying',
+          this.failures >= BACKOFF_MS.length
+            ? 'Image subtitles delayed. Retrying in background or seek to refresh.'
+            : 'Retrying image subtitles…',
+        );
+        if (!this.closed) this.retryTimer = setTimeout(this.update, delay);
       }
     } finally {
       if (this.pending === controller) {

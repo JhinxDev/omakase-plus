@@ -574,16 +574,25 @@ public struct LiveLibraryClient: Sendable {
         return client
     }
 
-    public func page(kind: LiveLibraryKind, title: LiveLibraryEntry?, offset: Int,
-                     query search: String = "") async throws -> LiveLibraryPage {
-        var components = URLComponents(url: Self.endpoint(origin, title == nil ? "catalog" : "episodes"),
+    public static func pageRequestURL(origin: FixtureOrigin, kind: LiveLibraryKind,
+                                      title: LiveLibraryEntry?, offset: Int,
+                                      query search: String = "", season: Int? = nil) -> URL? {
+        var components = URLComponents(url: endpoint(origin, title == nil ? "catalog" : "episodes"),
                                        resolvingAgainstBaseURL: false)
         var query = [URLQueryItem(name: "kind", value: kind.rawValue),
                      URLQueryItem(name: "offset", value: String(offset))]
         if let title { query.append(URLQueryItem(name: "title_id", value: title.id)) }
         if title == nil && !search.isEmpty { query.append(URLQueryItem(name: "q", value: search)) }
+        if title != nil, let season { query.append(URLQueryItem(name: "season", value: String(season))) }
         components?.queryItems = query
-        guard let url = components?.url else { throw FixtureConnectionError.invalidOrigin }
+        return components?.url
+    }
+
+    public func page(kind: LiveLibraryKind, title: LiveLibraryEntry?, offset: Int,
+                     query search: String = "", season: Int? = nil) async throws -> LiveLibraryPage {
+        guard let url = Self.pageRequestURL(origin: origin, kind: kind, title: title,
+                                            offset: offset, query: search, season: season)
+        else { throw FixtureConnectionError.invalidOrigin }
         let data = try await send(scoped(url), maxBytes: 256_000)
         let page = try JSONDecoder().decode(LiveLibraryPage.self, from: data)
         guard page.items.count <= 30, (page.continueWatching?.count ?? 0) <= 8,
