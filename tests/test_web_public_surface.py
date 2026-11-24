@@ -150,7 +150,7 @@ def test_public_origin_keeps_legacy_byok_product(public_app):
 def test_plus_csp_allows_mse_blob_media(private_app):
     client = TestClient(private_app)
     policy = client.get("/plus/login").headers["content-security-policy"]
-    assert "media-src 'self' blob:" in policy
+    assert "media-src 'self' blob: data:" in policy
     assert "worker-src 'self' blob:" in policy
     assert "default-src 'self'" in policy
 
