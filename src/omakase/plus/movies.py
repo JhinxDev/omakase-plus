@@ -505,6 +505,7 @@ class MovieService:
             "imdb_id": values[0],
             "tmdb_id": tmdb_id,
             "title": _text(data.get("title"), 300, required=True),
+            "original_title": _text(data.get("originalTitle") or data.get("original_title"), 300),
             "year": _year(data.get("releaseDate")),
             "poster_url": _art(data.get("posterPath"), "w342"),
             "backdrop_url": _art(data.get("backdropPath"), "w1280"),

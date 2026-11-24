@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import re
+from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 
 import httpx
 
-from omakase.plus import movies_store, request_candidates
+from omakase.plus import debrid_catalog, movies_store, request_candidates
 from omakase.plus.acquisition_policy import load_user_acquisition_policy
 from omakase.plus.btih import normalize_btih, torrent_hash_from_magnet
 from omakase.plus.catalog import quality_from_title
-from omakase.plus.debrid_catalog import CatalogTitle, _movie_matches, _tail
+from omakase.plus.connections import movie_connections
+from omakase.plus.debrid_catalog import CatalogTitle, _alternates, _movie_matches, _tail
 from omakase.plus.debrid_library import (
     DebridLibrary,
     DebridLibraryError,
@@ -20,16 +22,34 @@ from omakase.plus.debrid_library import (
     account_binding,
     account_token,
 )
+from omakase.plus.movies import MovieError, MovieService
 from omakase.plus.provider_limits import ProviderRateLimit, cooldown_hooks
 from omakase.plus.providers import playback as playback_providers
 from omakase.plus.realdebrid import RealDebridClient, RealDebridProviderBlock
+from omakase.plus.web_playback_catalog import personal_scope
+from omakase.plus.web_playback_source import PlaybackSourceError
 
 _TRANSFER_TIMEOUT = 12
 _ID = re.compile(r"[A-Za-z0-9]{3,64}")
-_MOVIE_QUALITY = {"2160p": 2, "1080p": 1}
+_QUALITY_ORDER = {"2160p": 4, "1080p": 3, "720p": 2}
+_BAD_QUALITY = re.compile(
+    r"\b(?:cam|hdcam|camrip|hdts|telesync|telecine|dvdscr|screener|sample|trailer)\b",
+    re.IGNORECASE,
+)
 _ACTIVE = frozenset({"submitted", "selecting", "selected"})
 _LOOKUP = "user_id=? AND imdb_id=? AND request_created_at=?"
 _TRANSIENT = (DebridLibraryError, ProviderRateLimit, httpx.HTTPError, TimeoutError, ValueError)
+STALE_RIVEN_AGE = timedelta(hours=2)
+STALE_ESCALATABLE_CODES = frozenset(
+    {
+        "requested",
+        "search_complete",
+        "backend_item_missing",
+        "backend_unavailable",
+        "transport_error",
+        "transport_timeout",
+    }
+)
 
 LABELS = {
     "submitting": "A transfer submission is awaiting confirmation.",
@@ -48,6 +68,32 @@ LABELS = {
 TERMINAL_RIVEN_CODES = frozenset(
     {"backend_failed", "no_eligible_results", "investigation_exhausted"}
 )
+
+
+def _parse_stamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or len(value) > 48:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+
+
+def is_fallback_eligible(request_row, *, now: datetime | None = None) -> bool:
+    """True when Riven failed terminally or stalled cleanly past STALE_RIVEN_AGE."""
+    if not request_row:
+        return False
+    code = request_row["code"]
+    if code in TERMINAL_RIVEN_CODES:
+        return True
+    if code not in STALE_ESCALATABLE_CODES:
+        return False
+    created = _parse_stamp(request_row["created_at"])
+    if created is None:
+        return False
+    current = now if now is not None else datetime.now(UTC)
+    return created <= current - STALE_RIVEN_AGE
 
 
 def attach_summaries(db, user_id, models):
@@ -84,21 +130,35 @@ def _change(db, key, previous, state, *, torrent_id=None):
 
 def _choose(candidates, title, policy):
     releases = []
+    allowed = set(policy.allowed_resolutions)
     for item in candidates:
         fields = " ".join(_tail(item.title, title))
-        quality = _MOVIE_QUALITY.get(quality_from_title(fields))
+        if not fields:
+            continue
+        resolution = quality_from_title(fields)
+        seeders = int(getattr(item, "seeders", 0) or 0)
+        size_bytes = int(getattr(item, "size_bytes", 0) or 0)
         if (
-            not quality
+            seeders <= 0
             or not _movie_matches(item.title, title)
-            or not policy.minimum_seeders <= int(item.seeders)
-            or not 0 < int(item.size_bytes) <= policy.max_release_size_bytes
-            or re.search(r"\b(?:cam|hdcam|camrip|hdts|telesync|telecine|dvdscr|screener)\b", fields)
+            or not 0 < size_bytes <= policy.max_release_size_bytes
+            or _BAD_QUALITY.search(fields)
         ):
             continue
         digest = torrent_hash_from_magnet(item.magnet)
-        if digest:
-            releases.append((quality, int(item.seeders), digest))
-    return max(releases)[2] if releases else None
+        if not digest:
+            continue
+        if resolution in allowed and seeders >= policy.minimum_seeders:
+            tier = 3
+        elif resolution in allowed:
+            tier = 2
+        elif resolution in {"720p", ""}:
+            tier = 1
+        else:
+            continue
+        quality_rank = _QUALITY_ORDER.get(resolution, 1)
+        releases.append((tier, quality_rank, seeders, digest))
+    return max(releases)[3] if releases else None
 
 
 async def _inspect(db, key, row, title, provider, authorized, max_bytes):
@@ -160,7 +220,13 @@ async def advance(db, user_id, imdb_id, candidates=(), *, library=None, provider
         return None
     binding = account_binding(token)
     key = (user_id, imdb_id, request["created_at"])
-    title = CatalogTitle("movie", imdb_id, metadata["title"], metadata["year"])
+    title = CatalogTitle(
+        "movie",
+        imdb_id,
+        metadata["title"],
+        metadata["year"],
+        alternate_titles=_alternates(metadata["title"], metadata.get("original_title")),
+    )
 
     def authorized():
         current = movies_store.get_request(db, user_id, imdb_id)
@@ -170,7 +236,7 @@ async def advance(db, user_id, imdb_id, candidates=(), *, library=None, provider
             and account_token(db, user_id) == token
             and current
             and current["created_at"] == key[2]
-            and current["code"] in TERMINAL_RIVEN_CODES
+            and is_fallback_eligible(current)
         )
 
     row = _row(db, key)
@@ -229,3 +295,85 @@ async def advance(db, user_id, imdb_id, candidates=(), *, library=None, provider
     except _TRANSIENT:
         row = _row(db, key)
         return row["state"] if row is not None else None
+
+
+async def refresh_pending(db, *, heartbeat, library=None):
+    """Periodically check stale or failed movie requests and advance cloud fallback transfers."""
+    if not request_candidates.search_enabled():
+        return
+    rows = db.execute(
+        """SELECT r.user_id, r.imdb_id, r.code, r.created_at,
+                  c.tmdb_id, c.title, c.original_title, c.year, c.identity_verified
+           FROM movie_requests r
+           JOIN movie_catalog c USING(user_id, imdb_id)
+           WHERE r.code NOT IN ('copy_removed', 'acquiring', 'searching', 'verifying', 'unreleased')
+           ORDER BY r.updated_at ASC, r.imdb_id
+           LIMIT 8"""
+    ).fetchall()
+    cloud_library = library or DebridLibrary()
+    inventory_cache: dict[int, set[str]] = {}
+    for row in rows:
+        user_id = int(row["user_id"])
+        imdb_id = str(row["imdb_id"])
+        if not is_fallback_eligible(row):
+            continue
+        if not playback_providers.select(db, user_id).cloud_route or not account_token(db, user_id):
+            continue
+        heartbeat()
+        try:
+            if user_id not in inventory_cache:
+                scope = personal_scope(db, user_id)
+                async with asyncio.timeout(6):
+                    inventory_cache[user_id] = await debrid_catalog.movie_ids(
+                        db, scope, cloud_library
+                    )
+        except (DebridLibraryError, PlaybackSourceError, TimeoutError):
+            inventory_cache[user_id] = set()
+        if imdb_id in inventory_cache[user_id]:
+            continue
+        original_title = row["original_title"]
+        if original_title is None and row["tmdb_id"]:
+            try:
+                svc = MovieService(db, movie_connections(db, user_id))
+                fresh = await svc._metadata(int(row["tmdb_id"]), imdb_id=imdb_id)
+                movies_store.upsert_movie(
+                    db,
+                    user_id,
+                    fresh,
+                    now=datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                )
+                original_title = fresh.get("original_title")
+            except (MovieError, httpx.HTTPError, TimeoutError, ValueError):
+                pass
+        existing = _row(db, (user_id, imdb_id, row["created_at"]))
+        if existing and existing["state"] in _ACTIVE:
+            await advance(db, user_id, imdb_id, library=cloud_library)
+            continue
+        if existing and existing["state"] not in _ACTIVE:
+            continue
+        policy = load_user_acquisition_policy(db, user_id)
+        on_matches = None
+        if request_candidates.acquire_enabled():
+
+            async def _acquire(eligible, _uid=user_id, _imdb=imdb_id):
+                await advance(db, _uid, _imdb, eligible, library=cloud_library)
+
+            on_matches = _acquire
+        await request_candidates.refresh(
+            db,
+            user_id,
+            "movie",
+            imdb_id,
+            request_candidates.JudgeRequest(
+                title=row["title"],
+                kind="movie",
+                year=row["year"],
+                alternate_titles=_alternates(row["title"], original_title),
+                allowed_resolutions=policy.allowed_resolutions,
+                minimum_seeders=policy.minimum_seeders,
+                maximum_bytes=policy.max_release_size_bytes,
+                tiered_fallback=True,
+            ),
+            timeout=10,
+            on_matches=on_matches,
+        )

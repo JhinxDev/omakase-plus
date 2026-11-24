@@ -383,6 +383,8 @@ async def dashboard(db, user_id):
                 models.append(model)
     request_candidates.attach_search_summaries(db, user_id, models)
     movie_fallback.attach_summaries(db, user_id, models)
+    for model in models:
+        status_model.decorate_display(model)
     return status_model.group(models)
 
 
@@ -399,7 +401,9 @@ async def request_detail(db, user_id, kind, title_id):
         model = _request_status(db, scope, kind, title_id, publication=_publication_reader(db))
     if model is None:
         raise ForYouError("Request not found.", 404)
+    request_candidates.attach_search_summaries(db, user_id, [model])
     movie_fallback.attach_summaries(db, user_id, [model])
+    status_model.decorate_display(model)
     return model
 
 
@@ -509,6 +513,8 @@ async def recommendations(db, user_id, category):
     ]
     request_candidates.attach_search_summaries(db, user_id, requests)
     movie_fallback.attach_summaries(db, user_id, requests)
+    for model in requests:
+        status_model.decorate_display(model)
     return {
         "category": category,
         "rows": _project_shelves(
@@ -754,14 +760,56 @@ async def submit_request(db, user_id, kind, title_id):
     return _request_status(db, scope, kind, title_id)
 
 
-async def _fallback_movie_search(db, user_id, title_id, status, provider_code, *, cloud):
+async def _fallback_movie_search(
+    db, user_id, title_id, status, provider_code, *, cloud, request_row=None, service=None
+):
     if status is None:
         return
-    if not status["resolved"] and provider_code in _FALLBACK_AFTER_RIVEN:
+    effective_row = (
+        {**dict(request_row), "code": provider_code}
+        if request_row is not None and provider_code
+        else request_row
+    )
+    stale_eligible = effective_row is not None and movie_fallback.is_fallback_eligible(
+        effective_row
+    )
+    if not status["resolved"] and (provider_code in _FALLBACK_AFTER_RIVEN or stale_eligible):
+        from omakase.plus.acquisition_policy import load_user_acquisition_policy
+
+        metadata = movies_store.get_movie(db, user_id, title_id) or {}
+        original_title = metadata.get("original_title")
+        if (
+            original_title is None
+            and metadata.get("tmdb_id")
+            and service is not None
+            and callable(getattr(service, "_metadata", None))
+        ):
+            try:
+                fresh = await service._metadata(int(metadata["tmdb_id"]), imdb_id=title_id)
+                movies_store.upsert_movie(
+                    db, user_id, fresh, now=status["last_confirmed_at"] or request_row["created_at"]
+                )
+                original_title = fresh.get("original_title")
+            except (MovieError, httpx.HTTPError, TimeoutError, ValueError):
+                pass
+        alternate = (
+            (original_title,)
+            if isinstance(original_title, str)
+            and original_title.strip()
+            and request_candidates.normalize(original_title)
+            != request_candidates.normalize(status["title"])
+            else ()
+        )
+        policy = load_user_acquisition_policy(db, user_id)
         on_matches = None
         if (
             cloud
-            and provider_code in movie_fallback.TERMINAL_RIVEN_CODES
+            and (
+                provider_code in movie_fallback.TERMINAL_RIVEN_CODES
+                or (
+                    effective_row is not None and movie_fallback.is_fallback_eligible(effective_row)
+                )
+            )
             and request_candidates.acquire_enabled()
             and await movie_fallback.advance(db, user_id, title_id) is None
         ):
@@ -774,11 +822,20 @@ async def _fallback_movie_search(db, user_id, title_id, status, provider_code, *
             user_id,
             "movie",
             title_id,
-            request_candidates.JudgeRequest(title=status["title"], year=status.get("release_year")),
+            request_candidates.JudgeRequest(
+                title=status["title"],
+                year=status.get("release_year"),
+                alternate_titles=alternate,
+                allowed_resolutions=policy.allowed_resolutions,
+                minimum_seeders=policy.minimum_seeders,
+                maximum_bytes=policy.max_release_size_bytes,
+                tiered_fallback=True,
+            ),
             on_matches=on_matches,
         )
     request_candidates.attach_search_summaries(db, user_id, [status])
     movie_fallback.attach_summaries(db, user_id, [status])
+    status_model.decorate_display(status)
 
 
 async def refresh_request(db, user_id, kind, title_id):
@@ -825,7 +882,17 @@ async def refresh_request(db, user_id, kind, title_id):
                 user_id, title_id, row, card.get("code"), check.get("attempted_at")
             )
         status = _request_status(db, scope, kind, title_id, movie_library=library)
-        await _fallback_movie_search(db, user_id, title_id, status, card.get("code"), cloud=cloud)
+        updated_row = movies_store.get_request(db, scope.viewer_id, title_id) or row
+        await _fallback_movie_search(
+            db,
+            user_id,
+            title_id,
+            status,
+            card.get("code"),
+            cloud=cloud,
+            request_row=updated_row,
+            service=service,
+        )
         return status
     return status
 

@@ -354,3 +354,80 @@ def test_refresh_does_nothing_when_the_feature_is_off(monkeypatch, db):
     assert source.calls == 0
     assert block["enabled"] is False
     assert rc.snapshot(db, 1, "movie", "tt0000006") == []
+
+
+def test_html_entities_and_diacritics_match_original_titles_with_year_retry(monkeypatch, db):
+    monkeypatch.setenv(rc.SEARCH_ENV, "1")
+    queries = []
+
+    class QuerySource:
+        async def search(self, query):
+            queries.append(query)
+            if query == "Le Diner de Cons 1998":
+                return [
+                    Candidate(
+                        "Le d&icirc;ner de cons 1998 1080p BluRay",
+                        magnet="magnet:?xt=urn:btih:" + "b" * 40,
+                        seeders=35,
+                    )
+                ]
+            return []
+
+    req = rc.JudgeRequest(
+        title="The Dinner Game",
+        kind="movie",
+        year=1998,
+        alternate_titles=("Le Dîner de Cons",),
+        allowed_resolutions=("1080p", "2160p"),
+        minimum_seeders=10,
+        tiered_fallback=True,
+    )
+    block = asyncio.run(rc.refresh(db, 1, "movie", "tt0119038", req, catalogs=[QuerySource()]))
+    assert queries == [
+        "The Dinner Game",
+        "Le Diner de Cons",
+        "The Dinner Game 1998",
+        "Le Diner de Cons 1998",
+    ]
+    assert block["summary"]["accepted"] == 1
+
+
+def test_tiered_evaluation_relaxes_seeders_and_resolution_while_blocking_cam():
+    req = rc.JudgeRequest(
+        title="Chouchou",
+        kind="movie",
+        year=2003,
+        allowed_resolutions=("1080p", "2160p"),
+        minimum_seeders=10,
+        tiered_fallback=True,
+    )
+    cam = Candidate(
+        "Chouchou 2003 HDCAM 1080p", seeders=50, magnet="magnet:?xt=urn:btih:" + "c" * 40
+    )
+    sd = Candidate(
+        "2003 Chouchou (FRA) [EngSub]", seeders=3, magnet="magnet:?xt=urn:btih:" + "d" * 40
+    )
+    hd_low = Candidate("Chouchou 2003 1080p", seeders=2, magnet="magnet:?xt=urn:btih:" + "e" * 40)
+
+    tier2 = rc.evaluate_candidates([cam, sd, hd_low], req)
+    assert [v.code for _, v in tier2] == ["bad_quality", "quality_excluded", "accepted_low_seeders"]
+
+    tier3 = rc.evaluate_candidates([cam, sd], req)
+    assert [v.code for _, v in tier3] == ["bad_quality", "accepted_quality_fallback"]
+
+
+def test_season_pack_judge_matches_single_and_multi_season_packs_only():
+    req = rc.JudgeRequest(
+        title="Fixture Show",
+        kind="tv",
+        season=2,
+        season_pack=True,
+        allowed_resolutions=("1080p",),
+        minimum_seeders=5,
+    )
+    assert rc.judge(Candidate("Fixture Show S02 1080p BluRay", seeders=10), req).accepted
+    assert rc.judge(Candidate("Fixture Show S01-S04 Complete 1080p", seeders=10), req).accepted
+    assert (
+        rc.judge(Candidate("Fixture Show S02E01 1080p", seeders=10), req).code == "episode_mismatch"
+    )
+    assert rc.judge(Candidate("Fixture Show S03 1080p", seeders=10), req).code == "episode_mismatch"

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
+import html
 import json
 import re
 import time
@@ -29,6 +31,7 @@ from omakase.plus.language_source import digest
 _TOKEN = re.compile(r"[^\W_]+")
 _EPISODE = re.compile(r"s([0-9]{1,3})e([0-9]{1,4})")
 _SEASON = re.compile(r"s([0-9]{1,3})")
+_SEASON_RANGE = re.compile(r"\bs([0-9]{1,2})\s*(?:-|to|thru)\s*s?([0-9]{1,2})\b", re.IGNORECASE)
 _TV_CACHE_TTL = 120
 _TV_CACHE_LIMIT = 256
 _TV_FETCH_LIMIT = 4
@@ -36,12 +39,28 @@ _TV_JOB_LIMIT = 48
 _TV_SCAN_SECONDS = 20
 
 
+@functools.lru_cache(maxsize=4096)
+def _tokens_cached(name: str) -> tuple[str, ...]:
+    unescaped = html.unescape(name)
+    folded = "".join(
+        ch for ch in unicodedata.normalize("NFKD", unescaped) if not unicodedata.combining(ch)
+    ).casefold()
+    return tuple(_TOKEN.findall(folded))
+
+
 def _tokens(name):
-    return (
-        tuple(_TOKEN.findall(unicodedata.normalize("NFKC", name).casefold()))
-        if isinstance(name, str)
-        else ()
-    )
+    if not isinstance(name, str) or not name:
+        return ()
+    return _tokens_cached(name)
+
+
+def _alternates(title, original_title):
+    if not isinstance(original_title, str):
+        return ()
+    cleaned = original_title.strip()
+    if not cleaned or _tokens(cleaned) == _tokens(title):
+        return ()
+    return (cleaned,)
 
 
 def _leaf(path):
@@ -108,6 +127,16 @@ class CatalogTitle:
     year: int | None
     season: int = 0
     episode: int = 0
+    alternate_titles: tuple[str, ...] = ()
+
+
+def _title_prefixes(title):
+    prefixes = []
+    for candidate in (title.title, *getattr(title, "alternate_titles", ())):
+        toks = _tokens(candidate)
+        if toks and toks not in prefixes:
+            prefixes.append(toks)
+    return tuple(prefixes)
 
 
 def catalog_title(db, scope, domain, key, season=0, episode=0):
@@ -125,13 +154,23 @@ def catalog_title(db, scope, domain, key, season=0, episode=0):
         return None
     if domain == "movie":
         row = db.execute(
-            """SELECT c.title,c.year FROM movie_catalog c LEFT JOIN movie_requests q
+            """SELECT c.title,c.original_title,c.year FROM movie_catalog c LEFT JOIN movie_requests q
                USING(user_id,imdb_id)
                WHERE c.user_id=? AND c.imdb_id=? AND c.identity_verified=1
                AND COALESCE(q.code,'')<>'copy_removed'""",
             (scope.viewer_id, key),
         ).fetchone()
-        return CatalogTitle(domain, key, row["title"], row["year"]) if row and row["year"] else None
+        return (
+            CatalogTitle(
+                domain,
+                key,
+                row["title"],
+                row["year"],
+                alternate_titles=_alternates(row["title"], row["original_title"]),
+            )
+            if row and row["year"]
+            else None
+        )
     row = db.execute(
         """SELECT c.metadata_json FROM tv_catalog c
            WHERE c.user_id=? AND c.tmdb_id=? AND (
@@ -151,23 +190,63 @@ def catalog_title(db, scope, domain, key, season=0, episode=0):
     return CatalogTitle(domain, key, name, metadata.get("year"), season, episode) if name else None
 
 
-def _tail(name, title):
-    parts = _tokens(name)
-    prefix = _tokens(title.title)
-    if not prefix or parts[: len(prefix)] != prefix:
+def _tail_from_parts(parts, title):
+    if not parts:
         return ()
-    return parts[len(prefix) :]
+    year = str(title.year) if title.year else None
+    for prefix in _title_prefixes(title):
+        if parts[: len(prefix)] == prefix:
+            return parts[len(prefix) :]
+        if (
+            title.domain == "movie"
+            and year
+            and parts[0] == year
+            and parts[1 : 1 + len(prefix)] == prefix
+        ):
+            return (parts[0], *parts[1 + len(prefix) :])
+    return ()
+
+
+def _tail(name, title):
+    return _tail_from_parts(_tokens(name), title)
+
+
+def _movie_matches_parts(parts, title):
+    tail = _tail_from_parts(parts, title)
+    return bool(tail and tail[0] == str(title.year) and not {"sample", "trailer"} & set(tail))
 
 
 def _movie_matches(name, title):
-    tail = _tail(name, title)
-    return bool(tail and tail[0] == str(title.year) and not {"sample", "trailer"} & set(tail))
+    return _movie_matches_parts(_tokens(name), title)
+
+
+def _build_token_index(torrents):
+    by_first: dict[str, list[tuple[tuple[str, ...], str]]] = {}
+    for data in torrents.values():
+        if data.get("status") != "downloaded":
+            continue
+        raw = data.get("filename") or ""
+        parts = _tokens(raw)
+        if not parts:
+            continue
+        entry = (parts, raw)
+        by_first.setdefault(parts[0], []).append(entry)
+        if len(parts) > 1 and parts[0].isdigit() and len(parts[0]) == 4:
+            by_first.setdefault(parts[1], []).append(entry)
+    return by_first
 
 
 def _tv_marker(name, title, *, from_pack=False):
     parts = _tail(name, title)
     if parts and title.year and parts[0] == str(title.year):
         parts = parts[1:]
+        if (
+            len(parts) > 1
+            and parts[0].isdigit()
+            and len(parts[0]) == 4
+            and int(title.year) <= int(parts[0]) <= 2099
+        ):
+            parts = parts[1:]
     if not parts and from_pack:
         parts = _tokens(name)
     if not parts or {"sample", "trailer"} & set(parts):
@@ -176,6 +255,19 @@ def _tv_marker(name, title, *, from_pack=False):
         if len(parts) > 1 and re.fullmatch(r"e[0-9]{1,4}|[0-9]{1,4}", parts[1]):
             return None
         return int(match[1]), int(match[2])
+    if not from_pack and title.season:
+        if (
+            len(parts) >= 2
+            and (m1 := _SEASON.fullmatch(parts[0]))
+            and (m2 := _SEASON.fullmatch(parts[1]))
+        ):
+            if int(m1[1]) <= title.season <= int(m2[1]):
+                return title.season, 0
+        if parts[0] == "complete":
+            return title.season, 0
+        if isinstance(name, str) and (rng := _SEASON_RANGE.search(name)):
+            if int(rng[1]) <= title.season <= int(rng[2]):
+                return title.season, 0
     if match := _SEASON.fullmatch(parts[0]):
         return int(match[1]), 0
     if len(parts) > 1 and parts[0] == "season" and re.fullmatch(r"[0-9]{1,3}", parts[1]):
@@ -212,7 +304,7 @@ async def movie_ids(db, scope, library):
     core.revalidate_scope(db, scope)
     inventory = await library.inventory(token)
     rows = db.execute(
-        """SELECT c.imdb_id, c.title, c.year
+        """SELECT c.imdb_id, c.title, c.original_title, c.year
            FROM movie_catalog c
            LEFT JOIN movie_requests q USING(user_id, imdb_id)
            WHERE c.user_id=? AND c.identity_verified=1
@@ -241,12 +333,28 @@ async def movie_ids(db, scope, library):
             scope.library_id,
         ),
     ).fetchall()
+    by_first = _build_token_index(inventory[0])
     ids = set()
     for row in rows:
         if row["year"]:
-            title = CatalogTitle("movie", row["imdb_id"], row["title"], row["year"])
-            if next(_records(inventory, title), None):
-                ids.add(title.key)
+            title = CatalogTitle(
+                "movie",
+                row["imdb_id"],
+                row["title"],
+                row["year"],
+                alternate_titles=_alternates(row["title"], row["original_title"]),
+            )
+            seen_buckets = set()
+            for prefix in _title_prefixes(title):
+                if prefix[0] in seen_buckets:
+                    continue
+                seen_buckets.add(prefix[0])
+                if any(
+                    _movie_matches_parts(parts, title)
+                    for parts, _raw in by_first.get(prefix[0], ())
+                ):
+                    ids.add(title.key)
+                    break
     return ids
 
 
@@ -291,16 +399,23 @@ async def tv_ids(db, scope, library):
             scope.library_id,
         ),
     ).fetchall()
+    by_first = _build_token_index(inventory[0])
     ids = set()
     for row in rows:
         metadata = json.loads(row["metadata_json"])
         name = metadata.get("title")
         if not name:
             continue
+        prefixes = [p for p in (_tokens(name),) if p]
+        if not prefixes:
+            continue
+        bucket = by_first.get(prefixes[0][0], ())
+        if not bucket:
+            continue
         year = metadata.get("year")
         for season in metadata.get("seasons", []):
             title = CatalogTitle("tv", str(row["tmdb_id"]), name, year, season["season_number"])
-            if next(_records(inventory, title), None):
+            if any(_matches(raw, title) for _parts, raw in bucket):
                 ids.add(row["tmdb_id"])
                 break
     return ids

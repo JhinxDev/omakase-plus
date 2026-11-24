@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import re
 import unicodedata
 from collections.abc import Sequence
@@ -70,14 +71,19 @@ def _season_phrase(value: str) -> str:
     return value
 
 
-def normalize_release_identity(value: str) -> str:
-    """Normalize title punctuation and equivalent season spellings."""
-    text = unicodedata.normalize("NFKC", value or "").casefold()
+@functools.lru_cache(maxsize=2048)
+def _normalize_release_identity_cached(raw: str) -> str:
+    text = unicodedata.normalize("NFKC", raw).casefold()
     text = text.replace("’", "'").replace("`", "'")
     text = _TECHNICAL_BRACKET_RE.sub(" ", text)
     text = _season_phrase(text)
     text = _PUNCTUATION_RE.sub(" ", text)
     return _SPACE_RE.sub(" ", text).strip()
+
+
+def normalize_release_identity(value: str) -> str:
+    """Normalize title punctuation and equivalent season spellings."""
+    return _normalize_release_identity_cached(value or "")
 
 
 def release_season_markers(value: str) -> frozenset[int]:

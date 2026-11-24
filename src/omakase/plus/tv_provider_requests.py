@@ -551,6 +551,11 @@ async def search_missing_episode(db, user_id, tmdb_id, service, snapshot):
     ]
     if not waiting:
         return
+    recent_seasons = {
+        key: value
+        for key, value in (checks.get("seasons") or {}).items()
+        if (checked := _provider_time(value)) and checked > now - _FALLBACK_REPEAT
+    }
     waiting.sort(key=lambda item: (item[1], item[0]))
     last = checks.get("episode")
     cursor = (0, 0)
@@ -564,7 +569,12 @@ async def search_missing_episode(db, user_id, tmdb_id, service, snapshot):
     # An early episode's cooldown can expire before a long request reaches its tail.
     season, episode = next(((s, e) for s, e in waiting if (e, s) > cursor), waiting[0])
     timestamp = now.isoformat()
-    reservation = {"latest": timestamp, "episodes": recent, "episode": checks.get("episode")}
+    reservation = {
+        "latest": timestamp,
+        "episodes": recent,
+        "episode": checks.get("episode"),
+        "seasons": recent_seasons,
+    }
     reserved = db.execute(
         """UPDATE tv_provider_requests SET snapshot_json=json_set(snapshot_json,'$.fallback_checks',json(?))
            WHERE user_id=? AND title_id=?
@@ -574,6 +584,54 @@ async def search_missing_episode(db, user_id, tmdb_id, service, snapshot):
     db.commit()
     if not reserved:
         return
+
+    if library["provider"] == "Real-Debrid" and request_candidates.acquire_enabled():
+        from omakase.plus.catalog_config import configured_catalogs
+        from omakase.plus.tv_service import TVError
+
+        sources = configured_catalogs(db, user_id, kind="tv").sources
+        if sources:
+            by_season: dict[int, list[int]] = {}
+            for s_num, ep_num in waiting:
+                by_season.setdefault(s_num, []).append(ep_num)
+            for pack_season in sorted(by_season):
+                eps = by_season[pack_season]
+                if len(eps) < 2 or str(pack_season) in recent_seasons:
+                    continue
+                if (
+                    callable(getattr(service, "season", None))
+                    and not db.execute(
+                        """SELECT 1 FROM tv_episodes WHERE user_id=? AND tmdb_id=?
+                       AND season_number=? AND episode_number=?""",
+                        (user_id, tmdb_id, pack_season, eps[0]),
+                    ).fetchone()
+                ):
+                    try:
+                        async with asyncio.timeout(3):
+                            await service.season(user_id, tmdb_id, pack_season)
+                    except (MovieError, TVError, TimeoutError):
+                        pass
+                searched, submitted = await tv_fallback.submit_season_pack(
+                    db, user_id, tmdb_id, pack_season, eps, catalogs=sources
+                )
+                if searched:
+                    recent_seasons[str(pack_season)] = timestamp
+                if submitted:
+                    completed_pack = {
+                        "latest": timestamp,
+                        "episodes": recent,
+                        "episode": checks.get("episode"),
+                        "seasons": recent_seasons,
+                    }
+                    db.execute(
+                        """UPDATE tv_provider_requests SET snapshot_json=json_set(snapshot_json,'$.fallback_checks',json(?))
+                           WHERE user_id=? AND title_id=?
+                             AND json_extract(snapshot_json,'$.fallback_checks.latest')=?""",
+                        (json.dumps(completed_pack), user_id, tmdb_id, timestamp),
+                    )
+                    db.commit()
+                    return
+                break
 
     async def on_matches(eligible):
         if library["provider"] == "Real-Debrid":
@@ -610,6 +668,7 @@ async def search_missing_episode(db, user_id, tmdb_id, service, snapshot):
             allowed_resolutions=policy.allowed_resolutions if policy else (),
             minimum_seeders=policy.minimum_seeders if policy else 1,
             maximum_bytes=policy.max_release_size_bytes if policy else 0,
+            tiered_fallback=True,
         ),
         force=True,
         timeout=5,
@@ -617,7 +676,12 @@ async def search_missing_episode(db, user_id, tmdb_id, service, snapshot):
     )
     if result.get("outcome") in {"complete", "partial"}:
         recent[f"{season}:{episode}"] = timestamp
-    completed = {"latest": timestamp, "episodes": recent, "episode": [season, episode]}
+    completed = {
+        "latest": timestamp,
+        "episodes": recent,
+        "episode": [season, episode],
+        "seasons": recent_seasons,
+    }
     db.execute(
         """UPDATE tv_provider_requests SET snapshot_json=json_set(snapshot_json,'$.fallback_checks',json(?))
            WHERE user_id=? AND title_id=?

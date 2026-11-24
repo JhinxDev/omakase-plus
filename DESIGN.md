@@ -589,3 +589,26 @@ Compilation and playback start do not establish visual usability. Physical
 MobLand acceptance failed on0.5.0 build31;0.5.1 build32 is the repair candidate,
 not an accepted device result until it has been installed and retested.
 
+## Requests dashboard and live performance, November 24
+
+The `/plus/requests` dashboard and `/plus/requests/{kind}/{title_id}` detail
+screen keep the dark midnight/iris shell while presenting plain-English status
+pills (`display_tone`: emerald `ready`, iris `progress`, sky `searching`,
+amber `attention`, slate `muted`), TV episode progress bars (`ready / expected`),
+and 44px button actions for status checks, retries, and direct library launch.
+Technical Riven stage timelines, fallback transfer states, and indexer candidate
+rejection rows live inside an expandable **Source & Release Diagnostics**
+disclosure on the detail page (expanded automatically when stopped or refreshed),
+leaving the primary cards scannable at both desktop (1440px) and mobile (390px)
+viewports with zero horizontal overflow. Progress bar width transitions respect
+`prefers-reduced-motion: reduce`.
+
+For home rail speed without softening the hero banner, small landscape cards use
+a bounded `640x360` WebP `?size=card` derivative while hero banners retain the
+full `2560x1440` path tested by hero quality QA. Backend library-membership scans
+index downloaded debrid prefixes once per inventory pass and cache validated
+curator publication lookups by receipt JSON. Live latency and headless Edge
+Web Vitals regressions are measured via `ops/benchmark_live.py` with
+before/after diffs recorded during release cutover.
+
+

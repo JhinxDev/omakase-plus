@@ -19,14 +19,17 @@ different decision from telling the truth about a search.
 from __future__ import annotations
 
 import asyncio
+import html
 import os
 import re
 import time
+import unicodedata
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from weakref import WeakValueDictionary
 
+from omakase.plus.btih import torrent_hash_from_magnet
 from omakase.plus.catalog import quality_from_title
 
 SEARCH_ENV = "OMAKASE_REQUEST_SEARCH"
@@ -55,12 +58,21 @@ REASON_TEXT = {
     "episode_mismatch": "the release is not the episode that was requested",
     "too_large": "it is larger than the size limit for this kind of title",
     "unreleased": "the release is marked as not yet released",
+    "bad_quality": "it is a low-quality cam, screener, or sample release",
+    "accepted_low_seeders": "accepted on fallback with fewer seeders",
+    "accepted_quality_fallback": "accepted on fallback at standard or 720p quality",
 }
 
 _SEPARATORS = re.compile(r"[^a-z0-9]+")
 _YEAR = re.compile(r"\b(19\d{2}|20\d{2})\b")
 _SEASON_EPISODE = re.compile(r"\bs(\d{1,2})[ ._-]?e(\d{1,3})\b", re.IGNORECASE)
+_SEASON_RANGE = re.compile(r"\bs(\d{1,2})\s*(?:-|to|thru)\s*s?(\d{1,2})\b", re.IGNORECASE)
+_SEASON_ONLY = re.compile(r"\b(?:s(\d{1,2})|season[ ._-]?(\d{1,2}))\b", re.IGNORECASE)
 _EPISODE_ONLY = re.compile(r"\b(?:e|ep)[ ._-]?(\d{1,3})\b", re.IGNORECASE)
+_BAD_QUALITY = re.compile(
+    r"\b(?:cam|hdcam|camrip|hdts|telesync|telecine|dvdscr|screener|sample|trailer)\b",
+    re.IGNORECASE,
+)
 _NOISE = frozenset(
     {
         "1080p",
@@ -121,9 +133,14 @@ def acquire_enabled() -> bool:
     return os.getenv(ACQUIRE_ENV, "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def _fold_text(value: object) -> str:
+    raw = html.unescape(str(value or ""))
+    return "".join(ch for ch in unicodedata.normalize("NFKD", raw) if not unicodedata.combining(ch))
+
+
 def normalize(value: object) -> str:
-    """Lowercase alphanumeric words, so punctuation and release tags cannot hide a match."""
-    text = _SEPARATORS.sub(" ", str(value or "").casefold())
+    """Lowercase ASCII-folded alphanumeric words, so punctuation and tags cannot hide a match."""
+    text = _SEPARATORS.sub(" ", _fold_text(value).casefold())
     return " ".join(word for word in text.split() if word and word not in _NOISE)
 
 
@@ -141,6 +158,10 @@ class Verdict:
 
     @property
     def text(self) -> str:
+        if self.code == "accepted_low_seeders":
+            return REASON_TEXT[self.code]
+        if self.code == "accepted_quality_fallback":
+            return REASON_TEXT[self.code]
         return REASON_TEXT.get(self.code, self.detail or "no reason was recorded")
 
 
@@ -156,10 +177,37 @@ class JudgeRequest:
     maximum_bytes: int = 0
     minimum_seeders: int = 1
     allowed_resolutions: tuple[str, ...] = ()
+    alternate_titles: tuple[str, ...] = ()
+    season_pack: bool = False
+    tiered_fallback: bool = False
 
     @property
     def episode_expected(self) -> bool:
-        return self.kind in {"tv", "anime"} and self.episode is not None
+        return self.kind in {"tv", "anime"} and self.episode is not None and not self.season_pack
+
+
+def _title_matches(found: Sequence[str], request: JudgeRequest) -> bool:
+    candidates = [_identity_tokens(request.title)]
+    for alt in request.alternate_titles:
+        tokens = _identity_tokens(alt)
+        if tokens:
+            candidates.append(tokens)
+    non_empty = [tokens for tokens in candidates if tokens]
+    if not non_empty:
+        return True
+    return any(all(token in found for token in wanted) for wanted in non_empty)
+
+
+def _season_pack_matches(folded_title: str, target_season: int) -> bool:
+    if _SEASON_EPISODE.search(folded_title):
+        return False
+    for m_range in _SEASON_RANGE.finditer(folded_title):
+        if int(m_range.group(1)) <= target_season <= int(m_range.group(2)):
+            return True
+    seasons = {int(g1 or g2) for g1, g2 in _SEASON_ONLY.findall(folded_title)}
+    if target_season in seasons:
+        return True
+    return bool(not seasons and re.search(r"\bcomplete\b", folded_title, re.IGNORECASE))
 
 
 def judge(candidate: object, request: JudgeRequest) -> Verdict:
@@ -169,7 +217,7 @@ def judge(candidate: object, request: JudgeRequest) -> Verdict:
     then availability, then identity. Each rejection names one reason, which is what makes
     the request page useful instead of vague.
     """
-    title = str(getattr(candidate, "title", "") or "")
+    title = _fold_text(getattr(candidate, "title", "") or "")
     magnet = str(getattr(candidate, "magnet", "") or "")
     torrent_url = str(getattr(candidate, "torrent_url", "") or "")
     if not magnet and not torrent_url:
@@ -179,10 +227,11 @@ def judge(candidate: object, request: JudgeRequest) -> Verdict:
         return Verdict(False, "no_seeders", "")
     if seeders < request.minimum_seeders:
         return Verdict(False, "insufficient_seeders", "")
+    if _BAD_QUALITY.search(title):
+        return Verdict(False, "bad_quality", "")
 
-    wanted = _identity_tokens(request.title)
     found = _identity_tokens(title)
-    if wanted and not all(token in found for token in wanted):
+    if not _title_matches(found, request):
         return Verdict(False, "title_mismatch", "")
 
     if request.year:
@@ -195,7 +244,10 @@ def judge(candidate: object, request: JudgeRequest) -> Verdict:
         ):
             return Verdict(False, "year_mismatch", "")
 
-    if request.episode_expected:
+    if request.season_pack:
+        if not _season_pack_matches(title, int(request.season or 1)):
+            return Verdict(False, "episode_mismatch", "")
+    elif request.episode_expected:
         season_hit = _SEASON_EPISODE.search(title)
         if season_hit:
             season, episode = int(season_hit.group(1)), int(season_hit.group(2))
@@ -217,6 +269,42 @@ def judge(candidate: object, request: JudgeRequest) -> Verdict:
     if request.allowed_resolutions and quality_from_title(title) not in request.allowed_resolutions:
         return Verdict(False, "quality_excluded", "")
     return Verdict(True, "accepted", "")
+
+
+def evaluate_candidates(
+    candidates: Sequence[object], request: JudgeRequest
+) -> list[tuple[object, Verdict]]:
+    """Judge candidates strictly first, then relax seeders and 720p/clean-SD only if empty."""
+    tier1 = [(item, judge(item, request)) for item in candidates]
+    if not request.tiered_fallback or any(verdict.accepted for _, verdict in tier1):
+        return tier1
+    if request.minimum_seeders > 1:
+        relaxed_seeders = replace(request, minimum_seeders=1)
+        tier2 = [
+            (
+                item,
+                Verdict(True, "accepted_low_seeders", "")
+                if (verdict := judge(item, relaxed_seeders)).accepted
+                else verdict,
+            )
+            for item in candidates
+        ]
+        if any(verdict.accepted for _, verdict in tier2):
+            return tier2
+    if request.allowed_resolutions:
+        relaxed_quality = replace(request, minimum_seeders=1, allowed_resolutions=())
+        tier3 = [
+            (
+                item,
+                Verdict(True, "accepted_quality_fallback", "")
+                if (verdict := judge(item, relaxed_quality)).accepted
+                else verdict,
+            )
+            for item in candidates
+        ]
+        if any(verdict.accepted for _, verdict in tier3):
+            return tier3
+    return tier1
 
 
 def summarize(verdicts: Sequence[Verdict]) -> dict[str, object]:
@@ -468,23 +556,48 @@ async def refresh(
         )
 
 
-async def _run_search(db, user_id, kind, title_id, request, catalogs, timeout, on_matches):
-    if catalogs is None:
-        from omakase.plus.catalog_config import configured_catalogs
+def _primary_queries(request: JudgeRequest) -> list[str]:
+    if request.season_pack:
+        return [f"{request.title} S{int(request.season or 1):02d}"]
+    if request.kind == "tv" and request.episode_expected:
+        return [f"{request.title} S{int(request.season or 1):02d}E{request.episode:02d}"]
+    queries: list[str] = []
+    seen: set[str] = set()
+    for raw in (request.title, *(_fold_text(alt) for alt in request.alternate_titles)):
+        cleaned = raw.strip()
+        key = normalize(cleaned) or cleaned.casefold()
+        if cleaned and key not in seen:
+            seen.add(key)
+            queries.append(cleaned)
+    return queries or [request.title]
 
-        catalogs = configured_catalogs(db, user_id, kind=kind).sources
 
-    async def one(source):
-        query = request.title
-        if request.kind == "tv" and request.episode_expected:
-            query += f" S{int(request.season or 1):02d}E{request.episode:02d}"
+def _dedupe_candidates(candidates: Sequence[object]) -> list[object]:
+    best: dict[tuple[str, str, int], object] = {}
+    for item in candidates:
+        title = getattr(item, "title", "") or ""
+        magnet = str(getattr(item, "magnet", "") or "")
+        url = str(getattr(item, "torrent_url", "") or "").strip()
+        digest = torrent_hash_from_magnet(magnet) or url
+        key = (digest, normalize(title), int(getattr(item, "size_bytes", 0) or 0))
+        prev = best.get(key)
+        if prev is None or (int(getattr(item, "seeders", 0) or 0), bool(magnet)) > (
+            int(getattr(prev, "seeders", 0) or 0),
+            bool(getattr(prev, "magnet", "")),
+        ):
+            best[key] = item
+    return list(best.values())
+
+
+async def _gather_queries(
+    catalogs, queries: Sequence[str], *, timeout: float
+) -> tuple[list[object], int, int]:
+    async def one(source, query):
         return tuple(await source.search(query))
 
-    tasks = [asyncio.create_task(one(source)) for source in catalogs]
+    tasks = [asyncio.create_task(one(source, query)) for query in queries for source in catalogs]
     if not tasks:
-        record(db, user_id, kind, title_id, [], marker=NO_SOURCES_CODE)
-        return page_block(db, user_id, kind, title_id)
-
+        return [], 0, 0
     try:
         completed, _ = await asyncio.wait(tasks, timeout=timeout)
     finally:
@@ -492,23 +605,60 @@ async def _run_search(db, user_id, kind, title_id, request, catalogs, timeout, o
             if not task.done():
                 task.cancel()
         results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    candidates = []
+    candidates: list[object] = []
     successes = 0
     for task, result in zip(tasks, results, strict=True):
         if task not in completed or isinstance(result, BaseException):
             continue
         successes += 1
         candidates.extend(result)
+    return candidates, successes, len(tasks)
+
+
+async def _run_search(db, user_id, kind, title_id, request, catalogs, timeout, on_matches):
+    if catalogs is None:
+        from omakase.plus.catalog_config import configured_catalogs
+
+        catalogs = configured_catalogs(db, user_id, kind=kind).sources
+
+    if not catalogs:
+        record(db, user_id, kind, title_id, [], marker=NO_SOURCES_CODE)
+        return page_block(db, user_id, kind, title_id)
+
+    queries = _primary_queries(request)
+    started = time.time()
+    raw_candidates, successes, task_count = await _gather_queries(
+        catalogs, queries, timeout=timeout
+    )
+    candidates = _dedupe_candidates(raw_candidates)
+    evaluated = evaluate_candidates(candidates, request)
+
+    if (
+        request.kind == "movie"
+        and request.tiered_fallback
+        and request.year
+        and successes > 0
+        and not any(verdict.accepted for _, verdict in evaluated)
+    ):
+        remaining = timeout - (time.time() - started)
+        if remaining > 0.5:
+            year_queries = [f"{query} {request.year}" for query in queries]
+            more, more_ok, more_total = await _gather_queries(
+                catalogs, year_queries, timeout=remaining
+            )
+            successes += more_ok
+            task_count += more_total
+            if more:
+                candidates = _dedupe_candidates([*candidates, *more])
+                evaluated = evaluate_candidates(candidates, request)
 
     marker = None
     if not successes:
         marker = ERROR_CODE
-    elif successes != len(tasks):
+    elif successes != task_count:
         marker = PARTIAL_CODE
     elif not candidates:
         marker = EMPTY_CODE
-    evaluated = [(item, judge(item, request)) for item in candidates]
     record(db, user_id, kind, title_id, evaluated, marker=marker)
     if on_matches is not None:
         eligible = [item for item, verdict in evaluated if verdict.accepted]

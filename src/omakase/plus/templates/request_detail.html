@@ -5,8 +5,8 @@
 {% block masthead %}
 <header class="product-masthead overview-masthead request-detail-masthead">
   <div class="request-detail-title">
-    {{ request_cover(item) }}
-    <div><a class="request-back" href="/plus/requests">All requests</a>
+    {{ request_cover(item, eager=true) }}
+    <div><a class="request-back" href="/plus/requests">← All requests</a>
     <h1>{{ item.title }}</h1>
     <p class="page-intro">{{ 'TV Show' if item.media_kind == 'tv' else item.media_kind | title }}{% if item.release_year %} · {{ item.release_year }}{% endif %}{% if item.season is not none %} · Season {{ item.season }}{% endif %}</p></div>
   </div>
@@ -23,9 +23,18 @@
   <section class="requests-panel movie-availability" aria-labelledby="request-status-heading">
     <h2 id="request-status-heading">Current status</h2>
     <div class="movie-detail-status">
-      <strong class="status-pill" data-request-label data-request-status role="status">{{ item.status_label }}</strong>
-      <p data-request-detail>{{ item.detail }}</p>
+      <strong class="status-pill" data-request-label data-request-status data-status-tone="{{ item.display_tone }}" role="status">{{ item.display_label }}</strong>
+      <p data-request-detail>{{ item.display_detail }}</p>
     </div>
+    <div class="request-episode-progress" data-request-progress{% if not item.progress %} hidden{% endif %}>
+      <div class="request-episode-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="{{ item.progress.expected if item.progress else 100 }}" aria-valuenow="{{ item.progress.ready if item.progress else 0 }}" aria-label="{{ item.title }} episode progress">
+        <span class="request-episode-progress-fill" data-request-progress-fill style="width: {{ item.progress.percent if item.progress else 0 }}%"></span>
+      </div>
+      <span class="request-episode-progress-text" data-request-progress-text>{% if item.progress %}{{ item.progress.ready }} / {{ item.progress.expected }} episodes · {{ item.progress.percent }}%{% endif %}</span>
+    </div>
+    <p class="requests-subline" data-request-subline-wrap{% if not item.display_subline %} hidden{% endif %}>
+      <span data-request-subline>{{ item.display_subline }}</span>
+    </p>
     <p class="requests-next-step" data-request-next{% if not item.next_action or item.next_action.kind == 'check' %} hidden{% endif %}>
       <strong>Next step</strong>
       <span data-request-next-text>{% if item.next_action %}{{ item.next_action.label }}{% if item.next_action.reason %} · {{ item.next_action.reason }}{% endif %}{% endif %}</span>
@@ -36,19 +45,22 @@
     </dl>
     {% if item.tv_provider %}
     <dl class="requests-facts requests-facts-grid">
-      <div><dt>Source</dt><dd>Riven</dd></div>
+      <div><dt>Source</dt><dd>Riven + Cloud Fallback</dd></div>
       {% if item.tv_provider.seasons %}<div><dt>Requested seasons</dt><dd>{{ item.tv_provider.seasons | join(', ') }}</dd></div>{% endif %}
       {% if item.tv_provider.origin == 'assistant' %}<div><dt>Submitted by</dt><dd>Assistant</dd></div>{% endif %}
     </dl>
     {% endif %}
     <div class="requests-actions requests-primary-actions">
+      {% if item.resolved or (item.progress and item.progress.ready > 0) %}
+      <a class="button button-primary request-action-btn" href="{{ item.href }}">{{ 'Open series' if item.kind == 'tv' else ('Watch movie' if item.state == 'ready' else 'Open in library') }}</a>
+      {% endif %}
       <form method="post" action="/plus/requests/{{ item.kind }}/{{ item.title_id }}/check" data-request-check data-busy-form data-single-flight{% if not item.can_check %} hidden{% endif %}>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="button button-primary" type="submit" data-busy-label="Checking…">Check status</button>
+        <button class="button button-secondary request-action-btn" type="submit" data-busy-label="Checking…">Check status</button>
       </form>
       <form method="post" action="/plus/requests/{{ item.kind }}/{{ item.title_id }}/retry" data-request-retry data-busy-form data-single-flight{% if not item.can_retry %} hidden{% endif %}>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="button button-secondary" type="submit" data-busy-label="{{ 'Sending…' if item.kind == 'tv' else 'Retrying…' }}">{{ 'Send to Riven' if item.kind == 'tv' else 'Retry request' }}</button>
+        <button class="button button-secondary request-action-btn" type="submit" data-busy-label="{{ 'Sending…' if item.kind == 'tv' else 'Retrying…' }}">{{ 'Send to Riven' if item.kind == 'tv' else 'Retry request' }}</button>
       </form>
       <span class="requests-facts" data-request-no-action hidden></span>
     </div>
@@ -58,8 +70,19 @@
   <section class="requests-panel request-tv-seasons" aria-labelledby="request-tv-seasons-heading">
     <h2 id="request-tv-seasons-heading">Episode progress</h2>
     {% for season in item.tv_provider.snapshot.seasons %}
-    <details class="requests-evidence">
-      <summary>Season {{ season.season }} <span>{% if season.ready %}{{ season.ready }} ready · {% endif %}{{ season.episodes | length }} episode{{ 's' if season.episodes | length != 1 else '' }} checked</span></summary>
+    {% set season_total = season.episodes | length %}
+    {% set season_ready = season.ready | default(0) %}
+    {% set season_pct = ((season_ready * 100) // season_total) if season_total > 0 else 0 %}
+    <details class="requests-evidence"{% if season_ready < season_total %} open{% endif %}>
+      <summary>
+        <span>Season {{ season.season }}</span>
+        <span class="request-season-summary-meta">{{ season_ready }} / {{ season_total }} ready ({{ season_pct }}%)</span>
+      </summary>
+      <div class="request-episode-progress request-episode-progress--compact">
+        <div class="request-episode-progress-bar" aria-hidden="true">
+          <span class="request-episode-progress-fill" style="width: {{ season_pct }}%"></span>
+        </div>
+      </div>
       <ol class="request-episode-list">
         {% for episode in season.episodes %}
         <li><span>Episode {{ episode.episode }}</span><span{% if episode.available %} data-status-tone="ready"{% endif %}>{{ 'Ready to watch' if episode.available else episode.status }}</span></li>
@@ -70,54 +93,64 @@
   </section>
   {% endif %}
 
-  {% if item.kind == 'movie' or request_search.checked_at %}
-  <section class="requests-panel request-search" aria-labelledby="request-search-heading" data-request-search="{{ 'on' if request_search.enabled else 'off' }}" data-request-evidence-at="{{ request_search.checked_at or '' }}">
-    <h2 id="request-search-heading">Fallback sources{% if item.tv_provider and item.tv_provider.snapshot and item.tv_provider.snapshot.fallback_episode %} · S{{ item.tv_provider.snapshot.fallback_episode[0] }} E{{ item.tv_provider.snapshot.fallback_episode[1] }}{% endif %}</h2>
-    <p data-request-search-headline>{{ request_search.headline }}</p>
-    <p class="requests-checked" data-request-search-time{% if not request_search.checked_at %} hidden{% endif %}>Searched <span data-request-search-checked>{% if request_search.checked_at %}<time datetime="{{ request_search.checked_at }}" data-local-datetime="{{ request_search.checked_at }}">{{ request_search.checked_at }}</time>{% endif %}</span></p>
-    <p class="requests-transfer" data-request-transfer{% if not item.fallback_transfer %} hidden{% endif %}>{{ item.fallback_transfer.headline if item.fallback_transfer else '' }}</p>
-    <a href="{{ item.detail_href }}" data-request-evidence-reload hidden>Load latest release details</a>
-    {% if request_search.enabled and request_search.candidates %}
-    <details class="requests-evidence">
-      <summary>Review {{ request_search.candidates | length }} release{{ 's' if request_search.candidates | length != 1 else '' }}</summary>
-      <ul class="request-search-candidates" aria-label="Candidates found">
-        {% for candidate in request_search.candidates %}
-        <li data-candidate-accepted="{{ 'true' if candidate.accepted else 'false' }}">
-          <span class="request-search-title">{{ candidate.title }}</span>
-          <span class="request-search-verdict">{% if candidate.accepted %}Passed release checks{% else %}{{ candidate.text }}{% endif %}</span>
-          {% if candidate.seeders is not none or candidate.indexer %}<span class="request-search-meta">{{ candidate.indexer or 'Source unnamed' }}{% if candidate.seeders is not none %} · {{ candidate.seeders }} seeding{% endif %}</span>{% endif %}
-        </li>
-        {% endfor %}
-      </ul>
-    </details>
-    {% endif %}
-  </section>
-  {% endif %}
+  <details class="requests-panel requests-diagnostics"{% if item.stopped_at or notice == 'checked' %} open{% endif %}>
+    <summary class="requests-diagnostics-summary">
+      <span>Source &amp; Release Diagnostics</span>
+      <span class="requests-diagnostics-badge">{% if request_search.candidates %}{{ request_search.candidates | length }} release{{ 's' if request_search.candidates | length != 1 else '' }} logged{% else %}Pipeline details{% endif %}</span>
+    </summary>
+    <div class="requests-diagnostics-body">
+      {% if item.kind == 'movie' or request_search.checked_at %}
+      <section class="request-search" aria-labelledby="request-search-heading" data-request-search="{{ 'on' if request_search.enabled else 'off' }}" data-request-evidence-at="{{ request_search.checked_at or '' }}">
+        <h2 id="request-search-heading">Indexer search{% if item.tv_provider and item.tv_provider.snapshot and item.tv_provider.snapshot.fallback_episode %} · S{{ item.tv_provider.snapshot.fallback_episode[0] }} E{{ item.tv_provider.snapshot.fallback_episode[1] }}{% endif %}</h2>
+        <p data-request-search-headline>{{ request_search.headline }}</p>
+        <p class="requests-checked" data-request-search-time{% if not request_search.checked_at %} hidden{% endif %}>Searched <span data-request-search-checked>{% if request_search.checked_at %}<time datetime="{{ request_search.checked_at }}" data-local-datetime="{{ request_search.checked_at }}">{{ request_search.checked_at }}</time>{% endif %}</span></p>
+        <p class="requests-transfer" data-request-transfer{% if not item.fallback_transfer %} hidden{% endif %}>{{ item.fallback_transfer.headline if item.fallback_transfer else '' }}</p>
+        <a href="{{ item.detail_href }}" data-request-evidence-reload hidden>Load latest release details</a>
+        {% if request_search.enabled and request_search.candidates %}
+        <details class="requests-evidence" open>
+          <summary>Review {{ request_search.candidates | length }} release{{ 's' if request_search.candidates | length != 1 else '' }}</summary>
+          <ul class="request-search-candidates" aria-label="Candidates found">
+            {% for candidate in request_search.candidates %}
+            <li data-candidate-accepted="{{ 'true' if candidate.accepted else 'false' }}">
+              <span class="request-search-title">{{ candidate.title }}</span>
+              <span class="request-search-verdict">{% if candidate.accepted %}{{ candidate.text if candidate.text and candidate.text != 'no reason was recorded' else 'Passed release checks' }}{% else %}{{ candidate.text }}{% endif %}</span>
+              {% if candidate.seeders is not none or candidate.indexer %}<span class="request-search-meta">{{ candidate.indexer or 'Source unnamed' }}{% if candidate.seeders is not none %} · {{ candidate.seeders }} seeding{% endif %}</span>{% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+        </details>
+        {% endif %}
+      </section>
+      {% endif %}
 
-  {% if not item.tv_provider %}<section class="requests-panel" aria-labelledby="request-stages-heading">
-    <h2 id="request-stages-heading">{{ 'Riven and library stages' if item.kind == 'movie' else 'Request stages' }}</h2>
-    <ol class="request-timeline requests-stages" aria-label="Request stages">
-      {% for stage in item.stages %}
-      <li data-stage="{{ stage.stage }}" data-state="{{ stage.state }}"{% if stage.state == 'current' %} aria-current="step"{% endif %}>
-        <span class="request-timeline-dot" aria-hidden="true"></span>
-        <span class="request-timeline-label">{{ stage.label }}</span>
-        <span data-request-stage-time>{% if stage.occurred_at %}<time datetime="{{ stage.occurred_at }}" data-local-datetime="{{ stage.occurred_at }}">{{ stage.occurred_at }}</time>{% elif stage.state == 'pending' %}not yet{% elif stage.state == 'unknown' %}not confirmed{% endif %}</span>
-      </li>
-      {% endfor %}
-    </ol>
-  </section>{% endif %}
+      {% if not item.tv_provider %}
+      <section class="request-stages-block" aria-labelledby="request-stages-heading">
+        <h2 id="request-stages-heading">{{ 'Riven and library stages' if item.kind == 'movie' else 'Request stages' }}</h2>
+        <ol class="request-timeline requests-stages" aria-label="Request stages">
+          {% for stage in item.stages %}
+          <li data-stage="{{ stage.stage }}" data-state="{{ stage.state }}"{% if stage.state == 'current' %} aria-current="step"{% endif %}>
+            <span class="request-timeline-dot" aria-hidden="true"></span>
+            <span class="request-timeline-label">{{ stage.label }}</span>
+            <span data-request-stage-time>{% if stage.occurred_at %}<time datetime="{{ stage.occurred_at }}" data-local-datetime="{{ stage.occurred_at }}">{{ stage.occurred_at }}</time>{% elif stage.state == 'pending' %}not yet{% elif stage.state == 'unknown' %}not confirmed{% endif %}</span>
+          </li>
+          {% endfor %}
+        </ol>
+      </section>
+      {% endif %}
 
-  <section class="requests-stop" aria-labelledby="request-stop-heading" data-stopped-at="{{ item.stopped_at or '' }}"{% if not item.stopped_at %} hidden{% endif %}>
-    <h2 id="request-stop-heading">Where it stopped</h2>
-    <strong data-request-stop-label>{{ item.stage_label }}</strong>
-    <p class="{{ 'requests-unknown' if item.unknown_reason else '' }}" data-request-stop-reason{% if item.unknown_reason %} data-unknown-reason{% else %} data-verified-reason{% endif %}>{{ (item.reason_text if item.unknown_reason else item.reason) or '' }}</p>
-    <p class="requests-facts" data-request-rejections{% if not item.candidates_rejected %} hidden{% endif %}>{% if item.candidates_rejected %}The acquisition service rejected {{ item.candidates_rejected }} candidate{{ 's' if item.candidates_rejected != 1 else '' }} before it stopped.{% endif %}</p>
-  </section>
+      <section class="requests-stop" aria-labelledby="request-stop-heading" data-stopped-at="{{ item.stopped_at or '' }}"{% if not item.stopped_at %} hidden{% endif %}>
+        <h2 id="request-stop-heading">Where it stopped</h2>
+        <strong data-request-stop-label>{{ item.stage_label }}</strong>
+        <p class="{{ 'requests-unknown' if item.unknown_reason else '' }}" data-request-stop-reason{% if item.unknown_reason %} data-unknown-reason{% else %} data-verified-reason{% endif %}>{{ (item.reason_text if item.unknown_reason else item.reason) or '' }}</p>
+        <p class="requests-facts" data-request-rejections{% if not item.candidates_rejected %} hidden{% endif %}>{% if item.candidates_rejected %}The acquisition service rejected {{ item.candidates_rejected }} candidate{{ 's' if item.candidates_rejected != 1 else '' }} before it stopped.{% endif %}</p>
+      </section>
 
-  <details class="movie-verification-details request-progress" data-request-milestones{% if not item.timeline %} hidden{% endif %}>
-    <summary>Provider milestones</summary>
-    {% if item.timeline %}{{ request_timeline(item) }}{% else %}<ol class="request-timeline" aria-label="Request timeline"></ol>{% endif %}
-    <p class="requests-facts">These are the confirmed provider events the server observed. Intermediate events are bounded and may expire.</p>
+      <details class="movie-verification-details request-progress" data-request-milestones{% if not item.timeline %} hidden{% endif %}>
+        <summary>Provider milestones</summary>
+        {% if item.timeline %}{{ request_timeline(item) }}{% else %}<ol class="request-timeline" aria-label="Request timeline"></ol>{% endif %}
+        <p class="requests-facts">These are the confirmed provider events the server observed. Intermediate events are bounded and may expire.</p>
+      </details>
+    </div>
   </details>
 </article>
 {% endblock %}

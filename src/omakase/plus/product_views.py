@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
-from functools import cache
+from functools import cache, lru_cache
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -1224,7 +1224,7 @@ def health_view(db, *, user_id: int) -> dict[str, Any]:
         ).fetchone()
         if receipt_row is not None:
             try:
-                receipt = validate_curator_receipt(json.loads(receipt_row["receipt_json"]))
+                receipt = _validated_curator_receipt_json(receipt_row["receipt_json"])
             except (TypeError, ValueError, json.JSONDecodeError):
                 receipt = None
             if receipt is not None:
@@ -1544,14 +1544,19 @@ def library_jobs(db, user_id: int) -> list[dict[str, Any]]:
     return jobs
 
 
+@lru_cache(maxsize=8)
+def _validated_curator_receipt_json(raw_json: str) -> dict[str, Any]:
+    return validate_curator_receipt(json.loads(raw_json))
+
+
 def plex_visible_counts(db) -> dict[tuple[int, int | None], tuple[int, int]]:
     row = db.execute(
         "SELECT receipt_json FROM media_curator_receipt_latest WHERE id = 1"
     ).fetchone()
-    if row is None:
+    if row is None or not isinstance(row["receipt_json"], str):
         return {}
     try:
-        receipt = validate_curator_receipt(json.loads(row["receipt_json"]))
+        receipt = _validated_curator_receipt_json(row["receipt_json"])
     except (TypeError, ValueError, json.JSONDecodeError):
         return {}
     if receipt["mode"] != "live" or not receipt["topology_converged"]:
