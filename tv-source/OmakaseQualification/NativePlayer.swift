@@ -39,16 +39,6 @@ struct PlayerScreen: View {
                 )
             }
         }
-        .overlay(alignment: .bottomTrailing) {
-            UpNextCountdownOverlay(
-                clock: session.clock,
-                canPlayNext: session.canPlayNext,
-                hasNextAction: playNext != nil,
-                openingNext: nextTask != nil,
-                nextError: nextError,
-                playNext: openNext
-            )
-        }
         .overlay(alignment: .topTrailing) {
             if nextTask != nil || nextError {
                 Text(nextError ? "Couldn’t open the next episode" : "Opening next episode…")
@@ -112,88 +102,6 @@ private struct PlayerDiagnosticsOverlay: View {
         .padding(40)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-    }
-}
-
-@MainActor
-private struct UpNextCountdownOverlay: View {
-    @ObservedObject var clock: PlaybackClock
-    let canPlayNext: Bool
-    let hasNextAction: Bool
-    let openingNext: Bool
-    let nextError: Bool
-    let playNext: () -> Void
-
-    @State private var dismissed = false
-    @State private var remaining: Int?
-    @FocusState private var focused: Action?
-
-    private enum Action: Hashable { case next, cancel }
-
-    private var active: Bool {
-        canPlayNext && hasNextAction && !openingNext && !nextError && !dismissed
-            && PlaybackSession.shouldSuggestNext(position: clock.position, duration: clock.duration)
-    }
-
-    var body: some View {
-        Group {
-            if active, let remaining {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("Up Next in \(remaining)s")
-                        .font(.headline.monospacedDigit())
-                        .foregroundStyle(.white)
-                    HStack(spacing: 14) {
-                        Button("Play Next") {
-                            self.remaining = nil
-                            dismissed = true
-                            playNext()
-                        }
-                        .buttonStyle(PlayerControlStyle(focused: focused == .next))
-                        .focusEffectDisabled()
-                        .focused($focused, equals: .next)
-                        .accessibilityIdentifier("player.up-next.play")
-
-                        Button("Cancel") {
-                            self.remaining = nil
-                            dismissed = true
-                        }
-                        .buttonStyle(PlayerControlStyle(focused: focused == .cancel))
-                        .focusEffectDisabled()
-                        .focused($focused, equals: .cancel)
-                        .accessibilityIdentifier("player.up-next.cancel")
-                    }
-                }
-                .padding(24)
-                .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 18))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 18).strokeBorder(.white.opacity(0.18), lineWidth: 1)
-                }
-                .padding(48)
-                .focusSection()
-            }
-        }
-        .onChange(of: clock.duration) { _, _ in
-            dismissed = false
-            remaining = nil
-        }
-        .task(id: active) {
-            guard active else {
-                remaining = nil
-                return
-            }
-            for step in stride(from: 10, through: 1, by: -1) {
-                guard !Task.isCancelled, active else {
-                    remaining = nil
-                    return
-                }
-                remaining = step
-                try? await Task.sleep(for: .seconds(1))
-            }
-            guard !Task.isCancelled, active else { return }
-            remaining = nil
-            dismissed = true
-            playNext()
-        }
     }
 }
 
