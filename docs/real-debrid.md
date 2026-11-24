@@ -1,8 +1,8 @@
 # Real-Debrid playback
 
-Omakase Plus can use a personal Real-Debrid account as a standalone media source.
-No Plex server or NAS is required, and Plex can stay connected as an optional
-source for a mixed setup.
+Omakase Plus can use a personal Real-Debrid account as an optional Bring Your Own Media (BYOM) source. No Plex server or NAS is required, and Plex can stay connected as an optional source for a mixed setup.
+
+> **Software-only notice:** Omakase Plus distributes application software only. It includes no bundled or pre-downloaded media files, indexers, or accounts. Connect only your own Real-Debrid credentials and access files you own or are authorized to stream.
 
 ## Connect
 

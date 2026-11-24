@@ -1,60 +1,54 @@
 # Omakase Plus
 
-Your anime, movies and TV, organized for the next watch.
+Your anime, movies, and TV, organized in one private media hub.
 
-A self-hosted application for discovery, planning, viewing progress, ratings and
-connected library availability. Watch in the browser or on a native Apple TV
-app, from your own Plex server or directly from a Real-Debrid account. Start
-with one app, then connect only the services you use.
+Omakase Plus is self-hosted personal media management, discovery, tracking, and playback software for the browser and Apple TV. Like Plex, it operates strictly on a **Bring Your Own Media (BYOM)** model: Omakase Plus provides the software alone, includes zero bundled or pre-downloaded media, and connects only to libraries, storage, and accounts that you own or are authorized to access.
 
-**Early release · Self-hosted · MIT software.**
-[Source](https://github.com/JhinxDev/omakase-plus) ·
-[Quickstart](https://omakase-plus.jhinx.dev/docs/quickstart) ·
-[Documentation](https://omakase-plus.jhinx.dev/docs)
+**Early release · Self-hosted · MIT software.**  
+[Documentation](https://omakase-plus.jhinx.dev/docs) · [Quickstart](https://omakase-plus.jhinx.dev/docs/quickstart) · [Changelog](CHANGELOG.md) · [Apple TV App](docs/apple-tv.md) · [Security](SECURITY.md)
 
-Run your own authenticated instance and connect only the services you need.
-There is no hosted signup or bundled media.
+![Omakase Plus Home showing sidebar navigation, featured anime banner, and Continue Watching row](docs/images/omakase-plus-home-v5.webp)
 
-![Omakase Plus Home with sidebar navigation, featured artwork and Continue Watching](docs/images/omakase-plus-home-ui4-37fb6d5956e3.webp)
-
-*Single-window capture from the demo app with a sample account, ratings, progress
-and availability. External actions are disabled in the
-[local showcase](docs/showcase.md). Artwork and vendor branding retain their
-owners' rights; see [third-party notices](THIRD-PARTY-NOTICES.md).*
+*Single-window capture from the local showcase (`scripts/showcase_preview.py`) with a sample account, ratings, and availability badges. External network actions are disabled. Artwork and vendor branding belong to their respective owners; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).*
 
 ## Releases
 
-The setup below uses [0.4.12](https://github.com/JhinxDev/omakase-plus/releases/tag/v0.4.12),
-the latest numbered source release. The [changelog](CHANGELOG.md) lists newer
-web and tvOS features under **Unreleased**. They may require a newer server or
-native build. Back up app data before upgrading.
+The quickstart uses [v0.4.12](https://github.com/JhinxDev/omakase-plus/releases/tag/v0.4.12), the latest numbered source release. The [changelog](CHANGELOG.md) tracks newer web, server, and Apple TV work under **Unreleased**. Back up your app data and encryption key before upgrading.
+
+## Interface tour
+
+| Anime Collection | Movies |
+| --- | --- |
+| ![Anime library view](docs/images/omakase-plus-library-v5.webp) | ![Movies library view](docs/images/omakase-plus-movies-v5.webp) |
+| **TV Shows** | **Settings Directory** |
+| ![TV Shows library view](docs/images/omakase-plus-tv-v5.webp) | ![Settings directory view](docs/images/omakase-plus-settings-v5.webp) |
 
 ## What works
 
-- Discover anime, movies and TV with optional AniList sync and Seerr catalog search.
-- Use **Edit Home** to choose your rows. Continue Watching remembers your place
-  across the web and paired Apple TV.
-- Browse media from connected sources in Collection. Find completed titles,
-  ratings and private review notes in your personal viewing history.
-- Follow requests submitted by you or on your behalf. TV requests can show
-  playable episode counts by season and activity from configured services.
-  See [TV requests and episodes](docs/television.md).
-- Stream exact Real-Debrid or Plex matches. The Apple TV app supports device
-  pairing, subtitles, resume sync, next episode and Media Info for supported copies.
-  See [Real-Debrid playback](docs/real-debrid.md) and [Apple TV](docs/apple-tv.md).
-- Get [notifications](docs/notification-center.md) to rate finished titles or
-  review eligible managed media. Shared or externally managed copies stay protected.
-- Account-scoped JSON CLI and optional stdio MCP access, with named permissions
-  and an audit log. See [agent tools](docs/agent-tools.md).
+- **Unified discovery & watchlists:** Organize anime, movies, and TV in one personal hub with optional two-way AniList and MyAnimeList tracking, Seerr/TMDB catalog search, **For You** shelves, private review notes, and customizable Home rows (**Edit Home**).
+- **Modern web player:** Stream eligible libraries in the browser via Shaka Player with HLS and DASH playback, non-reloading unbuffered VOD seeking, styled ASS/SSA (JASSUB WebAssembly) and WebVTT subtitle switching, playback speed controls, 85% completion tracking, and cross-device resume. See [Web player](docs/web-player.md).
+- **Native Apple TV app (`tvOS`):** Native AVPlayer client (`tv-source/`) with one-time PIN pairing, Home Screen Top Shelf Continue Watching, **Skip Intro** on verified opening markers, 10-second **Up Next** auto-play countdown, **Media Info** inspector, Audio/Subtitle language pickers, and automated Internal TestFlight cloud signing via GitHub Actions. See [Apple TV](docs/apple-tv.md).
+- **Households & language rules:** Share library visibility safely while keeping each member's progress, ratings, tracker accounts, and stream choices separate. Enforce personal audio and subtitle preferences across eligible releases. See [Households](docs/households.md) and [Audio & subtitles](docs/language-settings.md).
+- **Scoped operator automation:** Account-scoped JSON CLI and optional stdio MCP access with explicit write grants and an audit log, plus [notifications](docs/notification-center.md) for rating finished titles or reviewing managed copies. See [Agent tools](docs/agent-tools.md).
 
-Catalog matches, provider decisions, playable files and watch progress have
-distinct statuses. Supply your own media and service credentials.
+## How it works
+
+![Omakase Plus workflow: discover via AniList, MyAnimeList, Seerr, and AI; organize watchlists, ratings, households, and languages; watch in the web player, Apple TV app, or Plex](docs/images/omakase-plus-setup-v4.png)
+
+Start with personal planning on one container, then connect only the storage and services you use:
+
+| Setup path | Start here | What you bring |
+| --- | --- | --- |
+| App only | `compose.standalone.yaml` | Your own server, personal watchlists, and optional AniList sync |
+| Existing Plex or local storage | [Local Storage + Plex](docs/local-storage-plex-setup.md) | Your existing media directories, host mounts, and Plex library |
+| Authorized cloud storage (BYO) | [Media connections](docs/media-library-and-connections.md) · [Real-Debrid guide](docs/real-debrid.md) | Your own authorized cloud storage account and credentials |
+| Apple TV companion | [Apple TV guide](docs/apple-tv.md) | Your Xcode/App Store Connect team for TestFlight or local builds |
 
 ## Start with the app
 
-Want Claude Code or Codex to handle host setup? [Copy one setup prompt](docs/setup-with-an-agent.md). It checks your existing installation, starts with the app alone and keeps secrets on your computer.
+Want Claude Code or Codex to handle host setup? [Copy the setup prompt](docs/setup-with-an-agent.md). It inspects existing containers first, starts cleanly with app-only mode, and keeps all credentials on your machine.
 
-Clone the repository:
+Clone the repository and configure your local environment:
 
 ```sh
 git clone --branch v0.4.12 --single-branch https://github.com/JhinxDev/omakase-plus.git
@@ -64,10 +58,7 @@ cp .env.local.secrets.example .env.local.secrets
 chmod 0600 .env.local.secrets
 ```
 
-Use Git, Python 3, and Docker Engine with the Compose plugin on a Linux host. Set your app-data
-directory and UID/GID in `.env.local`, and generate a master encryption key using
-the [getting-started guide](docs/getting-started.md). Keep secrets in
-`.env.local.secrets`, outside version control. Then:
+On a Linux host with Git, Python 3, and Docker Compose: set `OMAKASE_DATA_PATH` and your UID/GID in `.env.local`, generate `OMAKASE_PLUS_MASTER_KEY` per the [getting-started guide](docs/getting-started.md), keep secrets in `.env.local.secrets`, and start the app:
 
 ```sh
 docker compose --env-file .env.local -f compose.standalone.yaml config --quiet
@@ -76,64 +67,25 @@ docker compose --env-file .env.local -f compose.standalone.yaml up -d
 docker inspect omakase-local-app --format '{{.State.Health.Status}}'
 ```
 
-Open [http://127.0.0.1:8766/plus](http://127.0.0.1:8766/plus) on that host, create
-your account, and follow Choose → Connect → Review → Enjoy. On a remote host,
-use an administrator-configured secure tunnel or protected HTTPS proxy; its
-loopback is not the browser computer's loopback.
+Open [http://127.0.0.1:8766/plus](http://127.0.0.1:8766/plus) on that host, create your administrator account, and follow **Choose → Connect → Review → Enjoy**. For remote access, place it behind your own authenticated HTTPS reverse proxy or private tunnel.
 
-The first account bootstraps a private instance. Account creation is then closed
-until an administrator sets `OMAKASE_PLUS_INVITE` for additional people.
+`OMAKASE_PLUS_PRIVATE=true` activates the authenticated hub: `/` redirects into `/plus`, public BYOK `/api/*` endpoints stay off, and `/docs` redirects to the documentation site. Registration locks automatically after the first account until an administrator issues `OMAKASE_PLUS_INVITE`.
 
-`OMAKASE_PLUS_PRIVATE=true` enables the authenticated application. It describes
-deployment access, not source-code visibility. Keep authentication and private
-network defaults when deploying this public source. A private instance serves
-only the authenticated product: `/` redirects into `/plus`, the public BYOK
-`/api/*` endpoints are not part of that origin, and `/docs` redirects to the
-documentation site. Neither mode serves `/openapi.json`, `/redoc` or an API
-console on the app origin.
+## Optional shared libraries, languages & tracker sync
 
-## Choose your setup
+New installations ship with optional shared libraries (`households`), automated language enforcement, and ongoing MyAnimeList tracker reconciliation disabled by default. Operators should review database migrations, backups, and configured adapters before enabling them per instance. See [Households](docs/households.md), [Audio & subtitles](docs/language-settings.md), and [MyAnimeList bridge](docs/myanimelist-bridge.md).
 
-![Omakase Plus setup: discover through AniList, Seerr or your AI; organize search, watchlists, progress and ratings; watch from Plex, Real-Debrid or the Apple TV app](docs/images/omakase-plus-setup-v3.png)
+## Bring Your Own Media & legal notice
 
-*Third-party names and logos belong to their owners; see [third-party notices](THIRD-PARTY-NOTICES.md).*
+Omakase Plus distributes **software only**.
 
-Start with personal planning, then add the connections you use. Movie and TV catalog search requires Seerr. Playback can use your existing Plex library, stream directly from Real-Debrid, or play on the native Apple TV app.
+- The repository and container images contain **zero media files, indexers, trackers, scrapers, or pre-downloaded content**.
+- Optional self-hosted connectors (including Plex, local mounts, Seerr, AniList, MyAnimeList, and BYO cloud storage) remain unconfigured and inactive unless you explicitly connect your own accounts or infrastructure.
+- You are solely responsible for supplying your own legally owned or authorized media, respecting provider terms of service, and complying with applicable laws in your jurisdiction.
 
-| Setup | Start here | Separate administrator work |
-| --- | --- | --- |
-| Omakase only | `compose.standalone.yaml` | None of the media services are required |
-| Real-Debrid only | Connect a token in **Settings → Connections** and choose the Real-Debrid playback source | No Plex server or NAS required |
-| Existing services | [Connections and media](docs/media-library-and-connections.md) | Configure your own service addresses and credentials |
-| Local import or optional Plex | [Storage and Plex](docs/local-storage-plex-setup.md) | Explicit mounts, permissions and Plex account/library setup |
+## Development & licensing
 
-Onboarding saves preferences and guidance; it does not install services or change
-host mounts. Optional qBittorrent acquisition remains scoped to its VPN profile.
-Use only media and services you are authorized to access.
-
-## Optional shared libraries, languages and personal tracker sync
-
-**Released optional capabilities.** Shared libraries, language settings and personal
-tracker reconciliation are included in the release. New-install feature flags
-default off. Each installation needs operator qualification of combined migrations
-033–036, rollback and its configured adapters before opt-in activation. A saved
-preference or passing unit test is not proof of working provider connections.
-
-| Optional feature | What stays separate |
-| --- | --- |
-| [Households](docs/households.md) | Shared catalog/files; each member's progress, ratings, tracker accounts and stream choices |
-| [Audio and subtitles](docs/language-settings.md) | Requested languages, physically verified tracks and the viewer's current Plex selection |
-| [Optional web player](docs/web-player.md) | Exact anime playback, prepared MKV, personal resume and truthful viewing coverage |
-| [MyAnimeList ↔ AniList](docs/myanimelist-bridge.md) | Each user's verified identities; first-sync preview, conflict decisions and opt-in ongoing checks |
-
-An owner connector never grants members its credentials. Revocation stops future
-access and work without erasing personal history. Language choices never replace
-someone else's working copy. Tracker connections require administrator OAuth setup
-and each user's own consent; no account is connected by this repository.
-
-## Development and operation
-
-Python 3.11+ and `uv` are required for source development:
+Python 3.11+ and `uv` are used for local development and verification:
 
 ```sh
 uv sync --frozen --extra dev
@@ -143,18 +95,8 @@ uv run --frozen --extra dev python -m ruff format --check .
 uv run --frozen omakase --help
 ```
 
-Read [Contributing](CONTRIBUTING.md), [Security](SECURITY.md),
-[release checks](docs/release-checklist.md), [updates](docs/updates.md), and
-[optional browser QA](docs/browser-qa.md). The recommendation-only CLI/web
-surface remains available; it is distinct from the authenticated Plus app.
-
-The web app and native Apple TV source share this repository. See the
-[Apple TV build and signing guide](docs/apple-tv.md). The [iPhone simulator
-prototype](ios-source/README.md) uses sample data and a test clip for development.
-
-The code retains its original [MIT license](LICENSE) and upstream attribution.
-Geist retains its [SIL Open Font License](src/omakase/plus/static/GEIST-OFL.txt).
-Bundled player dependencies retain their separate licenses, notices and source/
-relink materials under [THIRD-PARTY](THIRD-PARTY/jassub-2.5.23/README.md).
-Source tests do not establish native deployment, full playback, physical-device
-or human creative acceptance.
+- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Release checks](docs/release-checklist.md) · [Updates](docs/updates.md) · [Browser QA](docs/browser-qa.md)
+- Source code: [MIT License](LICENSE)
+- Bundled Geist typography: [SIL Open Font License](src/omakase/plus/static/GEIST-OFL.txt)
+- Third-party libraries and notices: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) and [JASSUB notices](THIRD-PARTY/jassub-2.5.23/README.md)
+- Apple TV (`tv-source/`) and iPhone prototype (`ios-source/`) share the API contracts in this repository. Automated tests do not substitute for physical-device or subjective media playback verification.

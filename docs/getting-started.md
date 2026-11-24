@@ -1,8 +1,6 @@
 # Getting started with Omakase Plus
 
-Plus is an authenticated self-hosted application available as an early source
-release. See the repository README for the source and release details; the
-recommendation-only package is a different edition.
+Plus is authenticated, self-hosted personal media management and playback software available as an early source release. Like Plex, Omakase Plus distributes software only, ships zero bundled or pre-downloaded media, and connects strictly to storage and services you supply. See the repository README for source and release details; the recommendation-only package is a different edition.
 
 ## Choose how much to set up
 
