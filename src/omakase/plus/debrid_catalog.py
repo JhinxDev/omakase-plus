@@ -204,41 +204,104 @@ def _records(inventory, title, published=()):
 
 
 async def movie_ids(db, scope, library):
+    from omakase.plus import households as core
+
     token = account_token(db, scope.viewer_id)
-    if scope.kind != "personal" or not token:
+    if scope.kind != "personal" or scope.viewer_id != scope.operational_owner_id or not token:
         return set()
+    core.revalidate_scope(db, scope)
     inventory = await library.inventory(token)
+    rows = db.execute(
+        """SELECT c.imdb_id, c.title, c.year
+           FROM movie_catalog c
+           LEFT JOIN movie_requests q USING(user_id, imdb_id)
+           WHERE c.user_id=? AND c.identity_verified=1
+             AND COALESCE(q.code, '')<>'copy_removed'
+             AND NOT EXISTS (
+                 SELECT 1 FROM library_items li
+                 WHERE li.library_id=? AND li.domain='movie'
+                   AND li.canonical_id=c.imdb_id AND li.state='removed'
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM library_resources r
+                 JOIN library_items i ON i.resource_id=r.id
+                 WHERE r.owner_user_id=? AND r.domain='movie'
+                   AND r.canonical_id=c.imdb_id AND r.season_number=0
+                   AND i.state='active' AND i.library_id!=?
+                   AND NOT EXISTS (
+                       SELECT 1 FROM library_items own
+                       WHERE own.library_id=? AND own.state='active' AND own.resource_id=r.id
+                   )
+             )""",
+        (
+            scope.viewer_id,
+            scope.library_id,
+            scope.operational_owner_id,
+            scope.library_id,
+            scope.library_id,
+        ),
+    ).fetchall()
     ids = set()
-    for row in db.execute(
-        "SELECT imdb_id FROM movie_catalog WHERE user_id=? AND identity_verified=1",
-        (scope.viewer_id,),
-    ):
-        title = catalog_title(db, scope, "movie", row[0])
-        if title and next(_records(inventory, title), None):
-            ids.add(title.key)
+    for row in rows:
+        if row["year"]:
+            title = CatalogTitle("movie", row["imdb_id"], row["title"], row["year"])
+            if next(_records(inventory, title), None):
+                ids.add(title.key)
     return ids
 
 
 async def tv_ids(db, scope, library):
+    from omakase.plus import households as core
+
     token = account_token(db, scope.viewer_id)
-    if scope.kind != "personal" or not token:
+    if scope.kind != "personal" or scope.viewer_id != scope.operational_owner_id or not token:
         return set()
+    core.revalidate_scope(db, scope)
     inventory = await library.inventory(token)
-    ids = set()
-    for row in db.execute(
-        """SELECT tmdb_id,metadata_json FROM tv_catalog c WHERE user_id=? AND (
-               json_extract(metadata_json,'$.in_collection')=1 OR EXISTS (
+    rows = db.execute(
+        """SELECT c.tmdb_id, c.metadata_json
+           FROM tv_catalog c
+           WHERE c.user_id=? AND (
+               json_extract(c.metadata_json, '$.in_collection')=1 OR EXISTS (
                    SELECT 1 FROM for_you_requests q WHERE q.user_id=c.user_id
                      AND q.title_id=c.tmdb_id AND q.kind='tv'
                )
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM library_items li
+               WHERE li.library_id=? AND li.domain='tv'
+                 AND li.canonical_id=CAST(c.tmdb_id AS TEXT) AND li.state='removed'
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM library_resources r
+               JOIN library_items i ON i.resource_id=r.id
+               WHERE r.owner_user_id=? AND r.domain='tv'
+                 AND r.canonical_id=CAST(c.tmdb_id AS TEXT) AND r.season_number=0
+                 AND i.state='active' AND i.library_id!=?
+                 AND NOT EXISTS (
+                     SELECT 1 FROM library_items own
+                     WHERE own.library_id=? AND own.state='active' AND own.resource_id=r.id
+                 )
            )""",
-        (scope.viewer_id,),
-    ):
-        metadata = json.loads(row[1])
+        (
+            scope.viewer_id,
+            scope.library_id,
+            scope.operational_owner_id,
+            scope.library_id,
+            scope.library_id,
+        ),
+    ).fetchall()
+    ids = set()
+    for row in rows:
+        metadata = json.loads(row["metadata_json"])
+        name = metadata.get("title")
+        if not name:
+            continue
+        year = metadata.get("year")
         for season in metadata.get("seasons", []):
-            title = catalog_title(db, scope, "tv", str(row[0]), season["season_number"])
-            if title and next(_records(inventory, title), None):
-                ids.add(row[0])
+            title = CatalogTitle("tv", str(row["tmdb_id"]), name, year, season["season_number"])
+            if next(_records(inventory, title), None):
+                ids.add(row["tmdb_id"])
                 break
     return ids
 
@@ -403,7 +466,9 @@ async def tv_episode_ids(
     return EpisodeAvailability(frozenset(result), tuple(sorted(partial)))
 
 
-async def resolve_catalog(db, scope, domain, key, season, episode, library):
+async def resolve_catalog(
+    db, scope, domain, key, season, episode, library, *, need_transcode: bool = True
+):
     title = catalog_title(db, scope, domain, key, season, episode)
     token = account_token(db, scope.viewer_id)
     if not title or not token:
@@ -471,7 +536,10 @@ async def resolve_catalog(db, scope, domain, key, season, episode, library):
                 locator = (title, hint)
             else:
                 continue
-            cloud = await library.torrent_source(token, record, file_id, inventory=info)
+            source_kwargs: dict[str, object] = {"inventory": info}
+            if not need_transcode:
+                source_kwargs["need_transcode"] = False
+            cloud = await library.torrent_source(token, record, file_id, **source_kwargs)
         except DebridLibraryError as error:
             if error.status in {403, 429, 451}:
                 raise

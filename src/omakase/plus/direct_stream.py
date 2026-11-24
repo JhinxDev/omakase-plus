@@ -38,6 +38,7 @@ import httpx
 from starlette.background import BackgroundTask
 from starlette.responses import Response, StreamingResponse
 
+from omakase.plus.http_pool import acquire_client
 from omakase.plus.outbound import OutboundError, _resolved_ips, blocked_address, pin_destination
 from omakase.plus.web_playback_delivery import DeliveryError, parse_range
 
@@ -420,12 +421,14 @@ async def open_direct(
         on_close()
         return Response(status_code=status, headers=reply, media_type=stream.source.media_type)
 
-    client = httpx.AsyncClient(
+    sni_host = parsed.host if (parsed := _origin_url(stream.origin)) is not None else None
+    client, owns_client = acquire_client(
+        key="direct-stream",
         transport=transport,
+        sni_hostname=sni_host,
         timeout=httpx.Timeout(20, connect=6, read=20),
         trust_env=False,
         follow_redirects=False,
-        limits=httpx.Limits(max_keepalive_connections=0),
     )
     upstream = None
     origin, previous_attempt = stream.origin, stream.completed_refresh()
@@ -465,7 +468,8 @@ async def open_direct(
     except BaseException:
         if upstream is not None:
             await upstream.aclose()
-        await client.aclose()
+        if owns_client:
+            await client.aclose()
         on_close()
         raise
 
@@ -478,7 +482,8 @@ async def open_direct(
         closed = True
         try:
             await upstream.aclose()
-            await client.aclose()
+            if owns_client:
+                await client.aclose()
         finally:
             on_close()
 
@@ -520,12 +525,14 @@ async def probe_origin(
     refusing a silently different file.
     """
     stream.validate()
-    client = httpx.AsyncClient(
+    sni_host = parsed.host if (parsed := _origin_url(stream.origin)) is not None else None
+    client, owns_client = acquire_client(
+        key="direct-probe",
         transport=transport,
+        sni_hostname=sni_host,
         timeout=httpx.Timeout(timeout, connect=min(4.0, timeout)),
         trust_env=False,
         follow_redirects=False,
-        limits=httpx.Limits(max_keepalive_connections=0),
     )
     origin, previous_attempt = stream.origin, stream.completed_refresh()
     try:
@@ -539,10 +546,12 @@ async def probe_origin(
             transport=transport,
         )
     except DirectError:
-        await client.aclose()
+        if owns_client:
+            await client.aclose()
         raise
     except (httpx.HTTPError, TimeoutError):
-        await client.aclose()
+        if owns_client:
+            await client.aclose()
         return {"probed": False, "reason": "transport"}
     try:
         if upstream.status_code in _EXPIRED:
@@ -552,7 +561,8 @@ async def probe_origin(
         return {"probed": True, "bytes": right - left + 1}
     finally:
         await upstream.aclose()
-        await client.aclose()
+        if owns_client:
+            await client.aclose()
 
 
 def stream_id(identity: str) -> str:

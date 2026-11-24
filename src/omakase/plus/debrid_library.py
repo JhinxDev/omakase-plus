@@ -9,13 +9,14 @@ import math
 import re
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import PurePosixPath
 
 import httpx
 
 from omakase.plus import connections
+from omakase.plus.http_pool import client_scope
 from omakase.plus.providers import playback as playback_providers
 from omakase.plus.realdebrid import RD_API
 
@@ -29,6 +30,7 @@ _PAGE = 100
 _MAX_ACCOUNT_ENTRIES = 10000
 _RESPONSE_BYTES = 2 * 1024 * 1024
 _TTL = 25
+_DOWNLOADS_TTL = 20
 _STALE = 900
 _MAX_CACHED_ACCOUNTS = 16
 _MAX_CATALOG_REFRESHES = 16
@@ -101,6 +103,7 @@ class CloudSource:
     # prove that a rotated provider link still describes the same content, so it
     # is carried rather than re-derived from a list response.
     size: int = 0
+    download_id: str = ""
 
 
 class DebridLibrary:
@@ -108,6 +111,7 @@ class DebridLibrary:
         self.transport = transport
         self.clock = clock
         self.cache = OrderedDict()
+        self.downloads_cache = OrderedDict()
         self.last_good = OrderedDict()
         self.lock = asyncio.Lock()
         self.paused = {}
@@ -131,10 +135,16 @@ class DebridLibrary:
         binding = account_binding(token)
         if binding in self.paused:
             raise DebridLibraryError("Real-Debrid is rate limited. Try again shortly.", 429)
+        if path == "unrestrict/link":
+            self._invalidate_downloads(binding)
         try:
             async with (
-                httpx.AsyncClient(
-                    transport=self.transport, timeout=8, follow_redirects=False, trust_env=False
+                client_scope(
+                    key="debrid-api",
+                    transport=self.transport,
+                    timeout=8,
+                    follow_redirects=False,
+                    trust_env=False,
                 ) as client,
                 client.stream(
                     "POST" if data is not None else "GET",
@@ -348,19 +358,27 @@ class DebridLibrary:
             rows.append(CloudEntry(f"{entry_id}-{number}", title, note, playable=playable))
         return sorted(rows, key=lambda row: (row.title.casefold(), row.id))
 
-    async def source(self, token, key):
+    def _invalidate_downloads(self, binding):
+        for cached_key in [key for key in self.downloads_cache if key[0] == binding]:
+            self.downloads_cache.pop(cached_key, None)
+
+    async def source(self, token, key, *, need_transcode: bool = True):
         if not _FILE.fullmatch(key):
             raise DebridLibraryError("This file is unavailable.", 404)
         if key.startswith("t-"):
             torrent_id, _, number = key[2:].rpartition("-")
-            return await self.torrent_source(token, torrent_id, int(number))
+            return await self.torrent_source(
+                token, torrent_id, int(number), need_transcode=need_transcode
+            )
         else:
             _, downloads = await self.inventory(token)
             item = downloads.get(key[2:], {})
             name = _text(item.get("filename"))
             size = _size(item.get("filesize"))
             content_hash = _text(item.get("generated"), 64)
-        return await self._source(token, key, item, name, size, content_hash)
+        return await self._source(
+            token, key, item, name, size, content_hash, need_transcode=need_transcode
+        )
 
     @staticmethod
     def _download_match(rows, link, name, size):
@@ -379,7 +397,18 @@ class DebridLibrary:
             None,
         )
 
-    async def _recent_downloads(self, token, *, pages=2):
+    async def _recent_downloads(self, token, *, pages=2, fresh=False):
+        binding = account_binding(token)
+        cache_key = (binding, pages)
+        now = self.clock()
+        if not fresh:
+            cached = self.downloads_cache.get(cache_key)
+            if cached is not None:
+                expires_at, rows = cached
+                if expires_at > now:
+                    self.downloads_cache.move_to_end(cache_key)
+                    return rows
+                self.downloads_cache.pop(cache_key, None)
         rows = []
         for page in range(1, pages + 1):
             batch, _ = await self._api(token, "downloads", params={"limit": 100, "page": page})
@@ -388,20 +417,28 @@ class DebridLibrary:
             rows.extend(batch)
             if len(batch) < 100:
                 break
+        self.downloads_cache[cache_key] = (self.clock() + _DOWNLOADS_TTL, rows)
+        self.downloads_cache.move_to_end(cache_key)
+        while len(self.downloads_cache) > _MAX_CACHED_ACCOUNTS:
+            self.downloads_cache.popitem(last=False)
         return rows
 
     async def _registered_download(self, token, link, name, size, *, attempts=4):
         # /unrestrict/link can answer with a composite id that the /streaming
         # endpoints reject. The canonical /downloads id appears within a moment.
         for attempt in range(attempts):
-            item = self._download_match(await self._recent_downloads(token), link, name, size)
+            item = self._download_match(
+                await self._recent_downloads(token, fresh=True), link, name, size
+            )
             if item is not None:
                 return item
             if attempt + 1 < attempts:
                 await asyncio.sleep(0.35 * (attempt + 1))
         return None
 
-    async def torrent_source(self, token, torrent_id, number, *, inventory=None):
+    async def torrent_source(
+        self, token, torrent_id, number, *, inventory=None, need_transcode: bool = True
+    ):
         if not re.fullmatch(_ID, torrent_id) or type(number) is not int or not 1 <= number < 10**10:
             raise DebridLibraryError("This file is unavailable.", 404)
         files, links, content_hash = inventory or await self._torrent(token, torrent_id)
@@ -415,7 +452,13 @@ class DebridLibrary:
         if item is not None:
             try:
                 return await self._source(
-                    token, f"t-{torrent_id}-{number}", item, name, size, content_hash
+                    token,
+                    f"t-{torrent_id}-{number}",
+                    item,
+                    name,
+                    size,
+                    content_hash,
+                    need_transcode=need_transcode,
                 )
             except DebridLibraryError as error:
                 if error.status != 404:
@@ -433,32 +476,17 @@ class DebridLibrary:
                 "Real-Debrid is still preparing this file. Try again shortly.", 503
             )
         return await self._source(
-            token, f"t-{torrent_id}-{number}", registered, name, size, content_hash
+            token,
+            f"t-{torrent_id}-{number}",
+            registered,
+            name,
+            size,
+            content_hash,
+            need_transcode=need_transcode,
         )
 
-    async def _source(self, token, key, item, name, size, content_hash):
-        download_id = item.get("id")
-        if (
-            item.get("streamable") != 1
-            or not name
-            or not size
-            or not isinstance(download_id, str)
-            or not re.fullmatch(_ID, download_id)
-        ):
-            raise DebridLibraryError("Real-Debrid cannot stream this file.", 415)
-        async with asyncio.TaskGroup() as requests:
-            # A wrapper keeps expected provider errors as plain exceptions for route callers.
-            info_task = requests.create_task(
-                self._api_result(token, "streaming/mediaInfos/" + download_id)
-            )
-            stream_task = requests.create_task(
-                self._api_result(token, "streaming/transcode/" + download_id)
-            )
-        info, streams = info_task.result(), stream_task.result()
-        for result in (info, streams):
-            if isinstance(result, DebridLibraryError):
-                raise result
-        duration = info.get("duration") if isinstance(info, dict) else None
+    @staticmethod
+    def _parse_transcode_playlists(streams):
         apple = streams.get("apple") if isinstance(streams, dict) else None
         original = apple.get("original") if isinstance(apple, dict) else None
         playlist = (
@@ -474,12 +502,57 @@ class DebridLibrary:
             and len(original) <= 4096
             else ""
         )
+        if not isinstance(playlist, str):
+            raise DebridLibraryError("This file has no compatible Real-Debrid stream.", 415)
+        return playlist, playlist_alt
+
+    async def resolve_playlists(self, token: str, source: CloudSource) -> CloudSource:
+        """Lazily resolve Real-Debrid Apple HLS transcode playlists if omitted at open."""
+        if source.playlist or not source.download_id:
+            return source
+        streams = await self._api_result(token, "streaming/transcode/" + source.download_id)
+        if isinstance(streams, DebridLibraryError):
+            raise streams
+        playlist, playlist_alt = self._parse_transcode_playlists(streams)
+        return replace(source, playlist=playlist, playlist_alt=playlist_alt)
+
+    async def _source(
+        self, token, key, item, name, size, content_hash, *, need_transcode: bool = True
+    ):
+        download_id = item.get("id")
+        if (
+            item.get("streamable") != 1
+            or not name
+            or not size
+            or not isinstance(download_id, str)
+            or not re.fullmatch(_ID, download_id)
+        ):
+            raise DebridLibraryError("Real-Debrid cannot stream this file.", 415)
+        if need_transcode:
+            async with asyncio.TaskGroup() as requests:
+                # A wrapper keeps expected provider errors as plain exceptions for route callers.
+                info_task = requests.create_task(
+                    self._api_result(token, "streaming/mediaInfos/" + download_id)
+                )
+                stream_task = requests.create_task(
+                    self._api_result(token, "streaming/transcode/" + download_id)
+                )
+            info, streams = info_task.result(), stream_task.result()
+            for result in (info, streams):
+                if isinstance(result, DebridLibraryError):
+                    raise result
+            playlist, playlist_alt = self._parse_transcode_playlists(streams)
+        else:
+            info = await self._api_result(token, "streaming/mediaInfos/" + download_id)
+            if isinstance(info, DebridLibraryError):
+                raise info
+            playlist, playlist_alt = "", ""
+        duration = info.get("duration") if isinstance(info, dict) else None
         if (
             type(duration) not in (float, int)
             or not math.isfinite(duration)
             or not 1 <= duration <= 43200
             or info.get("size") not in (None, 0, size)
-            or not isinstance(playlist, str)
         ):
             raise DebridLibraryError("This file has no compatible Real-Debrid stream.", 415)
         account = account_binding(token)
@@ -501,6 +574,7 @@ class DebridLibrary:
             playlist_alt,
             direct,
             size,
+            download_id,
         )
 
     async def _api_result(self, token, path):

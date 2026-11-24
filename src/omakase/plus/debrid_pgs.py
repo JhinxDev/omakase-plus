@@ -153,7 +153,7 @@ async def render_window(registry, plan, number, ordinal):
         await registry._feed(plan, number, pipe, from_number=max(0, number - 1))
 
     try:
-        async with asyncio.timeout(10):
+        async with asyncio.timeout(20):
             raw, _ = await _ffmpeg(
                 (
                     "-loglevel",

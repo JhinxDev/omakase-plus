@@ -431,6 +431,17 @@ def create_player_router(
             remux.held_media_versions(db)
         )
 
+    cleanup_tasks: set[asyncio.Task] = set()
+
+    def _track_cleanup(coro):
+        try:
+            task = asyncio.create_task(coro)
+        except RuntimeError:
+            coro.close()
+            return
+        cleanup_tasks.add(task)
+        task.add_done_callback(cleanup_tasks.discard)
+
     def _stop_process(process):
         if process is None:
             return
@@ -444,16 +455,36 @@ def create_player_router(
         if not item:
             return
         if stream := item.pop("compatible_stream", None):
-            asyncio.create_task(stream.close())
-        _stop_process(item.get("stream_process"))
-        _stop_process(item.get("subtitle_process"))
+            _track_cleanup(stream.close())
+        processes = [item.get("stream_process"), item.get("subtitle_process")]
+        _stop_process(processes[0])
+        _stop_process(processes[1])
         if task := item.get("subtitle_task"):
             task.cancel()
         folder = item.pop("stream_dir", None)
         item.pop("stream_subtitle", None)
         item.pop("subtitle_track", None)
         item.pop("subtitle_preview_bytes", None)
-        if folder:
+        live = [p for p in processes if p is not None and p.returncode is None]
+        if folder and live:
+
+            async def _reap_folder():
+                try:
+                    for process in live:
+                        if process.returncode is None:
+                            try:
+                                await asyncio.wait_for(process.wait(), 3)
+                            except TimeoutError:
+                                try:
+                                    process.kill()
+                                except ProcessLookupError:
+                                    pass
+                                await process.wait()
+                finally:
+                    shutil.rmtree(folder, ignore_errors=True)
+
+            _track_cleanup(_reap_folder())
+        elif folder:
             shutil.rmtree(folder, ignore_errors=True)
 
     async def stop_stream(item):

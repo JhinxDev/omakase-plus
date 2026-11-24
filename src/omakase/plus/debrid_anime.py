@@ -171,7 +171,7 @@ def _match_file(monitor, asset, inventory, episode):
     return matches[0]
 
 
-async def resolve_anime(db, scope, monitor_id, episode, library):
+async def resolve_anime(db, scope, monitor_id, episode, library, *, need_transcode: bool = True):
     token = account_token(db, scope.viewer_id)
     if not token:
         return None
@@ -184,8 +184,14 @@ async def resolve_anime(db, scope, monitor_id, episode, library):
         try:
             inventory = await library._torrent(token, asset.external_id)
             number = _match_file(monitor, asset, inventory, episode)
+            source_kwargs: dict[str, object] = {"inventory": inventory}
+            if not need_transcode:
+                source_kwargs["need_transcode"] = False
             cloud = await library.torrent_source(
-                token, asset.external_id, number, inventory=inventory
+                token,
+                asset.external_id,
+                number,
+                **source_kwargs,
             )
         except DebridLibraryError as error:
             if error.status in {403, 429, 451}:

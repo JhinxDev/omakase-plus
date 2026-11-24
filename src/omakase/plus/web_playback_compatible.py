@@ -11,6 +11,7 @@ from xml.etree import ElementTree as ET
 
 import httpx
 
+from omakase.plus.http_pool import acquire_client, client_scope
 from omakase.plus.outbound import OutboundError, pin_destination
 from omakase.plus.web_playback_delivery import HEADERS, DeliveryError, _ClosingStream
 
@@ -220,8 +221,13 @@ class CompatibleStream:
         }
 
     def _client(self):
-        return httpx.AsyncClient(
-            transport=self.transport, follow_redirects=False, trust_env=False, timeout=12
+        return client_scope(
+            key="compatible-stream",
+            transport=self.transport,
+            sni_hostname=self.destination.sni_hostname if self.destination else None,
+            timeout=12,
+            follow_redirects=False,
+            trust_env=False,
         )
 
     def _request(self, client, path, upstream_id, params=None):
@@ -349,14 +355,22 @@ class CompatibleStream:
         )
 
     async def _deliver(self, generation, path, limit, media_type, authorize, release):
-        client = self._client()
+        client, owns_client = acquire_client(
+            key="compatible-stream",
+            transport=self.transport,
+            sni_hostname=self.destination.sni_hostname if self.destination else None,
+            timeout=12,
+            follow_redirects=False,
+            trust_env=False,
+        )
         response = None
 
         async def close():
             try:
                 if response is not None:
                     await response.aclose()
-                await client.aclose()
+                if owns_client:
+                    await client.aclose()
             finally:
                 release()
 

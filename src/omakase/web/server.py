@@ -111,7 +111,13 @@ async def _lifespan(app):
 
         with closing(_connect()):
             pass
-    yield
+    try:
+        yield
+    finally:
+        if _PLUS_MOUNTED:
+            from omakase.plus.http_pool import close_pools
+
+            await close_pools()
 
 
 app = FastAPI(
