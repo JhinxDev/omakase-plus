@@ -788,6 +788,96 @@ class TestProductShell:
         finally:
             os.environ.pop("OMAKASE_PLUS_INVITE", None)
 
+    def test_settings_validation_errors_normalize_and_reset_controls_work(self, client):
+        try:
+            _signup_and_login(client)
+            downloads_html = client.get("/plus/settings/downloads").text
+            assert 'name="reset_acquisition_policy" value="1" formnovalidate' in downloads_html
+            assert '<span class="privacy-stamp">All media</span>' in downloads_html
+
+            bad_policy = client.post(
+                "/plus/settings",
+                data={
+                    "csrf_token": _csrf_token(client),
+                    "settings_section": "downloads",
+                    "acquisition_policy_present": "1",
+                    "resolution_1": "1080p",
+                    "minimum_seeders": "50",
+                    "preferred_seeders": "10",
+                    "max_release_size_gib": "80",
+                },
+                follow_redirects=False,
+            )
+            assert bad_policy.status_code == 302
+            assert bad_policy.headers["location"].startswith("/plus/settings/downloads?error=")
+            err_page = client.get(bad_policy.headers["location"]).text
+            assert 'role="alert"' in err_page
+            assert '<details class="settings-advanced" open>' in err_page
+            assert "1080p → 2160p → 720p" in err_page
+
+            bad_sources = client.post(
+                "/plus/settings",
+                data={
+                    "csrf_token": _csrf_token(client),
+                    "settings_section": "sources",
+                    "prowlarr_indexer_ids": "abc, 0",
+                    "prowlarr_categories": "5070",
+                },
+                follow_redirects=False,
+            )
+            assert bad_sources.status_code == 302
+            assert bad_sources.headers["location"].startswith("/plus/settings/sources?error=")
+            sources_err = client.get(bad_sources.headers["location"]).text
+            assert 'role="alert"' in sources_err
+            assert "<b>Stored</b>" not in sources_err
+            assert "/plus/settings/connections#connection-prowlarr" in sources_err
+
+            good_sources = client.post(
+                "/plus/settings",
+                data={
+                    "csrf_token": _csrf_token(client),
+                    "settings_section": "sources",
+                    "prowlarr_indexer_ids": "4, 7",
+                    "prowlarr_categories": "5070, 5000",
+                },
+                follow_redirects=False,
+            )
+            assert good_sources.status_code == 302
+            assert good_sources.headers["location"].startswith("/plus/settings/sources?saved=")
+            sources_saved = client.get(good_sources.headers["location"]).text
+            assert "<b>Stored</b>" in sources_saved
+            assert 'name="delete_prowlarr_indexer_ids" value="1" formnovalidate' in sources_saved
+
+            from omakase.plus.secrets import read_secret
+
+            with _connect_client_db(client) as conn:
+                assert read_secret(conn, 1, "prowlarr_indexer_ids") == "4,7"
+                assert read_secret(conn, 1, "prowlarr_categories") == "5070,5000"
+
+            set_ani = client.post(
+                "/plus/settings",
+                data={
+                    "csrf_token": _csrf_token(client),
+                    "settings_section": "preferences",
+                    "anilist_username": "Tester",
+                },
+                follow_redirects=False,
+            )
+            assert set_ani.status_code == 302
+            clear_ani = client.post(
+                "/plus/settings",
+                data={
+                    "csrf_token": _csrf_token(client),
+                    "settings_section": "preferences",
+                    "anilist_username": "",
+                },
+                follow_redirects=False,
+            )
+            assert clear_ani.status_code == 302
+            assert "anilist_username%20removed" in clear_ani.headers["location"]
+        finally:
+            os.environ.pop("OMAKASE_PLUS_INVITE", None)
+
     def test_apple_tv_bridge_secret_is_revealed_once_and_controls_require_csrf(self, client):
         try:
             _signup_and_login(client)

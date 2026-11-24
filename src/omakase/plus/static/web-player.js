@@ -547,6 +547,16 @@
       this.listeners = [];
     }
   }
+  function shouldReloadOnSeek(session, player, buffered, time) {
+    if (!session?.streaming || buffered) return false;
+    if (typeof player?.isLive === 'function' && !player.isLive() && typeof player?.seekRange === 'function') {
+      const range = player.seekRange();
+      if (Number.isFinite(range?.start) && Number.isFinite(range?.end) && time >= range.start - 1 && time <= range.end + 1) {
+        return false;
+      }
+    }
+    return true;
+  }
   function validatedSkipSegments(session) {
     const data = session?.skip_segments, source = session?.source;
     if (!data || !source || data.media_version !== source.media_version || data.episode_number !== source.episode_number || !Array.isArray(data.segments) || data.segments.length > 4) return [];
@@ -692,7 +702,7 @@
     }
     return { QualityMenu, AudioMenu, SubtitlesMenu, StreamInfoMenu };
   }
-  if (typeof module !== 'undefined' && module.exports) module.exports = { failureMessage, normalizeUnknownTrackLanguage, trackLanguage, episodePresentation, relativeSeekTarget, playbackTime, settingsMenuTypes, playerControlsConfiguration, qualityChoices, streamInfo, waitForSeek, SmoothTimeline, validatedSkipSegments, activeSkipSegment, EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
+  if (typeof module !== 'undefined' && module.exports) module.exports = { failureMessage, normalizeUnknownTrackLanguage, trackLanguage, episodePresentation, relativeSeekTarget, playbackTime, settingsMenuTypes, playerControlsConfiguration, qualityChoices, streamInfo, waitForSeek, shouldReloadOnSeek, SmoothTimeline, validatedSkipSegments, activeSkipSegment, EventQueue, selectedTracks, browserCapabilities, subtitlePreference, audioPreference, eventPosition, playbackRateConfiguration, styledSubtitleTracks, enhanceRangeControls, SessionPreparation, startPayload, exitSnapshot, TerminalCheckpoint, enforcePlayback, guardedPlay, nextEpisodeUrl, subtitleChoices, initialSubtitleValue, subtitleMenuKey, switchSubtitleRenderer };
   if (typeof document === 'undefined') return;
   const root = document.querySelector('[data-web-player]');
   if (!root) return;
@@ -769,6 +779,9 @@
   let captionTasks = Promise.resolve();
   let captionIntent = 0;
   let assTracks = [];
+  let cloudSubtitleTracks = [];
+  const cloudTrackUrlById = new Map();
+  let activeCloudTrackUrl = null;
   let customTextId = null;
   let subtitleOverride = null;
   let captionLoading = false;
@@ -902,7 +915,7 @@
     const selected = selectedTracks(player);
     const textId = customTextId ?? selected.text_id;
     // An absent or still-loading caption is not an explicit preference for Off.
-    return { ...selected, text_id: captionLoading || (textId === 'off' && subtitleOverride !== 'off') ? null : textId };
+    return { ...selected, text_id: captionLoading || subtitlePending || (textId === 'off' && subtitleOverride !== 'off') ? null : textId };
   }
   function playbackSnapshot(event) {
     const position = eventPosition(video.currentTime, session?.duration_seconds);
@@ -1094,9 +1107,11 @@
   }
   function captionUnavailable() {
     customTextId = 'off';
+    activeCloudTrackUrl = null;
     bitmapRenderer?.destroy();
     bitmapRenderer = null;
     void captions?.clear().catch(() => {});
+    player?.selectTextTrack(null);
     find('ass-select').value = 'off';
     find('ass-status').textContent = 'Subtitles unavailable.';
     refreshBarControls();
@@ -1110,8 +1125,10 @@
     const intent = ++captionIntent;
     const source = session;
     captionLoading = true;
+    const selector = find('ass-select');
+    if ([...selector.options].some(option => option.value === id)) selector.value = id;
     find('ass-status').textContent = id === 'off' ? 'Turning subtitles off…' : id.startsWith('native:') ? 'Preparing browser subtitles…' : id.startsWith('bitmap:') ? 'Preparing image subtitles…' : 'Preparing styled subtitles…';
-    find('ass-select').disabled = true;
+    selector.disabled = true;
     if (id.startsWith('ass:')) video.disablePictureInPicture = true;
     refreshBarControls();
     const task = captionTasks.catch(() => {}).then(async () => {
@@ -1137,27 +1154,53 @@
             },
           });
           customTextId = id;
-        } else if (!await switchSubtitleRenderer(id, {
-          nativeTracks: player.getTextTracks(), styledTracks: assTracks,
-          clearStyled: async () => { if (captions) await captions.clear(); },
-          selectNative: track => player.selectTextTrack(track), setCustom: value => { customTextId = value; },
-          current: () => intent === captionIntent && source === session && !leaving,
-          loadStyled: async track => {
-          if (!browserCapabilities(window, video).ass_supported) throw Object.assign(new Error('Styled subtitles unavailable'), { code: 'ass_display' });
-          if (!captions) {
-            const { OmakaseASS } = await import('/plus/static/web-ass.js' + assetVersion);
+          activeCloudTrackUrl = null;
+        } else {
+          let nativeTracks = player.getTextTracks();
+          if (id.startsWith('native:') && !nativeTracks.some(track => track.id != null && `native:${track.id}` === id) && cloudSubtitleTracks.length) {
+            const targetUrl = cloudTrackUrlById.get(id.slice('native:'.length));
+            const reattached = await attachCloudSubtitleTracks(player, () => intent === captionIntent && source === session && !leaving, cloudSubtitleTracks);
             if (intent !== captionIntent || source !== session || leaving) return;
-            const controller = new OmakaseASS({ video, container, onError: () => {
-              if (captions === controller && source === session && !leaving) captionUnavailable();
-            } });
-            captions = controller;
+            nativeTracks = player.getTextTracks();
+            if (targetUrl && !nativeTracks.some(track => track.id != null && `native:${track.id}` === id)) {
+              for (const [mappedId, url] of cloudTrackUrlById.entries()) {
+                if (url === targetUrl) {
+                  id = `native:${mappedId}`;
+                  if (subtitleOverride?.startsWith('native:')) subtitleOverride = id;
+                  break;
+                }
+              }
+            }
+            if (reattached) {
+              const activeSelector = find('ass-select');
+              renderSubtitleOptions(activeSelector, nativeTracks);
+              if ([...activeSelector.options].some(option => option.value === id)) activeSelector.value = id;
+            }
           }
-          const success = await captions.setTrack({ url: track.url, fonts: source.fonts || [], timeOffset: 0 });
-          return success;
-          },
-        })) return;
+          if (!await switchSubtitleRenderer(id, {
+            nativeTracks, styledTracks: assTracks,
+            clearStyled: async () => { if (captions) await captions.clear(); },
+            selectNative: track => player.selectTextTrack(track), setCustom: value => { customTextId = value; },
+            current: () => intent === captionIntent && source === session && !leaving,
+            loadStyled: async track => {
+            if (!browserCapabilities(window, video).ass_supported) throw Object.assign(new Error('Styled subtitles unavailable'), { code: 'ass_display' });
+            if (!captions) {
+              const { OmakaseASS } = await import('/plus/static/web-ass.js' + assetVersion);
+              if (intent !== captionIntent || source !== session || leaving) return;
+              const controller = new OmakaseASS({ video, container, onError: () => {
+                if (captions === controller && source === session && !leaving) captionUnavailable();
+              } });
+              captions = controller;
+            }
+            const success = await captions.setTrack({ url: track.url, fonts: source.fonts || [], timeOffset: 0 });
+            return success;
+            },
+          })) return;
+          if (id.startsWith('ass:')) { customTextId = id; activeCloudTrackUrl = null; }
+          else if (id.startsWith('native:')) activeCloudTrackUrl = cloudTrackUrlById.get(id.slice('native:'.length)) ?? activeCloudTrackUrl;
+          else { customTextId = 'off'; activeCloudTrackUrl = null; }
+        }
         if (intent !== captionIntent || source !== session || leaving) return;
-        if (id.startsWith('ass:')) customTextId = id;
         find('ass-select').value = id;
         find('ass-status').textContent = id === 'off' ? (assTracks.length ? 'Styled subtitles are off.' : 'Subtitles are off.') : id.startsWith('native:') ? 'Browser subtitle track selected.' : id.startsWith('bitmap:') ? 'Image subtitles selected.' : 'Styled subtitles ready.';
         captionLoading = false;
@@ -1225,46 +1268,112 @@
   function subtitlePolicy() {
     return subtitleDefault.value === 'anime' ? (config.catalog_target ? 'auto' : 'always') : subtitleDefault.value;
   }
-  async function discoverCloudSubtitles(target) {
-    const statusPath = target.cloud_subtitles_url;
-    if (typeof statusPath !== 'string' || !/^\/plus\/cloud\/media\/[a-f0-9]{32}\/subtitles\.json$/.test(statusPath)) return;
+  function fetchCloudSubtitleManifest(target) {
+    const statusPath = target?.cloud_subtitles_url;
+    if (typeof statusPath !== 'string' || !/^\/plus\/cloud\/media\/[a-f0-9]{32}\/subtitles\.json$/.test(statusPath)) {
+      return Promise.resolve(null);
+    }
     const mediaDirectory = statusPath.slice(0, -'subtitles.json'.length);
-    const owningPlayer = player;
-    const current = () => session === target && player === owningPlayer && ready && !failed && !leaving;
-    const deadline = performance.now() + 75000;
+    const current = () => session === target && !failed && !leaving;
     subtitlePending = true;
     refreshBarControls();
+    return (async () => {
+      const deadline = performance.now() + 75000;
+      let delay = 300;
+      try {
+        while (current() && performance.now() < deadline) {
+          const response = await fetch(statusPath, {
+            credentials: 'same-origin', redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(5000),
+          });
+          if (!current()) return null;
+          if (response.status === 202) {
+            await new Promise(resolve => window.setTimeout(resolve, delay));
+            delay = Math.min(delay * 2, 2000);
+            continue;
+          }
+          if (!response.ok) return null;
+          const { tracks: payload } = await response.json();
+          if (!Array.isArray(payload)) return null;
+          const validated = [];
+          for (const track of payload.slice(0, 8)) {
+            if (typeof track?.url !== 'string' || !track.url.startsWith(mediaDirectory) ||
+                !/^subtitles[0-7]\.vtt$/.test(track.url.slice(mediaDirectory.length))) continue;
+            const language = typeof track.language === 'string' && /^[a-z]{2,3}(-[a-z0-9]{2,8})*$/i.test(track.language) ? track.language : 'und';
+            const label = typeof track.name === 'string' ? track.name.slice(0, 40) : undefined;
+            validated.push({ url: track.url, language, label });
+          }
+          return validated;
+        }
+      } catch { /* Subtitle discovery is independent of playback. */ }
+      return null;
+    })();
+  }
+  async function attachCloudSubtitleTracks(owningPlayer, current, trackList) {
+    if (!owningPlayer || !Array.isArray(trackList) || !trackList.length) return false;
+    const prevLoading = captionLoading;
+    captionLoading = true;
+    let added = false;
     try {
-      while (current() && performance.now() < deadline) {
-        const response = await fetch(statusPath, {
-          credentials: 'same-origin', redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(5000),
-        });
-        if (!current()) return;
-        if (response.status === 202) {
-          await new Promise(resolve => window.setTimeout(resolve, 2000));
-          continue;
-        }
-        if (!response.ok) return;
-        const { tracks } = await response.json();
-        if (!Array.isArray(tracks)) return;
-        let added = false;
-        for (const track of tracks.slice(0, 4)) {
-          if (!current()) return;
-          if (typeof track?.url !== 'string' || !track.url.startsWith(mediaDirectory) ||
-              !/^subtitles[0-3]\.vtt$/.test(track.url.slice(mediaDirectory.length))) continue;
-          const language = typeof track.language === 'string' && /^[a-z]{2,3}(-[a-z0-9]{2,8})*$/i.test(track.language) ? track.language : 'und';
-          const label = typeof track.name === 'string' ? track.name.slice(0, 40) : undefined;
-          try {
-            await owningPlayer.addTextTrackAsync(new URL(track.url, window.location.origin).href, language, 'subtitles', 'text/vtt', undefined, label);
-            added = true;
-          } catch { /* Missing or unsupported text leaves video playing. */ }
-        }
-        if (added && current()) await prepareTracks();
+      const existingIds = new Set(owningPlayer.getTextTracks().map(track => String(track.id)));
+      for (const id of [...cloudTrackUrlById.keys()]) {
+        if (!existingIds.has(id)) cloudTrackUrlById.delete(id);
+      }
+      const attachedUrls = new Set(cloudTrackUrlById.values());
+      for (const track of trackList) {
+        if (!current()) return false;
+        if (attachedUrls.has(track.url)) continue;
+        try {
+          const addedTrack = await owningPlayer.addTextTrackAsync(
+            new URL(track.url, window.location.origin).href,
+            track.language,
+            'subtitles',
+            'text/vtt',
+            undefined,
+            track.label,
+          );
+          if (addedTrack?.id != null) cloudTrackUrlById.set(String(addedTrack.id), track.url);
+          else {
+            const unmapped = owningPlayer.getTextTracks().find(item => item.id != null && !cloudTrackUrlById.has(String(item.id)));
+            if (unmapped) cloudTrackUrlById.set(String(unmapped.id), track.url);
+          }
+          added = true;
+        } catch { /* Missing or unsupported text leaves video playing. */ }
+      }
+    } finally {
+      captionLoading = prevLoading;
+    }
+    return added;
+  }
+  async function attachPendingCloudSubtitles(target, manifestPromise) {
+    const owningPlayer = player;
+    const current = () => session === target && player === owningPlayer && ready && !failed && !leaving;
+    try {
+      const trackList = await manifestPromise;
+      if (!current()) return;
+      cloudSubtitleTracks = Array.isArray(trackList) ? trackList : [];
+      const added = await attachCloudSubtitleTracks(owningPlayer, current, cloudSubtitleTracks);
+      if (!current()) return;
+      subtitlePending = false;
+      if (added) {
+        await prepareTracks();
         return;
       }
+      refreshBarControls();
     } catch { /* Subtitle discovery is independent of playback. */ }
     finally {
       if (current()) { subtitlePending = false; refreshBarControls(); }
+    }
+  }
+  function renderSubtitleOptions(selector, nativeTracks) {
+    selector.replaceChildren(new Option('Off', 'off'));
+    for (const [kind, label] of [['native', 'Browser subtitles'], ['ass', 'Styled ASS'], ['bitmap', 'Image subtitles']]) {
+      const options = subtitleChoices(nativeTracks, assTracks, bitmapTracks).filter(choice => choice.kind === kind);
+      if (options.length) {
+        const group = document.createElement('optgroup');
+        group.label = label;
+        for (const option of options) group.appendChild(new Option(option.label, option.value));
+        selector.appendChild(group);
+      }
     }
   }
   function prepareTracks() {
@@ -1276,14 +1385,12 @@
     const selector = find('ass-select');
     selector.disabled = true;
     const nativeTracks = player.getTextTracks();
-    selector.replaceChildren(new Option('Off', 'off'));
-    for (const [kind, label] of [['native', 'Browser subtitles'], ['ass', 'Styled ASS'], ['bitmap', 'Image subtitles']]) {
-      const options = subtitleChoices(nativeTracks, assTracks, bitmapTracks).filter(choice => choice.kind === kind);
-      if (options.length) { const group = document.createElement('optgroup'); group.label = label; for (const option of options) group.appendChild(new Option(option.label, option.value)); selector.appendChild(group); }
-    }
+    renderSubtitleOptions(selector, nativeTracks);
     find('subtitle-unavailable').hidden = !!(nativeTracks.length || assTracks.length || bitmapTracks.length);
     const policy = subtitlePolicy();
     const initial = subtitleOverride ?? initialSubtitleValue(nativeTracks, assTracks, session.text_id, session.resume_version_changed, policy, bitmapTracks);
+    if ([...selector.options].some(option => option.value === initial)) selector.value = initial;
+    activeCloudTrackUrl = initial.startsWith('native:') ? (cloudTrackUrlById.get(initial.slice('native:'.length)) ?? activeCloudTrackUrl) : null;
     refreshBarControls();
     if (initial.startsWith('bitmap:')) {
       selector.value = initial;
@@ -1291,7 +1398,7 @@
       else void changeCaption(initial);
       return;
     }
-    if (initial === 'off' && !subtitleOverride && policy !== 'off' && !nativeTracks.length && !assTracks.length && session.subtitle_url) {
+    if (initial === 'off' && !subtitleOverride && policy !== 'off' && !nativeTracks.length && !assTracks.length && (session.subtitle_url || (session.cloud_subtitles_url && subtitlePending))) {
       selector.disabled = false;
       return;
     }
@@ -1325,6 +1432,9 @@
     session = null;
     assTracks = [];
     bitmapTracks = [];
+    cloudSubtitleTracks = [];
+    cloudTrackUrlById.clear();
+    activeCloudTrackUrl = null;
     customTextId = null;
     subtitleOverride = null;
     subtitlePending = false;
@@ -1425,6 +1535,20 @@
       mediaUri = media.href;
       player = new shaka.Player();
       await player.attach(video);
+      if (typeof player.configure === 'function') {
+        player.configure({
+          manifest: {
+            hls: {
+              disableClosedCaptionsDetection: true,
+              ignoreTextStreamFailures: true,
+            },
+          },
+          streaming: {
+            bufferingGoal: 20,
+            rebufferingGoal: 1.5,
+          },
+        });
+      }
       registerBarControls();
       overlay = new shaka.ui.Overlay(player, container, video);
       configureControls();
@@ -1439,6 +1563,7 @@
       const position = find('resume').checked && !session.resume_version_changed ? Math.max(0, Number(session.position_seconds) || 0) : 0;
       find('version-note').hidden = !session.resume_version_changed;
       const subtitlePreparation = watchStreamSubtitles(session);
+      const cloudManifestPromise = fetchCloudSubtitleManifest(session);
       video.preload = 'metadata';
       await player.load(media.href, position, session.media_type || undefined);
       if (failed || leaving) return;
@@ -1450,20 +1575,32 @@
         if (!(await waitForSeek(video, position, 10000))) throw unavailable();
       }
       if (session.streaming && position > 0 && !seekLanded(video, position)) {
-        setLoading('Finding your saved position…', true);
-        status.textContent = 'Preparing your saved position…';
-        const deadline = Date.now() + 45000;
-        for (;;) {
-          if (currentAttempt !== attempt || failed || leaving) return;
-          const range = player.seekRange();
-          if (position >= range.start - 1 && position <= range.end + 1) break;
-          if (Date.now() >= deadline) throw unavailable();
-          await new Promise(resolve => window.setTimeout(resolve, 250));
-        }
+        if (video.seeking) await waitForSeek(video, position, 2500);
+        if (currentAttempt !== attempt || failed || leaving) return;
         if (!seekLanded(video, position)) {
-          await player.load(media.href, position, session.media_type || undefined);
-          if (currentAttempt !== attempt || failed || leaving) return;
-          if (!(await waitForSeek(video, position))) throw unavailable();
+          setLoading('Finding your saved position…', true);
+          status.textContent = 'Preparing your saved position…';
+          const range = player.seekRange();
+          const vodInRange = typeof player.isLive === 'function' && !player.isLive()
+            && Number.isFinite(range?.end) && position >= range.start - 1 && position <= range.end + 1;
+          if (vodInRange) {
+            video.currentTime = position;
+            if (!(await waitForSeek(video, position, 8000))) throw unavailable();
+          } else {
+            const deadline = Date.now() + 45000;
+            for (;;) {
+              if (currentAttempt !== attempt || failed || leaving) return;
+              const liveRange = player.seekRange();
+              if (position >= liveRange.start - 1 && position <= liveRange.end + 1) break;
+              if (Date.now() >= deadline) throw unavailable();
+              await new Promise(resolve => window.setTimeout(resolve, 250));
+            }
+            if (!seekLanded(video, position)) {
+              await player.load(media.href, position, session.media_type || undefined);
+              if (currentAttempt !== attempt || failed || leaving) return;
+              if (!(await waitForSeek(video, position))) throw unavailable();
+            }
+          }
         }
       }
       if (currentAttempt !== attempt || failed || leaving) return;
@@ -1477,6 +1614,7 @@
         275,
       );
       ready = true;
+      const cloudSubtitlesReady = session.cloud_subtitles_url ? attachPendingCloudSubtitles(session, cloudManifestPromise) : Promise.resolve();
       const initialCaptions = prepareTracks();
       find('timeline').disabled = false;
       const currentSession = session;
@@ -1484,6 +1622,25 @@
       let seekTimer = null;
       let seeking = false;
       const seekCurrent = () => session === currentSession && ready && !failed && !leaving;
+      async function restoreTracksAfterReload(owningPlayer, reloadSession) {
+        if (!seekCurrent() || player !== owningPlayer || session !== reloadSession) return;
+        const restoredAudio = audioPreference(owningPlayer, reloadSession);
+        if (restoredAudio?.native) owningPlayer.selectAudioTrack(restoredAudio.native);
+        else if (restoredAudio?.variant) owningPlayer.selectVariantTrack(restoredAudio.variant, true);
+        if (cloudSubtitleTracks.length) {
+          await attachCloudSubtitleTracks(owningPlayer, seekCurrent, cloudSubtitleTracks);
+          if (!seekCurrent()) return;
+          if (activeCloudTrackUrl && subtitleOverride !== 'off') {
+            for (const [mappedId, url] of cloudTrackUrlById.entries()) {
+              if (url === activeCloudTrackUrl) {
+                subtitleOverride = `native:${mappedId}`;
+                break;
+              }
+            }
+          }
+        }
+        await prepareTracks();
+      }
       function scheduleSeek(delay) {
         window.clearTimeout(seekTimer);
         seekTimer = window.setTimeout(() => void applySeek(), delay);
@@ -1517,6 +1674,7 @@
             const buffered = Array.from({length: video.buffered.length}, (_, i) => i).some(
               i => video.buffered.start(i) <= request.time && request.time < video.buffered.end(i)
             );
+            let reloaded = false;
             if (currentSession.seek_url && !buffered) {
               await player.unload();
               if (!seekCurrent()) return;
@@ -1525,8 +1683,14 @@
               if (!seekCurrent()) return;
               if (pendingSeek !== request) continue;
               await player.load(mediaUri, request.time, currentSession.media_type);
-            } else if (!currentSession.streaming || buffered) video.currentTime = request.time;
-            else await player.load(mediaUri, request.time, currentSession.media_type || undefined);
+              reloaded = true;
+            } else if (!shouldReloadOnSeek(currentSession, player, buffered, request.time)) {
+              video.currentTime = request.time;
+            } else {
+              await player.load(mediaUri, request.time, currentSession.media_type || undefined);
+              reloaded = true;
+            }
+            if (reloaded) await restoreTracksAfterReload(player, currentSession);
             if (!seekCurrent()) return;
             settled = await waitForSeek(video, request.time);
             if (!seekCurrent()) return;
@@ -1586,7 +1750,16 @@
       refreshBarControls();
       player.addEventListener('variantchanged', () => capture('progress'));
       player.addEventListener('textchanged', () => {
-        if (!captionLoading && customTextId == null) { const active = player.getTextTracks().find(track => track.active); find('ass-select').value = active ? 'native:' + active.id : 'off'; }
+        if (captionLoading) return;
+        const active = player.getTextTracks().find(track => track.active);
+        if (typeof customTextId === 'string' && (customTextId.startsWith('ass:') || customTextId.startsWith('bitmap:'))) {
+          if (active) player.selectTextTrack(null);
+          return;
+        }
+        customTextId = active ? null : 'off';
+        find('ass-select').value = active ? 'native:' + active.id : 'off';
+        activeCloudTrackUrl = active ? (cloudTrackUrlById.get(String(active.id)) ?? activeCloudTrackUrl) : null;
+        refreshBarControls();
         capture('progress');
       });
       restart.disabled = false;
@@ -1599,7 +1772,7 @@
         let graceTimer;
         try {
           await Promise.race([
-            Promise.all([subtitlePreparation, initialCaptions]),
+            Promise.all([subtitlePreparation, initialCaptions, cloudSubtitlesReady]),
             new Promise(resolve => { graceTimer = window.setTimeout(resolve, 2500); }),
           ]);
         } finally { window.clearTimeout(graceTimer); }
@@ -1608,7 +1781,6 @@
       status.textContent = session.source?.mode === 'direct' ? 'Ready to play · Direct stream' : 'Ready to play';
       capture('seek');
       periodic = window.setInterval(() => { if (!video.paused && !video.ended) capture('progress'); }, 5000);
-      if (currentAttempt === attempt && !leaving && session) void discoverCloudSubtitles(session);
       await playReady();
     } catch (error) {
       if (currentAttempt === attempt && !leaving) {

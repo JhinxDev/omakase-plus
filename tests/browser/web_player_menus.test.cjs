@@ -75,3 +75,29 @@ test('async direct subtitle handoff restores its visible row after body fallback
     assert.equal(menu.button.classList.contains('shaka-hidden'),!back);
   }
 });
+
+test('SubtitlesMenu tracks pending cloud discovery then toggles off and back on cleanly',()=>{
+  global.document=document;const f=fixture();const menu=f.menus[2];
+  f.selector.options=f.selector.options.slice(0,1);f.selector.value='off';
+  f.state.subtitlePending=true;menu.checkAvailability();
+  assert.equal(menu.currentSelection.textContent,'Preparing…');
+  f.state.subtitlePending=false;
+  const eng=new Node('option');eng.value='native:1';eng.textContent='English';
+  const fra=new Node('option');fra.value='native:2';fra.textContent='French';
+  f.selector.options=[f.selector.options[0],eng,fra];
+  f.selector.value='native:1';menu.checkAvailability();
+  assert.equal(menu.currentSelection.textContent,'English');
+  let rows=menu.menu.querySelectorAll('[data-subtitle-choice]');
+  assert.equal(rows[0].getAttribute('aria-checked'),'false');
+  assert.equal(rows[1].getAttribute('aria-checked'),'true');
+  f.selector.value='off';menu.checkAvailability();
+  rows=menu.menu.querySelectorAll('[data-subtitle-choice]');
+  assert.equal(menu.currentSelection.textContent,'Off');
+  assert.equal(rows[0].getAttribute('aria-checked'),'true');
+  assert.equal(rows[1].getAttribute('aria-checked'),'false');
+  f.selector.value='native:1';menu.checkAvailability();
+  rows=menu.menu.querySelectorAll('[data-subtitle-choice]');
+  assert.equal(menu.currentSelection.textContent,'English');
+  assert.equal(rows[0].getAttribute('aria-checked'),'false');
+  assert.equal(rows[1].getAttribute('aria-checked'),'true');
+});

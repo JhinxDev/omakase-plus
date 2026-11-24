@@ -137,6 +137,7 @@ from omakase.plus.product_views import (
 )
 from omakase.plus.provider_limits import cooldown_hooks
 from omakase.plus.providers.realdebrid import RealDebridProvider
+from omakase.plus.prowlarr import ProwlarrConfigurationError, parse_positive_ids
 from omakase.plus.repairs import (
     RepairError,
     quarantine_asset,
@@ -2920,6 +2921,8 @@ async def settings_page(
             {
                 **_product_context(request, user, active_page="settings"),
                 "settings_section": "overview",
+                "saved": saved,
+                "settings_error": error,
             },
         )
     stored = {}
@@ -3053,6 +3056,15 @@ async def settings_post(
             delete_secret(db, user_id, key_name)
             saved_keys.append(f"{key_name} removed")
         elif value and value != "••••••••":
+            if key_name in {"prowlarr_indexer_ids", "prowlarr_categories"}:
+                try:
+                    normalized_ids = parse_positive_ids(value)
+                except ProwlarrConfigurationError as exc:
+                    return RedirectResponse(
+                        url=f"{return_path}?error={quote(str(exc), safe='')}",
+                        status_code=302,
+                    )
+                value = ",".join(str(item) for item in normalized_ids)
             store_secret(db, user_id, key_name, value)
             saved_keys.append(key_name)
 
@@ -3066,7 +3078,7 @@ async def settings_post(
             except ValueError as exc:
                 message = quote(str(exc), safe="")
                 return RedirectResponse(
-                    url=f"{return_path}?saved={message}",
+                    url=f"{return_path}?error={message}",
                     status_code=302,
                 )
             store_secret(
@@ -3084,7 +3096,10 @@ async def settings_post(
         store_secret(db, user_id, "anilist_username", anilist_username)
         saved_keys.append("anilist_username")
     elif "anilist_username" in form:
+        had_anilist = bool(read_secret(db, user_id, "anilist_username"))
         delete_secret(db, user_id, "anilist_username")
+        if had_anilist:
+            saved_keys.append("anilist_username removed")
 
     msg = f"Saved: {', '.join(saved_keys)}" if saved_keys else "No changes made."
     return RedirectResponse(
