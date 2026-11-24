@@ -96,7 +96,7 @@ enum TVTopShelfLibrary {
                 let card = TVTopShelfCard(id: id, action: candidate.action, kind: candidate.kind.rawValue,
                                           match: match, title: title, progress: candidate.entry.progress)
                 if !FileManager.default.fileExists(atPath: store.artworkURL(for: card).path) {
-                    fallbackImages[id] = renderedArtwork(nil, card: card)
+                    fallbackImages[id] = renderedArtwork(nil, isResume: card.action == .resume, title: title)
                 }
                 tiles.append((card, candidate))
             }
