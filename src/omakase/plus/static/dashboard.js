@@ -178,7 +178,7 @@
         const destination =
           successUrl === "/plus/discover"
             ? `${successUrl}?run=${encodeURIComponent(runId || "")}`
-            : `/plus/dashboard?run=${encodeURIComponent(runId || "")}`;
+            : `/plus/discover?run=${encodeURIComponent(runId || "")}`;
         window.location.assign(destination);
         return;
       }

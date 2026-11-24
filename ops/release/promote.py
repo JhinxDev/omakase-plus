@@ -158,6 +158,96 @@ def changed_paths(left: object, right: object, prefix: str = "") -> list[str]:
     return paths
 
 
+def _parse_env_secrets(env_text: str) -> dict[str, str]:
+    pattern = re.compile(r"(?:SECRET|KEY|TOKEN|PASSWORD|PASS|AUTH|CREDENTIAL|COOKIE)", re.I)
+    found: dict[str, str] = {}
+    for raw_line in env_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        key, sep, value = line.partition("=")
+        key = key.strip()
+        if not sep or not key or not pattern.search(key):
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        if len(value) >= 8:
+            found[key] = value
+    return found
+
+
+def _find_secret_leaks(rendered_yaml: str, env_secrets: Mapping[str, str]) -> list[str]:
+    return sorted({name for name, value in env_secrets.items() if value and value in rendered_yaml})
+
+
+def collapse_candidate_chain(
+    settings: Settings,
+    files: Sequence[str],
+    candidate_path: Path,
+    bindings: Mapping[str, str],
+) -> Path:
+    """Collapse the reviewed Compose chain + candidate override into one safe file."""
+    chain = (*files, str(candidate_path))
+    command = compose_command(settings, chain)
+    first_raw = run(
+        *command, "config", "--format", "json", cwd=settings.stack_dir, compose_bindings=bindings
+    )
+    draft_yaml = run(
+        *command,
+        "config",
+        "--no-interpolate",
+        "--no-env-resolution",
+        "--format",
+        "yaml",
+        cwd=settings.stack_dir,
+        compose_bindings=bindings,
+    )
+    try:
+        first_doc = json.loads(first_raw)
+    except ValueError as error:
+        raise ReleaseError("compose chain did not render valid JSON before collapse") from error
+
+    env_path = settings.stack_dir / ".env"
+    if env_path.is_file():
+        secrets = _parse_env_secrets(env_path.read_text(encoding="utf-8"))
+        leaked = _find_secret_leaks(draft_yaml, secrets)
+        if leaked:
+            raise ReleaseError(f"collapsed compose leaked resolved secret(s): {', '.join(leaked)}")
+
+    draft_path = settings.stack_dir / ".compose-collapsed.draft.yaml"
+    target_path = settings.stack_dir / "compose-collapsed.yaml"
+    try:
+        with open(draft_path, "w", encoding="utf-8", opener=_private_file) as handle:
+            handle.write(draft_yaml)
+            handle.flush()
+            os.fsync(handle.fileno())
+        collapsed_command = compose_command(settings, [str(draft_path)])
+        second_raw = run(
+            *collapsed_command,
+            "config",
+            "--format",
+            "json",
+            cwd=settings.stack_dir,
+            compose_bindings=bindings,
+        )
+        try:
+            second_doc = json.loads(second_raw)
+        except ValueError as error:
+            raise ReleaseError("collapsed compose file did not render valid JSON") from error
+        if second_doc != first_doc:
+            raise ReleaseError("collapsed compose chain differs from the reviewed chain")
+        os.replace(draft_path, target_path)
+        os.chmod(target_path, 0o600)
+        _fsync_dir(target_path.parent)
+    finally:
+        if draft_path.exists():
+            draft_path.unlink()
+    return target_path
+
+
 def deploy_override(service: str, image: str, revision: str) -> dict[str, object]:
     """Build the compose override that changes only the image and revision."""
     return {"services": {service: {"image": image, "environment": {"OMAKASE_REVISION": revision}}}}
@@ -949,6 +1039,8 @@ def preflight(
         "devices": devices,
         "devices_observed_at": devices_observed_at,
         "available_bytes": available,
+        "collapse_chain": bool(getattr(args, "collapse_chain", False)),
+        "collapsed_compose": str(settings.stack_dir / "compose-collapsed.yaml"),
         "manifest": manifest,
         "override": override,
     }
@@ -971,6 +1063,8 @@ def print_plan(settings: Settings, plan: Mapping[str, object], *, execute: bool)
         "previous_revision": plan["previous_revision"],
         "compose_files": plan["compose_files"],
         "compose_bindings": plan["compose_bindings"],
+        "collapse_chain": bool(plan.get("collapse_chain", False)),
+        "collapsed_compose": plan.get("collapsed_compose"),
         "database": str(settings.db_path),
         "backup_dir": str(settings.state_dir(str(plan["revision"]))),
         "schema": schema,
@@ -1054,9 +1148,14 @@ def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str
             "backup": backup,
         }
         _durable_json(state / "prepared.json", prepared)
+        start_command = candidate_command
+        collapsed_compose: Path | None = None
+        if getattr(args, "collapse_chain", False):
+            collapsed_compose = collapse_candidate_chain(settings, files, candidate_path, bindings)
+            start_command = compose_command(settings, [str(collapsed_compose)])
         phase = "candidate_start_attempted"
         run(
-            *candidate_command,
+            *start_command,
             "up",
             "-d",
             "--no-deps",
@@ -1083,6 +1182,7 @@ def execute_flow(settings: Settings, args: argparse.Namespace, plan: Mapping[str
             "previous_image_ref": plan["previous_image_ref"],
             "previous_revision": plan["previous_revision"],
             "compose_files": files,
+            "collapsed_compose": str(collapsed_compose) if collapsed_compose else None,
             "compose_bindings": bindings,
             "backup": backup,
             "verified_files": len(
@@ -1182,6 +1282,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--writers-fenced",
         action="store_true",
         help="attest scheduled, API and ad hoc writes are fenced",
+    )
+    parser.add_argument(
+        "--collapse-chain",
+        action="store_true",
+        help="collapse the candidate compose chain into compose-collapsed.yaml before startup",
     )
     parser.add_argument("--rollback", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(

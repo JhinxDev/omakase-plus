@@ -203,10 +203,10 @@ class TestJobLifecycle:
                 result = _wait_for_job(client, job_id)
 
             run_id = result["run_id"]
-            html = client.get(f"/plus/dashboard?run={run_id}").text
+            html = client.get(f"/plus/discover?run={run_id}").text
             assert "Vinland Saga" in html
             assert "Monster" in html
-            assert "Recent Runs" in html
+            assert "Your tasting menu" in html
         finally:
             os.environ.pop("OMAKASE_PLUS_INVITE", None)
 
@@ -232,7 +232,7 @@ class TestJobLifecycle:
             )
 
             # No run_history row was written.
-            html = client.get("/plus/dashboard").text
+            html = client.get("/plus/discover?mode=recommend").text
             assert "Vinland Saga" not in html
         finally:
             os.environ.pop("OMAKASE_PLUS_INVITE", None)
@@ -312,7 +312,7 @@ class TestJobLifecycle:
             assert "invalid shortlist" in result["detail"].lower()
 
             # No silent 0-pick row was written.
-            html = client.get("/plus/dashboard").text
+            html = client.get("/plus/discover?mode=recommend").text
             assert "Vinland Saga" not in html
         finally:
             os.environ.pop("OMAKASE_PLUS_INVITE", None)

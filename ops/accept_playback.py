@@ -244,7 +244,6 @@ async def _run(watch_path):
             clock=lambda: clock["now"],
             hls_database=lambda: None,
             subtitle_root=str(data / "subtitles"),
-            seek_root=str(data / "seek"),
         ),
         prefix="/plus",
     )

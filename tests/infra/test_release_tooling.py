@@ -49,6 +49,7 @@ def _load(name: str):
 
 build_image = _load("build_image")
 check_drift = _load("check_drift")
+collapse = _load("collapse")
 promote = _load("promote")
 
 
@@ -957,3 +958,125 @@ def test_help_text_states_the_dry_run_default():
     )
     assert result.returncode == 0
     assert "Dry run by default" in result.stdout
+
+
+def test_collapse_env_secret_parsing_and_leak_detection():
+    env_text = "\n".join(
+        [
+            "# comment",
+            "OMAKASE_ENV=production",
+            'export SESSION_SECRET="super-secret-value-123"',
+            "SHORT_KEY=abc",
+            "REALDEBRID_API_TOKEN='rd-token-987654321'",
+        ]
+    )
+    secrets = collapse.parse_env_secrets(env_text)
+    assert secrets == {
+        "SESSION_SECRET": "super-secret-value-123",
+        "REALDEBRID_API_TOKEN": "rd-token-987654321",
+    }
+
+    safe_yaml = "services:\n  app:\n    environment:\n      SESSION_SECRET: ${SESSION_SECRET}\n"
+    assert collapse.find_secret_leaks(safe_yaml, secrets) == []
+
+    leaked_yaml = (
+        "services:\n  app:\n    environment:\n      SESSION_SECRET: super-secret-value-123\n"
+    )
+    leaked = collapse.find_secret_leaks(leaked_yaml, secrets)
+    assert leaked == ["SESSION_SECRET"]
+    assert "super-secret-value-123" not in str(leaked)
+
+
+def test_collapse_transient_paths_and_rehoming():
+    files = [
+        "/opt/stacks/omakase-plus/compose.yaml",
+        "/var/tmp/omakase/overlay.yaml",
+        "/tmp/extra/sub.env",
+    ]
+    assert collapse.find_transient_paths(files) == [
+        "/var/tmp/omakase/overlay.yaml",
+        "/tmp/extra/sub.env",
+    ]
+
+    yaml_text = (
+        "services:\n"
+        "  app:\n"
+        "    env_file:\n"
+        "      - /var/tmp/omakase/overlay.env\n"
+        "    volumes:\n"
+        "      - /tmp/one/cfg.json:/app/cfg.json:ro\n"
+        "      - /tmp/two/cfg.json:/app/other.json:ro\n"
+    )
+    rewritten, mappings = collapse.rehome_transient_paths(yaml_text, "/opt/stacks/omakase-plus")
+    assert "/var/tmp/" not in rewritten
+    assert "/tmp/" not in rewritten
+    assert "/opt/stacks/omakase-plus/rehomed/overlay.env" in rewritten
+    assert len(mappings) == 3
+    assert len({entry["target"] for entry in mappings}) == 3
+    assert ":/app/cfg.json:ro" in rewritten
+
+
+def test_collapse_remote_script_preserves_placeholders_and_guards_secrets():
+    assert "--no-interpolate" in collapse.REMOTE
+    assert "--no-env-resolution" in collapse.REMOTE
+    assert "secret_leak" in collapse.REMOTE
+    assert '.replace("$", "$$")' not in collapse.REMOTE
+
+
+def test_promote_collapse_chain_option_and_guards(tmp_path, monkeypatch):
+    args = promote.parse_args(["--manifest", str(tmp_path / "m.json"), "--collapse-chain"])
+    assert args.collapse_chain is True
+
+    stack = tmp_path / "stack"
+    stack.mkdir()
+    (stack / ".env").write_text(
+        "OMAKASE_SESSION_SECRET=very-secret-token-value\n", encoding="utf-8"
+    )
+    base = stack / "compose.yaml"
+    candidate = stack / "candidate.json"
+    base.write_text("services:\n  app:\n    image: old\n", encoding="utf-8")
+    candidate.write_text("{}", encoding="utf-8")
+    settings = promote.settings_from_args(promote.parse_args(["--stack-dir", str(stack)]))
+    bindings = {"PLUS_UI_REVISION": OLD_REVISION, "PLUS_UI_IMAGE_ID": IMAGE_A}
+
+    # Happy path writes compose-collapsed.yaml with placeholders intact.
+    monkeypatch.setattr(promote, "_fsync_dir", lambda *_: None)
+
+    def happy_run(*command, cwd, compose_bindings):
+        if "--format" in command and command[command.index("--format") + 1] == "yaml":
+            return "services:\n  app:\n    image: new\n    environment:\n      OMAKASE_SESSION_SECRET: ${OMAKASE_SESSION_SECRET}\n"
+        return '{"services": {"app": {"image": "new"}}}'
+
+    monkeypatch.setattr(promote, "run", happy_run)
+    collapsed = promote.collapse_candidate_chain(settings, [str(base)], candidate, bindings)
+    assert collapsed == stack / "compose-collapsed.yaml"
+    assert collapsed.is_file()
+    assert "${OMAKASE_SESSION_SECRET}" in collapsed.read_text(encoding="utf-8")
+
+    # Secret leak refuses before writing.
+    def leak_run(*command, cwd, compose_bindings):
+        if "--format" in command and command[command.index("--format") + 1] == "yaml":
+            return "services:\n  app:\n    environment:\n      OMAKASE_SESSION_SECRET: very-secret-token-value\n"
+        return '{"services": {"app": {"image": "new"}}}'
+
+    monkeypatch.setattr(promote, "run", leak_run)
+    with pytest.raises(promote.ReleaseError, match="leaked resolved secret"):
+        promote.collapse_candidate_chain(settings, [str(base)], candidate, bindings)
+
+    # Equivalence mismatch refuses and leaves no draft file behind.
+    calls = {"json": 0}
+
+    def drift_run(*command, cwd, compose_bindings):
+        if "--format" in command and command[command.index("--format") + 1] == "yaml":
+            return "services:\n  app:\n    image: new\n"
+        calls["json"] += 1
+        return (
+            '{"services": {"app": {"image": "first"}}}'
+            if calls["json"] == 1
+            else '{"services": {"app": {"image": "second"}}}'
+        )
+
+    monkeypatch.setattr(promote, "run", drift_run)
+    with pytest.raises(promote.ReleaseError, match="differs from the reviewed chain"):
+        promote.collapse_candidate_chain(settings, [str(base)], candidate, bindings)
+    assert not (stack / ".compose-collapsed.draft.yaml").exists()

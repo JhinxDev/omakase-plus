@@ -8,6 +8,22 @@ identifier; it does not replace the public release version.
 
 ## Unreleased
 
+- Backend storage and networking now use tuned SQLite WAL/cache PRAGMAs,
+  batched library queries, a shared loop-scoped HTTP/2 connection pool across
+  playback and Real-Debrid clients, and a 20s TTL downloads cache that skips
+  redundant transcode polling when opening direct native streams.
+- Playback startup pre-warms the opening window cleanly, tracks and reaps
+  FFmpeg/pump background tasks on close, raises PGS caption extraction timeout
+  to 20s, and surfaces bounded retryable status updates in the web player.
+- Apple TV (`OmakasePlusTV`) now drops `TVVLCKit` in favor of native AVPlayer,
+  adds off-main bounded artwork caching, Audio/Subtitle language pickers in
+  Settings, a TV season selector, a 10-second Up Next countdown, and an Internal
+  TestFlight Cloud Signing release path (`scripts/deploy-testflight-tvos.sh` and
+  `.github/workflows/tvos-testflight.yml`).
+- Retired unused legacy modules (`prepared_hls.py`, `debrid_seek.py`,
+  `debrid-player.js`, `/cloud/player`, and `dashboard.html`), hardened Compose
+  chain collapse (`ops/release/collapse.py` and `promote.py --collapse-chain`),
+  and sped up CI workflows with pip and Buildx caching.
 - Home and title pages group playback actions and viewing status. Home remembers
   the featured carousel’s pause setting. Navigation uses one loading indicator.
 - Collections show verified connected media. Viewing history keeps completed

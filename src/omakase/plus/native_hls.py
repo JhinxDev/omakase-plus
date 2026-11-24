@@ -34,19 +34,15 @@ from pathlib import Path
 
 import httpx
 
-from omakase.plus.debrid_seek import (
-    _CUES,
-    _EBML,
-    _SEGMENT,
-    _children,
-    _element,
-    _timecode_scale,
-    _uint,
-)
+from omakase.plus.http_pool import acquire_client, client_scope
 from omakase.plus.playback_diagnostics import diagnostic_id, warn
 
 _LOG = logging.getLogger(__name__)
 
+_EBML = 0x1A45DFA3
+_SEGMENT = 0x18538067
+_CUES = 0x1C53BB6B
+_TIMECODE_SCALE = 0x2AD7B1
 _TRACKS = 0x1654AE6B
 _INFO = 0x1549A966
 _SEEKHEAD = 0x114D9B74
@@ -83,6 +79,66 @@ _PIXEL_HEIGHT = 0xBA
 _DEFAULT_DURATION = 0x23E383
 _CODEC_DELAY = 0x56AA
 _UNKNOWN_SIZE = b"\x01\xff\xff\xff\xff\xff\xff\xff"
+
+
+def _vint(data, position, keep_marker):
+    first = data[position]
+    length = 1
+    mask = 0x80
+    while length <= 8 and not (first & mask):
+        mask >>= 1
+        length += 1
+    if length > 8 or position + length > len(data):
+        raise ValueError("bad vint")
+    value = first if keep_marker else first & (mask - 1)
+    for offset in range(1, length):
+        value = (value << 8) | data[position + offset]
+    return value, position + length
+
+
+def _element(data, position):
+    element_id, after_id = _vint(data, position, True)
+    size, body = _vint(data, after_id, False)
+    if size == (1 << (7 * (body - after_id))) - 1:
+        size = None
+    return element_id, size, body
+
+
+def _children(data, start, end, wanted):
+    result = {}
+    position = start
+    while position < end:
+        try:
+            element_id, size, body = _element(data, position)
+        except (IndexError, ValueError):
+            break
+        if size is None:
+            size = end - body
+        stop = body + size
+        if stop > end or stop <= position:
+            break
+        if element_id in wanted:
+            result.setdefault(element_id, []).append((body, stop))
+        position = stop
+    return result
+
+
+def _uint(data, start, stop):
+    return int.from_bytes(data[start:stop], "big")
+
+
+def _timecode_scale(data, info_range):
+    if info_range is None:
+        return None
+    start, end = info_range
+    fields = _children(data, start, end, {_TIMECODE_SCALE})
+    if _TIMECODE_SCALE not in fields:
+        return None
+    try:
+        return _uint(data, *fields[_TIMECODE_SCALE][0])
+    except (IndexError, ValueError):
+        return None
+
 
 _VIDEO_CODECS = {
     "V_MPEG4/ISO/AVC": "h264",
@@ -142,9 +198,6 @@ _CAPTION_SOURCE_BYTES = 2 * _READ_CHUNK
 _READ_PARALLEL = 4
 # A provider that keeps returning nothing is retried this many times, then fails.
 _READ_ATTEMPTS = 4
-# CueRelativePosition window starts are implemented and unit tested but off by
-# default: they are not qualified until a live measurement shows saved bytes.
-_CUE_RELATIVE_ENABLED = False
 _CUE_RELATIVE_TOLERANCE_MS = 120
 _CUE_HEAD_BYTES = 64 * 1024
 _CUE_PROBE_BYTES = 4096
@@ -311,6 +364,7 @@ class NativePlan:
     warm: float | None = None
     opening_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     opening_prepared: bool = False
+    prewarmed_opening: int | None = None
     web_codecs: str = ""
     # Bytes reserved for windows that are queued or running, so concurrent
     # producers cannot both pass admission against the same free space.
@@ -736,8 +790,11 @@ async def build_timeline(url, duration):
         return None
     if not isinstance(duration, (int, float)) or not 1 <= duration <= 43_200:
         return None
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(30, connect=10), follow_redirects=False, trust_env=False
+    async with client_scope(
+        key="native-hls-probe",
+        timeout=httpx.Timeout(30, connect=10),
+        follow_redirects=False,
+        trust_env=False,
     ) as client:
         try:
             probe = await client.head(url)
@@ -2327,6 +2384,7 @@ class NativeStreams:
         self.client = None
         self.client_loop = None
         self.admission_lock = asyncio.Lock()
+        self._cleanup_tasks: set[asyncio.Task] = set()
 
     async def shared_client(self):
         """One pooled provider client: a TLS handshake per window is pure cost.
@@ -2335,12 +2393,13 @@ class NativeStreams:
         restarted worker) gets a fresh client instead of borrowing dead sockets.
         """
         loop = asyncio.get_running_loop()
-        if self.client is None or self.client_loop is not loop:
+        if self.client is None or self.client.is_closed or self.client_loop is not loop:
             self.client = httpx.AsyncClient(
                 timeout=httpx.Timeout(30, connect=10),
                 limits=httpx.Limits(max_connections=8, max_keepalive_connections=8),
                 follow_redirects=False,
                 trust_env=False,
+                http2=True,
             )
             self.client_loop = loop
         return self.client
@@ -2501,17 +2560,23 @@ class NativeStreams:
 
     async def _warm(self, plan):
         timeline = plan.timeline
-        if timeline is None:
-            return
-        if plan.continuous:
-            # A continuous session starts on the first request, when the route
-            # already knows how many subtitle renditions the player will see.
+        if timeline is None or plan.web_codecs or not timeline.header:
             return
         opening = 0
         if plan.warm is not None:
             opening = self._position_index(timeline, plan.warm)
         try:
-            await self.ensure(plan, opening, _OPEN_WAIT)
+            if plan.continuous:
+                async with plan.opening_lock:
+                    if plan.web_codecs or plan.opening_prepared:
+                        return
+                    # Pre-warm the opening segment immediately when timeline finishes
+                    # building so FFmpeg starts before master.m3u8 arrives.
+                    await self.ensure(plan, opening, _OPEN_WAIT, subtitles=1)
+                    plan.opening_prepared = True
+                    plan.prewarmed_opening = opening
+            else:
+                await self.ensure(plan, opening, _OPEN_WAIT)
         except (NativeError, asyncio.CancelledError):
             return
 
@@ -3221,33 +3286,18 @@ class NativeStreams:
         if number + 1 < len(timeline.clusters):
             end = min(end, timeline.clusters[number + 1] + _WINDOW_TAIL_BYTES)
         budget = min(_WINDOW_MAX_BYTES, max(end - offset, self._reserve_estimate(timeline, number)))
-        resolved = None
-        if _CUE_RELATIVE_ENABLED:
-            resolved = await self._relative_start(timeline, number, keyframe_ms)
-        start_offset = offset if resolved is None else resolved[0]
         reusable = plan.session.caption_source if from_number is not None and plan.session else None
         reader = _RangeReader(
             timeline.url,
-            start_offset,
-            min(timeline.total, start_offset + budget),
+            offset,
+            min(timeline.total, offset + budget),
             client=await self.shared_client(),
             limit=min(_WINDOW_MAX_BYTES, self._reserve_estimate(timeline, number) * 2),
             reuse=reusable,
         )
         write_seconds = 0.0
         try:
-            if resolved is None:
-                await self._write_head(reader, timeline, keyframe_ms, timeline.video_number, stdin)
-            else:
-                # The cluster header and its Timestamp are written here because
-                # the original ones are before the first byte we read; blocks stay
-                # verbatim so their relative timestamps keep their meaning.
-                cluster_ms = resolved[1] if resolved[1] is not None else keyframe_ms
-                stdin.write(timeline.header + _encode_id(_SEGMENT) + _UNKNOWN_SIZE)
-                stdin.write(timeline.info + timeline.tracks)
-                stdin.write(_encode_id(_CLUSTER) + _UNKNOWN_SIZE)
-                stdin.write(_encode_element(_TIMESTAMP, int(cluster_ms).to_bytes(8, "big")))
-                await stdin.drain()
+            await self._write_head(reader, timeline, keyframe_ms, timeline.video_number, stdin)
             async for chunk in reader.chunks(_READ_CHUNK):
                 if stdin.is_closing():
                     break
@@ -3565,21 +3615,45 @@ class NativeStreams:
         if plan.backward_seek is not None:
             plan.backward_seek.superseded.set()
             plan.backward_seek = None
-        if session is not None:
-            # Kill the forward session before its spool disappears, so no child
-            # process can keep writing into a directory that is being removed.
-            session.shutdown(reason)
-        for task in (
-            plan.task,
-            plan.prefetch,
-            *plan.windows.values(),
-            *(window.task for window in plan.subtitle_windows.values()),
-        ):
-            if task is not None:
-                task.cancel()
+        pending = [
+            task
+            for task in (
+                plan.task,
+                plan.prefetch,
+                *plan.windows.values(),
+                *(window.task for window in plan.subtitle_windows.values()),
+            )
+            if task is not None
+        ]
+        for task in pending:
+            task.cancel()
         plan.windows.clear()
         plan.subtitle_windows.clear()
-        shutil.rmtree(plan.root, ignore_errors=True)
+        active_tasks = [task for task in pending if not task.done()]
+        if session is None and not active_tasks:
+            shutil.rmtree(plan.root, ignore_errors=True)
+            return
+        if session is not None:
+            # Stop child processes immediately so they stop writing right away.
+            session.shutdown(reason)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            shutil.rmtree(plan.root, ignore_errors=True)
+            return
+
+        async def _reap_and_clean():
+            try:
+                if session is not None:
+                    await session.close(reason)
+                if active_tasks:
+                    await asyncio.wait(active_tasks, timeout=5)
+            finally:
+                shutil.rmtree(plan.root, ignore_errors=True)
+
+        task = asyncio.create_task(_reap_and_clean())
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
 
     def sweep(self):
         now = self.clock()
@@ -3651,8 +3725,12 @@ class _RangeReader:
 
     async def _client(self):
         if self.client is None:
-            self.client = httpx.AsyncClient(
-                timeout=httpx.Timeout(30, connect=10), follow_redirects=False, trust_env=False
+            self.client, self.owns_client = acquire_client(
+                key="native-hls-range",
+                transport=self.transport,
+                timeout=httpx.Timeout(30, connect=10),
+                follow_redirects=False,
+                trust_env=False,
             )
         return self.client
 

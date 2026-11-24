@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import math
@@ -403,10 +404,15 @@ async def _deliver_tracker_outbox(db, credited):
         return
     if os.getenv("OMAKASE_PLUS_REVIEW_MODE", "").lower() == "true":
         return
+    from omakase.plus.db import worker_connection
     from omakase.plus.watch.anilist_sync import process_tracker_outbox
 
+    def _run():
+        with worker_connection(db) as connection:
+            process_tracker_outbox(connection, outbox_id=credited.outbox_id)
+
     try:
-        await asyncio.to_thread(process_tracker_outbox, db, outbox_id=credited.outbox_id)
+        await asyncio.to_thread(_run)
     except Exception:
         _LOG.warning("native credit stage=tracker_sync code=failed")
 
@@ -775,7 +781,6 @@ def create_native_tv_test_router(
     clock=time.monotonic,
     hls_database=_hls_database,
     subtitle_root=None,
-    seek_root=None,
     native_root=None,
 ):
     router = APIRouter(
@@ -798,13 +803,19 @@ def create_native_tv_test_router(
         transport,
         clock,
         subtitle_root=subtitle_root,
-        seek_root=seek_root,
         native_root=native_root,
     )
     resolved_cache = OrderedDict()
     preload_tasks = {}
     subtitle_prewarm_tasks = {}
     warm_paths = set()
+    background_tasks: set[asyncio.Task] = set()
+
+    def track_background(task):
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+        return task
+
     # Open stamp and native key per served media id, for the first-media phase.
     media_open = {}
 
@@ -884,7 +895,7 @@ def create_native_tv_test_router(
             if grant.native_key:
                 cloud_streams.native.close(grant.native_key)
             if grant.hls:
-                return asyncio.create_task(close_hls(grant.hls))
+                return track_background(asyncio.create_task(close_hls(grant.hls)))
         return None
 
     def drop_device_passes(device_key):
@@ -1318,30 +1329,69 @@ def create_native_tv_test_router(
             }
         raise ValueError("Unsupported watch page")
 
-    async def resolve_debrid_path(db, scope, path):
+    async def _call_source(fn, *args, need_transcode: bool = True):
+        params = inspect.signature(fn).parameters.values()
+        supports = any(
+            param.kind is inspect.Parameter.VAR_KEYWORD
+            or (
+                param.name == "need_transcode"
+                and param.kind
+                in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            )
+            for param in params
+        )
+        if supports:
+            return await fn(*args, need_transcode=need_transcode)
+        return await fn(*args)
+
+    async def resolve_debrid_path(db, scope, path, *, need_transcode: bool = True):
         if match := ANIME.fullmatch(path):
-            return await resolve_debrid_anime(
-                db, scope, int(match[1]), int(match[2]), cloud_library
+            return await _call_source(
+                resolve_debrid_anime,
+                db,
+                scope,
+                int(match[1]),
+                int(match[2]),
+                cloud_library,
+                need_transcode=need_transcode,
             )
         if match := MOVIE.fullmatch(path):
-            return await resolve_debrid_catalog(db, scope, "movie", match[1], 0, 0, cloud_library)
+            return await _call_source(
+                resolve_debrid_catalog,
+                db,
+                scope,
+                "movie",
+                match[1],
+                0,
+                0,
+                cloud_library,
+                need_transcode=need_transcode,
+            )
         if match := TV.fullmatch(path):
             season, episode = int(match[2]), int(match[3])
             if int(match[1]) <= 2_147_483_647 and season <= 200 and episode <= 1000:
-                return await resolve_debrid_catalog(
-                    db, scope, "tv", match[1], season, episode, cloud_library
+                return await _call_source(
+                    resolve_debrid_catalog,
+                    db,
+                    scope,
+                    "tv",
+                    match[1],
+                    season,
+                    episode,
+                    cloud_library,
+                    need_transcode=need_transcode,
                 )
         return None
 
-    async def debrid_source(db, scope, path, *, use_cache=False):
+    async def debrid_source(db, scope, path, *, use_cache=False, need_transcode: bool = True):
         cache_key = (scope.viewer_id, path)
         if use_cache:
             cached = resolved_cache.get(cache_key)
             if cached is not None and cached[0] > clock():
                 resolved_cache.move_to_end(cache_key)
                 return cached[1]
-        result = await resolve_debrid_path(db, scope, path)
-        if use_cache and result is not None:
+        result = await resolve_debrid_path(db, scope, path, need_transcode=need_transcode)
+        if use_cache and result is not None and need_transcode:
             resolved_cache[cache_key] = (clock() + 150, result)
             while len(resolved_cache) > 16:
                 resolved_cache.popitem(last=False)
@@ -1371,7 +1421,7 @@ def create_native_tv_test_router(
             finally:
                 warm_paths.discard(path)
 
-        asyncio.create_task(warm())
+        track_background(asyncio.create_task(warm()))
 
     def schedule_preload(key, grant):
         if grant.engine == "direct" or key in preload_tasks:
@@ -2494,7 +2544,9 @@ def create_native_tv_test_router(
                         raise DirectError("Real-Debrid connection changed.", 403)
                     return token
 
-                fresh = await cloud_library.source(current_token(), file_id)
+                fresh = await _call_source(
+                    cloud_library.source, current_token(), file_id, need_transcode=False
+                )
                 current_token()
                 return refreshed_origin(fresh)
 
@@ -2504,7 +2556,9 @@ def create_native_tv_test_router(
         async def refresh():
             with hls_database() as connection:
                 checked(connection, grant)
-                candidate = await debrid_source(connection, grant.source._scope, path)
+                candidate = await debrid_source(
+                    connection, grant.source._scope, path, need_transcode=False
+                )
                 checked(connection, grant)
                 if candidate is None:
                     return None
@@ -2524,7 +2578,10 @@ def create_native_tv_test_router(
         phases = {"open": 0}
         try:
             async with asyncio.timeout(60):
-                source = await cloud_library.source(token, file_id)
+                need_transcode = engine not in {"native", "direct"}
+                source = await _call_source(
+                    cloud_library.source, token, file_id, need_transcode=need_transcode
+                )
                 phases["resolve"] = stamp()
                 direct = (
                     direct_pass(
@@ -2719,7 +2776,12 @@ def create_native_tv_test_router(
         if mode != "plex":
             try:
                 async with asyncio.timeout(60):
-                    candidate = await debrid_source(db, scope, path)
+                    candidate = await debrid_source(
+                        db,
+                        scope,
+                        path,
+                        need_transcode=engine not in {"native", "direct"},
+                    )
                     open_phases["resolve"] = opened_stamp()
                     if candidate:
                         if engine == "direct":

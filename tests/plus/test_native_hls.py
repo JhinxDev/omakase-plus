@@ -1541,3 +1541,74 @@ def test_audio_track_descriptor_names_stay_inside_the_playlist():
     assert audio.playlist == "audio2.m3u8"
     assert audio.segment(3) == "a2-00003.m4s"
     assert audio.copyable is False
+
+
+def test_warm_prewarms_continuous_opening_window_and_marks_prepared(tmp_path, monkeypatch):
+    streams = NativeStreams(tmp_path / "spool")
+    timeline = NativeTimeline(
+        url="https://3.stream.real-debrid.com/video.mkv",
+        duration=120.0,
+        origin=0.0,
+        segments=((0.0, 5.0), (5.0, 10.0)),
+        clusters=(0, 500),
+        total=1000,
+        header=b"\x1a\x45\xdf\xa3",
+        info=b"",
+        tracks=b"",
+        video_codec="h264",
+    )
+    plan = native_hls.NativePlan(
+        key="warm", url=timeline.url, duration=120.0, root=tmp_path / "warm"
+    )
+    plan.timeline = timeline
+    plan.continuous = True
+    calls = []
+
+    async def fake_ensure(p, number, timeout=0, subtitles=0):
+        calls.append((number, subtitles))
+
+    monkeypatch.setattr(streams, "ensure", fake_ensure)
+
+    async def run():
+        await streams._warm(plan)
+        await streams._warm(plan)
+
+    asyncio.run(run())
+    assert calls == [(0, 1)]
+    assert plan.opening_prepared is True
+
+
+def test_close_waits_for_active_session_before_removing_spool_dir(tmp_path):
+    streams = NativeStreams(tmp_path / "spool")
+    spool_dir = tmp_path / "spool" / "active"
+    spool_dir.mkdir(parents=True)
+    (spool_dir / "v00000.m4s").write_bytes(b"data")
+    plan = native_hls.NativePlan(
+        key="active",
+        url="https://3.stream.real-debrid.com/video.mkv",
+        duration=60.0,
+        root=spool_dir,
+    )
+    events = []
+
+    class FakeSession:
+        def shutdown(self, reason):
+            events.append(("shutdown", reason, spool_dir.exists()))
+
+        async def close(self, reason):
+            await asyncio.sleep(0.02)
+            events.append(("close", reason, spool_dir.exists()))
+
+    plan.session = FakeSession()
+    streams.plans["active"] = plan
+
+    async def run():
+        streams.close("active", reason="test")
+        assert spool_dir.exists(), (
+            "spool dir must not be deleted before child process reap completes"
+        )
+        await asyncio.gather(*list(streams._cleanup_tasks))
+        assert not spool_dir.exists()
+
+    asyncio.run(run())
+    assert events == [("shutdown", "test", True), ("close", "test", True)]

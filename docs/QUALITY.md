@@ -80,8 +80,8 @@ source. It scans `src` only, and it skips third party assets.
    `TITLE_DEBT_CEILING` and `TITLE_ID_DEBT_CEILING`. Today the source carries
    numbering contracts for three titles (in `coverage.py`,
    `publication_episodes.py`, `identity.py`, `catalog.py`, `manifest.py`,
-   `media_store.py`, `media_sync.py`) and two template placeholders
-   (`templates/dashboard.html`, `templates/discover.html`). Those are recorded as
+   `media_store.py`, `media_sync.py`) and one template placeholder
+   (`templates/discover.html`). Those are recorded as
    measured ceilings. A count may fall, never rise, and one new mention anywhere
    fails, including inside a file that is already listed. When the debt is
    removed, delete the entry.
