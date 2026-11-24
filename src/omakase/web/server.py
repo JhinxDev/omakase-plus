@@ -197,12 +197,11 @@ async def plus_security_headers(request, call_next):
                 # so both the account document and link response need this fixed
                 # Google origin. Never derive it from configuration or headers.
                 form_sources += " https://accounts.google.com"
+        from omakase.plus.web_security import plus_content_security_policy
+
         response.headers.setdefault(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; "
-            "font-src 'self'; img-src 'self' data:; connect-src 'self'; "
-            "media-src 'self' blob: data:; worker-src 'self' blob:; object-src 'none'; "
-            f"base-uri 'self'; form-action {form_sources}; frame-ancestors 'none'",
+            plus_content_security_policy(form_sources),
         )
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "same-origin")

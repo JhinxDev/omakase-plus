@@ -61,3 +61,13 @@ async def enforce_browser_csrf(request: Request) -> None:
     # in current engines. Their absence is reserved for API/CLI clients.
     if request.headers.get("origin") or request.headers.get("sec-fetch-site"):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+
+def plus_content_security_policy(form_sources: str = "'self'") -> str:
+    """Build the Content-Security-Policy header for authenticated Plus routes."""
+    return (
+        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; "
+        "font-src 'self'; img-src 'self' data:; connect-src 'self'; "
+        "media-src 'self' blob: data:; worker-src 'self' blob:; object-src 'none'; "
+        f"base-uri 'self'; form-action {form_sources}; frame-ancestors 'none'"
+    )
