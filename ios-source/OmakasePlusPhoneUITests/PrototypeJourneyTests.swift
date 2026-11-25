@@ -93,6 +93,36 @@ final class PhoneShowcaseCaptureTests: XCTestCase {
         let homeTab = app.tabBars.buttons["Home"]
         XCTAssertTrue(homeTab.waitForExistence(timeout: 20), "iPhone Home tab must load after pairing")
         try await Task.sleep(for: .seconds(4))
+        let heroTitle = app.staticTexts["phone.home.heroTitle"]
+        XCTAssertTrue(heroTitle.waitForExistence(timeout: 10), "Home hero title must appear")
+        XCTAssertGreaterThanOrEqual(
+            heroTitle.frame.minX,
+            0,
+            "Home hero title must not clip past the leading viewport edge"
+        )
+        XCTAssertLessThanOrEqual(
+            heroTitle.frame.maxX,
+            app.frame.maxX + 1,
+            "Home hero title must stay inside the viewport width"
+        )
+        let heroSubtitle = app.staticTexts["phone.home.heroSubtitle"]
+        if heroSubtitle.exists {
+            let parts = heroSubtitle.label.components(separatedBy: " · ")
+            XCTAssertEqual(
+                parts.count,
+                Set(parts).count,
+                "Home hero subtitle must not repeat remaining time: \(heroSubtitle.label)"
+            )
+        }
+        let firstShelf = app.staticTexts.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "phone.home.shelf.")
+        ).firstMatch
+        XCTAssertTrue(firstShelf.waitForExistence(timeout: 5), "Home shelf heading must appear")
+        XCTAssertGreaterThanOrEqual(
+            firstShelf.frame.minX,
+            0,
+            "Home shelf heading must not clip past the leading viewport edge"
+        )
         attach("01-ios-home", app)
 
         app.swipeUp(velocity: .slow)

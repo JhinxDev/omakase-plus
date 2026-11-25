@@ -86,6 +86,8 @@ struct PhoneTitleDetailView: View {
             }
             .padding(16)
         }
+        .frame(maxWidth: .infinity, alignment: .bottomLeading)
+        .clipped()
     }
 
     private var playableHeroTarget: (entry: LiveLibraryEntry, featured: Bool)? {

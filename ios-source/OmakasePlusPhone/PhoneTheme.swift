@@ -75,20 +75,21 @@ struct PhoneArtworkView: View {
     @State private var image: UIImage?
 
     var body: some View {
-        ZStack {
-            Rectangle().fill(Color.appRaised)
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                Image(systemName: fallbackIcon)
-                    .font(.title2)
-                    .foregroundStyle(Color.appMuted.opacity(0.65))
+        Rectangle()
+            .fill(Color.appRaised)
+            .overlay {
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Image(systemName: fallbackIcon)
+                        .font(.title2)
+                        .foregroundStyle(Color.appMuted.opacity(0.65))
+                }
             }
-        }
-        .clipped()
-        .task(id: cacheKey) {
+            .clipped()
+            .task(id: cacheKey) {
             if let cached = PhoneArtworkCache.shared.image(for: cacheKey) {
                 image = cached
                 return
