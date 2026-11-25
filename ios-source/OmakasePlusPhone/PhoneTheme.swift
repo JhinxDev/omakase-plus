@@ -97,7 +97,7 @@ struct PhoneArtworkView: View {
             guard let source else { return }
             guard let data = try? await source.fetch(), !Task.isCancelled,
                   let decoded = UIImage(data: data) else { return }
-            PhoneArtworkCache.shared.store(decoded, forKey: cacheKey)
+            PhoneArtworkCache.shared.store(decoded, for: cacheKey)
             image = decoded
         }
     }
