@@ -483,3 +483,77 @@ final class DirectControlsLayoutTests: XCTestCase {
         add(attachment)
     }
 }
+
+final class ShowcaseCaptureTests: XCTestCase {
+    @MainActor
+    func testCaptureNativeTvOSViews() async throws {
+        continueAfterFailure = false
+        let origin = ProcessInfo.processInfo.environment["OMAKASE_SHOWCASE_ORIGIN"] ?? "https://127.0.0.1:8854"
+        let app = XCUIApplication()
+        app.launchArguments = ["-omakase.tv.server-origin", origin]
+        app.launch()
+
+        if app.buttons["live.enter"].waitForExistence(timeout: 12) {
+            try await moveFocus(to: app.buttons["live.enter"], in: app)
+            XCUIRemote.shared.press(.select)
+            if app.buttons["live.showCode"].waitForExistence(timeout: 8) {
+                try await moveFocus(to: app.buttons["live.showCode"], in: app)
+                XCUIRemote.shared.press(.select)
+            }
+        }
+
+        let homeTab = app.buttons.matching(
+            NSPredicate(format: "identifier == %@ OR label == %@", "nav-home", "Home")
+        ).firstMatch
+        XCTAssertTrue(homeTab.waitForExistence(timeout: 20), "Home tab must load after pairing")
+        try await Task.sleep(for: .seconds(4))
+        attach("01-tvos-home", app)
+
+        XCUIRemote.shared.press(.down)
+        try await Task.sleep(for: .milliseconds(700))
+        XCUIRemote.shared.press(.down)
+        try await Task.sleep(for: .seconds(1.5))
+        attach("02-tvos-shelves", app)
+
+        for (idKey, label, snapName) in [
+            ("nav-anime", "Anime", "03-tvos-anime"),
+            ("nav-tv", "TV Shows", "04-tvos-tv"),
+            ("nav-requests", "Requests", "05-tvos-requests"),
+        ] {
+            let tab = app.buttons.matching(
+                NSPredicate(format: "identifier == %@ OR label == %@", idKey, label)
+            ).firstMatch
+            if tab.exists {
+                try await moveFocus(to: tab, in: app)
+                XCUIRemote.shared.press(.select)
+                try await Task.sleep(for: .seconds(2.5))
+                attach(snapName, app)
+            }
+        }
+    }
+
+    @MainActor
+    private func moveFocus(to target: XCUIElement, in app: XCUIApplication) async throws {
+        let isFocused = NSPredicate(format: "hasFocus == true")
+        for _ in 0..<8 {
+            if isFocused.evaluate(with: target) { return }
+            XCUIRemote.shared.press(.up)
+            try await Task.sleep(for: .milliseconds(160))
+        }
+        for dir: XCUIRemote.Button in [.right, .down, .left, .up] {
+            for _ in 0..<12 {
+                if isFocused.evaluate(with: target) { return }
+                XCUIRemote.shared.press(dir)
+                try await Task.sleep(for: .milliseconds(160))
+            }
+        }
+    }
+
+    @MainActor
+    private func attach(_ name: String, _ app: XCUIApplication) {
+        let att = XCTAttachment(screenshot: app.screenshot())
+        att.name = name
+        att.lifetime = .keepAlways
+        add(att)
+    }
+}
