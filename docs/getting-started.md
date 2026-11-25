@@ -22,7 +22,17 @@ These are deployment choices. Local/NAS versus cloud media is a separate
 preference that can be decided later. Saving either choice in Setup records
 account guidance; it never installs software or changes the running deployment.
 
-### App-only first install
+### Fastest install (2 minutes, prebuilt image)
+
+On a Linux host with Docker Engine and Docker Compose installed, run the interactive quick installer. It pulls the prebuilt `ghcr.io/jhinxdev/omakase-plus:latest` image, generates a fresh `OMAKASE_PLUS_MASTER_KEY` inside `.env.local.secrets` without overwriting an existing key, and writes one clean `compose.yaml`:
+
+```bash
+curl -fsSL https://omakase-plus.jhinx.dev/install.sh | bash
+```
+
+Follow the prompts to choose your install folder (`~/omakase-plus`), port (`8766`), network mode (localhost, LAN, or custom HTTPS domain), and optional media directory or Plex container. When the healthcheck passes, open the printed `/plus` URL in your browser to create the first admin account. To upgrade later, run `cd ~/omakase-plus && docker compose --env-file .env.local pull && docker compose --env-file .env.local up -d`.
+
+### Manual source install (`compose.standalone.yaml`)
 
 Use a reviewed source checkout on a Linux host with Git, Python 3, Docker Engine
 and the Compose plugin already installed. From the repository root, copy the configuration examples:

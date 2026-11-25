@@ -46,9 +46,15 @@ Start with personal planning on one container, then connect only the storage and
 
 ## Start with the app
 
-Want Claude Code or Codex to handle host setup? [Copy the setup prompt](docs/setup-with-an-agent.md). It inspects existing containers first, starts cleanly with app-only mode, and keeps all credentials on your machine.
+The fastest way to try Omakase Plus on any Linux host or homelab server with Docker Engine is the interactive quick installer, which pulls the prebuilt `ghcr.io/jhinxdev/omakase-plus:latest` image, generates your private encryption key automatically, and writes a clean `compose.yaml`:
 
-Clone the repository and configure your local environment:
+```sh
+curl -fsSL https://omakase-plus.jhinx.dev/install.sh | bash
+```
+
+Want Claude Code or Codex to inspect an existing host instead? [Copy the setup prompt](docs/setup-with-an-agent.md). It inspects existing containers first, starts cleanly with app-only mode, and keeps all credentials on your machine.
+
+Prefer manual source setup? Clone the repository and configure your local environment:
 
 ```sh
 git clone --branch v0.4.12 --single-branch https://github.com/JhinxDev/omakase-plus.git
