@@ -125,6 +125,7 @@ struct PhoneHomeView: View {
                         .frame(maxWidth: .infinity, minHeight: 260)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, 28)
             }
             .background(Color.appBackground.ignoresSafeArea())
@@ -169,14 +170,21 @@ struct PhoneHomeView: View {
                 Text(featured?.title ?? projection.banner.title)
                     .font(.title2.bold())
                     .lineLimit(2)
-                let subtitle = featured.map {
-                    [$0.subtitle, $0.progress.remainingLabel].filter { !$0.isEmpty }.joined(separator: " · ")
+                    .accessibilityIdentifier("phone.home.heroTitle")
+                let subtitle = featured.map { card in
+                    let rawSubtitle = card.subtitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let remaining = card.progress.remainingLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !remaining.isEmpty && !rawSubtitle.localizedCaseInsensitiveContains(remaining) {
+                        return [rawSubtitle, remaining].filter { !$0.isEmpty }.joined(separator: " · ")
+                    }
+                    return rawSubtitle
                 } ?? projection.banner.mediaDetail
                 if !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.subheadline)
                         .foregroundStyle(Color.appMuted)
                         .lineLimit(1)
+                        .accessibilityIdentifier("phone.home.heroSubtitle")
                 }
                 if let featured, featured.entry.watchPath != nil {
                     Button {
@@ -195,6 +203,8 @@ struct PhoneHomeView: View {
             }
             .padding(16)
         }
+        .frame(maxWidth: .infinity, alignment: .bottomLeading)
+        .clipped()
     }
 
     private var emptyHomeCard: some View {
@@ -220,6 +230,7 @@ struct PhoneHomeView: View {
             Text(row.label)
                 .font(.title3.bold())
                 .padding(.horizontal, 16)
+                .accessibilityIdentifier("phone.home.shelf.\(row.id)")
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 14) {
                     ForEach(row.cards) { card in
