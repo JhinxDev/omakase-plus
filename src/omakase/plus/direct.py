@@ -9,7 +9,7 @@ import httpx
 from omakase.plus.media_types import MediaTarget
 
 API_URL = "https://graphql.anilist.co"
-USER_AGENT = "Omakase/0.1 (+https://github.com/HeyiTzSenpai/omakase)"
+USER_AGENT = "Omakase/0.1 (+https://github.com/JhinxDev/omakase-plus)"
 
 _ANILIST_ID_RE = re.compile(r"anilist\.co/anime/(\d+)", re.I)
 _ARC_HINT_RE = re.compile(r"\b(arc|cour|final|movie|ova|part|season|special)\b", re.I)

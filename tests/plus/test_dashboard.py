@@ -410,7 +410,7 @@ class TestDefaultAniListUsername:
             resp = client.post(
                 "/plus/settings",
                 data={
-                    "anilist_username": "HeyiTzSenpai",
+                    "anilist_username": "demo-anilist-user",
                     "csrf_token": _csrf_token(client),
                 },
                 follow_redirects=False,
@@ -419,7 +419,7 @@ class TestDefaultAniListUsername:
 
             html = client.get("/plus/discover?mode=recommend").text
             assert 'name="username"' in html
-            assert 'value="HeyiTzSenpai"' in html
+            assert 'value="demo-anilist-user"' in html
         finally:
             os.environ.pop("OMAKASE_PLUS_INVITE", None)
 
@@ -436,7 +436,7 @@ class TestDefaultAniListUsername:
             client.post(
                 "/plus/settings",
                 data={
-                    "anilist_username": "HeyiTzSenpai",
+                    "anilist_username": "demo-anilist-user",
                     "csrf_token": _csrf_token(client),
                 },
             )
@@ -448,7 +448,7 @@ class TestDefaultAniListUsername:
                 )
                 _drain_job(client, resp)
             assert resp.status_code == 200
-            assert captured["username"] == "HeyiTzSenpai"
+            assert captured["username"] == "demo-anilist-user"
         finally:
             os.environ.pop("OMAKASE_PLUS_INVITE", None)
 
@@ -465,7 +465,7 @@ class TestDefaultAniListUsername:
             client.post(
                 "/plus/settings",
                 data={
-                    "anilist_username": "HeyiTzSenpai",
+                    "anilist_username": "demo-anilist-user",
                     "csrf_token": _csrf_token(client),
                 },
             )

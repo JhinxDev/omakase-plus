@@ -338,7 +338,7 @@ class TestJobLifecycle:
             monkeypatch.setattr("omakase.plus.routes.run_pipeline", fake_run)
             monkeypatch.setattr(
                 "omakase.plus.routes.read_secret",
-                lambda db, user_id, key: "HeyiTzSenpai" if key == "anilist_username" else "",
+                lambda db, user_id, key: "demo-anilist-user" if key == "anilist_username" else "",
             )
             response = client.post(
                 "/plus/api/run",
