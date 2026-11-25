@@ -7,14 +7,41 @@
 
 /* Begin PBXBuildFile section */
 		110000000000000000000029 = {isa = PBXBuildFile; fileRef = 110000000000000000000042; };
-		110000000000000000000020 /* PrototypeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000010; };
+		110000000000000000000020 /* PrototypeShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000010; };
+		110000000000000000000101 /* OmakasePlusPhoneApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000201; };
+		110000000000000000000102 /* PhoneTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000202; };
+		110000000000000000000103 /* PhoneKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000203; };
+		110000000000000000000104 /* PhoneSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000204; };
+		110000000000000000000105 /* PhoneOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000205; };
+		110000000000000000000106 /* PhoneHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000206; };
+		110000000000000000000107 /* PhoneLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000207; };
+		110000000000000000000108 /* PhoneTitleDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000208; };
+		110000000000000000000109 /* PhoneSearchRequestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000209; };
+		11000000000000000000010A /* PhonePlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11000000000000000000020A; };
+		11000000000000000000010B /* PhoneSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11000000000000000000020B; };
+		11000000000000000000010C /* PhoneRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11000000000000000000020C; };
+		11000000000000000000010D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 11000000000000000000020D; };
 		110000000000000000000027 /* PrototypeJourneyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000017; };
 		110000000000000000000028 /* QualificationCore in Frameworks */ = {isa = PBXBuildFile; productRef = 110000000000000000000041; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		110000000000000000000042 = {isa = PBXFileReference; lastKnownFileType = file; path = ../tv-source/OmakaseQualification/Resources/baseline.mp4; sourceTree = "<group>"; };
-		110000000000000000000010 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrototypeApp.swift; sourceTree = "<group>"; };
+		110000000000000000000010 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrototypeShell.swift; sourceTree = "<group>"; };
+		110000000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmakasePlusPhoneApp.swift; sourceTree = "<group>"; };
+		110000000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneTheme.swift; sourceTree = "<group>"; };
+		110000000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneKeychain.swift; sourceTree = "<group>"; };
+		110000000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSessionStore.swift; sourceTree = "<group>"; };
+		110000000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneOnboardingView.swift; sourceTree = "<group>"; };
+		110000000000000000000206 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHomeView.swift; sourceTree = "<group>"; };
+		110000000000000000000207 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneLibraryView.swift; sourceTree = "<group>"; };
+		110000000000000000000208 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneTitleDetailView.swift; sourceTree = "<group>"; };
+		110000000000000000000209 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSearchRequestsView.swift; sourceTree = "<group>"; };
+		11000000000000000000020A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhonePlayerView.swift; sourceTree = "<group>"; };
+		11000000000000000000020B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSettingsView.swift; sourceTree = "<group>"; };
+		11000000000000000000020C = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneRootView.swift; sourceTree = "<group>"; };
+		11000000000000000000020D = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		11000000000000000000020E = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		110000000000000000000017 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmakasePlusPhoneUITests/PrototypeJourneyTests.swift; sourceTree = "<group>"; };
 		110000000000000000000018 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OmakasePlusPhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		110000000000000000000019 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OmakasePlusPhoneUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -30,7 +57,23 @@
 		110000000000000000000004 = {
 			isa = PBXGroup;
 			path = OmakasePlusPhone;
-			children = (110000000000000000000010,);
+			children = (
+				110000000000000000000201,
+				110000000000000000000202,
+				110000000000000000000203,
+				110000000000000000000204,
+				110000000000000000000205,
+				110000000000000000000206,
+				110000000000000000000207,
+				110000000000000000000208,
+				110000000000000000000209,
+				11000000000000000000020A,
+				11000000000000000000020B,
+				11000000000000000000020C,
+				110000000000000000000010,
+				11000000000000000000020D,
+				11000000000000000000020E,
+			);
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -86,9 +129,23 @@
 /* End PBXProject section */
 
 /* Begin Build phases */
-		110000000000000000000060 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (110000000000000000000020,); runOnlyForDeploymentPostprocessing = 0; };
+		110000000000000000000060 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+			110000000000000000000101,
+			110000000000000000000102,
+			110000000000000000000103,
+			110000000000000000000104,
+			110000000000000000000105,
+			110000000000000000000106,
+			110000000000000000000107,
+			110000000000000000000108,
+			110000000000000000000109,
+			11000000000000000000010A,
+			11000000000000000000010B,
+			11000000000000000000010C,
+			110000000000000000000020,
+		); runOnlyForDeploymentPostprocessing = 0; };
 		110000000000000000000061 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (110000000000000000000028,); runOnlyForDeploymentPostprocessing = 0; };
-		110000000000000000000062 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (110000000000000000000029,); runOnlyForDeploymentPostprocessing = 0; };
+		110000000000000000000062 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (110000000000000000000029, 11000000000000000000010D,); runOnlyForDeploymentPostprocessing = 0; };
 		110000000000000000000063 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (110000000000000000000027,); runOnlyForDeploymentPostprocessing = 0; };
 		110000000000000000000064 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		110000000000000000000065 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
@@ -98,6 +155,8 @@
 		110000000000000000000051 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {
 			ALWAYS_SEARCH_USER_PATHS = NO;
 			IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+			OMAKASE_IOS_BUILD_NUMBER = 1;
+			OMAKASE_IOS_MARKETING_VERSION = 0.7.0;
 			ONLY_ACTIVE_ARCH = YES;
 			SDKROOT = iphoneos;
 			SWIFT_VERSION = 5.0;
@@ -107,32 +166,41 @@
 		110000000000000000000059 = {isa = XCBuildConfiguration; name = Release; buildSettings = {
 			ALWAYS_SEARCH_USER_PATHS = NO;
 			IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+			OMAKASE_IOS_BUILD_NUMBER = 1;
+			OMAKASE_IOS_MARKETING_VERSION = 0.7.0;
 			SDKROOT = iphoneos;
 			SWIFT_VERSION = 5.0;
 			SWIFT_COMPILATION_MODE = wholemodule;
 		}; };
 		110000000000000000000053 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {
+			ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 			CODE_SIGN_STYLE = Automatic;
-			CURRENT_PROJECT_VERSION = 1;
+			CURRENT_PROJECT_VERSION = "$(OMAKASE_IOS_BUILD_NUMBER)";
 			GENERATE_INFOPLIST_FILE = YES;
-			INFOPLIST_KEY_CFBundleDisplayName = "Omakase Prototype";
+			INFOPLIST_FILE = OmakasePlusPhone/Info.plist;
+			INFOPLIST_KEY_CFBundleDisplayName = "Omakase Plus";
 			INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 			INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-			MARKETING_VERSION = 0.1.0;
+			MARKETING_VERSION = "$(OMAKASE_IOS_MARKETING_VERSION)";
+			OMAKASE_SERVER_ORIGIN = "";
 			PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.plus.iosprototype;
 			PRODUCT_NAME = "$(TARGET_NAME)";
 			SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 			TARGETED_DEVICE_FAMILY = 1;
 		}; };
 		110000000000000000000054 = {isa = XCBuildConfiguration; name = Release; buildSettings = {
+			ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 			CODE_SIGN_STYLE = Automatic;
-			CURRENT_PROJECT_VERSION = 1;
+			CURRENT_PROJECT_VERSION = "$(OMAKASE_IOS_BUILD_NUMBER)";
+			EXCLUDED_SOURCE_FILE_NAMES = "baseline.mp4";
 			GENERATE_INFOPLIST_FILE = YES;
-			INFOPLIST_KEY_CFBundleDisplayName = "Omakase Prototype";
+			INFOPLIST_FILE = OmakasePlusPhone/Info.plist;
+			INFOPLIST_KEY_CFBundleDisplayName = "Omakase Plus";
 			INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 			INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-			MARKETING_VERSION = 0.1.0;
-			PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.plus.iosprototype;
+			MARKETING_VERSION = "$(OMAKASE_IOS_MARKETING_VERSION)";
+			OMAKASE_SERVER_ORIGIN = "";
+			PRODUCT_BUNDLE_IDENTIFIER = dev.omakase.plus.ios;
 			PRODUCT_NAME = "$(TARGET_NAME)";
 			SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 			TARGETED_DEVICE_FAMILY = 1;

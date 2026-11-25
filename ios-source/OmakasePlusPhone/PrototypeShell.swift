@@ -4,13 +4,6 @@ import QualificationCore
 import SwiftUI
 
 /// Offline qualification shell. No server, pairing, credentials or network media.
-@main
-struct OmakasePhonePrototype: App {
-    var body: some Scene {
-        WindowGroup { PrototypeLibrary().preferredColorScheme(.dark).tint(.purple) }
-    }
-}
-
 @MainActor
 @Observable
 private final class PrototypeStore {
@@ -27,7 +20,7 @@ private final class PrototypeStore {
     }
 }
 
-private struct PrototypeLibrary: View {
+struct PrototypeLibrary: View {
     @State private var store = PrototypeStore()
     @State private var search = ""
 
