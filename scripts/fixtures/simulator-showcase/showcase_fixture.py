@@ -427,7 +427,7 @@ class ShowcaseHandler(BaseHTTPRequestHandler):
     server_version = "OmakaseShowcaseFixture/1"
 
     def log_message(self, format: str, *args) -> None:
-        return
+        print(f"[fixture] {self.command} {self.path.split('?')[0]}", flush=True)
 
     def reply(
         self, status: int, body: bytes = b"", *, content_type: str = "application/json"
@@ -446,7 +446,7 @@ class ShowcaseHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         route = urlsplit(self.path)
         if route.path == API + "device":
-            token = secrets.token_hex(24)
+            token = secrets.token_urlsafe(32)
             STATE_TOKENS.add(token)
             return self.json_reply(
                 200, {"device_token": token, "user_code": "OMKS-2468", "expires_in": 300}
@@ -566,6 +566,7 @@ def self_test() -> int:
     home = build_home_payload()
     anime = build_catalog_payload("anime")
     reqs = build_requests_payload()
+    assert len(secrets.token_urlsafe(32)) == 43
     assert count >= 30, f"expected >= 30 cached artwork slots, got {count}"
     assert len(home["rows"]) == 3
     assert len(anime["items"]) == 6

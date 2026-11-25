@@ -59,19 +59,21 @@ start_recorder() {
   local device="$1"
   local out_mp4="$2"
   local pid_file="$3"
-  python3 - "$device" "$out_mp4" "$pid_file" <<'PY'
+  local log_file="$4"
+  python3 - "$device" "$out_mp4" "$pid_file" "$log_file" <<'PY'
 import signal, subprocess, sys
 from pathlib import Path
 
-device, out_mp4, pid_file = sys.argv[1], sys.argv[2], sys.argv[3]
+device, out_mp4, pid_file, log_file = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 # Restore SIG_DFL for SIGINT in child so POSIX non-interactive shell background
 # SIG_IGN inheritance never prevents simctl recordVideo from finalizing MP4 atoms.
-proc = subprocess.Popen(
-    ["xcrun", "simctl", "io", device, "recordVideo", "--codec=h264", "--force", out_mp4],
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL,
-    preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL),
-)
+with open(log_file, "w") as lf:
+    proc = subprocess.Popen(
+        ["xcrun", "simctl", "io", device, "recordVideo", "--codec=h264", "--force", out_mp4],
+        stdout=lf,
+        stderr=subprocess.STDOUT,
+        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL),
+    )
 Path(pid_file).write_text(str(proc.pid))
 PY
 }
@@ -195,7 +197,8 @@ PY
     cp -R "$scratch/TVVLCKit-binary/." "$root/tv-source/Vendor/"
   fi
 
-  start_recorder "$tv_device" "$output/tvos-tour.mp4" "$scratch/tv-rec.pid"
+  start_recorder "$tv_device" "$output/tvos-tour.mp4" "$scratch/tv-rec.pid" "$output/tvos-rec.log"
+  set +e
   TEST_RUNNER_OMAKASE_SHOWCASE_ORIGIN="https://127.0.0.1:8854" \
   xcodebuild test -project "$root/tv-source/OmakaseQualification.xcodeproj" \
     -scheme OmakasePlusTV -configuration Debug -sdk appletvsimulator \
@@ -205,8 +208,11 @@ PY
     -only-testing:OmakasePlusTVUITests/ShowcaseCaptureTests \
     CODE_SIGN_IDENTITY=- OMAKASE_SERVER_ORIGIN= \
     2>&1 | tee "$output/tvos-xcodebuild.log"
+  xc_tv_status=${PIPESTATUS[0]}
+  set -e
   stop_recorder "$scratch/tv-rec.pid"
   export_named_screenshots "$scratch/TVShowcase.xcresult" "$output"
+  [[ "$xc_tv_status" -eq 0 ]] || exit "$xc_tv_status"
 fi
 
 if [[ "$platform" == "ios" || "$platform" == "both" ]]; then
@@ -225,7 +231,8 @@ PY
   xcrun simctl bootstatus "$ios_device" -b
   xcrun simctl keychain "$ios_device" add-root-cert "$scratch/tls/ca.crt"
 
-  start_recorder "$ios_device" "$output/ios-tour.mp4" "$scratch/ios-rec.pid"
+  start_recorder "$ios_device" "$output/ios-tour.mp4" "$scratch/ios-rec.pid" "$output/ios-rec.log"
+  set +e
   TEST_RUNNER_OMAKASE_SHOWCASE_ORIGIN="https://127.0.0.1:8854" \
   xcodebuild test -project "$root/ios-source/OmakasePlusPhone.xcodeproj" \
     -scheme OmakasePlusPhone -configuration Debug \
@@ -235,8 +242,11 @@ PY
     -only-testing:OmakasePlusPhoneUITests/PhoneShowcaseCaptureTests \
     CODE_SIGNING_ALLOWED=NO \
     2>&1 | tee "$output/ios-xcodebuild.log"
+  xc_ios_status=${PIPESTATUS[0]}
+  set -e
   stop_recorder "$scratch/ios-rec.pid"
   export_named_screenshots "$scratch/iOSShowcase.xcresult" "$output"
+  [[ "$xc_ios_status" -eq 0 ]] || exit "$xc_ios_status"
 fi
 
 ls -lh "$output"
