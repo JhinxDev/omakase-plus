@@ -89,7 +89,7 @@ struct PhoneArtworkView: View {
         }
         .clipped()
         .task(id: cacheKey) {
-            if let cached = PhoneArtworkCache.shared.image(forKey: cacheKey) {
+            if let cached = PhoneArtworkCache.shared.image(for: cacheKey) {
                 image = cached
                 return
             }
