@@ -65,3 +65,54 @@ final class PrototypeJourneyTests: XCTestCase {
         XCTAssertTrue(app.textFields["phone.onboarding.inviteField"].waitForExistence(timeout: 5))
     }
 }
+
+final class PhoneShowcaseCaptureTests: XCTestCase {
+    @MainActor
+    func testCaptureNativeiOSViews() async throws {
+        let origin = ProcessInfo.processInfo.environment["OMAKASE_SHOWCASE_ORIGIN"]
+        try XCTSkipUnless(origin != nil && !(origin?.isEmpty ?? true), "Showcase capture only")
+        continueAfterFailure = false
+
+        let app = XCUIApplication()
+        app.launch()
+
+        let serverField = app.textFields["phone.onboarding.server"]
+        if serverField.waitForExistence(timeout: 10) {
+            serverField.tap()
+            let existing = (serverField.value as? String) ?? ""
+            let target = origin ?? "https://127.0.0.1:8854"
+            if existing == "https://" && target.hasPrefix("https://") {
+                serverField.typeText(String(target.dropFirst("https://".count)))
+            } else {
+                serverField.tap(withNumberOfTaps: 3, numberOfTouches: 1)
+                serverField.typeText(target)
+            }
+            app.buttons["phone.onboarding.pair"].tap()
+        }
+
+        let homeTab = app.tabBars.buttons["Home"]
+        XCTAssertTrue(homeTab.waitForExistence(timeout: 20), "iPhone Home tab must load after pairing")
+        try await Task.sleep(for: .seconds(4))
+        attach("01-ios-home", app)
+
+        app.swipeUp(velocity: .slow)
+        try await Task.sleep(for: .seconds(1.5))
+        attach("02-ios-home-shelves", app)
+
+        app.tabBars.buttons["Library"].tap()
+        try await Task.sleep(for: .seconds(2.8))
+        attach("03-ios-library", app)
+
+        app.tabBars.buttons["Requests"].tap()
+        try await Task.sleep(for: .seconds(2.5))
+        attach("04-ios-requests", app)
+    }
+
+    @MainActor
+    private func attach(_ name: String, _ app: XCUIApplication) {
+        let att = XCTAttachment(screenshot: app.screenshot())
+        att.name = name
+        att.lifetime = .keepAlways
+        add(att)
+    }
+}

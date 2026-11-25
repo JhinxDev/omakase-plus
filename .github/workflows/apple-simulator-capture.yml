@@ -1,0 +1,57 @@
+name: Apple Simulator Showcase Capture
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/apple-simulator-capture.yml'
+      - 'scripts/capture-apple-simulators.sh'
+      - 'scripts/fixtures/simulator-showcase/**'
+      - 'tv-source/OmakasePlusTVUITests/RemoteFocusTests.swift'
+      - 'ios-source/OmakasePlusPhoneUITests/PrototypeJourneyTests.swift'
+
+permissions:
+  contents: read
+
+jobs:
+  capture-tvos:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Capture Apple TV 4K Simulator screens
+        run: bash scripts/capture-apple-simulators.sh "$RUNNER_TEMP/apple-tvos-showcase" tvos
+      - name: Upload Apple TV Simulator captures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apple-tvos-showcase
+          path: ${{ runner.temp }}/apple-tvos-showcase/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  capture-ios:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Capture iPhone Pro Simulator screens
+        run: bash scripts/capture-apple-simulators.sh "$RUNNER_TEMP/apple-ios-showcase" ios
+      - name: Upload iPhone Simulator captures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apple-ios-showcase
+          path: ${{ runner.temp }}/apple-ios-showcase/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
