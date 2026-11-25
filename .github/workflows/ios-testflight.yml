@@ -1,0 +1,74 @@
+name: TestFlight iOS build
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Distribution mode
+        type: choice
+        default: upload
+        options:
+          - upload
+          - export-only
+      build_number:
+        description: Optional CFBundleVersion override
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  testflight-ios:
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - name: Validate App Store Connect secrets
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+        run: |
+          for name in APPLE_TEAM_ID ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8_BASE64; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing required repository secret: $name"
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Archive, sign and publish OmakasePlusPhone
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          OMAKASE_SERVER_ORIGIN: ${{ secrets.OMAKASE_SERVER_ORIGIN }}
+          TESTFLIGHT_MODE: ${{ inputs.mode }}
+          TESTFLIGHT_BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          args=(--output "$RUNNER_TEMP/omakase-ios-testflight")
+          if [ "${TESTFLIGHT_MODE}" = "export-only" ]; then
+            args+=(--export-only)
+          fi
+          if [ -n "${TESTFLIGHT_BUILD_NUMBER}" ]; then
+            args+=(--build-number "${TESTFLIGHT_BUILD_NUMBER}")
+          fi
+          bash scripts/deploy-testflight-ios.sh "${args[@]}"
+      - name: Clean temporary build files
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP"/omakase-ios-testflight.* || true
+      - name: Upload TestFlight receipt and export artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: omakase-ios-testflight-${{ github.sha }}
+          path: ${{ runner.temp }}/omakase-ios-testflight/
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0

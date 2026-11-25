@@ -6,6 +6,7 @@ final class PrototypeJourneyTests: XCTestCase {
     @MainActor
     func testSyntheticBrowsePlaybackSeekAndScopedSessionResume() throws {
         let app = XCUIApplication()
+        app.launchArguments = ["-OmakaseSyntheticPrototype"]
         app.launch()
         XCTAssertTrue(app.staticTexts["prototypeNotice"].waitForExistence(timeout: 10))
         app.buttons["title-movie"].tap()
@@ -40,6 +41,7 @@ final class PrototypeJourneyTests: XCTestCase {
     @MainActor
     func testSyntheticSearch() throws {
         let app = XCUIApplication()
+        app.launchArguments = ["-OmakaseSyntheticPrototype"]
         app.launch()
         let search = app.searchFields.firstMatch
         XCTAssertTrue(search.waitForExistence(timeout: 10))
@@ -47,5 +49,19 @@ final class PrototypeJourneyTests: XCTestCase {
         search.typeText("Violet")
         XCTAssertTrue(app.buttons["title-movie"].exists)
         XCTAssertFalse(app.buttons["title-anime"].exists)
+    }
+
+    @MainActor
+    func testRealOnboardingLaunchAndInviteToggle() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let serverField = app.textFields["phone.onboarding.server"]
+        XCTAssertTrue(serverField.waitForExistence(timeout: 10))
+        let pairButton = app.buttons["phone.onboarding.pair"]
+        XCTAssertTrue(pairButton.exists)
+        let inviteToggle = app.buttons["phone.onboarding.invite"]
+        XCTAssertTrue(inviteToggle.exists)
+        inviteToggle.tap()
+        XCTAssertTrue(app.textFields["phone.onboarding.inviteField"].waitForExistence(timeout: 5))
     }
 }
