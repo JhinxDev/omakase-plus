@@ -5,7 +5,7 @@ description = "Self-hosted anime, movie and TV discovery, viewing progress, rati
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-authors = [{ name = "HeyiTzSenpai" }]
+authors = [{ name = "JhinxDev" }]
 keywords = ["anime", "recommendations", "llm", "anilist", "myanimelist", "ai", "cli", "movies", "tv", "plex", "self-hosted"]
 classifiers = [
     "Development Status :: 4 - Beta",

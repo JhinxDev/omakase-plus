@@ -13,7 +13,7 @@ import httpx
 
 API_URL = "https://graphql.anilist.co"
 OAUTH_URL = "https://anilist.co/api/v2/oauth"
-USER_AGENT = "Omakase/0.1 (+https://github.com/HeyiTzSenpai/omakase)"
+USER_AGENT = "Omakase/0.1 (+https://github.com/JhinxDev/omakase-plus)"
 
 
 class AniListWriteError(ValueError):

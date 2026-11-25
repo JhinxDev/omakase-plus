@@ -16,7 +16,7 @@ from omakase.franchise import apply_lane_policy
 from omakase.types import MediaItem, MediaRelation, SourceData
 
 API_URL = "https://graphql.anilist.co"
-USER_AGENT = "Omakase/0.1 (homelab; +https://github.com/HeyiTzSenpai/omakase)"
+USER_AGENT = "Omakase/0.1 (homelab; +https://github.com/JhinxDev/omakase-plus)"
 PUBLIC_RECOMMENDATION_LANES = frozenset({"best_match", "new_seasons", "hidden_gems"})
 CATALOG_TIMEOUT_SECONDS = 20
 

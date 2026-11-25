@@ -29,7 +29,7 @@ from urllib.request import Request, urlopen
 from omakase.adapters.base import SourceAdapter, register
 from omakase.types import MediaItem, SourceData
 
-USER_AGENT = "Omakase/0.1 (homelab; +https://github.com/HeyiTzSenpai/omakase)"
+USER_AGENT = "Omakase/0.1 (homelab; +https://github.com/JhinxDev/omakase-plus)"
 
 MAL_API = "https://api.myanimelist.net/v2"
 JIKAN_API = "https://api.jikan.moe/v4"

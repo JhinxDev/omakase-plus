@@ -1,5 +1,10 @@
 # Omakase Plus
 
+[![CI](https://github.com/JhinxDev/omakase-plus/actions/workflows/ci.yml/badge.svg)](https://github.com/JhinxDev/omakase-plus/actions/workflows/ci.yml)
+[![Container Image](https://github.com/JhinxDev/omakase-plus/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/JhinxDev/omakase-plus/actions/workflows/docker-publish.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/)
+
 Your anime, movies, and TV, organized in one private media hub.
 
 Omakase Plus is self-hosted personal media management, discovery, tracking, and playback software for the browser, Apple TV, and iPhone. Like Plex, it operates strictly on a **Bring Your Own Media (BYOM)** model: Omakase Plus provides the software alone, includes zero bundled or pre-downloaded media, and connects only to libraries, storage, and accounts that you own or are authorized to access.
@@ -28,8 +33,10 @@ The quickstart uses [v0.4.12](https://github.com/JhinxDev/omakase-plus/releases/
 | ![Anime library view](docs/images/omakase-plus-library-v6.webp) | ![Movies library view](docs/images/omakase-plus-movies-v6.webp) |
 | **TV Shows** | **Requests** |
 | ![TV Shows library view](docs/images/omakase-plus-tv-v6.webp) | ![Requests pipeline view](docs/images/omakase-plus-requests-v6.webp) |
-| **Settings Directory** | |
-| ![Settings directory view](docs/images/omakase-plus-settings-v6.webp) | |
+
+### Settings Directory
+
+![Settings directory view](docs/images/omakase-plus-settings-v6.webp)
 
 ## What works
 
