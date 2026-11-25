@@ -7,9 +7,9 @@ Omakase Plus is self-hosted personal media management, discovery, tracking, and 
 **Early release · Self-hosted · MIT software.**  
 [Documentation](https://omakase-plus.jhinx.dev/docs) · [Quickstart](https://omakase-plus.jhinx.dev/docs/quickstart) · [Changelog](CHANGELOG.md) · [Apple TV App](docs/apple-tv.md) · [Security](SECURITY.md)
 
-![Omakase Plus Home showing sidebar navigation, featured anime banner, and Continue Watching row](docs/images/omakase-plus-home-v5.webp)
+![Omakase Plus Home showing sidebar navigation, featured banner, and Continue Watching row](docs/images/omakase-plus-home-v6.webp)
 
-*Single-window capture from the local showcase (`scripts/showcase_preview.py`) with a sample account, ratings, and availability badges. External network actions are disabled. Artwork and vendor branding belong to their respective owners; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).*
+*Single-viewport captures from a live Omakase Plus server with private account and connection details redacted. Artwork and vendor branding belong to their respective owners; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).*
 
 ## Releases
 
@@ -19,15 +19,18 @@ The quickstart uses [v0.4.12](https://github.com/JhinxDev/omakase-plus/releases/
 
 | Anime Collection | Movies |
 | --- | --- |
-| ![Anime library view](docs/images/omakase-plus-library-v5.webp) | ![Movies library view](docs/images/omakase-plus-movies-v5.webp) |
-| **TV Shows** | **Settings Directory** |
-| ![TV Shows library view](docs/images/omakase-plus-tv-v5.webp) | ![Settings directory view](docs/images/omakase-plus-settings-v5.webp) |
+| ![Anime library view](docs/images/omakase-plus-library-v6.webp) | ![Movies library view](docs/images/omakase-plus-movies-v6.webp) |
+| **TV Shows** | **Requests** |
+| ![TV Shows library view](docs/images/omakase-plus-tv-v6.webp) | ![Requests pipeline view](docs/images/omakase-plus-requests-v6.webp) |
+| **Settings Directory** | |
+| ![Settings directory view](docs/images/omakase-plus-settings-v6.webp) | |
 
 ## What works
 
 - **Unified discovery & watchlists:** Organize anime, movies, and TV in one personal hub with optional two-way AniList and MyAnimeList tracking, Seerr/TMDB catalog search, **For You** shelves, private review notes, and customizable Home rows (**Edit Home**).
 - **Modern web player:** Stream eligible libraries in the browser via Shaka Player with HLS and DASH playback, non-reloading unbuffered VOD seeking, styled ASS/SSA (JASSUB WebAssembly) and WebVTT subtitle switching, playback speed controls, 85% completion tracking, and cross-device resume. See [Web player](docs/web-player.md).
 - **Native Apple TV app (`tvOS`):** Native AVPlayer client (`tv-source/`) with one-time PIN pairing, Home Screen Top Shelf Continue Watching, **Skip Intro** on verified opening markers, 10-second **Up Next** auto-play countdown, **Media Info** inspector, Audio/Subtitle language pickers, and automated Internal TestFlight cloud signing via GitHub Actions. See [Apple TV](docs/apple-tv.md).
+- **Native iPhone app (`iOS V1`):** Native SwiftUI client (`ios-source/`) sharing `QualificationCore` with Apple TV for pairing codes, invitation links, household profile switching, Home shelves, library browsing, catalog search and requests, native `AVPlayerViewController` (PiP, AirPlay, Skip Intro, Next Episode, Media Info), and GitHub Actions TestFlight Cloud Signing.
 - **Households & language rules:** Share library visibility safely while keeping each member's progress, ratings, tracker accounts, and stream choices separate. Enforce personal audio and subtitle preferences across eligible releases. See [Households](docs/households.md) and [Audio & subtitles](docs/language-settings.md).
 - **Scoped operator automation:** Account-scoped JSON CLI and optional stdio MCP access with explicit write grants and an audit log, plus [notifications](docs/notification-center.md) for rating finished titles or reviewing managed copies. See [Agent tools](docs/agent-tools.md).
 
