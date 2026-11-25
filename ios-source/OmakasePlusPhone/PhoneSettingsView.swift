@@ -125,6 +125,9 @@ struct PhoneSettingsView: View {
             }
             .sheet(isPresented: $showAddProfile) {
                 PhoneOnboardingView(store: store)
+                    .onChange(of: store.activeProfile?.id) { _, _ in
+                        showAddProfile = false
+                    }
             }
         }
     }

@@ -148,7 +148,6 @@ private struct PhoneAVPlayerController: UIViewControllerRepresentable {
         let controller = AVPlayerViewController()
         controller.allowsPictureInPicturePlayback = true
         controller.canStartPictureInPictureAutomaticallyFromInline = true
-        controller.appliesPreferredDisplayCriteriaAutomatically = true
         let player = AVPlayer()
         player.allowsExternalPlayback = true
         controller.player = player
@@ -178,7 +177,7 @@ private struct PhoneAVPlayerController: UIViewControllerRepresentable {
         if let target = seekRequest {
             Task { @MainActor in
                 seekRequest = nil
-                await player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+                _ = await player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
             }
         }
     }
@@ -226,20 +225,6 @@ private struct PhoneAVPlayerController: UIViewControllerRepresentable {
             let options: [String: Any]? = pass.mediaCookies.isEmpty ? nil : [AVURLAssetHTTPCookiesKey: pass.mediaCookies]
             let item = AVPlayerItem(asset: AVURLAsset(url: mediaURL, options: options))
 
-            let titleItem = AVMutableMetadataItem()
-            titleItem.identifier = .commonIdentifierTitle
-            titleItem.value = pass.card.title as NSString
-            titleItem.extendedLanguageTag = "und"
-            var metadata: [AVMetadataItem] = [titleItem]
-            if let ep = pass.card.episodeTitle {
-                let subItem = AVMutableMetadataItem()
-                subItem.identifier = .iTunesMetadataTrackSubTitle
-                subItem.value = ep as NSString
-                subItem.extendedLanguageTag = "und"
-                metadata.append(subItem)
-            }
-            item.externalMetadata = metadata
-
             if let resumeAt, mediaURL.pathExtension.lowercased() == "m3u8" {
                 item.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600),
                           toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: nil)
@@ -249,14 +234,14 @@ private struct PhoneAVPlayerController: UIViewControllerRepresentable {
             statusObserver = item.observe(\.status, options: [.new]) { [weak self, weak player, weak item] observed, _ in
                 guard observed.status == .readyToPlay, let self, let player, let item else { return }
                 Task { @MainActor in
-                    self.applyTrackDefaults(
+                    await self.applyTrackDefaults(
                         to: item,
                         audioLanguage: audioLanguage,
                         subtitlesAlways: subtitlesAlways,
                         subtitleLanguage: subtitleLanguage
                     )
                     if let resumeAt, mediaURL.pathExtension.lowercased() != "m3u8" {
-                        await player.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600))
+                        _ = await player.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600))
                     }
                     player.play()
                 }
@@ -312,15 +297,15 @@ private struct PhoneAVPlayerController: UIViewControllerRepresentable {
             audioLanguage: String,
             subtitlesAlways: Bool,
             subtitleLanguage: String
-        ) {
+        ) async {
             if audioLanguage != "auto",
-               let audioGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .audible),
+               let audioGroup = try? await item.asset.loadMediaSelectionGroup(for: .audible),
                let match = audioGroup.options.first(where: {
                    $0.extendedLanguageTag?.lowercased().hasPrefix(audioLanguage) == true
                }) {
                 item.select(match, in: audioGroup)
             }
-            if let subGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
+            if let subGroup = try? await item.asset.loadMediaSelectionGroup(for: .legible) {
                 if subtitlesAlways {
                     let lang = subtitleLanguage == "auto" ? "en" : subtitleLanguage
                     if let match = subGroup.options.first(where: {
