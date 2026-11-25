@@ -10,15 +10,12 @@ private server credentials or hostnames.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
 import secrets
 import ssl
 import struct
-import sys
-import time
 import urllib.parse
 import urllib.request
 import zlib
@@ -64,11 +61,15 @@ ARTWORK_CACHE: dict[tuple[str, str], tuple[bytes, str]] = {}
 STATE_TOKENS: set[str] = {"showcase-default-token"}
 
 
-def _gradient_png(width: int, height: int, c1: tuple[int, int, int], c2: tuple[int, int, int]) -> bytes:
+def _gradient_png(
+    width: int, height: int, c1: tuple[int, int, int], c2: tuple[int, int, int]
+) -> bytes:
     """Clean dark gradient PNG fallback so artwork never renders harsh flat blocks."""
 
     def chunk(kind: bytes, data: bytes) -> bytes:
-        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        return (
+            struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        )
 
     header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     raw_rows = bytearray()
@@ -79,7 +80,12 @@ def _gradient_png(width: int, height: int, c1: tuple[int, int, int], c2: tuple[i
         b = int(c1[2] * (1 - t) + c2[2] * t)
         raw_rows.append(0)
         raw_rows.extend(bytes((r, g, b)) * width)
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(bytes(raw_rows))) + chunk(b"IEND", b"")
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(bytes(raw_rows)))
+        + chunk(b"IEND", b"")
+    )
 
 
 def _fetch_bytes(url: str, timeout: float = 8.0) -> tuple[bytes, str] | None:
@@ -92,7 +98,9 @@ def _fetch_bytes(url: str, timeout: float = 8.0) -> tuple[bytes, str] | None:
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = resp.read(5 * 1024 * 1024)
-            ctype = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip() or "image/jpeg"
+            ctype = (
+                resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip() or "image/jpeg"
+            )
             if len(data) > 1024:
                 return data, ctype
     except Exception:
@@ -111,7 +119,9 @@ def _populate_anilist() -> None:
     """
     for art_id, _title, search_term, *_rest in ANIME_CATALOG:
         try:
-            body = json.dumps({"query": query, "variables": {"search": search_term}}).encode("utf-8")
+            body = json.dumps({"query": query, "variables": {"search": search_term}}).encode(
+                "utf-8"
+            )
             req = urllib.request.Request(
                 "https://graphql.anilist.co",
                 data=body,
@@ -150,14 +160,18 @@ def _populate_tvmaze() -> None:
             req = urllib.request.Request(url, headers={"User-Agent": "OmakaseShowcaseFixture/1.0"})
             with urllib.request.urlopen(req, timeout=8.0) as resp:
                 show = json.loads(resp.read(1024 * 1024).decode("utf-8"))
-            poster_url = ((show.get("image") or {}).get("original")) or ((show.get("image") or {}).get("medium"))
+            poster_url = ((show.get("image") or {}).get("original")) or (
+                (show.get("image") or {}).get("medium")
+            )
             if poster_url:
                 fetched = _fetch_bytes(poster_url.replace("http://", "https://"))
                 if fetched:
                     ARTWORK_CACHE[(art_id, "poster")] = fetched
             episodes = (show.get("_embedded") or {}).get("episodes") or []
             for ep in episodes[:4]:
-                ep_img = ((ep.get("image") or {}).get("original")) or ((ep.get("image") or {}).get("medium"))
+                ep_img = ((ep.get("image") or {}).get("original")) or (
+                    (ep.get("image") or {}).get("medium")
+                )
                 if ep_img:
                     fetched = _fetch_bytes(ep_img.replace("http://", "https://"))
                     if fetched:
@@ -176,14 +190,26 @@ def populate_artwork(*, offline: bool = False) -> int:
     # Ensure every ID has fallback artwork so no request ever 404s
     for art_id, *_ in ANIME_CATALOG + TV_CATALOG:
         if (art_id, "poster") not in ARTWORK_CACHE:
-            ARTWORK_CACHE[(art_id, "poster")] = (_gradient_png(120, 180, (28, 30, 48), (11, 13, 20)), "image/png")
+            ARTWORK_CACHE[(art_id, "poster")] = (
+                _gradient_png(120, 180, (28, 30, 48), (11, 13, 20)),
+                "image/png",
+            )
         if (art_id, "banner") not in ARTWORK_CACHE:
-            ARTWORK_CACHE[(art_id, "banner")] = (_gradient_png(320, 180, (36, 32, 62), (11, 13, 20)), "image/png")
+            ARTWORK_CACHE[(art_id, "banner")] = (
+                _gradient_png(320, 180, (36, 32, 62), (11, 13, 20)),
+                "image/png",
+            )
     for art_id, _t, _y, _r, _p, rgb in MOVIE_CATALOG:
         if (art_id, "poster") not in ARTWORK_CACHE:
-            ARTWORK_CACHE[(art_id, "poster")] = (_gradient_png(120, 180, rgb, (9, 11, 18)), "image/png")
+            ARTWORK_CACHE[(art_id, "poster")] = (
+                _gradient_png(120, 180, rgb, (9, 11, 18)),
+                "image/png",
+            )
         if (art_id, "banner") not in ARTWORK_CACHE:
-            ARTWORK_CACHE[(art_id, "banner")] = (_gradient_png(320, 180, rgb, (9, 11, 18)), "image/png")
+            ARTWORK_CACHE[(art_id, "banner")] = (
+                _gradient_png(320, 180, rgb, (9, 11, 18)),
+                "image/png",
+            )
     return len(ARTWORK_CACHE)
 
 
@@ -200,7 +226,10 @@ def build_home_payload() -> dict:
             "progress": {"percent": pct, "remaining_label": rem},
             "play_url": f"/plus/watch/title/tv/{art_id}/1/1?play=1",
             "play_label": "Resume",
-            "artwork": {"landscape": f"artwork/{art_id}/banner", "poster": f"artwork/{art_id}/poster"},
+            "artwork": {
+                "landscape": f"artwork/{art_id}/banner",
+                "poster": f"artwork/{art_id}/poster",
+            },
         }
         for art_id, title, _q, ep, rem, pct in TV_CATALOG[:4]
     ]
@@ -216,7 +245,10 @@ def build_home_payload() -> dict:
             "play_url": f"/plus/watch/{art_id}/{watched + 1}?play=1",
             "play_label": f"Play episode {watched + 1}",
             "episode": {"season": 1, "episode": watched + 1},
-            "artwork": {"landscape": f"artwork/{art_id}/banner", "poster": f"artwork/{art_id}/poster"},
+            "artwork": {
+                "landscape": f"artwork/{art_id}/banner",
+                "poster": f"artwork/{art_id}/poster",
+            },
         }
         for art_id, title, _q, watched, total, status in ANIME_CATALOG[:5]
     ]
@@ -231,7 +263,10 @@ def build_home_payload() -> dict:
             "progress": {"percent": pct, "remaining_label": rem},
             "play_url": f"/plus/watch/title/movie/tt000{art_id}?play=1",
             "play_label": "Resume" if pct > 0 else "Play",
-            "artwork": {"landscape": f"artwork/{art_id}/banner", "poster": f"artwork/{art_id}/poster"},
+            "artwork": {
+                "landscape": f"artwork/{art_id}/banner",
+                "poster": f"artwork/{art_id}/poster",
+            },
         }
         for art_id, title, year, rem, pct, _rgb in MOVIE_CATALOG[:3]
     ]
@@ -239,7 +274,10 @@ def build_home_payload() -> dict:
         "banner": {
             "title": tv_lead[1],
             "media_detail": f"TV Shows · {tv_lead[3]} · {tv_lead[4]}",
-            "artwork": {"landscape": f"artwork/{tv_lead[0]}/banner", "poster": f"artwork/{tv_lead[0]}/poster"},
+            "artwork": {
+                "landscape": f"artwork/{tv_lead[0]}/banner",
+                "poster": f"artwork/{tv_lead[0]}/poster",
+            },
         },
         "rows": [
             {"id": "continue-tv", "label": "Continue Watching: TV Shows", "cards": tv_cards},
@@ -309,7 +347,9 @@ def build_episodes_payload(title_id: str) -> dict:
             "id": str(ep),
             "title": f"Episode {ep}",
             "note": "S1 · 44 min",
-            "watch_path": f"/plus/watch/title/tv/{numeric}/1/{ep}" if domain == "tv" else f"/plus/watch/{numeric}/{ep}",
+            "watch_path": f"/plus/watch/title/tv/{numeric}/1/{ep}"
+            if domain == "tv"
+            else f"/plus/watch/{numeric}/{ep}",
             "episode_artwork": f"episode-artwork/{domain}/{numeric}/1/{ep}",
             "progress": 1.0 if ep == 1 else (0.4 if ep == 2 else 0.0),
             "watched": ep == 1,
@@ -342,8 +382,18 @@ def build_requests_payload() -> dict:
                         "can_check": True,
                         "last_checked_at": "2026-11-25T06:20:00Z",
                         "stages": [
-                            {"stage": "saved", "label": "Request saved", "state": "complete", "occurred_at": "2026-11-25T06:00:00Z"},
-                            {"stage": "checked", "label": "Sources checked · 2 matches eligible", "state": "complete", "occurred_at": "2026-11-25T06:20:00Z"},
+                            {
+                                "stage": "saved",
+                                "label": "Request saved",
+                                "state": "complete",
+                                "occurred_at": "2026-11-25T06:00:00Z",
+                            },
+                            {
+                                "stage": "checked",
+                                "label": "Sources checked · 2 matches eligible",
+                                "state": "complete",
+                                "occurred_at": "2026-11-25T06:20:00Z",
+                            },
                         ],
                     },
                     {
@@ -357,7 +407,12 @@ def build_requests_payload() -> dict:
                         "can_check": True,
                         "last_checked_at": "2026-11-25T06:19:00Z",
                         "stages": [
-                            {"stage": "saved", "label": "Request saved", "state": "complete", "occurred_at": "2026-11-25T06:00:00Z"},
+                            {
+                                "stage": "saved",
+                                "label": "Request saved",
+                                "state": "complete",
+                                "occurred_at": "2026-11-25T06:00:00Z",
+                            },
                         ],
                     },
                 ],
@@ -374,7 +429,9 @@ class ShowcaseHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args) -> None:
         return
 
-    def reply(self, status: int, body: bytes = b"", *, content_type: str = "application/json") -> None:
+    def reply(
+        self, status: int, body: bytes = b"", *, content_type: str = "application/json"
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
@@ -391,7 +448,9 @@ class ShowcaseHandler(BaseHTTPRequestHandler):
         if route.path == API + "device":
             token = secrets.token_hex(24)
             STATE_TOKENS.add(token)
-            return self.json_reply(200, {"device_token": token, "user_code": "OMKS-2468", "expires_in": 300})
+            return self.json_reply(
+                200, {"device_token": token, "user_code": "OMKS-2468", "expires_in": 300}
+            )
         if route.path == API + "unlink":
             return self.json_reply(200, {"unlinked": True})
         if route.path in (API + "for-you/request", API + "for-you/request/check"):
@@ -407,14 +466,18 @@ class ShowcaseHandler(BaseHTTPRequestHandler):
         if route.path == API + "profile":
             return self.json_reply(200, {"id": "1", "name": "Jhinx", "has_avatar": False})
         if route.path == API + "libraries":
-            return self.json_reply(200, {"items": [{"id": PERSONAL, "name": "Personal", "kind": "personal"}]})
+            return self.json_reply(
+                200, {"items": [{"id": PERSONAL, "name": "Personal", "kind": "personal"}]}
+            )
         if route.path == API + "home":
             return self.json_reply(200, build_home_payload())
         if route.path == API + "requests":
             return self.json_reply(200, build_requests_payload())
         if route.path == API + "catalog":
             q = parse_qs(route.query)
-            return self.json_reply(200, build_catalog_payload(q.get("kind", ["anime"])[0], q.get("q", [""])[0]))
+            return self.json_reply(
+                200, build_catalog_payload(q.get("kind", ["anime"])[0], q.get("q", [""])[0])
+            )
         if route.path == API + "episodes":
             q = parse_qs(route.query)
             return self.json_reply(200, build_episodes_payload(q.get("title_id", ["2001"])[0]))
@@ -434,7 +497,9 @@ class ShowcaseHandler(BaseHTTPRequestHandler):
             return self.json_reply(200, {"items": build_catalog_payload("anime")["items"][:4]})
         if route.path in (API + "for-you", API + "catalog-search"):
             q = parse_qs(route.query)
-            category = "all" if route.path.endswith("catalog-search") else q.get("category", ["anime"])[0]
+            category = (
+                "all" if route.path.endswith("catalog-search") else q.get("category", ["anime"])[0]
+            )
             kind = "movie" if category == "movies" else ("tv" if category == "tv" else "anime")
             cards = [
                 {
@@ -448,7 +513,12 @@ class ShowcaseHandler(BaseHTTPRequestHandler):
             ]
             return self.json_reply(
                 200,
-                {"category": category, "rows": [{"key": "featured", "title": "Featured Picks", "cards": cards}], "requests": [], "warnings": []},
+                {
+                    "category": category,
+                    "rows": [{"key": "featured", "title": "Featured Picks", "cards": cards}],
+                    "requests": [],
+                    "warnings": [],
+                },
             )
         m_art = re.fullmatch(re.escape(API) + r"artwork/(\d+)/(banner|poster)", route.path)
         if m_art:
@@ -457,7 +527,9 @@ class ShowcaseHandler(BaseHTTPRequestHandler):
                 "image/png",
             )
             return self.reply(200, data, content_type=ctype)
-        m_ep = re.fullmatch(re.escape(API) + r"episode-artwork/(anime|tv)/(\d+)/(\d+)/(\d+)", route.path)
+        m_ep = re.fullmatch(
+            re.escape(API) + r"episode-artwork/(anime|tv)/(\d+)/(\d+)/(\d+)", route.path
+        )
         if m_ep:
             data, ctype = ARTWORK_CACHE.get((m_ep.group(2), "banner")) or (
                 _gradient_png(320, 180, (32, 28, 52), (9, 11, 18)),
@@ -500,7 +572,9 @@ def self_test() -> int:
     assert [c["key"] for c in reqs["categories"]] == ["active", "attention", "history"]
     for row in home["rows"]:
         for card in row["cards"]:
-            assert re.fullmatch(r"artwork/[1-9][0-9]{0,17}/(banner|poster)", card["artwork"]["landscape"])
+            assert re.fullmatch(
+                r"artwork/[1-9][0-9]{0,17}/(banner|poster)", card["artwork"]["landscape"]
+            )
     print(f"SHOWCASE_SELF_TEST_OK artwork={count} rows={len(home['rows'])}")
     return 0
 
