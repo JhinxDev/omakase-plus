@@ -731,6 +731,14 @@ _NATIVE_REQUEST_FIELDS = (
 )
 
 
+# A request poster is either a native artwork path the paired client already knows
+# how to fetch with its bearer token, or a TMDB image URL. Nothing else is emitted.
+_NATIVE_POSTER = re.compile(
+    r"artwork/[1-9][0-9]{0,17}/poster"
+    r"|https://image\.tmdb\.org/t/p/(?:w[0-9]{2,4}|original)/[A-Za-z0-9_-]{1,96}\.(?:jpg|png|webp)"
+)
+
+
 def native_request_status(status):
     """Project one shared request model onto the Apple TV contract.
 
@@ -755,6 +763,10 @@ def native_request_status(status):
             }
         )
     payload["stages"] = stages
+    poster = status.get("poster")
+    payload["poster"] = (
+        poster if isinstance(poster, str) and _NATIVE_POSTER.fullmatch(poster) else None
+    )
     fallback = status.get("fallback_search")
     if isinstance(fallback, dict):
         payload["fallback_search"] = {
@@ -958,7 +970,7 @@ def create_native_tv_test_router(
                 row["user_id"], row["browser_session"], row["library_id"], clock() + 1
             )
             try:
-                library_scope(db, grant)
+                library_scope(db, grant, renew=False)
             except HTTPException:
                 continue
             rows.append(
@@ -986,7 +998,7 @@ def create_native_tv_test_router(
             if grant.actor != actor:
                 continue
             try:
-                library_scope(db, grant)
+                library_scope(db, grant, renew=False)
             except HTTPException:
                 continue
             rows.append(
@@ -1038,8 +1050,10 @@ def create_native_tv_test_router(
         drop_device_passes(key)
         return True
 
-    def library_scope(db, grant):
-        authenticated, _ = authenticate_session(db, grant.browser_session, renew=False)
+    def library_scope(db, grant, *, renew: bool = True):
+        # A paired device in use keeps its approving browser session alive; the
+        # session's own absolute lifetime still bounds it.
+        authenticated, _ = authenticate_session(db, grant.browser_session, renew=renew)
         if authenticated != grant.actor or grant.expires <= clock():
             raise HTTPException(401, "Apple TV library link expired", headers=NO_STORE)
         try:
@@ -1988,19 +2002,44 @@ def create_native_tv_test_router(
             page = await dashboard(db, scope.viewer_id)
         except ForYouError as error:
             raise HTTPException(error.status, error.detail, headers=NO_STORE) from None
+        translate = artwork_translator(db, scope)
+
+        def with_poster(item):
+            if not isinstance(item, dict):
+                return item
+            return {**item, "poster": request_poster(db, scope, translate, item)}
+
         return JSONResponse(
             {
                 "categories": [
                     {
                         "key": category["key"],
                         "title": category["title"],
-                        "requests": [native_request_status(item) for item in category["requests"]],
+                        "requests": [
+                            native_request_status(with_poster(item))
+                            for item in category["requests"]
+                        ],
                     }
                     for category in page["categories"]
                 ],
             },
             headers=NO_STORE,
         )
+
+    def request_poster(db, scope, translate, item):
+        """Map a request's web poster link onto an artwork the paired client can fetch."""
+        title_id = str(item.get("title_id") or "")
+        if item.get("kind") == "anime":
+            if not re.fullmatch(r"[1-9][0-9]{0,9}", title_id):
+                return None
+            monitor = db.execute(
+                "SELECT id FROM media_monitors WHERE user_id=? AND anilist_id=? ORDER BY id LIMIT 1",
+                (scope.viewer_id, int(title_id)),
+            ).fetchone()
+            if monitor and anime_artwork_id(db, scope, str(monitor[0])):
+                return f"artwork/{monitor[0]}/poster"
+            return None
+        return translate(item.get("poster_href"), "poster")
 
     @router.get(LIBRARY_API + "/home")
     async def library_home(request: Request, db=Depends(get_db)):
@@ -2020,12 +2059,10 @@ def create_native_tv_test_router(
         project_home_artwork(db, scope, payload)
         return JSONResponse(payload, headers=NO_STORE)
 
-    def project_home_artwork(db, scope, payload):
-        """Translate cookie-authenticated web routes into native artwork targets."""
+    def artwork_translator(db, scope):
+        """Return translate(raw, style): web artwork routes become native artwork targets."""
         from omakase.plus.native_tv_library import _tmdb_image
 
-        cards = [payload["banner"]]
-        cards.extend(card for row in payload["rows"] for card in row["cards"])
         memo = {}
 
         def translate(raw, style):
@@ -2060,6 +2097,14 @@ def create_native_tv_test_router(
                     return None
             column = "backdrop_url" if style == "landscape" else "poster_url"
             return _tmdb_image(memo[category, key].get(column))
+
+        return translate
+
+    def project_home_artwork(db, scope, payload):
+        """Translate cookie-authenticated web routes into native artwork targets."""
+        cards = [payload["banner"]]
+        cards.extend(card for row in payload["rows"] for card in row["cards"])
+        translate = artwork_translator(db, scope)
 
         for card in cards:
             artwork = card["artwork"]
@@ -3075,7 +3120,7 @@ def create_native_tv_test_router(
         intent_id = None
         try:
             with fresh_source_transaction(db):
-                library_scope(db, library)
+                library_scope(db, library, renew=False)
                 checked(db, grant)
                 saved = store.save_native_resume(
                     db,

@@ -169,12 +169,19 @@ def network_hint(host):
 
 
 def record_activity(db, key, *, seen_at, network):
+    """Record use of a paired device and slide its expiry forward.
+
+    A device that keeps being used stays paired. Only an idle device reaches its
+    DEVICE_TTL, and a revoked or expired credential is never revived because the
+    update still requires an unexpired row.
+    """
     with db:
         db.execute(
-            """UPDATE native_tv_devices SET last_seen_at=?,network_hint=?
+            """UPDATE native_tv_devices
+               SET last_seen_at=?,network_hint=?,expires_at=MAX(expires_at,?)
                WHERE token_digest=? AND user_id IS NOT NULL AND expires_at>?
                  AND (last_seen_at IS NULL OR last_seen_at<=?)""",
-            (seen_at, network, key, seen_at, seen_at - ACTIVITY_INTERVAL),
+            (seen_at, network, seen_at + DEVICE_TTL, key, seen_at, seen_at - ACTIVITY_INTERVAL),
         )
 
 

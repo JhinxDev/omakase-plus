@@ -4,6 +4,7 @@ import SwiftUI
 struct PhoneRootView: View {
     @State private var store = PhoneSessionStore()
     @State private var selectedTab = 0
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -41,6 +42,7 @@ struct PhoneRootView: View {
                         }
                         .tag(4)
                 }
+                .id(store.activeProfile?.id)
                 .fullScreenCover(
                     item: Binding(
                         get: { store.activePass },
@@ -53,12 +55,21 @@ struct PhoneRootView: View {
                 ) { pass in
                     PhonePlayerView(store: store, pass: pass)
                 }
+            } else if store.restoreState == .needsRetry {
+                reconnecting
             } else {
                 PhoneOnboardingView(store: store)
             }
         }
+        // Retry a locked-phone restore and refresh the device link each time the app
+        // becomes active, including the first launch.
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            store.resumeIfNeeded()
+            await store.renewIfNeeded()
+        }
         .alert(
-            "Playback Notice",
+            "Omakase Plus",
             isPresented: Binding(
                 get: { store.errorMessage != nil && store.client != nil },
                 set: { shown in if !shown { store.errorMessage = nil } }
@@ -68,6 +79,30 @@ struct PhoneRootView: View {
         } message: {
             Text(store.errorMessage ?? "")
         }
+    }
+
+    private var reconnecting: some View {
+        VStack(spacing: 18) {
+            ProgressView()
+                .tint(Color.appAccent)
+            Text("Reconnecting…")
+                .font(.headline)
+            Text("Unlock your iPhone to open your saved connection.")
+                .font(.subheadline)
+                .foregroundStyle(Color.appMuted)
+                .multilineTextAlignment(.center)
+            Button("Try again") { store.resumeIfNeeded() }
+                .buttonStyle(.borderedProminent)
+                .tint(Color.appAccent)
+                .foregroundStyle(Color.appBackground)
+            Button("Connect a different server") { store.abandonRestore() }
+                .font(.subheadline)
+                .foregroundStyle(Color.appAccent)
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.appBackground.ignoresSafeArea())
+        .foregroundStyle(Color.appText)
     }
 }
 

@@ -123,3 +123,21 @@ def test_malformed_or_missing_rows_do_not_invent_a_state():
     assert payload["stages"] == [
         {"stage": "saved", "label": "", "state": "unknown", "occurred_at": None}
     ]
+
+
+def test_only_fetchable_poster_targets_reach_the_native_client():
+    tmdb = "https://image.tmdb.org/t/p/w342/abc_123.jpg"
+    assert native_tv_test.native_request_status(_model(poster=tmdb))["poster"] == tmdb
+    native = "artwork/12/poster"
+    assert native_tv_test.native_request_status(_model(poster=native))["poster"] == native
+    assert native_tv_test.native_request_status(_model())["poster"] is None
+    for hostile in (
+        "http://image.tmdb.org/t/p/w342/a.jpg",
+        "https://evil.example/t/p/w342/a.jpg",
+        "https://image.tmdb.org/t/p/w342/a.jpg?x=1",
+        "artwork/0/poster",
+        "artwork/1/poster/../../x",
+        "/plus/movies/tt1/artwork?variant=poster",
+        7,
+    ):
+        assert native_tv_test.native_request_status(_model(poster=hostile))["poster"] is None

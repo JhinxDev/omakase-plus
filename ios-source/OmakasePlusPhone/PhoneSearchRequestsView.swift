@@ -137,9 +137,11 @@ struct PhoneDiscoverView: View {
         }
     }
 
-    private func reload() async {
+    private func reload(keepFeedback: Bool = false) async {
         loading = true
-        requestFeedback = nil
+        if !keepFeedback {
+            requestFeedback = nil
+        }
         defer { loading = false }
         do {
             page = try await client.recommendations(category)
@@ -174,7 +176,9 @@ struct PhoneDiscoverView: View {
         do {
             let result = try await client.requestTitle(card)
             requestFeedback = "\(result.title): \(result.displayStatus)"
-            await reload()
+            await reload(keepFeedback: true)
+        } catch FixtureConnectionError.unauthorized {
+            store.handleUnauthorized()
         } catch {
             requestFeedback = "Could not submit request for \(card.title)."
         }
@@ -216,6 +220,7 @@ struct PhoneRequestsView: View {
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
+            .scrollIndicators(.hidden)
             .background(Color.appBackground.ignoresSafeArea())
             .foregroundStyle(Color.appText)
             .navigationTitle("Requests")
@@ -230,35 +235,55 @@ struct PhoneRequestsView: View {
     }
 
     private func requestRow(_ item: LiveTitleRequest) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(item.title)
-                    .font(.headline)
-                Spacer()
-                Text(item.displayStatus)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.appAccent)
-            }
-            if !item.detail.isEmpty {
-                Text(item.detail)
-                    .font(.caption)
-                    .foregroundStyle(Color.appMuted)
-            }
-            if let fallback = item.fallbackSearch {
-                Text(fallback.headline)
-                    .font(.caption2)
-                    .foregroundStyle(Color.appMuted)
-            }
-            if item.canCheck == true {
-                Button {
-                    Task { await check(item) }
-                } label: {
-                    Text(checkingID == item.id ? "Checking…" : "Check status")
+        HStack(alignment: .top, spacing: 12) {
+            PhoneArtworkView(
+                cacheKey: "req:\(item.id):\(item.poster ?? "")",
+                source: (item.poster?.isEmpty == false) ? .request(client, item) : nil,
+                fallbackIcon: "tray"
+            )
+            .frame(width: 56, height: 84)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.appKeyline, lineWidth: 1))
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(item.title)
+                        .font(.headline)
+                        .lineLimit(2)
+                    Spacer()
+                    Text(item.displayStatus)
                         .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.appAccent)
                 }
-                .buttonStyle(.bordered)
-                .tint(Color.appAccent)
-                .disabled(checkingID != nil)
+                if !item.detail.isEmpty {
+                    Text(item.detail)
+                        .font(.caption)
+                        .foregroundStyle(Color.appMuted)
+                }
+                if let stages = item.stages, !stages.isEmpty {
+                    let doneCount = stages.filter { $0.state == "done" }.count
+                    let noun = stages.count == 1 ? "stage" : "stages"
+                    Text("\(doneCount) of \(stages.count) \(noun) complete")
+                        .font(.caption2)
+                        .foregroundStyle(Color.appMuted)
+                }
+                if let fallback = item.fallbackSearch {
+                    Text(fallback.headline)
+                        .font(.caption2)
+                        .foregroundStyle(Color.appMuted)
+                }
+                if item.canCheck == true {
+                    Button {
+                        Task { await check(item) }
+                    } label: {
+                        Text(checkingID == item.id ? "Checking…" : "Check status")
+                            .font(.caption.weight(.semibold))
+                            .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(Color.appAccent)
+                    .disabled(checkingID != nil)
+                }
             }
         }
         .padding(.vertical, 4)
@@ -287,6 +312,8 @@ struct PhoneRequestsView: View {
         do {
             _ = try await client.checkRequest(item)
             await loadRequests()
+        } catch FixtureConnectionError.unauthorized {
+            store.handleUnauthorized()
         } catch {
             errorMessage = "Status check failed for \(item.title)."
         }
