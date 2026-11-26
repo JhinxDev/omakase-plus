@@ -16,7 +16,7 @@
 </div>
 {%- endmacro %}
 
-{% macro movie_card(card, request_view=false, collection=false) -%}
+{% macro movie_card(card, request_view=false, collection=false, cleanup_selectable=false) -%}
 {% set display = card.display | default({}, true) %}
 {% set history = card.history or {} %}
 {% set status_known = history.status_source and history.status_source != 'none' %}
@@ -41,5 +41,12 @@
     {% if request_view and (display.request_recorded_at or display.request_observed_at) %}<p class="movie-card-timestamp">{% set stamp = display.request_observed_at or display.request_recorded_at %}{{ 'Checked' if display.request_observed_at else 'Last update' }} <time datetime="{{ stamp }}" data-local-datetime="{{ stamp }}">{{ stamp }}</time></p>{% endif %}
   </div>
   {% if card.imdb_id %}</a>{% else %}<p class="movie-card-note">Preview only. Exact identity is still being checked.</p>{% endif %}
+  {% if cleanup_selectable and card.imdb_id and (card.cloud_match or card.plex_present or card.state == 'ready') %}
+  <label class="cleanup-select-pill">
+    <input type="checkbox" class="sr-only" name="item_id" value="{{ card.imdb_id }}" data-cleanup-select>
+    <span class="cleanup-select-check" aria-hidden="true"></span>
+    <span class="cleanup-select-label">Select to clean up</span>
+  </label>
+  {% endif %}
 </article>
 {%- endmacro %}

@@ -12,19 +12,33 @@
     <summary>More filters</summary><div class="collection-secondary-views"><a href="/plus/movies?view=requests"{% if view == 'requests' %} aria-current="page"{% endif %}>Requests</a></div>
   </details>{% endif %}
 {% endcall %}
-{% if notice == 'saved' %}<p class="product-notice" role="status">Your watched status and rating were saved.</p>{% elif notice in ['updated','synced'] %}<p class="product-notice" role="status">Check finished. Review the current result below.</p>{% endif %}
+{% if notice == 'saved' %}<p class="product-notice" role="status">Your watched status and rating were saved.</p>{% elif notice == 'cleaned' %}<p class="product-notice" role="status">Selected movie copies were removed from Real-Debrid. Your watch history and ratings stay saved.</p>{% elif notice in ['updated','synced'] %}<p class="product-notice" role="status">Check finished. Review the current result below.</p>{% endif %}
 {% if sync_result and not cloud_playback %}<section class="product-notice" role="status"><p>Imported {{ sync_result.imported }} viewing records. {{ sync_result.skipped }} skipped.{% if sync_result.remaining %} {{ sync_result.remaining }} movies remain to check.{% else %} This import pass is complete.{% endif %}</p>{% if sync_result.remaining %}<form method="post" action="/plus/movies/sync" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit" data-busy-label="Reading Plex history…">Continue import</button></form>{% endif %}</section>{% endif %}
 {% if cloud_error %}<p class="product-notice" role="status">Could not check the Real-Debrid library right now.</p>{% endif %}
 {% if movies_error %}<section class="utility-panel" role="status"><h2>Movie results are unavailable</h2><p>{{ movies_error }}</p><a class="button button-secondary" href="/plus/settings/connections">Review connections</a></section>{% endif %}
 {% if action_card %}<section class="utility-panel" role="status"><h2>{{ action_card.title }}</h2><p>{{ action_card.detail }}</p></section>{% endif %}
-{% if cards %}<header class="stream-section-heading"><div><h2>{% if query %}Search results{% elif view == 'requests' %}Your requests{% elif view == 'available' %}Available movies{% elif view == 'watching' %}Movies in progress{% elif view == 'completed' %}Movies you’ve watched{% else %}Your collection{% endif %}</h2></div><span class="movie-result-count">{{ cards | length }} {{ 'movie' if cards | length == 1 else 'movies' }}</span></header>
-<div class="movie-grid catalog-poster-grid">{% for card in cards %}{{ movie_card(card, request_view=view == 'requests', collection=true) }}{% endfor %}</div>
+{% if cards %}
+{% set removable_movies = cards | selectattr('cloud_match') | list if cloud_playback else cards | selectattr('plex_present') | list %}
+{% if view == 'completed' and removable_movies %}
+<form class="completed-cleanup-selection" method="post" action="/plus/movies/completed/cleanup/preview">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="completed-cleanup-toolbar">
+    <div><strong>Finished watching?</strong><span>Select finished movies to remove their copies while keeping your watch history and ratings.</span></div>
+    <div class="cleanup-toolbar-actions">
+      <button class="button button-secondary" type="button" data-cleanup-select-all>Select all</button>
+      <button class="button button-secondary" type="submit">Clean up selected media</button>
+    </div>
+  </div>
+{% endif %}
+<header class="stream-section-heading"><div><h2>{% if query %}Search results{% elif view == 'requests' %}Your requests{% elif view == 'available' %}Available movies{% elif view == 'watching' %}Watching now{% elif view == 'completed' %}Watched movies{% else %}Your collection{% endif %}</h2></div><span class="movie-result-count">{{ cards | length }} {{ 'movie' if cards | length == 1 else 'movies' }}</span></header>
+<div class="movie-grid catalog-poster-grid">{% for card in cards %}{{ movie_card(card, request_view=view == 'requests', collection=true, cleanup_selectable=(view == 'completed' and removable_movies | length > 0)) }}{% endfor %}</div>
+{% if view == 'completed' and removable_movies %}</form>{% endif %}
 {% elif not movies_error %}
 {% if query %}{{ empty_state('No matching movies', 'Try a different title, year, or IMDb ID.') }}
-{% elif view == 'available' %}{{ empty_state('No movies found in your connected library', 'Movies appear here when the library confirms a copy.', 'View collection', '/plus/movies') }}
+{% elif view == 'available' %}{{ empty_state('No movies found in your connected library', 'Movies appear here when the library confirms a copy.', 'Back to collection', '/plus/movies') }}
 {% elif view == 'requests' %}{{ empty_state('Your requests', 'You have no open movie requests.', 'Browse movies', '/plus/search?kind=movies') }}
-{% elif view == 'watching' %}{{ empty_state('Nothing in progress', 'Movies you mark as Watching appear here.', 'View collection', '/plus/movies') }}
-{% elif view == 'completed' %}{{ empty_state('No watched movies yet', 'Movies you mark as Watched appear here.', 'View collection', '/plus/movies') }}
+{% elif view == 'watching' %}{{ empty_state('Nothing in progress', 'Movies you mark as Watching appear here.', 'Back to collection', '/plus/movies') }}
+{% elif view == 'completed' %}{{ empty_state('No watched movies yet', 'Movies you mark as Watched appear here.', 'Back to collection', '/plus/movies') }}
 {% else %}{{ empty_state('Your next movie starts here', 'Find a movie and save your rating after watching.', 'Explore movies', '/plus/discover?kind=movies') }}{% endif %}
 {% endif %}
 {% if cloud_playback %}

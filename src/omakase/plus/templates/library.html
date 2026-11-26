@@ -86,20 +86,17 @@
 <form class="completed-cleanup-selection" method="post" action="/plus/library/completed/cleanup/preview">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <div class="completed-cleanup-toolbar">
-    <div><strong>Finished watching?</strong><span>Select media to review removal options.</span></div>
-    <button class="button button-secondary" type="submit">Clean up selected media</button>
+    <div><strong>Finished watching?</strong><span>Select finished titles to remove their copies while keeping your watch history and ratings.</span></div>
+    <div class="cleanup-toolbar-actions">
+      <button class="button button-secondary" type="button" data-cleanup-select-all>Select all</button>
+      <button class="button button-secondary" type="submit">Clean up selected media</button>
+    </div>
   </div>
 {% endif %}
 {% if titles %}<header class="stream-section-heading"><div><h2>{% if query %}Search results{% elif lifecycle_filter == 'in_progress' %}Watching now{% elif lifecycle_filter == 'completed' %}Watched anime{% elif lifecycle_filter == 'available' %}Available anime{% else %}Your collection{% endif %}</h2></div><span class="movie-result-count">{{ titles | length }} {{ 'title' if titles | length == 1 else 'titles' }}</span></header>{% endif %}
 <section class="library-grid watchlist-grid catalog-poster-grid" aria-label="Anime library">
   {% for item in titles %}
   <article class="library-card watchlist-card catalog-card state-border-{{ item.state }}">
-    {% if lifecycle_filter == 'completed' %}
-    <label class="completed-title-selector">
-      <input type="checkbox" name="monitor_id" value="{{ item.id }}">
-      <span>Select {{ item.title }}</span>
-    </label>
-    {% endif %}
     <a class="library-card-main" href="/plus/library/{{ item.id }}" aria-label="Open {{ item.title }}">
       <div class="library-poster poster-frame" data-fallback-title="{{ item.title }}">
         <span class="media-art-fallback" aria-hidden="true">{{ item.title[:2] | upper }}</span>
@@ -123,6 +120,13 @@
     <progress class="coverage-track" max="{{ item.required if item.required else 1 }}" value="{{ item.usable }}" aria-label="{{ item.usable }} of {{ item.required }} required episodes usable"></progress>
     <p>Plex visibility confirms the library entry. Playback is checked separately.</p>
     </details>{% endif %}
+    {% if lifecycle_filter == 'completed' %}
+    <label class="cleanup-select-pill">
+      <input type="checkbox" class="sr-only" name="monitor_id" value="{{ item.id }}" data-cleanup-select>
+      <span class="cleanup-select-check" aria-hidden="true"></span>
+      <span class="cleanup-select-label">Select to clean up</span>
+    </label>
+    {% endif %}
     <footer>
       <a href="/plus/library/{{ item.id }}">{{ 'Manage title' if item.lifecycle == 'completed' else 'Details & episodes' }} <span aria-hidden="true">↗</span></a>
     </footer>
@@ -133,9 +137,9 @@
 {% else %}
 <div class="product-empty product-empty-large">
   <span class="empty-mark" aria-hidden="true"></span>
-  <h2>No titles match these filters.</h2>
-  <p>{% if query %}Try a different search.{% else %}Titles with a copy ready to watch appear here.{% endif %}</p>
-  <a class="button button-secondary" href="/plus/library">Clear filters</a>
+  <h2>{% if query %}No titles match these filters.{% elif lifecycle_filter == 'in_progress' %}Nothing in progress{% elif lifecycle_filter == 'completed' %}No watched anime yet{% else %}No titles match these filters.{% endif %}</h2>
+  <p>{% if query %}Try a different search.{% elif lifecycle_filter == 'completed' %}Anime you finish appear here.{% else %}Titles with a copy ready to watch appear here.{% endif %}</p>
+  <a class="button button-secondary" href="/plus/library">{% if lifecycle_filter in ['in_progress', 'completed'] %}Back to collection{% else %}Clear filters{% endif %}</a>
   <a class="button button-primary" href="/plus/add">Add anime</a>
 </div>
 {% endif %}

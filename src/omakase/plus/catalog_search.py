@@ -355,6 +355,25 @@ class AnimeCatalogSearch:
         ).fetchone()
         if score:
             card.update(rating=score["score_ten"], rating_source="manual")
+        planned = self.db.execute(
+            "SELECT status FROM anilist_plannings WHERE user_id=? AND anilist_id=? ORDER BY id DESC LIMIT 1",
+            (self.user_id, card["id"]),
+        ).fetchone()
+        if planned:
+            mapped = {
+                "CURRENT": "watching",
+                "COMPLETED": "completed",
+                "PLANNING": "planned",
+                "DROPPED": "dropped",
+                "PAUSED": "paused",
+                "REPEATING": "rewatching",
+            }.get(str(planned["status"] or "").upper())
+            if mapped and (
+                card["watch_status"] == "unknown" or mapped in {"planned", "paused", "dropped"}
+            ):
+                card["watch_status"] = mapped
+                if card["history_source"] is None:
+                    card["history_source"] = "local"
         return card
 
     async def _lookup(self, *, query: str | None = None, media_id: int | None = None):

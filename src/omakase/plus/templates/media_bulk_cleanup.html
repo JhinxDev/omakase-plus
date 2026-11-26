@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Clean up watched {{ cleanup.kind_label }} · Omakase{% endblock %}
+{% block eyebrow %}Watched media cleanup{% endblock %}
+{% block page_title %}Review copy removal{% endblock %}
+{% block page_intro %}<p class="page-intro">Remove copies from Real-Debrid without changing your watch history or ratings.</p>{% endblock %}
+{% block page_actions %}<a class="button button-secondary" href="{{ cleanup.back_href }}"><span aria-hidden="true">←</span>&nbsp; {{ cleanup.back_label }}</a>{% endblock %}
+{% block content %}
+<section class="removal-confirmation bulk-cleanup" aria-labelledby="cleanup-heading">
+  <header class="removal-heading">
+    <span class="section-index">WATCHED CLEANUP</span>
+    <h2 id="cleanup-heading">Confirm what leaves your Real-Debrid storage</h2>
+    <p>Your watch status, ratings, and viewing history stay saved in Omakase.</p>
+  </header>
+
+  {% if error %}<div class="product-notice notice-danger removal-error" role="alert">{{ error }}</div>{% endif %}
+
+  {% if cleanup.eligible %}
+  <div class="bulk-cleanup-list" role="group" aria-label="Selected watched {{ cleanup.kind_label }}">
+    {% for item in cleanup.eligible %}
+    <article>
+      <div><strong>{{ item.title }}</strong>{% if item.year %} <span>{{ item.year }}</span>{% endif %}</div>
+      {% if item.files %}
+      <ul class="cleanup-file-list">
+        {% for f in item.files %}
+        <li><code>{{ f.filename }}</code>{% if f.size_label %} <small>({{ f.size_label }})</small>{% endif %}</li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p>Use <a href="{{ item.detail_href }}">this title’s Plex review panel</a> to confirm Plex removal.</p>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="product-empty">
+    <h2>No removable copies selected.</h2>
+    <p>{{ cleanup.back_label }} and select watched items with a copy in Real-Debrid.</p>
+  </div>
+  {% endif %}
+
+  {% if cleanup.blocked %}
+  <details class="bulk-cleanup-blocked" open>
+    <summary>{{ cleanup.blocked | length }} item{% if cleanup.blocked | length != 1 %}s{% endif %} skipped</summary>
+    <ul>{% for item in cleanup.blocked %}<li><strong>{{ item.title }}</strong>: {{ item.reason }}</li>{% endfor %}</ul>
+  </details>
+  {% endif %}
+
+  <div class="removal-boundary">
+    <strong>Watch history &amp; ratings stay intact.</strong>
+    <p>Only the matched Real-Debrid file copy is removed. Your watched status and rating are preserved.</p>
+  </div>
+
+  {% if cleanup.eligible and cleanup.cloud_playback %}
+  <form class="removal-form" method="post" action="{{ cleanup.execute_action }}" data-busy-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% for item_id in cleanup.eligible_ids %}<input type="hidden" name="item_id" value="{{ item_id }}">{% endfor %}
+    <div class="removal-actions">
+      <button class="button button-danger" type="submit" data-busy-label="Removing copies…">Remove selected Real-Debrid {{ 'copy' if cleanup.eligible | length == 1 else 'copies' }}</button>
+      <a class="button button-secondary" href="{{ cleanup.back_href }}">{{ cleanup.back_label }}</a>
+    </div>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

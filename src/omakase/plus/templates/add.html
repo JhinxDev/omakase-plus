@@ -12,11 +12,11 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>
       <span>Title, AniList link, or ID</span>
-      <input type="search" name="query" value="{{ query }}" maxlength="500" placeholder="Hell's Paradise Season 2" required autofocus>
+      <input type="search" name="query" value="{{ query }}" maxlength="500" placeholder="Hell's Paradise Season 2" autocomplete="off" autocapitalize="none" spellcheck="false" required autofocus>
     </label>
     <label>
       <span>Season or arc <small>optional</small></span>
-      <input type="text" name="season" value="{{ season }}" maxlength="100" placeholder="Season 2 or Final Season Part 2">
+      <input type="text" name="season" value="{{ season }}" maxlength="100" placeholder="Season 2 or Final Season Part 2" autocomplete="off" spellcheck="false">
     </label>
     <button class="button button-primary" type="submit" data-busy-label="Finding exact matches…">Find anime</button>
   </form>

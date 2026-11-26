@@ -2,6 +2,8 @@
 body.product-body .series-hero,
 body.product-body .movie-detail-hero.series-hero {
   --series-art-height: clamp(240px, 26vw, 340px);
+  position: relative;
+  isolation: isolate;
   display: block;
   grid-template-columns: none;
   gap: 0;
@@ -176,7 +178,7 @@ body.product-body .movie-detail-hero.series-hero::after {
   list-style: none;
 }
 .series-episode { min-width: 0; border-bottom: 1px solid #353044; display: flex; flex-direction: column; }
-.series-episode:focus { outline: 2px solid #c3b1ff; outline-offset: 4px; }
+.series-episode:focus-visible { outline: 2px solid #c3b1ff; outline-offset: 4px; }
 .series-episode-frame {
   position: relative;
   isolation: isolate;

@@ -39,6 +39,9 @@
   {% if card.trailer %}
   <button type="button" class="button button-secondary" data-trailer-open data-trailer-id="{{ card.trailer.id }}" data-trailer-title="{{ card.title }}">Watch trailer</button>
   {% endif %}
+  {% if back_label == 'For You' or not (card.in_plex_episodes or (cloud_playback and cloud_episodes)) %}
+  <button type="button" class="button button-secondary" data-detail-dismiss data-kind="tv" data-media-id="{{ card.tmdb_id }}" data-title="{{ card.title }}">Not for me</button>
+  {% endif %}
 </div>
 {% elif slot == 'synopsis' %}
 {% if card.overview %}<div class="tv-overview"><p>{{ card.overview | truncate(300, false, '…') }}</p>{% if card.overview | length > 300 %}<details><summary>Read full synopsis</summary><p>{{ card.overview }}</p></details>{% endif %}</div>{% else %}<p class="tv-overview tv-muted">A catalog synopsis is not available for this show yet.</p>{% endif %}
@@ -69,6 +72,15 @@
     {{ apple_tv_link(featured_episode.url, native_tv_test_enabled, csrf_token) }}
     {% if not cloud_playback and card.plex_url %}<a class="button button-secondary" href="{{ card.plex_url }}" rel="noopener noreferrer" target="_blank">Open in Plex</a>{% endif %}
   </details>
+  {% endif %}
+  {% if cloud_playback and card.status == 'completed' and cloud_episodes %}
+  <section class="movie-after-watch">
+    <form method="post" action="/plus/tv/completed/cleanup/preview" data-busy-form>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="item_id" value="{{ card.tmdb_id }}">
+      <button class="button button-secondary" type="submit" data-busy-label="Checking copy…">Review copy removal</button>
+    </form>
+  </section>
   {% endif %}
 {% endif %}
 {% endcall %}

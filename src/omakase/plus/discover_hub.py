@@ -11,12 +11,12 @@ from itertools import islice
 
 import httpx
 
-from omakase.plus import for_you_layout
+from omakase.plus import for_you_layout, movies_store
 from omakase.plus.anilist import API_URL, USER_AGENT
 from omakase.plus.connections import movie_connections
 from omakase.plus.http_pool import client_scope
 from omakase.plus.movie_discovery import MovieDiscoveryService
-from omakase.plus.movies import MovieError, MovieService, _art
+from omakase.plus.movies import MovieError, MovieService, _art, _iso
 from omakase.plus.product_views import plex_visible_counts
 from omakase.plus.secrets import read_secret
 from omakase.plus.trailers import extract_anilist_trailer
@@ -223,6 +223,19 @@ def _parse_anilist_card(item: dict) -> dict | None:
     return card
 
 
+def invalidate_tracker_cache(user_id: int) -> None:
+    """Clear cached AniList history/seeds for ``user_id`` after list updates."""
+    for key in [entry_key for entry_key in _history if entry_key[0] == user_id]:
+        _history.pop(key, None)
+
+
+def invalidate_screen_cache(user_id: int, kind: str | None = None) -> None:
+    """Clear cached Movie/TV For You shelves for ``user_id`` after tracking updates."""
+    kinds = (kind,) if kind else ("movies", "tv")
+    for category in kinds:
+        _screen_rows.pop((user_id, category), None)
+
+
 def cached_anime_trailer(anilist_id: int) -> dict[str, str] | None:
     """Return any in-memory cached trailer for ``anilist_id`` without extra I/O."""
     for card in _catalog:
@@ -329,7 +342,7 @@ def anime_shelves(
                UNION SELECT anilist_id FROM web_playback_watch
                  WHERE user_id=? AND covered_seconds>0
                UNION SELECT anilist_id FROM anilist_plannings
-                 WHERE user_id=? AND status IN ('COMPLETED','CURRENT','REPEATING')""",
+                 WHERE user_id=? AND status IN ('COMPLETED','CURRENT','REPEATING','DROPPED','PAUSED')""",
             (user_id, user_id, user_id),
         )
     )
@@ -556,7 +569,7 @@ async def _read_watch_history_and_seeds(token, username):
                         continue
                     status = entry.get("status")
                     progress = entry.get("progress")
-                    if status in {"CURRENT", "COMPLETED", "REPEATING"} or (
+                    if status in {"CURRENT", "COMPLETED", "REPEATING", "DROPPED", "PAUSED"} or (
                         type(progress) is int and progress > 0
                     ):
                         watched.add(media_id)
@@ -762,7 +775,12 @@ def _seed_movie(db, user_id: int):
 
 def _seed_tv(db, user_id: int):
     return db.execute(
-        """SELECT h.tmdb_id, h.rating, c.title
+        """SELECT h.tmdb_id, h.rating,
+                  COALESCE(
+                      json_extract(c.metadata_json, '$.title'),
+                      json_extract(c.metadata_json, '$.name'),
+                      ''
+                  ) AS title
            FROM tv_history h
            JOIN tv_catalog c ON c.user_id=h.user_id AND c.tmdb_id=h.tmdb_id
            WHERE h.user_id=? AND h.rating >= 7
@@ -779,7 +797,7 @@ async def _screen_shelves(db, user_id, signature, kind):
         watched_movie_ids = {
             mid
             for k, mid, status, _ in signature
-            if k == "movie" and status in {"completed", "dropped"}
+            if k == "movie" and status in {"completed", "dropped", "watching"}
         }
         excluded_ids |= watched_movie_ids
         discovery = MovieDiscoveryService(svc)
@@ -813,7 +831,7 @@ async def _screen_shelves(db, user_id, signature, kind):
             results = data.get("results")
             if not isinstance(results, list):
                 return "", []
-            picked = []
+            candidates = []
             for row in results[:12]:
                 if not isinstance(row, dict) or row.get("adult"):
                     continue
@@ -823,14 +841,38 @@ async def _screen_shelves(db, user_id, signature, kind):
                     continue
                 if isinstance(title, str) and title.strip().casefold() in excluded_titles:
                     continue
-                try:
-                    meta = await svc._metadata(tmdb_id)
-                except MovieError:
-                    continue
+                candidates.append((tmdb_id, row))
+            semaphore = asyncio.Semaphore(4)
+
+            async def resolve_candidate(tmdb_id: int, row: dict) -> dict | None:
+                async with semaphore:
+                    try:
+                        meta, _ = await discovery._cache(
+                            "detail",
+                            tmdb_id,
+                            lambda: svc._metadata(tmdb_id),
+                        )
+                    except MovieError:
+                        return None
+                if meta.get("imdb_id"):
+                    try:
+                        movies_store.upsert_movie(
+                            db,
+                            user_id,
+                            meta,
+                            now=_iso(svc._clock()),
+                        )
+                    except ValueError:
+                        pass
                 card = svc._card(user_id, meta)
                 card["vote_average"] = row.get("voteAverage")
                 card["trailer"] = meta.get("trailer")
-                picked.append(_project_movie_card(card))
+                return _project_movie_card(card)
+
+            resolved = await asyncio.gather(
+                *(resolve_candidate(tmdb_id, row) for tmdb_id, row in candidates)
+            )
+            picked = [card for card in resolved if card is not None and card.get("id")]
             return str(seed["title"]), picked
 
         (
@@ -870,7 +912,7 @@ async def _screen_shelves(db, user_id, signature, kind):
         watched = {
             media_id
             for kind_name, media_id, status, _ in signature
-            if kind_name == "tv" and status in {"completed", "dropped"}
+            if kind_name == "tv" and status in {"completed", "dropped", "watching"}
         }
         excluded_ids |= watched
         watching = {
@@ -989,7 +1031,7 @@ async def _screen_shelves(db, user_id, signature, kind):
 
         async def fetch_because() -> tuple[str, list[dict]]:
             seed = _seed_tv(db, user_id)
-            if seed is None:
+            if seed is None or not str(seed["title"] or "").strip():
                 return "", []
             try:
                 data = await svc._json(

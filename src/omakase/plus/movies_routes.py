@@ -236,7 +236,7 @@ def create_movies_router(
             q=q,
             offset=offset,
             view="available" if view == "ready" else view,
-            notice=notice if notice in {"saved", "synced", "updated"} else "",
+            notice=notice if notice in {"saved", "synced", "updated", "cleaned"} else "",
             sync_result=sync_result,
         )
 
@@ -1033,6 +1033,79 @@ def create_movies_router(
                 "Cache-Control": "private, no-store",
                 "Content-Disposition": 'attachment; filename="omakase-movies.json"',
             },
+        )
+
+    @router.post("/movies/completed/cleanup/preview", response_class=HTMLResponse)
+    async def completed_cleanup_preview(
+        request: Request,
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        from omakase.plus.media_cleanup_bulk import MediaCleanupBulkError, preview_movie_cleanup
+
+        form = await request.form()
+        require_csrf(request, str(form.get("csrf_token", "")))
+        cloud_playback = playback_providers.select(db, user.id).cloud_route
+        raw_ids = [str(value) for value in form.getlist("item_id")]
+        error_msg = ""
+        try:
+            cleanup = await preview_movie_cleanup(
+                db,
+                personal_scope(db, user.id),
+                raw_ids,
+                cloud_playback=cloud_playback,
+            )
+            status_code = 200
+        except MediaCleanupBulkError as exc:
+            error_msg = str(exc)
+            cleanup = {
+                "kind": "movie",
+                "kind_label": "movies",
+                "back_href": "/plus/movies?view=completed",
+                "back_label": "Back to watched movies",
+                "execute_action": "/plus/movies/completed/cleanup/execute",
+                "cloud_playback": cloud_playback,
+                "eligible": [],
+                "eligible_ids": [],
+                "blocked": [],
+            }
+            status_code = 422
+        return templates.TemplateResponse(
+            request,
+            "media_bulk_cleanup.html",
+            {**context(request, user), "cleanup": cleanup, "error": error_msg},
+            status_code=status_code,
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @router.post("/movies/completed/cleanup/execute")
+    async def completed_cleanup_execute(
+        request: Request,
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        from omakase.plus.media_cleanup_bulk import MediaCleanupBulkError, execute_cloud_cleanup
+        from omakase.plus.movies import _iso
+
+        form = await request.form()
+        require_csrf(request, str(form.get("csrf_token", "")))
+        if not playback_providers.select(db, user.id).cloud_route:
+            raise HTTPException(409, "Real-Debrid cleanup requires cloud playback mode.")
+        raw_ids = [str(value) for value in form.getlist("item_id")]
+        try:
+            await execute_cloud_cleanup(
+                db,
+                personal_scope(db, user.id),
+                kind="movie",
+                raw_ids=raw_ids,
+                now=_iso(service(db, user)._clock()),
+            )
+        except MediaCleanupBulkError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return RedirectResponse(
+            "/plus/movies?view=completed&notice=cleaned",
+            status_code=303,
+            headers={"Cache-Control": "private, no-store"},
         )
 
     @router.get("/discover/movies", response_class=RedirectResponse)

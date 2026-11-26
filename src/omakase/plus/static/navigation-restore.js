@@ -17,6 +17,12 @@
   const MAX_AGE_MS = 30 * 60 * 1000;
   const RAIL_SELECTOR = '[data-nav-scroll], .media-rail';
   const APPLY_TICKS_MS = [0, 60, 180, 480, 1000, 1800, 2800];
+  let lastInputKeyboard = false;
+
+  document.addEventListener('pointerdown', () => { lastInputKeyboard = false; }, true);
+  document.addEventListener('keydown', event => {
+    if (!event.metaKey && !event.ctrlKey && !event.altKey) lastInputKeyboard = true;
+  }, true);
 
   let storage = null;
   try {
@@ -123,7 +129,7 @@
     return findLink(document);
   }
 
-  function capture(anchor) {
+  function capture(anchor, viaKeyboard) {
     const scrollY = Math.max(0, Math.round(window.scrollY || 0));
     const rows = {};
     rails().forEach((rail, index) => {
@@ -138,6 +144,7 @@
       tab: activeTab(),
       scrollY,
       rows,
+      viaKeyboard: Boolean(viaKeyboard),
       focusHref: anchor ? anchor.getAttribute('href') || '' : '',
       focusRail: rail ? rail.id : '',
       focusCard: anchor.closest('[data-card-id]')?.dataset.cardId || '',
@@ -179,16 +186,24 @@
       if (cancelled) return;
       restoreVertical(record);
       restoreHorizontal(record);
-      if (!focused) {
-        const target = focusTarget(record);
-        if (target) {
-          try {
-            target.focus({ preventScroll: true });
-          } catch (error) {
-            target.focus();
+      if (record.viaKeyboard === true) {
+        if (!focused) {
+          const target = focusTarget(record);
+          if (target) {
+            try {
+              target.focus({ preventScroll: true });
+            } catch (error) {
+              target.focus();
+            }
+            focused = true;
           }
-          focused = true;
         }
+      } else if (
+        document.activeElement &&
+        document.activeElement.matches &&
+        document.activeElement.matches('a.hub-card-link, a.om-card-link, .poster-card-link')
+      ) {
+        document.activeElement.blur();
       }
     };
     APPLY_TICKS_MS.forEach(delay => {
@@ -259,7 +274,7 @@
     }
     if (url.origin !== window.location.origin) return;
     if (url.pathname + url.search === here()) return;
-    write(RECORD_KEY, capture(anchor));
+    write(RECORD_KEY, capture(anchor, lastInputKeyboard || event.detail === 0));
   });
 
   document.addEventListener('click', handleBack);

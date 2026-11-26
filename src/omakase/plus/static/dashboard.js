@@ -232,6 +232,7 @@
               title: group.dataset.title,
               source: group.dataset.source || "anilist",
               media_id: intOrNull(group.dataset.mediaId),
+              imdb_id: group.dataset.imdbId || null,
               run_id: intOrNull(group.dataset.runId),
               score,
             }),
@@ -465,8 +466,9 @@
   function setupCompletedSelection() {
     const form = document.querySelector(".completed-cleanup-selection");
     if (!form) return;
-    const choices = Array.from(form.querySelectorAll('input[name="monitor_id"]'));
+    const choices = Array.from(form.querySelectorAll('input[data-cleanup-select], input[name="monitor_id"]'));
     const button = form.querySelector('button[type="submit"]');
+    const toggleAll = form.querySelector('[data-cleanup-select-all]');
     if (!button || choices.length === 0) return;
     const idleLabel = button.textContent;
     const update = () => {
@@ -475,8 +477,20 @@
       button.textContent = count
         ? `Clean up ${count} selected title${count === 1 ? "" : "s"}`
         : idleLabel;
+      if (toggleAll) {
+        toggleAll.textContent = count === choices.length ? "Clear selection" : "Select all";
+      }
     };
     choices.forEach((choice) => choice.addEventListener("change", update));
+    if (toggleAll) {
+      toggleAll.addEventListener("click", () => {
+        const selectAll = choices.some((choice) => !choice.checked);
+        choices.forEach((choice) => {
+          choice.checked = selectAll;
+        });
+        update();
+      });
+    }
     update();
   }
 
@@ -531,6 +545,313 @@
 
   document.addEventListener("omakase:rows-ready", ({ detail }) => setupLocalDateTimes(detail));
 
+  function removeDiscoverCards(hub, source, targetId) {
+    if (!hub) return;
+    for (const card of hub.querySelectorAll("[data-hub-item], [data-hub-anime]")) {
+      const cardId = String(card.dataset.hubItem || card.dataset.hubAnime || "");
+      const cardSource = String(card.dataset.hubSource || "anilist");
+      if (cardId === targetId && (!source || cardSource === source)) {
+        card.remove();
+      }
+    }
+  }
+
+  function applyDiscoverPlanBadge(hub, source, targetId) {
+    if (!hub) return;
+    for (const card of hub.querySelectorAll("[data-hub-item], [data-hub-anime]")) {
+      const cardId = String(card.dataset.hubItem || card.dataset.hubAnime || "");
+      const cardSource = String(card.dataset.hubSource || "anilist");
+      if (cardId !== targetId || (source && cardSource !== source)) continue;
+      const poster = card.querySelector(".hub-poster");
+      if (poster && !poster.querySelector(".hub-badge")) {
+        const badge = document.createElement("span");
+        badge.className = "hub-badge";
+        badge.textContent = "Saved";
+        poster.append(badge);
+      }
+      card.querySelector(".btn-plan")?.remove();
+    }
+  }
+
+  async function submitTrackPayload(payload) {
+    const response = await fetch("/plus/api/discover/track", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data || data.status !== "ok") {
+      throw new Error(data?.detail || "Could not save tracking update.");
+    }
+    return data;
+  }
+
+  function setupTrackControls() {
+    const modal = document.querySelector("[data-track-modal]");
+    const form = modal?.querySelector("[data-track-modal-form]");
+    const heading = modal?.querySelector("[data-track-heading]");
+    const kindLabel = modal?.querySelector("[data-track-kind-label]");
+    const statusSelect = modal?.querySelector("[data-track-status]");
+    const progressField = modal?.querySelector("[data-track-progress-field]");
+    const progressInput = modal?.querySelector("[data-track-progress]");
+    const capLabel = modal?.querySelector("[data-track-episode-cap]");
+    const scoreInput = modal?.querySelector("[data-track-score]");
+    const statusMsg = modal?.querySelector("[data-track-status-message]");
+    const saveBtn = modal?.querySelector("[data-track-save]");
+    const dismissBtn = modal?.querySelector("[data-track-dismiss]");
+    const cancelBtn = modal?.querySelector("[data-track-cancel]");
+    const closeBtn = modal?.querySelector("[data-track-close]");
+
+    let activeState = null;
+
+    function closeModal() {
+      if (!modal) return;
+      if (typeof modal.close === "function" && modal.open) modal.close();
+      else modal.removeAttribute("open");
+      if (activeState?.trigger && typeof activeState.trigger.focus === "function") {
+        activeState.trigger.focus({ preventScroll: true });
+      }
+      activeState = null;
+    }
+
+    function setModalMessage(text, error = false) {
+      if (!statusMsg) return;
+      statusMsg.textContent = text;
+      statusMsg.dataset.state = error ? "error" : "success";
+      statusMsg.hidden = !text;
+    }
+
+    function populateStatusOptions(kind, selectedStatus) {
+      if (!statusSelect) return;
+      const options = kind === "anime"
+        ? [
+            ["completed", "Completed"],
+            ["watching", "Watching"],
+            ["planned", "Plan to Watch"],
+            ["paused", "Paused"],
+            ["dropped", "Dropped"],
+          ]
+        : [
+            ["completed", "Completed"],
+            ["watching", "Watching"],
+            ["dropped", "Dropped"],
+          ];
+      statusSelect.replaceChildren();
+      for (const [value, label] of options) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        if (value === selectedStatus) option.selected = true;
+        statusSelect.append(option);
+      }
+      if (!selectedStatus && statusSelect.options.length) {
+        statusSelect.value = "completed";
+      }
+      window.omakaseSyncSelect?.(statusSelect);
+    }
+
+    function syncCompletedProgress(total) {
+      if (!statusSelect || !progressInput) return;
+      if (statusSelect.value === "completed" && total && (!progressInput.value || progressInput.value === "0")) {
+        progressInput.value = String(total);
+      }
+    }
+
+    document.addEventListener("click", (event) => {
+      const trigger = event.target.closest?.("[data-track-open]");
+      if (!trigger || !modal || !form) return;
+      event.preventDefault();
+      const kind = trigger.dataset.kind || "anime";
+      const total = intOrNull(trigger.dataset.episodes);
+      activeState = {
+        kind,
+        media_id: intOrNull(trigger.dataset.mediaId),
+        imdb_id: trigger.dataset.imdbId || null,
+        title: trigger.dataset.title || "",
+        episode_total: total,
+        trigger,
+        hub: trigger.closest(".discover-hub"),
+      };
+      if (kindLabel) {
+        kindLabel.textContent = kind === "anime" ? "AniList & Omakase" : (kind === "movie" ? "Movies" : "TV Shows");
+      }
+      if (heading) heading.textContent = activeState.title || "Track & rate";
+      populateStatusOptions(kind, trigger.dataset.status || "completed");
+      if (progressField) progressField.hidden = kind !== "anime";
+      if (progressInput) {
+        progressInput.value = trigger.dataset.progress || (statusSelect?.value === "completed" && total ? String(total) : "0");
+        if (total) progressInput.max = String(total);
+        else progressInput.removeAttribute("max");
+      }
+      if (capLabel) capLabel.textContent = total ? `/ ${total}` : "";
+      if (scoreInput) scoreInput.value = trigger.dataset.score || "";
+      setModalMessage("");
+      if (saveBtn) { saveBtn.disabled = false; clearButtonBusy(saveBtn); saveBtn.textContent = "Save"; }
+      if (dismissBtn) { dismissBtn.disabled = false; clearButtonBusy(dismissBtn); dismissBtn.textContent = "Not interested"; }
+      if (typeof modal.showModal === "function") modal.showModal();
+      else modal.setAttribute("open", "");
+    });
+
+    if (statusSelect) {
+      statusSelect.addEventListener("change", () => {
+        if (activeState?.kind === "anime") syncCompletedProgress(activeState.episode_total);
+      });
+    }
+
+    if (form) {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!activeState) return;
+        const statusVal = statusSelect ? statusSelect.value : "completed";
+        const progressVal = activeState.kind === "anime" && progressInput ? intOrNull(progressInput.value) : null;
+        const scoreVal = scoreInput && scoreInput.value !== "" ? parseFloat(scoreInput.value) : null;
+        if (saveBtn) { saveBtn.disabled = true; setButtonBusy(saveBtn, "Saving…"); }
+        setModalMessage("");
+        try {
+          const data = await submitTrackPayload({
+            kind: activeState.kind,
+            media_id: activeState.media_id,
+            imdb_id: activeState.imdb_id,
+            title: activeState.title,
+            status: statusVal,
+            progress: progressVal,
+            episode_total: activeState.episode_total,
+            score: Number.isFinite(scoreVal) ? scoreVal : null,
+          });
+          const source = activeState.kind === "anime" ? "anilist" : activeState.kind;
+          if (data.remove_from_for_you) {
+            removeDiscoverCards(activeState.hub, source, String(activeState.media_id));
+          } else if (data.saved_to_watchlist) {
+            applyDiscoverPlanBadge(activeState.hub, source, String(activeState.media_id));
+          }
+          const hubStatus = activeState.hub?.querySelector("[data-hub-status]");
+          if (hubStatus) {
+            hubStatus.textContent = data.detail || "Saved.";
+            hubStatus.focus({ preventScroll: true });
+          }
+          closeModal();
+        } catch (err) {
+          setModalMessage(err.message || "Could not save tracking update.", true);
+          if (saveBtn) { saveBtn.disabled = false; clearButtonBusy(saveBtn); saveBtn.textContent = "Save"; }
+        }
+      });
+    }
+
+    if (dismissBtn) {
+      dismissBtn.addEventListener("click", async () => {
+        if (!activeState) return;
+        dismissBtn.disabled = true;
+        setButtonBusy(dismissBtn, "Saving…");
+        setModalMessage("");
+        try {
+          const data = await submitTrackPayload({
+            kind: activeState.kind,
+            media_id: activeState.media_id,
+            imdb_id: activeState.imdb_id,
+            title: activeState.title,
+            status: "not_for_me",
+          });
+          const source = activeState.kind === "anime" ? "anilist" : activeState.kind;
+          removeDiscoverCards(activeState.hub, source, String(activeState.media_id));
+          const hubStatus = activeState.hub?.querySelector("[data-hub-status]");
+          if (hubStatus) {
+            hubStatus.textContent = data.detail || "Hidden from For You.";
+            hubStatus.focus({ preventScroll: true });
+          }
+          closeModal();
+        } catch (err) {
+          setModalMessage(err.message || "Could not hide title.", true);
+          dismissBtn.disabled = false;
+          clearButtonBusy(dismissBtn);
+          dismissBtn.textContent = "Not interested";
+        }
+      });
+    }
+
+    if (cancelBtn) cancelBtn.addEventListener("click", closeModal);
+    if (closeBtn) closeBtn.addEventListener("click", closeModal);
+    modal?.addEventListener("cancel", (event) => { event.preventDefault(); closeModal(); });
+    modal?.addEventListener("click", (event) => { if (event.target === modal) closeModal(); });
+
+    document.querySelectorAll("[data-catalog-track-form]").forEach((inlineForm) => {
+      const inlineSelect = inlineForm.querySelector('select[name="status"]');
+      const inlineProgress = inlineForm.querySelector('input[name="progress"]');
+      const total = intOrNull(inlineForm.dataset.episodeTotal);
+      inlineSelect?.addEventListener("change", () => {
+        if (inlineSelect.value === "completed" && inlineProgress && total && (!inlineProgress.value || inlineProgress.value === "0")) {
+          inlineProgress.value = String(total);
+        }
+      });
+      inlineForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = inlineForm.querySelector('button[type="submit"]');
+        const statusVal = inlineSelect ? inlineSelect.value : "watching";
+        const progressVal = inlineProgress ? intOrNull(inlineProgress.value) : null;
+        const scoreEl = inlineForm.querySelector('input[name="score"]');
+        const scoreVal = scoreEl && scoreEl.value !== "" ? parseFloat(scoreEl.value) : null;
+        if (button) { button.disabled = true; setButtonBusy(button, "Saving…"); }
+        try {
+          const data = await submitTrackPayload({
+            kind: inlineForm.dataset.kind || "anime",
+            media_id: intOrNull(inlineForm.dataset.mediaId),
+            title: inlineForm.dataset.title || "",
+            status: statusVal,
+            progress: progressVal,
+            episode_total: total,
+            score: Number.isFinite(scoreVal) ? scoreVal : null,
+          });
+          const summary = document.querySelector("[data-catalog-watch-summary]");
+          if (summary) {
+            const labelMap = {
+              watching: "Watching",
+              completed: "Completed",
+              planned: "Planned",
+              paused: "Paused",
+              dropped: "Dropped",
+            };
+            let text = labelMap[statusVal] || statusVal;
+            if (progressVal !== null && progressVal > 0) {
+              text += ` ${progressVal}${total ? `/${total}` : ""}`;
+            }
+            if (Number.isFinite(scoreVal)) text += ` · Rating ${scoreVal}/10`;
+            summary.textContent = text;
+          }
+          showActionStatus(inlineForm, data.detail || "Saved.", "success");
+        } catch (err) {
+          showActionStatus(inlineForm, err.message || "Could not save.", "error");
+        } finally {
+          if (button) { button.disabled = false; clearButtonBusy(button); button.textContent = "Save"; }
+        }
+      });
+    });
+
+    document.querySelectorAll("[data-detail-dismiss]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        setButtonBusy(btn, "Saving…");
+        const kind = btn.dataset.kind || "anime";
+        try {
+          await submitTrackPayload({
+            kind,
+            media_id: intOrNull(btn.dataset.mediaId),
+            imdb_id: btn.dataset.imdbId || null,
+            title: btn.dataset.title || "",
+            status: "not_for_me",
+          });
+          clearButtonBusy(btn);
+          btn.textContent = "Hidden from For You";
+          const tab = kind === "movie" ? "movies" : kind;
+          window.setTimeout(() => {
+            window.location.assign(`/plus/discover?kind=${encodeURIComponent(tab)}&message=${encodeURIComponent("Hidden from For You.")}`);
+          }, 250);
+        } catch {
+          btn.disabled = false;
+          clearButtonBusy(btn, true);
+        }
+      });
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     document.querySelectorAll('[data-open-details]').forEach((link) => {
       link.addEventListener('click', () => {
@@ -547,6 +868,7 @@
     }
     setupRunForm();
     setupFeedback();
+    setupTrackControls();
     setupPlanButtons();
     setupBusyForms();
     setupNavigationLoading();

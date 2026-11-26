@@ -14,7 +14,9 @@
   series_backdrop=card.poster_url,
   copy_class='series-hero-copy'
 ) %}
-{% if slot == 'header_extra' %}
+{% if slot == 'poster' %}
+    {% if card.poster_url %}<img class="movie-poster" src="{{ card.poster_url }}" alt="" width="84" height="126" data-poster>{% endif %}
+{% elif slot == 'header_extra' %}
     <div class="detail-meta">
       {% if card.year %}<span>{{ card.year }}</span>{% endif %}
       {% if card.format %}<span>{{ card.format | replace('_',' ') | title }}</span>{% endif %}
@@ -38,6 +40,9 @@
       {% if card.trailer %}
       <button type="button" class="button button-secondary" data-trailer-open data-trailer-id="{{ card.trailer.id }}" data-trailer-title="{{ card.title }}">Watch trailer</button>
       {% endif %}
+      {% if not card.library_id %}
+      <button type="button" class="button button-secondary" data-detail-dismiss data-kind="anime" data-media-id="{{ card.anilist_id }}" data-title="{{ card.title }}">Not for me</button>
+      {% endif %}
       <a class="button button-secondary" href="https://anilist.co/anime/{{ card.anilist_id }}/" target="_blank" rel="noopener noreferrer">AniList ↗</a>
     </div>
 {% elif slot == 'synopsis' %}
@@ -51,9 +56,32 @@
       </div>
       <div data-fact-tone="viewing">
         <dt>Watch progress</dt>
-        <dd>{% if card.watch_status == 'completed' or card.progress %}Watched{% if card.progress %} {{ card.progress }}{% if card.episode_total %}/{{ card.episode_total }}{% endif %}{% endif %}{% elif card.watch_status == 'unknown' %}No linked watch history{% else %}{{ card.watch_status | replace('_',' ') | title }}{% endif %}{% if card.rating %} · Rating {{ card.rating }}/10{% endif %}</dd>
+        <dd data-catalog-watch-summary>{% if card.watch_status == 'completed' or card.progress %}Watched{% if card.progress %} {{ card.progress }}{% if card.episode_total %}/{{ card.episode_total }}{% endif %}{% endif %}{% elif card.watch_status == 'unknown' %}No linked watch history{% else %}{{ card.watch_status | replace('_',' ') | title }}{% endif %}{% if card.rating %} · Rating {{ card.rating }}/10{% endif %}</dd>
       </div>
     </dl>
+    <details class="series-personal-controls catalog-track-controls" open>
+      <summary>Track on AniList &amp; Omakase</summary>
+      <form class="product-form" data-catalog-track-form data-kind="anime" data-media-id="{{ card.anilist_id }}" data-title="{{ card.title }}" data-episode-total="{{ card.episode_total or '' }}">
+        <label>
+          <span>List status</span>
+          <select name="status">
+            {% for value, label in [('watching', 'Watching'), ('completed', 'Completed'), ('planned', 'Plan to Watch'), ('paused', 'Paused'), ('dropped', 'Dropped')] %}
+            <option value="{{ value }}"{% if card.watch_status == value or (value == 'watching' and card.watch_status in ['unknown', 'rewatching']) %} selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>Episodes watched{% if card.episode_total %} <small>/ {{ card.episode_total }}</small>{% endif %}</span>
+          <input type="number" name="progress" min="0"{% if card.episode_total %} max="{{ card.episode_total }}"{% endif %} value="{{ card.progress if card.progress is not none else 0 }}">
+        </label>
+        <label>
+          <span>Your rating / 10</span>
+          <input type="number" name="score" min="1" max="10" step="0.5" value="{{ card.rating if card.rating is not none else '' }}" placeholder="Optional">
+        </label>
+        <p class="field-help">Updates AniList and Omakase without downloading.</p>
+        <button class="button button-primary" type="submit">Save</button>
+      </form>
+    </details>
 {% endif %}
 {% endcall %}
 {% else %}<section class="utility-panel" role="alert"><h1>Title unavailable</h1><p>{{ search_error or 'The catalog could not load this title. Try again in a moment.' }}</p><a class="button button-secondary" href="/plus/search?kind=anime" data-nav-back>Back to search</a></section>{% endif %}
