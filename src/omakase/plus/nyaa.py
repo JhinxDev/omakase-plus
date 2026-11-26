@@ -41,6 +41,7 @@ class NyaaTorrent:
     is_trusted: bool
     is_batch: bool
     torrent_url: str = ""
+    indexer: str = ""
 
 
 def _parse_size(size_str: str) -> tuple[int, str]:

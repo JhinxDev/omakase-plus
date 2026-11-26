@@ -176,7 +176,7 @@ def test_removal_review_names_only_eligible_deletion_destination_and_protects_hi
     assert "Remove from Plex and Real-Debrid" not in html
     assert "Watch history and ratings are kept" in html
     assert 'name="confirmation"' in html and 'name="csrf_token"' in html
-    assert "autofocus" in html and ">Cancel</a>" in html
+    assert "autofocus" in html and ">Back to title</a>" in html
     assert "proof-ordered" not in html and "curator" not in html
     preview["shared_plex_title"] = True
     blocked = _render_removal(preview)
@@ -841,3 +841,59 @@ def test_plex_only_movie_native_absence_requires_exact_movie_identity(db):
         db.execute("SELECT completed_at FROM media_title_removals").fetchone()[0]
         == "2026-07-28T08:06:20Z"
     )
+
+
+def test_cloud_only_title_removal_queues_provider_cleanup_and_template_exposes_rd_form(
+    db, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from omakase.plus import local_list, title_removal
+
+    owner, monitor, _ = _seed_title(db)
+    monkeypatch.setattr(
+        title_removal.playback_providers, "select", lambda *_: SimpleNamespace(cloud_route=True)
+    )
+    monkeypatch.setattr(title_removal.playback_providers, "plex_linked", lambda *_: False)
+    local_list.set_local_removed(db, user_id=owner, monitor_id=monitor, removed=True)
+
+    preview = title_removal_preview(db, user_id=owner, monitor_id=monitor)
+    assert preview["cloud_only"] is True
+    html = _render_removal({**preview, "local_list_removed": True})
+    assert ">Back to title</a>" in html
+    assert ">Cancel</a>" not in html
+    assert ">Remove from Real-Debrid</button>" in html
+    assert 'name="confirmation"' in html
+
+    receipt = request_title_removal(
+        db,
+        user_id=owner,
+        monitor_id=monitor,
+        confirmation="Solo Leveling",
+        requested_at="2026-07-28T08:05:00Z",
+    )
+    assert receipt["status"] == "plex_removed"
+
+    class FakeRD:
+        def __init__(self):
+            self.deleted = []
+
+        async def get_item(self, external_id):
+            return object()
+
+        async def delete_item(self, external_id):
+            self.deleted.append(external_id)
+            return True
+
+    rd = FakeRD()
+    processed = asyncio.run(
+        process_provider_removals(
+            db,
+            provider_factory=lambda _uid: rd,
+            completed_at="2026-07-28T08:05:05Z",
+        )
+    )
+    assert processed == 1
+    assert rd.deleted == ["rd-solo-leveling"]
+    row = db.execute("SELECT status, curator_run_id FROM media_title_removals").fetchone()
+    assert tuple(row) == ("complete", "cloud-only")

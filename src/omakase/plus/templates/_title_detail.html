@@ -1,0 +1,28 @@
+{% macro detail_back(href, label) -%}
+<a href="{{ href }}" class="detail-back-link" data-nav-back><span aria-hidden="true">←</span>&nbsp; {{ label }}</a>
+{%- endmacro %}
+
+{% macro detail_hero(hero_class, heading_id, title_text, backdrop_url='', backdrop_alt='', backdrop_class='', series_backdrop=none, is_poster=false, copy_class='series-hero-copy') -%}
+<section class="{{ hero_class }}" aria-labelledby="{{ heading_id }}">
+  {% if backdrop_url %}<picture class="detail-backdrop{% if backdrop_class %} {{ backdrop_class }}{% endif %}"><img src="{{ backdrop_url }}" alt="{{ backdrop_alt }}" fetchpriority="high"{% if series_backdrop is not none %} data-series-backdrop="{{ series_backdrop }}"{% endif %}{% if is_poster %} data-poster{% endif %}></picture>{% endif %}
+  <div class="{{ copy_class }}">
+    <div class="series-hero-head">
+      {% if caller is defined %}{{ caller('poster') }}{% endif %}
+      <div>
+        <h1 id="{{ heading_id }}">{{ title_text }}</h1>
+        {% if caller is defined %}{{ caller('header_extra') }}{% endif %}
+      </div>
+    </div>
+    {% if caller is defined %}{{ caller('actions') }}{% endif %}
+    <div class="series-hero-details">
+      <div class="series-hero-synopsis">
+        {% if caller is defined %}{{ caller('synopsis') }}{% endif %}
+      </div>
+      <div class="series-hero-facts">
+        {% if caller is defined %}{{ caller('facts') }}{% endif %}
+      </div>
+    </div>
+    {% if caller is defined %}{{ caller('body') }}{% endif %}
+  </div>
+</section>
+{%- endmacro %}

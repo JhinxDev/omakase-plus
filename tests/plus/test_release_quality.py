@@ -55,3 +55,30 @@ def test_malformed_inventory_cannot_claim_a_verified_720p_release(db):
     assert card["usable"] == 0
     assert card["release_qualities"] == []
     assert card["fallback_episodes"] == []
+
+
+def test_superseded_720p_asset_does_not_leak_onto_1080p_release_qualities(db):
+    user = _user(db, "owner@example.com")
+    monitor, high = _seed_ready_title(db, user)
+    db.execute(
+        "UPDATE media_assets SET planned_coverage_json='[1,2,3]', usable_coverage_json='[1,2,3]' WHERE id=?",
+        (high,),
+    )
+    upsert_asset(
+        db,
+        monitor_id=monitor,
+        torrent_hash="9" * 40,
+        source_title="Older 720p batch",
+        quality="720p",
+        planned_coverage=(2, 3),
+        usable_coverage=(2, 3),
+        inventory_fingerprint="b" * 64,
+        inventory_verified_at="2026-07-26T11:58:00Z",
+        status="downloaded",
+    )
+    card = library_titles(db, user_id=user)[0]
+    detail = title_detail(db, user_id=user, monitor_id=monitor)
+    assert card["release_qualities"] == ["1080p"]
+    assert card["fallback_episodes"] == []
+    assert detail["release_qualities"] == ["1080p"]
+    assert detail["fallback_episodes"] == []

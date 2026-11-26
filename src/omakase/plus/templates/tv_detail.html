@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_media_components.html" import playback_link %}
 {% from "_series_components.html" import episode_frame %}
+{% from "_title_detail.html" import detail_back, detail_hero %}
 {% from "_device_components.html" import apple_tv_link %}
 {% from "_season_picker.html" import season_picker %}
 {% from "_watch_status.html" import watch_status_field %}
@@ -13,13 +14,21 @@
 <div class="tv-page">
 {% if notice in ['saved','updated'] %}<p class="product-notice" role="status">{% if notice == 'saved' %}Your watch history and rating were saved.{% else %}Check finished. Review the current result below.{% endif %}</p>{% endif %}
 {% if tv_error %}<p class="product-notice notice-danger" role="status">{{ tv_error }}</p>{% endif %}
-<a href="/plus/tv" class="detail-back-link" data-nav-back><span aria-hidden="true">←</span>&nbsp; Your TV shows</a>
+{{ detail_back('/plus/tv', 'Your TV shows') }}
 {% set series_art = '/plus/tv/' ~ card.tmdb_id ~ '/artwork' if card.poster_url else '' %}
-<section class="tv-detail-hero series-hero" aria-labelledby="tv-title">
-{% if card.backdrop_url or series_art %}<picture class="detail-backdrop{% if not card.backdrop_url %} series-backdrop--poster{% endif %}"><img src="{{ '/plus/tv/' ~ card.tmdb_id ~ '/artwork?variant=backdrop' if card.backdrop_url else series_art }}" alt="" fetchpriority="high" data-series-backdrop="{{ series_art if card.backdrop_url else '' }}"></picture>{% endif %}
-<div class="tv-detail-copy"><h1 id="tv-title">{{ card.title }}</h1>
+{% call(slot) detail_hero(
+  'tv-detail-hero series-hero',
+  'tv-title',
+  card.title,
+  backdrop_url=('/plus/tv/' ~ card.tmdb_id ~ '/artwork?variant=backdrop' if card.backdrop_url else series_art),
+  backdrop_class=('' if card.backdrop_url else 'series-backdrop--poster'),
+  series_backdrop=(series_art if card.backdrop_url else '') if (card.backdrop_url or series_art) else none,
+  copy_class='tv-detail-copy'
+) %}
+{% if slot == 'header_extra' %}
 <div class="detail-meta">{% if card.year %}<span>{{ card.year }}</span>{% endif %}<span>TV series</span>{% set regular_season_count = card.seasons | default([]) | rejectattr('season_number', 'equalto', 0) | list | length %}{% if regular_season_count %}<span>{{ regular_season_count }} {% if card.catalog_subset %}cached {% endif %}{{ 'season' if regular_season_count == 1 else 'seasons' }}</span>{% endif %}</div>
 {% if card.genres %}<ul class="genre-chips" aria-label="Genres">{% for genre in card.genres %}{% set name = genre.name if genre is mapping else genre %}<li data-genre="{{ name | lower }}">{{ name }}</li>{% endfor %}</ul>{% endif %}
+{% elif slot == 'actions' %}
 <div class="tv-actions series-hero-actions">
   {% if featured_episode %}
     {% set action = 'Continue watching' if featured_episode.continue else 'Play' %}
@@ -28,9 +37,9 @@
   {% elif not cloud_playback and card.plex_url %}<a class="button button-primary" href="{{ card.plex_url }}" rel="noopener noreferrer" target="_blank">Open in Plex</a>{% endif %}
   <a class="button {{ 'button-secondary' if featured_episode or (not cloud_playback and card.plex_url) else 'button-primary' }}" href="{{ '?season=' ~ featured_episode.season if featured_episode and featured_episode.season != selected_season else '' }}#tv-seasons">Explore episodes</a>
 </div>
-<div class="series-hero-details">
+{% elif slot == 'synopsis' %}
 {% if card.overview %}<div class="tv-overview"><p>{{ card.overview | truncate(300, false, '…') }}</p>{% if card.overview | length > 300 %}<details><summary>Read full synopsis</summary><p>{{ card.overview }}</p></details>{% endif %}</div>{% else %}<p class="tv-overview tv-muted">A catalog synopsis is not available for this show yet.</p>{% endif %}
-<div class="series-hero-facts">
+{% elif slot == 'facts' %}
   <dl class="series-facts">
     <div data-fact-tone="viewing"><dt>Viewing progress</dt><dd>{{ card.watched_episodes | default(0) }} {{ "episode" if card.watched_episodes == 1 else "episodes" }} watched</dd></div>
     {% if cloud_playback %}
@@ -58,9 +67,8 @@
     {% if not cloud_playback and card.plex_url %}<a class="button button-secondary" href="{{ card.plex_url }}" rel="noopener noreferrer" target="_blank">Open in Plex</a>{% endif %}
   </details>
   {% endif %}
-</div>
-</div>
-</div></section>
+{% endif %}
+{% endcall %}
 {% if not cloud_playback %}<section class="tv-availability" aria-labelledby="tv-availability-title"><div><h2 id="tv-availability-title">Plex availability</h2><p>{{ card.detail or 'Check Plex for an exact match. Catalog listings and watched history do not establish playable availability.' }}</p></div><form method="post" action="/plus/tv/{{ card.tmdb_id }}/check" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit" data-busy-label="Checking Plex…">Check in Plex</button></form></section>{% elif cloud_error %}<p class="product-notice" role="status">Could not check the Real-Debrid library right now.</p>{% endif %}
 <section id="tv-seasons" class="tv-seasons" aria-labelledby="tv-seasons-title"><header class="stream-section-heading"><h2 id="tv-seasons-title">Episodes</h2></header>
 {% if cloud_partial %}<p class="product-notice" role="status">Some Real-Debrid files are still unchecked. Refresh this page to check more episodes.</p>{% endif %}

@@ -322,3 +322,43 @@ def test_successful_empty_http_alias_does_not_degrade_sibling_window(monkeypatch
     assert [candidate.torrent_hash for candidate in catalog.merge_alias_windows(windows)] == [
         "A" * 40
     ]
+
+
+def test_parse_releases_preserves_indexer_name():
+    from omakase.plus.prowlarr import parse_releases
+
+    named = _row()
+    named["indexer"] = "  YTS  "
+    unnamed = _row(torrent_hash="B" * 40)
+    releases = parse_releases([named, unnamed])
+    assert [item.indexer for item in releases] == ["YTS", ""]
+
+
+def test_search_resolves_proxy_magnet_for_clean_sd_bdrip_and_skips_cam():
+    requests: list[httpx.Request] = []
+    raw_hash = bytes.fromhex("EF" * 20)
+    base32_hash = base64.b32encode(raw_hash).decode()
+    clean_sd = _row(title="Chouchou 2003 BDRip XviD")
+    clean_sd["infoHash"] = ""
+    clean_sd["magnetUrl"] = "https://catalog.example/2/download?link=clean"
+    cam = _row(title="Chouchou 2003 HDCAM")
+    cam["infoHash"] = ""
+    cam["magnetUrl"] = "https://catalog.example/2/download?link=cam"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/api/v1/search":
+            return httpx.Response(200, json=[clean_sd, cam])
+        assert request.url.params.get("link") == "clean"
+        return httpx.Response(301, headers={"Location": f"magnet:?xt=urn:btih:{base32_hash}"})
+
+    source = ProwlarrCatalog(
+        base_url="https://catalog.example",
+        api_key="fixture-key",
+        resolved_addresses=("93.184.216.34",),
+        transport=httpx.MockTransport(handler),
+    )
+    releases = asyncio.run(source.search("Chouchou"))
+    assert len(releases) == 1
+    assert releases[0].magnet == f"magnet:?xt=urn:btih:{'EF' * 20}"
+    assert len(requests) == 2

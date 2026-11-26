@@ -2025,13 +2025,19 @@ async def remove_title_media(
             user_id=user.id,
             monitor_id=monitor_id,
         )
-        request_title_removal(
+        receipt = request_title_removal(
             db,
             user_id=user.id,
             monitor_id=monitor_id,
             confirmation=confirmation,
             requested_at=_canonical_now(),
         )
+        if receipt.get("status") == "plex_removed":
+            await process_provider_removals(
+                db,
+                provider_factory=lambda uid: _removal_provider(db, uid),
+                completed_at=_canonical_now(),
+            )
     except TitleRemovalError as exc:
         if str(exc) == "Media title not found":
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -2043,10 +2049,16 @@ async def remove_title_media(
             error=str(exc),
             status_code=422,
         )
-    message = (
-        "Removal started. Plex will unpublish this title first; eligible "
-        "Real-Debrid media will be deleted only after that proof. AniList was not changed."
-    )
+    if preview.get("cloud_only"):
+        message = (
+            "Media removed from Real-Debrid where eligible. "
+            "Watch history, ratings, and AniList were not changed."
+        )
+    else:
+        message = (
+            "Removal started. Plex will unpublish this title first; eligible "
+            "Real-Debrid media will be deleted only after that proof. AniList was not changed."
+        )
     return RedirectResponse(
         url=f"/plus/library/{monitor_id}?message={quote(message, safe='')}",
         status_code=302,

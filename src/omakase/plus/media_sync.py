@@ -2684,8 +2684,12 @@ async def run_media_sync(
         if monitor_ids is None:
             from omakase.plus import movie_fallback
             from omakase.plus.movie_cleanup_worker import process_movie_cleanup_jobs
+            from omakase.plus.title_removal import process_provider_removals
             from omakase.plus.tv_provider_requests import refresh_pending
 
+            await process_provider_removals(
+                db, provider_factory=provider_factory, completed_at=started_at
+            )
             await process_movie_cleanup_jobs(db, heartbeat=heartbeat)
             await refresh_pending(db, heartbeat=heartbeat)
             await movie_fallback.refresh_pending(db, heartbeat=heartbeat)

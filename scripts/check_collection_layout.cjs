@@ -19,7 +19,7 @@ suite=runpy.run_path('tests/plus/test_streaming_templates.py')
 tv=runpy.run_path('tests/plus/test_tv_templates.py')
 from omakase.plus.movie_presentation import present_movie
 titles=['Code Geass: Akito the Exiled - The Wyvern Arrives','Code Geass: Akito the Exiled - The Wyvern Divided','BLEACH: Thousand-Year Blood War - The Calamity','A Very Long Four Line Title That Must Stay Inside Its Own Reserved Heading Block Even On A Narrow Phone Screen']
-context=suite['library_context']()
+context=suite['library_context']('all')
 context['titles']=[{**suite['title_context'](),'id':i+1,'title':t,'year':2026,'required':27,'usable':0,'plex_visible':0,'release_qualities':['1080p']} for i,t in enumerate(titles)]
 movies=[present_movie({'imdb_id':f'tt{i+1:07d}','title':t,'year':1982,'state':'ready','plex_present':True,'resolution':'1080p','history':{'status':'completed','status_source':'manual','rating':8},'artwork_url':''}) for i,t in enumerate(['1408','The Thing',*titles])]+[present_movie({'imdb_id':'tt0000099','title':'Without viewing history','year':2026,'state':'ready','plex_present':True,'resolution':'1080p','artwork_url':''})]
 shows=[tv['show'](tmdb_id=i+1,title=t,in_plex_episodes=38) for i,t in enumerate(['True Detective','A Series',*titles])]
@@ -61,10 +61,10 @@ for(const name of ['cinema.css','streaming.css','tv.css','status-clarity.css','p
     if(scenario.textScale)await page.addStyleTag({content:'html{font-size:200%}'});
     const searchDisclosure=page.locator('.collection-search-disclosure');
     let folded;
-    assert.equal(await searchDisclosure.count(),kind==='library'?0:1,`${kind}: expected search disclosure`);
+    assert.equal(await searchDisclosure.count(),1,`${kind}: expected search disclosure`);
     if(await searchDisclosure.count()) {
      assert.equal(await searchDisclosure.evaluate(node=>node.open),false,'secondary search is folded without JavaScript');
-     folded=await page.evaluate(()=>({titles:[...document.querySelectorAll('.movie-card h2,.tv-card h3')].slice(0,2).map(node=>node.getBoundingClientRect().toJSON()),dock:document.querySelector('.mobile-primary-nav').getBoundingClientRect().top}));
+     folded=await page.evaluate(()=>({titles:[...document.querySelectorAll('.library-card h2,.movie-card h2,.tv-card h3')].slice(0,2).map(node=>node.getBoundingClientRect().toJSON()),dock:document.querySelector('.mobile-primary-nav').getBoundingClientRect().top}));
      assert.equal(folded.titles.length,2,'first poster row is present');
      if(scenario.width===390&&!scenario.textScale) assert(folded.titles.every(box=>box.bottom<folded.dock),'first full poster row and titles fit above the phone dock');
      await page.screenshot({path:path.join(output,`${kind}-${scenario.width}${suffix}-folded.png`)});

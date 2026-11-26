@@ -216,7 +216,11 @@ async def _resolve_proxy_magnets(
         if not isinstance(raw, dict) or _release_hash(raw):
             return index, raw
         title = str(raw.get("title") or "")
-        if not re.search(r"\b(?:2160p|1080p|720p|4k|uhd)\b", title, re.IGNORECASE):
+        if re.search(
+            r"\b(?:cam|hdcam|ts|telesync|hdts|tc|telecine|scr|screener|dvdscr|workprint|wp)\b",
+            title,
+            re.IGNORECASE,
+        ):
             return index, raw
         for field_name in ("magnetUrl", "downloadUrl"):
             endpoint = _proxy_download_url(base_url, raw.get(field_name))
@@ -290,6 +294,7 @@ def parse_releases(payload: object) -> tuple[NyaaTorrent, ...]:
                 pub_date=_published_at(raw.get("publishDate")),
                 is_trusted=False,
                 is_batch=bool(_BATCH_RE.search(title)),
+                indexer=str(raw.get("indexer") or "").strip(),
             )
         )
     return tuple(releases)

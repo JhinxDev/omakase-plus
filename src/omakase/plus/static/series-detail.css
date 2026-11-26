@@ -1,15 +1,20 @@
 /* Give the artwork a fixed stage so long synopses and forms can grow below it. */
-body.product-body .series-hero {
-  --series-art-height: clamp(320px, 36vw, 480px);
+body.product-body .series-hero,
+body.product-body .movie-detail-hero.series-hero {
+  --series-art-height: clamp(240px, 26vw, 340px);
   display: block;
-  margin: 0 0 2rem;
-  padding: clamp(1.25rem, 3vw, 2.5rem);
+  grid-template-columns: none;
+  gap: 0;
+  margin: 0 0 1.75rem;
+  padding: clamp(1.2rem, 2.5vw, 2rem);
   border: 1px solid #353044;
   border-radius: 14px;
   background: #11131e;
 }
 body.product-body .series-hero > .detail-backdrop,
-body.product-body .series-hero::after {
+body.product-body .series-hero::after,
+body.product-body .movie-detail-hero.series-hero > .detail-backdrop,
+body.product-body .movie-detail-hero.series-hero::after {
   inset: 0 0 auto;
   height: var(--series-art-height);
 }
@@ -19,27 +24,40 @@ body.product-body .series-hero > .series-backdrop--poster img {
   object-position: 90% 10%;
   opacity: .7;
 }
-body.product-body .series-hero::after {
+body.product-body .series-hero::after,
+body.product-body .movie-detail-hero.series-hero::after {
   background: linear-gradient(90deg, #11131eed 0%, #11131ea6 32%, #11131e14 73%, transparent 100%),
     linear-gradient(0deg, #11131e 1%, #11131e4d 24%, transparent 62%);
   pointer-events: none;
 }
-.series-hero :is(.title-view-progress, .title-view-progress > div:first-child, .tv-detail-copy) { display: block; min-width: 0; }
+.series-hero :is(.title-view-progress, .title-view-progress > div:first-child, .tv-detail-copy, .movie-detail-copy, .series-hero-copy) { display: block; min-width: 0; }
+.series-hero-head { display: flex; flex-wrap: nowrap; align-items: flex-start; gap: 1rem; min-width: 0; }
+.series-hero-head > div:last-child { min-width: 0; flex: 1; }
+.series-hero-head .movie-poster {
+  width: 84px;
+  height: auto;
+  flex: 0 0 auto;
+  aspect-ratio: 2 / 3;
+  border-radius: 7px;
+  border: 1px solid #ffffff20;
+  object-fit: cover;
+  box-shadow: 0 8px 24px #0006;
+}
 .series-hero h1 {
-  max-width: 20ch;
-  margin: .25rem 0 .75rem;
+  max-width: 24ch;
+  margin: .2rem 0 .6rem;
   color: #f8f4ff;
-  font-size: clamp(2rem, 4.2vw, 3.75rem);
+  font-size: clamp(1.75rem, 3.2vw, 2.75rem);
   font-weight: 750;
-  line-height: 1.02;
-  letter-spacing: -.035em;
+  line-height: 1.05;
+  letter-spacing: -.03em;
   overflow-wrap: anywhere;
   text-wrap: balance;
 }
 .series-hero :is(.detail-meta, .title-genres, .genre-chips) { max-width: 56ch; }
 .series-hero .detail-meta { row-gap: .5rem; }
 .series-hero .detail-meta .state-tag { color: inherit; }
-.series-hero .series-hero-actions { gap: .65rem; margin: 1.5rem 0 0; }
+.series-hero .series-hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin: 1.15rem 0 0; }
 .series-hero .series-hero-actions .button { min-height: 44px; white-space: normal; }
 .series-hero .series-hero-actions .button-primary {
   color: #171124;
@@ -52,8 +70,15 @@ body.product-body .series-hero::after {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
   align-items: start;
-  gap: 1.5rem clamp(1.25rem, 3vw, 2.5rem);
-  margin-top: 1.75rem;
+  gap: 1.25rem clamp(1.25rem, 3vw, 2.25rem);
+  margin-top: 1.25rem;
+}
+.series-hero-details:has(> .series-hero-facts:empty) { grid-template-columns: minmax(0, 1fr); }
+.series-hero-facts:empty { display: none; }
+.movie-detail-hero.series-hero .movie-detail-body {
+  margin-top: 1.25rem;
+  padding-top: 1.15rem;
+  border-top: 1px solid #353044;
 }
 .series-hero-details > * { min-width: 0; }
 .series-hero-details :is(.title-synopsis, .title-progress-source, .tv-overview, .tv-overview p) { margin-block: 0 .75rem; }
@@ -67,11 +92,20 @@ body.product-body .series-hero::after {
 .series-management .watch-actions > form { min-width: 0; }
 .series-management :is(input, select) { max-width: 100%; }
 .series-hero-facts .series-management { margin: .75rem 0 0; }
-.series-hero-facts .tv-history { margin: 1rem 0 0; padding: 0; background: none; border: 0; }
+.series-hero-facts .tv-history,
+.series-hero-facts .movie-watch-controls { margin: .75rem 0 0; padding: 0; background: none; border: 0; }
 .series-hero-facts .tv-history .panel-heading { padding: 0; border: 0; }
-.series-hero-facts .tv-history .product-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); gap: .6rem; padding: .65rem 0 0; }
-.series-hero-facts .tv-history :is(input, select) { width: 100%; min-inline-size: 0; }
-.series-hero-facts .tv-history .button { justify-self: start; align-self: end; }
+.series-hero-facts .tv-history .product-form,
+.series-hero-facts .series-personal-controls .product-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); gap: .6rem; padding: .65rem 0 0; }
+.series-hero-facts .tv-history :is(input, select),
+.series-hero-facts .series-personal-controls :is(input, select, textarea) { width: 100%; min-inline-size: 0; }
+.series-hero-facts .tv-history .button,
+.series-hero-facts .series-personal-controls .button { justify-self: start; align-self: end; }
+.series-hero-facts .movie-availability { margin: 0; padding: 0; border: 0; background: none; }
+.series-hero-facts .movie-availability > h2 { display: none; }
+.series-hero-facts .movie-request-progress { margin-top: .75rem; }
+.series-hero-facts .movie-verification-details,
+.series-hero-facts .movie-cleanup-details { margin-top: .75rem; }
 
 /* Viewing history and provider inventory answer different questions. Keep their
    words, numbers and colors distinct even when both are present. */
@@ -295,7 +329,8 @@ body.product-body .series-hero::after {
 
 @media (max-width: 700px) {
   .viewer-episodes .series-episode-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem .75rem; }
-  body.product-body .series-hero { --series-art-height: 320px; }
+  body.product-body .series-hero,
+  body.product-body .movie-detail-hero.series-hero { --series-art-height: 250px; padding: 1.1rem; }
   body.product-body .series-hero::after {
     background: linear-gradient(90deg, #11131ee8, #11131e64),
       linear-gradient(0deg, #11131e, #11131e9c 40%, transparent);

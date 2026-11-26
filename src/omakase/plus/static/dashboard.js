@@ -449,7 +449,7 @@
         menu.querySelector("summary")?.focus();
       });
       menu.addEventListener("focusout", (event) => {
-        if (!menu.contains(event.relatedTarget)) menu.open = false;
+        if (event.relatedTarget && !menu.contains(event.relatedTarget)) menu.open = false;
       });
     });
   }
