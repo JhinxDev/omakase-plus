@@ -367,6 +367,30 @@ class DebridStreams:
         if task.done() and not task.cancelled():
             task.exception()
 
+    @staticmethod
+    def _same_loop(task) -> bool:
+        try:
+            return task.get_loop() is asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+
+    @classmethod
+    def _reusable_warm(cls, task) -> bool:
+        return task is not None and not task.cancelled() and cls._same_loop(task)
+
+    @staticmethod
+    async def _await_warm(task, timeout: float) -> None:
+        """Wait on a shared warm task without letting its own cancellation fail the caller."""
+        try:
+            async with asyncio.timeout(timeout):
+                await asyncio.shield(task)
+        except TimeoutError:
+            return
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+
     def _cache_segment(self, url, data):
         if not data:
             return
@@ -407,7 +431,7 @@ class DebridStreams:
             if evicted_task is not None and not evicted_task.done():
                 evicted_task.cancel()
         task = state.get("task")
-        if task is not None and not task.done():
+        if task is not None and not task.done() and self._same_loop(task):
             return
         pump = self._pump(state)
         try:
@@ -429,20 +453,20 @@ class DebridStreams:
                     state["next"] += 1
                     continue
                 task = self.warm.get(url)
-                owns = task is None
+                owns = not self._reusable_warm(task) or task.done()
                 if owns:
                     task = asyncio.create_task(self._fetch_segment(url))
+                    task.add_done_callback(self._consume_task_result)
                     self.warm[url] = task
                 try:
-                    await asyncio.shield(task)
-                except TimeoutError:
-                    return
+                    await self._await_warm(task, 65)
                 except asyncio.CancelledError:
                     if owns:
                         task.cancel()
                     return
                 finally:
-                    self.warm.pop(url, None)
+                    if self.warm.get(url) is task:
+                        self.warm.pop(url, None)
                 state["next"] += 1
         finally:
             state["task"] = None
@@ -623,8 +647,11 @@ class DebridStreams:
         if not media.segments:
             return
         url = media.segments[0]
-        if url in self.warm:
+        existing = self.warm.get(url)
+        if existing is not None and not existing.done() and self._same_loop(existing):
             return
+        if existing is not None:
+            self.warm.pop(url, None)
         stored = self.first_cache.get(url)
         if stored is not None and stored[0] > self.clock():
             self.first_cache.move_to_end(url)
@@ -1054,14 +1081,11 @@ class DebridStreams:
             # reuses it instead of racing a second upstream read, which
             # Real-Debrid answers by stalling both.
             task = self.warm.get(url)
-            if task is None or task.done():
+            if not self._reusable_warm(task) or task.done():
                 task = asyncio.create_task(self._fetch_segment(url))
+                task.add_done_callback(self._consume_task_result)
                 self.warm[url] = task
-            try:
-                async with asyncio.timeout(_SEGMENT_GRACE):
-                    await asyncio.shield(task)
-            except TimeoutError:
-                pass
+            await self._await_warm(task, _SEGMENT_GRACE)
             stored = self.segment_cache.get(url)
             if stored is None or stored[0] <= self.clock():
                 # The provider has not delivered this segment inside the player's
@@ -1069,16 +1093,17 @@ class DebridStreams:
                 # wrong moment, and the player would cache it under this URL for
                 # the rest of the session. Give the same fetch a short second
                 # window, then fail with a status the player may retry.
-                try:
-                    grace = (
-                        _BROWSER_SEGMENT_RETRY_WAIT
-                        if self.subtitles.embedded_only
-                        else _SEGMENT_RETRY_WAIT
-                    )
-                    async with asyncio.timeout(grace):
-                        await asyncio.shield(task)
-                except TimeoutError:
-                    pass
+                grace = (
+                    _BROWSER_SEGMENT_RETRY_WAIT
+                    if self.subtitles.embedded_only
+                    else _SEGMENT_RETRY_WAIT
+                )
+                if not self._reusable_warm(task) or (task.done() and task.cancelled()):
+                    task = asyncio.create_task(self._fetch_segment(url))
+                    task.add_done_callback(self._consume_task_result)
+                    self.warm[url] = task
+                if not task.done():
+                    await self._await_warm(task, grace)
                 stored = self.segment_cache.get(url)
                 if stored is None or stored[0] <= self.clock():
                     warn(_LOG, "provider_delivery", "segment_not_ready", "provider", request_id)
@@ -1108,12 +1133,8 @@ class DebridStreams:
                 self.first_cache.pop(url, None)
             if not cached:
                 task = self.warm.pop(url, None)
-                if task is not None:
-                    try:
-                        async with asyncio.timeout(45):
-                            await asyncio.shield(task)
-                    except TimeoutError:
-                        pass
+                if self._reusable_warm(task):
+                    await self._await_warm(task, 45)
                 stored = self.first_cache.get(url)
                 if stored is not None and stored[0] > self.clock():
                     self.first_cache.move_to_end(url)
