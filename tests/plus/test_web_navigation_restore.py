@@ -40,9 +40,15 @@ def test_restore_script_is_registered_for_static_delivery():
 def test_detail_templates_route_back_through_the_shared_restore(template, fallback):
     html = (TEMPLATES / template).read_text(encoding="utf-8")
     controls = [line for line in html.splitlines() if "data-nav-back" in line]
-    assert controls, f"{template} has no shared restore Back control"
+    macro_calls = [line for line in html.splitlines() if "detail_back(" in line]
+    assert controls or macro_calls, f"{template} has no shared restore Back control"
     for line in controls:
         assert f'href="{fallback}' in line, line
+    for line in macro_calls:
+        assert f"detail_back('{fallback}'" in line, line
+    if macro_calls:
+        macro = (TEMPLATES / "_title_detail.html").read_text(encoding="utf-8")
+        assert 'href="{{ href }}"' in macro and "data-nav-back" in macro
 
 
 def test_record_captures_the_context_needed_to_return():

@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_media_components.html" import playback_link, progress_bar, ready_badge, play_icon %}
 {% from "_series_components.html" import episode_frame %}
+{% from "_title_detail.html" import detail_back, detail_hero %}
 {% from "_device_components.html" import apple_tv_link %}
 {% block title %}{{ title.title }} · Omakase{% endblock %}
 {% block extra_head %}<link rel="stylesheet" href="/plus/static/series-detail.css?v={{ asset_version }}">{% endblock %}
@@ -75,24 +76,27 @@
 </section>
 {% endif %}
 
-<a class="detail-back-link" href="/plus/library" data-nav-back><span aria-hidden="true">←</span>&nbsp; Your anime</a>
-<nav class="title-section-nav" id="overview" tabindex="-1" aria-label="Title sections"><a href="#overview">Overview</a><a href="#episode-heading">Episodes</a></nav>
+{{ detail_back('/plus/library', 'Your anime') }}
 {% set series_art = '/plus/media/' ~ title.anilist_id ~ '/poster' %}
-<section class="title-view-hero streaming-title-hero series-hero" aria-labelledby="series-title">
-  <picture class="detail-backdrop"><img src="/plus/media/{{ title.anilist_id }}/banner" alt="" fetchpriority="high" data-series-backdrop="{{ series_art }}"></picture>
-  <div class="title-view-progress">
-  <div>
-    <h1 id="series-title">{{ title.title }}</h1>
+{% call(slot) detail_hero(
+  'title-view-hero streaming-title-hero series-hero',
+  'series-title',
+  title.title,
+  backdrop_url='/plus/media/' ~ title.anilist_id ~ '/banner',
+  series_backdrop=series_art,
+  copy_class='title-view-progress'
+) %}
+{% if slot == 'header_extra' %}
     <div class="detail-meta">{% if title.season_number %}<span>Season {{ title.season_number }}</span>{% endif %}<span>{{ title.release_status_label }}</span>{% if title.episode_total %}<span>{{ title.episode_total }} episodes</span>{% endif %}<span class="state-tag state-{{ title.lifecycle }}">{{ title.lifecycle_label }}</span><a href="https://anilist.co/anime/{{ title.anilist_id }}/" target="_blank" rel="noopener noreferrer">AniList ↗</a></div>
     {% if title.genres %}
     <ul class="title-genres" aria-label="Genres">{% for genre in title.genres %}<li data-genre="{{ genre | lower }}">{{ genre }}</li>{% endfor %}</ul>
     {% endif %}
+{% elif slot == 'actions' %}
     <div class="title-primary-actions series-hero-actions">
       {% if title.play_url %}{% set play_action = 'Continue watching' if title.play_episode and (title.play_label == 'Resume' or title.progress_episodes) else title.play_label %}{{ playback_link(title.play_url, play_action ~ (' · E' ~ title.play_episode if title.play_episode else ' movie'), play_action ~ ' ' ~ title.title ~ (', episode ' ~ title.play_episode if title.play_episode else '')) }}{% endif %}
       <a class="button {{ 'button-secondary' if title.play_url else 'button-primary' }}" href="#episode-heading">{{ "View episode history" if title.state == "archived" else "View episodes" }}</a>
     </div>
-    <div class="series-hero-details">
-    <div class="series-hero-synopsis">
+{% elif slot == 'synopsis' %}
     {% if title.description %}
     <p class="title-synopsis">{{ title.description_preview | default(title.description, true) }}</p>
     {% if title.description_more %}
@@ -114,20 +118,21 @@
       {% if known_subtitles %}<strong>Subtitles:</strong> {{ known_subtitles | join(', ') }}{% endif %}
     </p>
     {% endif %}
-    </div>
-    <div class="series-hero-facts">
+{% elif slot == 'facts' %}
     <h2 id="watch-progress-heading" class="sr-only">Availability and viewing progress</h2>
     {% set plex_removal = not cloud_playback and title.removal and title.removal.scope == 'plex_only' %}
     {% if title.state == 'archived' %}<p>{{ title.status_label }} · Your watch history and rating are saved.</p>{% elif plex_removal %}<p>{{ 'Removed from Plex' if title.removal.status == 'complete' else 'Removing from Plex' }}</p>{% endif %}
-    <div class="series-viewing-summary"><p class="series-fact-label">Viewing progress</p>{{ progress_bar(title, show_availability=false) }}</div>
-    {% if title.state != 'archived' and not plex_removal %}
-    <div class="series-source-summary" data-fact-tone="{{ 'ready' if cloud_playback and (title.episode_play_urls or title.play_url) else 'neutral' }}">
-      <p class="series-fact-label">{{ 'Real-Debrid' if cloud_playback else 'Plex availability' }}</p>
-      {% if cloud_playback %}<p>{% if title.episode_play_urls %}{{ title.episode_play_urls | length }} {{ 'episode' if title.episode_play_urls | length == 1 else 'episodes' }} in Real-Debrid{% elif title.play_url %}In Real-Debrid{% else %}Availability unconfirmed{% endif %}</p>{% else %}{{ ready_badge(title) }}{% endif %}
-    </div>
-    {% endif %}
+    <dl class="series-facts">
+      <div class="series-viewing-summary" data-fact-tone="viewing"><dt class="series-fact-label">Viewing progress</dt><dd>{{ progress_bar(title, show_availability=false) }}</dd></div>
+      {% if title.state != 'archived' and not plex_removal %}
+      <div class="series-source-summary" data-fact-tone="{{ 'ready' if cloud_playback and (title.episode_play_urls or title.play_url) else 'neutral' }}">
+        <dt class="series-fact-label">{{ 'Real-Debrid' if cloud_playback else 'Plex availability' }}</dt>
+        <dd>{% if cloud_playback %}{% if title.episode_play_urls %}{{ title.episode_play_urls | length }} {{ 'episode' if title.episode_play_urls | length == 1 else 'episodes' }} in Real-Debrid{% elif title.play_url %}In Real-Debrid{% else %}Availability unconfirmed{% endif %}{% else %}{{ ready_badge(title) }}{% endif %}</dd>
+      </div>
+      {% endif %}
+    </dl>
     {% if not cloud_playback and title.publication_pending and title.state != 'archived' and not plex_removal %}<p class="title-availability-copy">Preparing for your library.</p>{% endif %}
-    {% if not cloud_playback and title.fallback_episodes %}<p class="title-availability-copy">{{ title.fallback_episodes | length }} episode{{ 's' if title.fallback_episodes | length != 1 else '' }} use a 720p fallback. <a href="#episode-heading">See episode quality</a>.</p>{% endif %}
+    {% if title.fallback_episodes %}<p class="title-availability-copy">720p fallback on {% if title.fallback_episodes | length == 1 %}episode {{ title.fallback_episodes[0] }}{% else %}episodes {{ title.fallback_episodes | join(', ') }}{% endif %}. <a href="#episode-heading">See episode quality</a>.</p>{% endif %}
     {% if title.next_episode %}<p class="title-progress-source">Up next: episode {{ title.next_episode }}</p>{% endif %}
 
     {% if tracker_state in ('failed', 'conflict') %}
@@ -189,8 +194,7 @@
   <div class="title-library-actions" role="group" aria-label="Library actions">{{ watchlist_action() }}</div>
 {% if title.play_url and native_tv_test_enabled %}<details class="series-device-options"><summary>Watch on Apple TV</summary>{{ apple_tv_link(title.play_url, native_tv_test_enabled, csrf_token) }}</details>{% endif %}
 </div>
-    </div>
-    </div>
+{% elif slot == 'body' %}
 {% if not cloud_playback %}
 <details class="title-technical-details" id="media-availability">
   <summary>Title options</summary>
@@ -341,9 +345,8 @@
 </details>
 {% endif %}
     {% if title.local_list_removed %}<p class="product-notice" role="status">Removed from your Omakase list. AniList, watch history and media files are unchanged. You can restore this title here.</p>{% endif %}
-  </div>
-  </div>
-</section>
+{% endif %}
+{% endcall %}
 
 {% if not cloud_playback and title.publication_pending %}
 <div class="product-notice plex-publication-notice" role="status">

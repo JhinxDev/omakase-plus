@@ -40,9 +40,14 @@ _ACTIVE = frozenset({"submitted", "selecting", "selected"})
 _LOOKUP = "user_id=? AND imdb_id=? AND request_created_at=?"
 _TRANSIENT = (DebridLibraryError, ProviderRateLimit, httpx.HTTPError, TimeoutError, ValueError)
 STALE_RIVEN_AGE = timedelta(hours=2)
+_STALL_AGE = timedelta(hours=8)
+_RETRY_COOLDOWN = timedelta(seconds=60)
+_ATTEMPTS = 3
+_RETRYABLE = frozenset({"file_mismatch", "stalled", "provider_restricted", "provider_failed"})
 STALE_ESCALATABLE_CODES = frozenset(
     {
         "requested",
+        "acknowledgement_unconfirmed",
         "search_complete",
         "backend_item_missing",
         "backend_unavailable",
@@ -60,6 +65,7 @@ LABELS = {
     "downloaded": "The provider reports that the selected movie file is available.",
     "existing_copy": "A matching transfer already exists in your provider account.",
     "file_mismatch": "The provider did not supply one unambiguous movie file.",
+    "stalled": "The fallback transfer stalled; checking alternatives.",
     "provider_restricted": "The provider restricted this release.",
     "provider_failed": "The provider reported that the fallback transfer failed.",
     "provider_missing": "The provider no longer has this transfer.",
@@ -104,8 +110,13 @@ def attach_summaries(db, user_id, models):
     predicates = ",".join("?" for _ in by_id)
     rows = db.execute(
         f"""SELECT t.imdb_id, t.state, t.account_binding FROM movie_fallback_transfers t
-        JOIN movie_requests r USING (user_id, imdb_id)
-        WHERE t.user_id=? AND t.request_created_at=r.created_at AND t.imdb_id IN ({predicates})""",
+            JOIN movie_requests r USING (user_id, imdb_id)
+            WHERE t.user_id=? AND t.request_created_at=r.created_at AND t.imdb_id IN ({predicates})
+              AND t.id = (
+                  SELECT MAX(t2.id) FROM movie_fallback_transfers t2
+                  WHERE t2.user_id=t.user_id AND t2.imdb_id=t.imdb_id
+                    AND t2.request_created_at=t.request_created_at
+              )""",
         (user_id, *by_id),
     )
     for row in rows:
@@ -114,40 +125,57 @@ def attach_summaries(db, user_id, models):
             by_id[row["imdb_id"]]["fallback_transfer"] = {"state": state, "headline": LABELS[state]}
 
 
+def _attempts(db, key, binding):
+    return db.execute(
+        f"""SELECT * FROM movie_fallback_transfers
+            WHERE {_LOOKUP} AND account_binding=?
+            ORDER BY id DESC""",
+        (*key, binding),
+    ).fetchall()
+
+
 def _row(db, key):
-    return db.execute(f"SELECT * FROM movie_fallback_transfers WHERE {_LOOKUP}", key).fetchone()
+    return db.execute(
+        f"SELECT * FROM movie_fallback_transfers WHERE {_LOOKUP} ORDER BY id DESC LIMIT 1",
+        key,
+    ).fetchone()
 
 
-def _change(db, key, previous, state, *, torrent_id=None):
+def _row_by_id(db, row_id: int):
+    return db.execute("SELECT * FROM movie_fallback_transfers WHERE id=?", (row_id,)).fetchone()
+
+
+def _change(db, row_id: int, previous: str, state: str, *, torrent_id=None):
     count = db.execute(
-        f"""UPDATE movie_fallback_transfers SET state=?, torrent_id=COALESCE(?,torrent_id)
-            WHERE {_LOOKUP} AND state=?""",
-        (state, torrent_id, *key, previous),
+        """UPDATE movie_fallback_transfers SET state=?, torrent_id=COALESCE(?,torrent_id)
+           WHERE id=? AND state=?""",
+        (state, torrent_id, row_id, previous),
     ).rowcount
     db.commit()
     return count == 1
 
 
-def _choose(candidates, title, policy):
+def _rank(candidates, title, policy) -> list[str]:
     releases = []
     allowed = set(policy.allowed_resolutions)
+    seen: set[str] = set()
     for item in candidates:
-        fields = " ".join(_tail(item.title, title))
-        if not fields:
-            continue
+        title_text = str(getattr(item, "title", "") or "")
+        fields = " ".join(_tail(title_text, title)) or title_text
         resolution = quality_from_title(fields)
         seeders = int(getattr(item, "seeders", 0) or 0)
         size_bytes = int(getattr(item, "size_bytes", 0) or 0)
         if (
             seeders <= 0
-            or not _movie_matches(item.title, title)
+            or not debrid_catalog._torrent_matches_movie(title_text, title)
             or not 0 < size_bytes <= policy.max_release_size_bytes
             or _BAD_QUALITY.search(fields)
         ):
             continue
         digest = torrent_hash_from_magnet(item.magnet)
-        if not digest:
+        if not digest or digest in seen:
             continue
+        seen.add(digest)
         if resolution in allowed and seeders >= policy.minimum_seeders:
             tier = 3
         elif resolution in allowed:
@@ -158,10 +186,38 @@ def _choose(candidates, title, policy):
             continue
         quality_rank = _QUALITY_ORDER.get(resolution, 1)
         releases.append((tier, quality_rank, seeders, digest))
-    return max(releases)[3] if releases else None
+    return [entry[3] for entry in sorted(releases, reverse=True)]
 
 
-async def _inspect(db, key, row, title, provider, authorized, max_bytes):
+def _choose(candidates, title, policy):
+    ranked = _rank(candidates, title, policy)
+    return ranked[0] if ranked else None
+
+
+def _is_stalled(row, provider_status: str) -> bool:
+    if provider_status not in {
+        "queued",
+        "downloading",
+        "uploading",
+        "compressing",
+        "magnet_conversion",
+    }:
+        return False
+    raw = row["created_at"] if "created_at" in row.keys() else None
+    created = _parse_stamp(raw)
+    return created is not None and created <= datetime.now(UTC) - _STALL_AGE
+
+
+def _retry_ready(row, *, next_attempt: bool) -> bool:
+    if next_attempt:
+        return True
+    raw = row["created_at"] if "created_at" in row.keys() else None
+    created = _parse_stamp(raw)
+    return created is not None and created <= datetime.now(UTC) - _RETRY_COOLDOWN
+
+
+async def _inspect(db, row, title, provider, authorized, max_bytes):
+    row_id = int(row["id"])
     state = row["state"]
     try:
         item = await provider.get_torrent(row["torrent_id"], require_definite_absence=True)
@@ -174,40 +230,60 @@ async def _inspect(db, key, row, title, provider, authorized, max_bytes):
     elif item.status in {"dead", "error", "magnet_error", "virus"}:
         next_state = "provider_failed"
     else:
-        files = [
-            part
+        video_files = [
+            (part.id, part.path, part.bytes)
             for part in item.files
-            if part.id > 0
-            and 0 < part.bytes <= max_bytes
-            and _video(PurePosixPath(part.path).name)
-            and _movie_matches(PurePosixPath(part.path).name, title)
+            if part.id > 0 and _video(PurePosixPath(part.path).name)
         ]
+        chosen_id = debrid_catalog.select_movie_file(
+            title,
+            str(getattr(item, "filename", "") or ""),
+            video_files,
+            max_bytes=max_bytes,
+        )
         selected = [part.id for part in item.files if part.selected]
-        if not files and item.status == "magnet_conversion":
+        if chosen_id is None and item.status == "magnet_conversion":
+            if _is_stalled(row, item.status):
+                _change(db, row_id, state, "stalled")
+                return _row_by_id(db, row_id)["state"]
             return state
-        if len(files) != 1 or (selected and selected != [files[0].id]):
+        if chosen_id is None or (selected and selected != [chosen_id]):
             next_state = "file_mismatch"
         elif selected:
-            next_state = "downloaded" if item.status == "downloaded" and item.links else "selected"
+            if item.status == "downloaded" and item.links:
+                next_state = "downloaded"
+            elif _is_stalled(row, item.status):
+                next_state = "stalled"
+            else:
+                next_state = "selected"
         elif (
             item.status == "waiting_files_selection"
             and authorized()
-            and _change(db, key, "submitted", "selecting")
+            and _change(db, row_id, "submitted", "selecting")
         ):
             try:
-                accepted = await provider.select_files(item.id, str(files[0].id))
+                accepted = await provider.select_files(item.id, str(chosen_id))
             except _TRANSIENT:
                 return "selecting"
             if accepted:
-                _change(db, key, "selecting", "selected")
-            return _row(db, key)["state"]
+                _change(db, row_id, "selecting", "selected")
+            return _row_by_id(db, row_id)["state"]
         else:
-            return _row(db, key)["state"]
-    _change(db, key, state, next_state)
-    return _row(db, key)["state"]
+            return _row_by_id(db, row_id)["state"]
+    _change(db, row_id, state, next_state)
+    return _row_by_id(db, row_id)["state"]
 
 
-async def advance(db, user_id, imdb_id, candidates=(), *, library=None, provider=None):
+async def advance(
+    db,
+    user_id,
+    imdb_id,
+    candidates=(),
+    *,
+    library=None,
+    provider=None,
+    next_attempt: bool = False,
+):
     """Use one scoped receipt and advance it without resubmitting an ambiguous write."""
     if not request_candidates.acquire_enabled():
         return None
@@ -239,58 +315,84 @@ async def advance(db, user_id, imdb_id, candidates=(), *, library=None, provider
             and is_fallback_eligible(current)
         )
 
-    row = _row(db, key)
-    if row and row["account_binding"] != binding:
+    any_row = _row(db, key)
+    if any_row and any_row["account_binding"] != binding:
         return "account_changed"
-    if row and row["state"] not in _ACTIVE:
+    attempts = _attempts(db, key, binding)
+    row = attempts[0] if attempts else None
+    if row and row["state"] not in _ACTIVE and row["state"] not in _RETRYABLE:
         return row["state"]
+    if (
+        row
+        and row["state"] in _RETRYABLE
+        and (not _retry_ready(row, next_attempt=next_attempt) or len(attempts) >= _ATTEMPTS)
+    ):
+        return row["state"]
+    if row and row["state"] in _RETRYABLE and not candidates:
+        return None
     if not row and not candidates:
         return None
     if not authorized():
-        return None
+        return row["state"] if row and row["state"] not in _ACTIVE else None
     provider = provider or RealDebridClient(token, **cooldown_hooks(db, user_id))
     policy = load_user_acquisition_policy(db, user_id)
     try:
         async with asyncio.timeout(_TRANSFER_TIMEOUT):
-            if row is None:
-                digest = _choose(candidates, title, policy)
-                if not digest:
-                    return None
-                inventory = await (library or DebridLibrary()).fresh_torrents(token)
-                present = any(
-                    normalize_btih(item.get("hash")) == digest
-                    or (
-                        item.get("status") not in {"dead", "error", "magnet_error", "virus"}
-                        and _movie_matches(item.get("filename"), title)
-                    )
-                    for item in inventory.values()
+            if row is not None and row["state"] in _ACTIVE:
+                state = await _inspect(
+                    db, row, title, provider, authorized, policy.max_release_size_bytes
                 )
-                if not authorized():
-                    return None
-                state = "existing_copy" if present else "submitting"
-                count = db.execute(
-                    """INSERT INTO movie_fallback_transfers(user_id,imdb_id,request_created_at,
-                       account_binding,torrent_hash,state) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
-                    (*key, binding, digest, state),
-                ).rowcount
-                db.commit()
-                if not count or present:
-                    winner = _row(db, key)
-                    return winner["state"] if winner is not None else "existing_copy"
-                try:
-                    item_id = await provider.add_magnet(f"magnet:?xt=urn:btih:{digest}")
-                except RealDebridProviderBlock:
-                    _change(db, key, "submitting", "provider_restricted")
-                    return "provider_restricted"
-                except _TRANSIENT:
-                    item_id = None
-                if not isinstance(item_id, str) or not _ID.fullmatch(item_id):
-                    _change(db, key, "submitting", "submission_unknown")
-                    return "submission_unknown"
-                _change(db, key, "submitting", "submitted", torrent_id=item_id)
-                row = _row(db, key)
+                if (
+                    state not in _RETRYABLE
+                    or not _retry_ready(row, next_attempt=next_attempt)
+                    or len(attempts) >= _ATTEMPTS
+                    or not candidates
+                ):
+                    return state
+                attempts = _attempts(db, key, binding)
+                row = attempts[0] if attempts else None
+            tried = {str(item["torrent_hash"]) for item in attempts}
+            unused = [digest for digest in _rank(candidates, title, policy) if digest not in tried]
+            digest = unused[0] if unused else None
+            if not digest:
+                return row["state"] if row is not None else None
+            inventory = await (library or DebridLibrary()).fresh_torrents(token)
+            present = any(
+                normalize_btih(item.get("hash")) == digest
+                or (
+                    normalize_btih(item.get("hash")) not in tried
+                    and item.get("status") not in {"dead", "error", "magnet_error", "virus"}
+                    and _movie_matches(item.get("filename"), title)
+                )
+                for item in inventory.values()
+            )
+            if not authorized():
+                return None
+            state = "existing_copy" if present else "submitting"
+            cursor = db.execute(
+                """INSERT INTO movie_fallback_transfers(user_id,imdb_id,request_created_at,
+                   account_binding,torrent_hash,state) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                (*key, binding, digest, state),
+            )
+            db.commit()
+            if not cursor.rowcount or present:
+                winner = _row(db, key)
+                return winner["state"] if winner is not None else "existing_copy"
+            row_id = int(cursor.lastrowid)
+            try:
+                item_id = await provider.add_magnet(f"magnet:?xt=urn:btih:{digest}")
+            except RealDebridProviderBlock:
+                _change(db, row_id, "submitting", "provider_restricted")
+                return "provider_restricted"
+            except _TRANSIENT:
+                item_id = None
+            if not isinstance(item_id, str) or not _ID.fullmatch(item_id):
+                _change(db, row_id, "submitting", "submission_unknown")
+                return "submission_unknown"
+            _change(db, row_id, "submitting", "submitted", torrent_id=item_id)
+            row = _row_by_id(db, row_id)
             return await _inspect(
-                db, key, row, title, provider, authorized, policy.max_release_size_bytes
+                db, row, title, provider, authorized, policy.max_release_size_bytes
             )
     except _TRANSIENT:
         row = _row(db, key)
@@ -317,7 +419,8 @@ async def refresh_pending(db, *, heartbeat, library=None):
         imdb_id = str(row["imdb_id"])
         if not is_fallback_eligible(row):
             continue
-        if not playback_providers.select(db, user_id).cloud_route or not account_token(db, user_id):
+        token = account_token(db, user_id)
+        if not playback_providers.select(db, user_id).cloud_route or not token:
             continue
         heartbeat()
         try:
@@ -345,18 +448,23 @@ async def refresh_pending(db, *, heartbeat, library=None):
                 original_title = fresh.get("original_title")
             except (MovieError, httpx.HTTPError, TimeoutError, ValueError):
                 pass
-        existing = _row(db, (user_id, imdb_id, row["created_at"]))
+        key = (user_id, imdb_id, row["created_at"])
+        binding = account_binding(token)
+        attempts = _attempts(db, key, binding)
+        existing = attempts[0] if attempts else None
         if existing and existing["state"] in _ACTIVE:
-            await advance(db, user_id, imdb_id, library=cloud_library)
-            continue
-        if existing and existing["state"] not in _ACTIVE:
+            state = await advance(db, user_id, imdb_id, library=cloud_library, next_attempt=True)
+            attempts = _attempts(db, key, binding)
+            if state not in _RETRYABLE or len(attempts) >= _ATTEMPTS:
+                continue
+        elif existing and (existing["state"] not in _RETRYABLE or len(attempts) >= _ATTEMPTS):
             continue
         policy = load_user_acquisition_policy(db, user_id)
         on_matches = None
         if request_candidates.acquire_enabled():
 
             async def _acquire(eligible, _uid=user_id, _imdb=imdb_id):
-                await advance(db, _uid, _imdb, eligible, library=cloud_library)
+                await advance(db, _uid, _imdb, eligible, library=cloud_library, next_attempt=True)
 
             on_matches = _acquire
         await request_candidates.refresh(

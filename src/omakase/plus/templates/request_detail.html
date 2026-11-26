@@ -114,7 +114,7 @@
             <li data-candidate-accepted="{{ 'true' if candidate.accepted else 'false' }}">
               <span class="request-search-title">{{ candidate.title }}</span>
               <span class="request-search-verdict">{% if candidate.accepted %}{{ candidate.text if candidate.text and candidate.text != 'no reason was recorded' else 'Passed release checks' }}{% else %}{{ candidate.text }}{% endif %}</span>
-              {% if candidate.seeders is not none or candidate.indexer %}<span class="request-search-meta">{{ candidate.indexer or 'Source unnamed' }}{% if candidate.seeders is not none %} · {{ candidate.seeders }} seeding{% endif %}</span>{% endif %}
+              {% if candidate.seeders is not none or candidate.indexer %}<span class="request-search-meta">{% if candidate.indexer %}{{ candidate.indexer }}{% endif %}{% if candidate.indexer and candidate.seeders is not none %} · {% endif %}{% if candidate.seeders is not none %}{{ candidate.seeders }} seeding{% endif %}</span>{% endif %}
             </li>
             {% endfor %}
           </ul>

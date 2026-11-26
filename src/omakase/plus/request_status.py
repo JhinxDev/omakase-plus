@@ -454,7 +454,17 @@ def decorate_display(model):
         elif int(search.get("eligible") or 0) > 0:
             elig = int(search["eligible"])
             noun = "release" if elig == 1 else "releases"
-            display_detail = f"{elig} matching {noun} found. Queuing cloud transfer."
+            if transfer_state in {
+                "file_mismatch",
+                "stalled",
+                "provider_restricted",
+                "provider_failed",
+            }:
+                display_detail = f"{elig} matching {noun} found; checking alternatives."
+            elif transfer_state in {"exhausted", "download_failed"}:
+                display_detail = f"{elig} matching {noun} found, but transfers did not complete."
+            else:
+                display_detail = f"{elig} matching {noun} found. Queuing cloud transfer."
         elif status_label in {
             "Received by Riven",
             "Request saved",
@@ -470,9 +480,15 @@ def decorate_display(model):
     display_subline = ""
     if transfer_state in {"submitting", "submitted", "selecting", "selected", "downloaded"}:
         display_subline = "Cloud transfer active"
-    elif transfer_state in {"file_mismatch", "provider_restricted", "provider_failed"}:
+    elif transfer_state in {
+        "file_mismatch",
+        "stalled",
+        "provider_restricted",
+        "provider_failed",
+    }:
         display_subline = {
-            "file_mismatch": "Waiting for cleaner file match",
+            "file_mismatch": "Release file layout could not be matched; checking alternatives",
+            "stalled": "Transfer stalled; checking alternatives",
             "provider_restricted": "Previous source restricted; checking alternatives",
             "provider_failed": "Previous transfer failed; checking alternatives",
         }[transfer_state]

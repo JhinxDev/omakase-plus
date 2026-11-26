@@ -11,6 +11,7 @@ from typing import Any
 
 from omakase.plus.manifest import validate_curator_receipt
 from omakase.plus.media_store import record_sync_run
+from omakase.plus.providers import playback as playback_providers
 
 
 class TitleRemovalError(ValueError):
@@ -102,6 +103,12 @@ def _provider_deletion_eligible(asset: sqlite3.Row) -> bool:
     )
 
 
+def _cloud_only_removal(db: sqlite3.Connection, user_id: int) -> bool:
+    """Return True when playback uses Real-Debrid directly and Plex is not linked."""
+    selection = playback_providers.select(db, user_id)
+    return selection.cloud_route and not playback_providers.plex_linked(db, user_id)
+
+
 def title_removal_preview(
     db: sqlite3.Connection,
     *,
@@ -150,6 +157,7 @@ def title_removal_preview(
         "retained_asset_count": len(assets) - eligible_count,
         "shared_plex_title": shared,
         "household_blocked": household_guard["has_shared_references"] or household_guard["blocked"],
+        "cloud_only": _cloud_only_removal(db, user_id),
         "progress": progress,
     }
 
@@ -381,26 +389,46 @@ def _request_title_removal_impl(
         raise TitleRemovalError("This title has no media to remove")
 
     try:
-        cursor = db.execute(
-            """INSERT INTO media_title_removals
-               (user_id, monitor_id, anilist_id, season_number, title, requested_at,
-                status, detail, scope)
-               VALUES (?, ?, ?, ?, ?, ?, 'awaiting_plex', ?, ?)""",
-            (
-                user_id,
-                monitor_id,
-                monitor["anilist_id"],
-                monitor["season_number"],
-                title,
-                requested_at,
+        cloud_only = _cloud_only_removal(db, user_id) and scope == "plex_and_provider"
+        if cloud_only:
+            cursor = db.execute(
+                """INSERT INTO media_title_removals
+                   (user_id, monitor_id, anilist_id, season_number, title, requested_at,
+                    status, curator_run_id, plex_removed_at, detail, scope)
+                   VALUES (?, ?, ?, ?, ?, ?, 'plex_removed', 'cloud-only', ?, ?, ?)""",
                 (
-                    "Owner publication withdrawn; shared Plex title remains until other owners withdraw"
-                    if shared
-                    else "Waiting for a converged Plex curator receipt"
+                    user_id,
+                    monitor_id,
+                    monitor["anilist_id"],
+                    monitor["season_number"],
+                    title,
+                    requested_at,
+                    requested_at,
+                    "Real-Debrid media cleanup queued",
+                    scope,
                 ),
-                scope,
-            ),
-        )
+            )
+        else:
+            cursor = db.execute(
+                """INSERT INTO media_title_removals
+                   (user_id, monitor_id, anilist_id, season_number, title, requested_at,
+                    status, detail, scope)
+                   VALUES (?, ?, ?, ?, ?, ?, 'awaiting_plex', ?, ?)""",
+                (
+                    user_id,
+                    monitor_id,
+                    monitor["anilist_id"],
+                    monitor["season_number"],
+                    title,
+                    requested_at,
+                    (
+                        "Owner publication withdrawn; shared Plex title remains until other owners withdraw"
+                        if shared
+                        else "Waiting for a converged Plex curator receipt"
+                    ),
+                    scope,
+                ),
+            )
         removal_id = int(cursor.lastrowid)
         for asset in assets:
             eligible = scope == "plex_and_provider" and _provider_deletion_eligible(asset)
@@ -428,10 +456,14 @@ def _request_title_removal_impl(
         db.execute(
             """UPDATE media_monitors
                SET active = 0, next_check_at = NULL,
-                   last_result = 'USER_REMOVAL_AWAITING_PLEX',
+                   last_result = ?,
                    updated_at = datetime('now')
                WHERE id = ? AND user_id = ?""",
-            (monitor_id, user_id),
+            (
+                "USER_REMOVAL_PROVIDER_QUEUED" if cloud_only else "USER_REMOVAL_AWAITING_PLEX",
+                monitor_id,
+                user_id,
+            ),
         )
         if scope == "plex_and_provider":
             db.execute(
@@ -446,9 +478,13 @@ def _request_title_removal_impl(
             monitor_id=monitor_id,
             outcome="removal_requested",
             detail=(
-                "Plex-only unpublish; provider/source media retained"
-                if scope == "plex_only"
-                else "User requested Plex unpublish before provider deletion"
+                "User requested Real-Debrid provider deletion"
+                if cloud_only
+                else (
+                    "Plex-only unpublish; provider/source media retained"
+                    if scope == "plex_only"
+                    else "User requested Plex unpublish before provider deletion"
+                )
             ),
             completed_at=requested_at,
         )
@@ -458,7 +494,11 @@ def _request_title_removal_impl(
         if commit:
             db.rollback()
         raise
-    return {"id": removal_id, "status": "awaiting_plex", "idempotent": False}
+    return {
+        "id": removal_id,
+        "status": "plex_removed" if cloud_only else "awaiting_plex",
+        "idempotent": False,
+    }
 
 
 def _native_plex_absence_proved(

@@ -3,10 +3,7 @@
 {% from "_collection_search.html" import collection_search, collection_tabs %}
 {% from "_media_components.html" import progress_bar %}
 {% block title %}Anime · Omakase{% endblock %}
-{% block eyebrow %}Saved for your next watch{% endblock %}
-{% block page_title %}Your anime{% endblock %}
-{% block page_intro %}{% endblock %}
-{% block page_actions %}<a class="button button-primary" href="/plus/add">Add anime</a>{% endblock %}
+{% block masthead %}<div class="product-masthead collection-masthead" role="region" aria-label="Page overview"><div><h1>Your anime</h1></div><div class="masthead-actions"><a class="button button-primary" href="/plus/add">Add anime</a></div></div>{% endblock %}
 {% block content %}
 <div class="watchlist-browser">
 {% set collection_extra = '&query=' ~ (query | urlencode) ~ '&state=' ~ state_filter ~ '&provider=' ~ provider_filter ~ '&content_type=' ~ content_type_filter %}
@@ -31,11 +28,11 @@
   </ul>
 </details>
 {% endif %}
-{% call(slot) collection_search('/plus/library', 'anime', 'Filter your collection', 'Search your anime', query, 'query', 'Find in your collection', titles | length) %}
+{% set extra_active = (lifecycle_filter or 'all') in ['active','ready_to_start','waiting'] or (content_type_filter or 'all') != 'all' or (state_filter or 'all') != 'all' or (provider_filter or 'all') != 'all' %}
+{% call(slot) collection_search('/plus/library', 'anime', 'Filter this view', 'Search your anime', query or '', 'query', 'Find in your collection', titles | length, collapsible=true, expanded=extra_active) %}
 {% if slot == 'fields' %}
   <datalist id="library-title-suggestions">{% for title in title_suggestions %}<option value="{{ title }}"></option>{% endfor %}</datalist>
 {% else %}
-  {% set extra_active = lifecycle_filter in ['active','ready_to_start','waiting'] or content_type_filter != 'all' or state_filter != 'all' or provider_filter != 'all' %}
   <details class="watchlist-filter-details" {% if extra_active %}open{% endif %}>
   <summary>More filters{% if extra_active %} · active{% endif %}</summary>
   <div class="watchlist-extra-filters">
@@ -93,6 +90,7 @@
     <button class="button button-secondary" type="submit">Clean up selected media</button>
   </div>
 {% endif %}
+{% if titles %}<header class="stream-section-heading"><div><h2>{% if query %}Search results{% elif lifecycle_filter == 'in_progress' %}Watching now{% elif lifecycle_filter == 'completed' %}Watched anime{% elif lifecycle_filter == 'available' %}Available anime{% else %}Your collection{% endif %}</h2></div><span class="movie-result-count">{{ titles | length }} {{ 'title' if titles | length == 1 else 'titles' }}</span></header>{% endif %}
 <section class="library-grid watchlist-grid catalog-poster-grid" aria-label="Anime library">
   {% for item in titles %}
   <article class="library-card watchlist-card catalog-card state-border-{{ item.state }}">
@@ -114,7 +112,6 @@
     </a>
     {{ progress_bar(item, show_availability=not cloud_playback) }}
     {% if cloud_playback and item.play_url %}<p class="collection-card-availability" data-status-tone="ready">In Real-Debrid</p>{% endif %}
-    {% if item.release_qualities %}<div class="release-quality" role="group" aria-label="Verified release quality">{% for quality in item.release_qualities %}<span class="{{ 'quality-fallback' if quality == '720p' else '' }}">{{ quality }}{{ ' fallback' if quality == '720p' else ' release' }}</span>{% endfor %}</div>{% endif %}
     {% if not cloud_playback %}<details class="watchlist-coverage">
       <summary>Availability details</summary>
     {% if item.publication_pending %}<p>Preparing for your library.</p>{% endif %}

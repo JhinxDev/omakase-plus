@@ -629,3 +629,7 @@ before/after diffs recorded during release cutover.
 
 
 
+## Unified detail heroes, collection search parity, and Real-Debrid cleanup, November 26
+
+- **Collection & detail parity:** The Anime collection page (`library.html`) shares `.collection-masthead`, the collapsed `Search & filters` disclosure, `.stream-section-heading`, and quiet browse cards without raw quality pill clutter, matching Movies and TV Shows. Detail pages across Anime (`title.html`), Movies (`movie_detail.html`), and TV Shows (`tv_detail.html`) share `_title_detail.html` (`detail_back`, `detail_hero`) and `series-detail.css` with a compact backdrop hero height and without the legacy Anime `Overview | Episodes` bar.
+- **Truthful fallback quality & removal UX:** `product_views.py` computes `release_qualities` solely from winning `effective_quality` episodes rather than superseded batch assets, while `title.html` names the exact 720p fallback episode numbers whenever `fallback_episodes` is non-empty. `title_remove.html` always labels the back button `Back to title` and exposes Real-Debrid media deletion (plus `cloud_only` immediate provider processing in `title_removal.py` / `routes.py` when Plex is unlinked).

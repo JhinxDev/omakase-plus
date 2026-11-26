@@ -305,9 +305,6 @@ def library_titles(
             if episodes and quality in {"1080p", "2160p", "720p"}:
                 quality_coverage.setdefault(quality, set()).update(episodes)
         usable = sum(episode <= required for episode in coverage) if required else len(coverage)
-        qualities = [
-            quality for quality in ("1080p", "2160p", "720p") if quality in quality_coverage
-        ]
         effective_quality = episode_qualities(db, assets, read_receipt=read_receipt)
         if required:
             effective_quality = {
@@ -315,6 +312,14 @@ def library_titles(
                 for episode, value in effective_quality.items()
                 if episode <= required
             }
+        winning_qualities = {
+            str(info.get("quality") or "").lower()
+            for info in effective_quality.values()
+            if str(info.get("quality") or "").lower() in {"1080p", "2160p", "720p"}
+        }
+        qualities = [
+            quality for quality in ("1080p", "2160p", "720p") if quality in winning_qualities
+        ]
         fallback_episodes = sorted(
             episode for episode, value in effective_quality.items() if value["quality"] == "720p"
         )

@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% from "_movie_components.html" import movie_poster, movie_quality %}
+{% from "_title_detail.html" import detail_back, detail_hero %}
 {% from "_request_timeline.html" import request_timeline %}
 {% from "_device_components.html" import apple_tv_link %}
 {% from "_watch_status.html" import watch_status_field %}
 {% block title %}{{ card.title }} · Omakase{% endblock %}
 {% block masthead %}{% endblock %}
-{% block extra_head %}<link rel="stylesheet" href="/plus/static/discover-hub.css?v={{ asset_version }}">{% if not cloud_playback %}<script src="/plus/static/movie-plex-review.js?v={{ asset_version }}" defer></script>{% endif %}<script src="/plus/static/request-timeline.js?v={{ asset_version }}" defer></script>{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="/plus/static/discover-hub.css?v={{ asset_version }}"><link rel="stylesheet" href="/plus/static/series-detail.css?v={{ asset_version }}">{% if not cloud_playback %}<script src="/plus/static/movie-plex-review.js?v={{ asset_version }}" defer></script>{% endif %}<script src="/plus/static/request-timeline.js?v={{ asset_version }}" defer></script>{% endblock %}
 {% block content %}
 {% set history = card.history or {} %}
 {% set status_known = history.status_source and history.status_source != 'none' %}
@@ -27,17 +28,22 @@
 {% elif notice == 'request_unchanged' %}<p class="product-notice" role="status">No change reported. This check did not submit another request.</p>
 {% elif notice == 'request_saved' %}<p class="product-notice" role="status">Request check skipped. Review the latest available status below.</p>
 {% elif notice == 'request_failed' %}<p class="product-notice" role="status">The request check did not complete. Review the connection details below.</p>{% endif %}
-<section class="movie-detail-hero" aria-labelledby="movie-detail-heading">
-  {% if card.backdrop_url %}<picture class="detail-backdrop"><img src="/plus/movies/{{ card.imdb_id }}/artwork?variant=backdrop" alt="" fetchpriority="high" data-poster></picture>{% endif %}
-  {{ movie_poster(card, true, false) }}
-  <div class="movie-detail-copy">
-    <a href="/plus/movies" class="detail-back-link" data-nav-back><span aria-hidden="true">←</span>&nbsp; Your movies</a>
-    <h1 id="movie-detail-heading">{{ card.title }}</h1>
+{{ detail_back('/plus/movies', 'Your movies') }}
+{% call(slot) detail_hero(
+  'movie-detail-hero series-hero',
+  'movie-detail-heading',
+  card.title,
+  backdrop_url=('/plus/movies/' ~ card.imdb_id ~ '/artwork?variant=backdrop' if card.backdrop_url else ''),
+  is_poster=true,
+  copy_class='movie-detail-copy'
+) %}
+{% if slot == 'poster' %}
+{{ movie_poster(card, true, false) }}
+{% elif slot == 'header_extra' %}
     <div class="detail-meta">{% if card.year %}<span>{{ card.year }}</span>{% endif %}<span>Movie</span>{{ movie_quality(card) }}<span class="watch-state" data-watch-state="{{ 'watched' if status_known and history.status == 'completed' else 'neutral' }}">{{ display.watch_label }}</span>{% if history.rating %}<span class="watched-count">Your rating {{ history.rating }}/10</span>{% endif %}</div>
     {% if card.genres %}<ul class="genre-chips" aria-label="Genres">{% for genre in card.genres %}{% set name = genre.name if genre is mapping else genre %}<li data-genre="{{ name | lower }}">{{ name }}</li>{% endfor %}</ul>{% endif %}
-    {% if card.overview %}<p class="movie-overview">{{ card.overview }}</p>{% endif %}
-    {% if card.reason %}<p class="movie-overview">{{ card.reason }}</p>{% endif %}
-    <div class="movie-detail-actions" data-request-play-slot>
+{% elif slot == 'actions' %}
+    <div class="movie-detail-actions series-hero-actions" data-request-play-slot>
       {% if can_play %}<a class="button button-primary" href="/plus/watch/title/movie/{{ card.imdb_id }}?play=1">Play movie</a>{{ apple_tv_link("/plus/watch/title/movie/" ~ card.imdb_id ~ "?play=1", native_tv_test_enabled, csrf_token) }}{% endif %}
       {% if not cloud_playback and card.plex_url and card.state == 'ready' and not can_play %}
       <a class="button button-primary" href="{{ card.plex_url }}" rel="noopener noreferrer" target="_blank">Open in Plex</a>
@@ -52,6 +58,10 @@
       {{ playback_check('button button-primary') }}
       {% endif %}
     </div>
+{% elif slot == 'synopsis' %}
+    {% if card.overview %}<p class="movie-overview">{{ card.overview }}</p>{% endif %}
+    {% if card.reason %}<p class="movie-overview">{{ card.reason }}</p>{% endif %}
+{% elif slot == 'body' %}
     <div class="movie-detail-body">
       <section class="movie-availability" aria-labelledby="movie-availability-heading"{% if title_request and title_request.can_check and not in_library %} data-request-refresh="/plus/movies/{{ card.imdb_id }}/request-status"{% endif %}>
         <h2 id="movie-availability-heading">Availability</h2>
@@ -155,6 +165,6 @@
       </section>
       {% endif %}
     </div>
-  </div>
-</section>
+{% endif %}
+{% endcall %}
 {% endblock %}

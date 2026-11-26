@@ -332,7 +332,7 @@ def test_collection_search_scope_and_form_contract_are_explicit():
     movies = render("movies.html", cards=[], query="test", view="all")
     tv = render("tv.html", cards=[], query="test", view="all")
     for html, kind, action, field, scope in [
-        (library, "anime", "/plus/library", "query", "Filter your collection"),
+        (library, "anime", "/plus/library", "query", "Filter this view"),
         (movies, "movies", "/plus/movies", "q", "Filter this view"),
         (tv, "tv", "/plus/tv", "q", "Filter this view"),
     ]:
@@ -345,9 +345,15 @@ def test_collection_search_scope_and_form_contract_are_explicit():
         assert field in search["inputs"]
         if kind == "anime":
             assert 'href="/plus/add"' in html
+            assert "collection-masthead" in html
+            assert "Saved for your next watch" not in html
         else:
             assert f'href="/plus/search?kind={kind}"' in html
         assert scope in html
+        assert "collection-search-disclosure" in forms.details
+    non_empty_library = render("library.html", **{**library_context(), "titles": [title_context()]})
+    assert "Your collection" in non_empty_library
+    assert "open" not in Forms().details.get("collection-search-disclosure", "")
     assert 'name="lifecycle"' in library
     assert 'name="state"' in library and 'name="provider"' in library
 
@@ -358,6 +364,7 @@ def test_active_anime_type_remains_visible_inside_expanded_filters():
     html = render("library.html", **context)
     parsed = Forms()
     parsed.feed(html)
+    assert "open" in parsed.details["collection-search-disclosure"]
     assert "open" in parsed.details["watchlist-filter-details"]
     assert html.count('name="content_type"') == 1
     assert html.index('class="watchlist-filter-details"') < html.index('name="content_type"')
@@ -429,3 +436,90 @@ def test_missing_anime_is_never_ready_zero():
     assert html.index("Missing 27 episodes</span>") > html.index(
         'title="Example anime">Example anime</h2>'
     )
+
+
+def test_detail_pages_share_series_hero_and_title_shows_exact_fallback_episodes():
+    title = title_context()
+    title["fallback_episodes"] = []
+    anime_clean = render("title.html", title=title, cloud_playback=True)
+    assert 'class="detail-back-link"' in anime_clean
+    assert "title-section-nav" not in anime_clean
+    assert "720p fallback" not in anime_clean
+
+    title["fallback_episodes"] = [4, 7]
+    anime_fallback = render("title.html", title=title, cloud_playback=True)
+    assert "720p fallback on episodes 4, 7." in anime_fallback
+
+    movie = render(
+        "movie_detail.html",
+        card={
+            "imdb_id": "tt0328955",
+            "tmdb_id": 56780,
+            "title": "Chouchou",
+            "year": 2003,
+            "genres": ["Comedy"],
+            "overview": "Fixture synopsis",
+            "backdrop_url": "/plus/movies/tt0328955/artwork?variant=backdrop",
+            "history": {"status": "unwatched", "status_source": "manual"},
+            "display": {
+                "watch_label": "Not watched",
+                "status_tone": "neutral",
+                "status_label": "Requested",
+                "summary": "Waiting",
+            },
+        },
+        cloud_playback=True,
+    )
+    assert 'class="movie-detail-hero series-hero"' in movie
+    assert 'class="detail-back-link"' in movie
+    assert "series-detail.css" in movie
+
+    tv = render(
+        "tv_detail.html",
+        card={
+            "tmdb_id": 42,
+            "title": "Example Show",
+            "year": 2024,
+            "genres": ["Drama"],
+            "overview": "TV synopsis",
+            "seasons": [],
+        },
+        selected_season=1,
+    )
+    assert 'class="tv-detail-hero series-hero"' in tv
+    assert 'class="detail-back-link"' in tv
+
+    req_html = render(
+        "request_detail.html",
+        item={
+            "kind": "movie",
+            "title": "Chouchou",
+            "title_id": "tt0328955",
+            "detail_href": "/plus/requests/movie/tt0328955",
+            "href": "/plus/movies/tt0328955",
+            "stage": "acquired",
+            "stage_label": "Searching",
+            "category": "active",
+            "display_headline": "Searching",
+            "display_detail": "2 matching releases found; checking alternatives.",
+            "stages": [],
+        },
+        request_search={
+            "enabled": True,
+            "total": 1,
+            "eligible": 1,
+            "headline": "1 release found",
+            "detail": "Checking",
+            "candidates": [
+                {
+                    "title": "2003 Chouchou (FRA) [EngSub]",
+                    "indexer": "",
+                    "seeders": 3,
+                    "accepted": True,
+                    "reason": "accepted",
+                }
+            ],
+        },
+    )
+    assert "Source unnamed" not in req_html
+    assert "3 seeding" in req_html

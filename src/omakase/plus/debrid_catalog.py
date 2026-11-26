@@ -220,6 +220,63 @@ def _movie_matches(name, title):
     return _movie_matches_parts(_tokens(name), title)
 
 
+def _contains_subsequence(haystack: tuple[str, ...], needle: tuple[str, ...]) -> bool:
+    if not needle or len(needle) > len(haystack):
+        return False
+    width = len(needle)
+    return any(haystack[idx : idx + width] == needle for idx in range(len(haystack) - width + 1))
+
+
+def _torrent_matches_movie(torrent_name: str, title) -> bool:
+    if _movie_matches(torrent_name, title):
+        return True
+    parts = _tokens(torrent_name)
+    year = getattr(title, "year", None)
+    prefixes = _title_prefixes(title) if hasattr(title, "title") else ()
+    return bool(
+        year
+        and prefixes
+        and any(_contains_subsequence(parts, prefix) for prefix in prefixes)
+        and str(year) in parts
+        and not {"sample", "trailer"} & set(parts)
+    )
+
+
+def select_movie_file(
+    title,
+    torrent_name: str,
+    files: list[tuple[int, str, int]],
+    *,
+    max_bytes: int = 0,
+    allow_torrent_fallback: bool = True,
+) -> int | None:
+    """Pick one unambiguous movie video file ID from torrent file candidates."""
+    eligible = [
+        (file_id, path, int(size or 0))
+        for file_id, path, size in files
+        if not (max_bytes and int(size or 0) > max_bytes)
+        and not ({"sample", "trailer"} & set(_tokens(path)))
+    ]
+    exact = [file_id for file_id, path, _size in eligible if _movie_matches(path, title)]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1 or not allow_torrent_fallback or not eligible:
+        return None
+    if not _torrent_matches_movie(torrent_name, title):
+        return None
+    if len(eligible) == 1:
+        return eligible[0][0]
+    sizes = [size for _fid, _path, size in eligible]
+    if any(size <= 0 for size in sizes):
+        return None
+    largest_idx = max(range(len(eligible)), key=lambda i: eligible[i][2])
+    largest_id, _path, largest_size = eligible[largest_idx]
+    other_max = max(size for i, (_fid, _p, size) in enumerate(eligible) if i != largest_idx)
+    if largest_size >= 100 * 1024 * 1024 and largest_size >= 5 * other_max:
+        return largest_id
+    return None
+
+
 def _build_token_index(torrents):
     by_first: dict[str, list[tuple[tuple[str, ...], str]]] = {}
     for data in torrents.values():
@@ -631,26 +688,50 @@ async def resolve_catalog(
             files, links, content_hash = info
             if content_hash.upper() != str(data.get("hash") or "").upper():
                 continue
-            matches = (
-                [
-                    number
-                    for number, name in _video_files(files, links)
-                    if (
-                        _movie_matches(name, title)
-                        if domain == "movie"
-                        else _tv_marker(name, title, from_pack=True) == (season, episode)
-                    )
-                ]
-                if _matches(data.get("filename"), title)
-                else []
-            )
             locator = title
-            if len(matches) == 1:
-                file_id = matches[0]
-            elif hint and hint.matches(data) and (file_id := hint.file_id(files, links, title)):
-                locator = (title, hint)
+            if domain == "movie":
+                raw_videos = [
+                    (number, name, int((files.get(number) or {}).get("bytes") or 0))
+                    for number, name in _video_files(files, links)
+                ]
+                file_id = (
+                    select_movie_file(
+                        title,
+                        str(data.get("filename") or ""),
+                        raw_videos,
+                        allow_torrent_fallback=False,
+                    )
+                    if _matches(data.get("filename"), title)
+                    else None
+                )
+                if file_id is None and hint and hint.matches(data):
+                    if hinted := hint.file_id(files, links, title):
+                        file_id = hinted
+                        locator = (title, hint)
+                if file_id is None and (not hint or hint.matches(data)):
+                    file_id = select_movie_file(
+                        title,
+                        str(data.get("filename") or ""),
+                        raw_videos,
+                    )
+                if file_id is None:
+                    continue
             else:
-                continue
+                matches = (
+                    [
+                        number
+                        for number, name in _video_files(files, links)
+                        if _tv_marker(name, title, from_pack=True) == (season, episode)
+                    ]
+                    if _matches(data.get("filename"), title)
+                    else []
+                )
+                if len(matches) == 1:
+                    file_id = matches[0]
+                elif hint and hint.matches(data) and (file_id := hint.file_id(files, links, title)):
+                    locator = (title, hint)
+                else:
+                    continue
             source_kwargs: dict[str, object] = {"inventory": info}
             if not need_transcode:
                 source_kwargs["need_transcode"] = False
