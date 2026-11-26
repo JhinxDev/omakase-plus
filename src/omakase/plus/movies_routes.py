@@ -377,6 +377,10 @@ def create_movies_router(
             if card is None:
                 raise HTTPException(404, "Movie not found")
             card["history"] = MovieHistoryService(svc).get(user.id, imdb_id)
+            if not card.get("trailer") and card.get("tmdb_id") and hasattr(svc, "movie_trailer"):
+                trailer = await svc.movie_trailer(user.id, int(card["tmdb_id"]))
+                if trailer:
+                    card["trailer"] = trailer
             card = present_movie(card, cloud_ids=cloud_ids)
             title_request = request_status(db, user.id, "movie", imdb_id, movie_card=card)
             removal = cleanup_status(db, user.id, imdb_id)
@@ -390,12 +394,15 @@ def create_movies_router(
             return await render(
                 request, user, db, action_card={"title": "Movie unavailable", "detail": exc.detail}
             )
+        back_from_discover = request.query_params.get("from") == "discover"
         return templates.TemplateResponse(
             request,
             "movie_detail.html",
             {
                 **context(request, user),
                 "card": card,
+                "back_href": "/plus/discover?kind=movies" if back_from_discover else "/plus/movies",
+                "back_label": "For You" if back_from_discover else "Your movies",
                 "cloud_playback": cloud_ids is not None,
                 "cloud_error": cloud_error,
                 "title_request": title_request,

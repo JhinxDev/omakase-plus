@@ -1,4 +1,5 @@
-{% macro detail_back(href, label) -%}
+{% macro detail_back(href, label, override_href=none, override_label=none) -%}
+{% if override_href %}{% set href = override_href %}{% set label = override_label %}{% endif %}
 <a href="{{ href }}" class="detail-back-link" data-nav-back><span aria-hidden="true">←</span>&nbsp; {{ label }}</a>
 {%- endmacro %}
 

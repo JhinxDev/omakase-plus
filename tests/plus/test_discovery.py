@@ -330,7 +330,10 @@ def test_for_you_shell_defers_catalog_and_ai_work(client):
     ):
         page = client.get("/plus/discover")
     assert page.status_code == 200
-    assert "Anime for You" in page.text
+    assert "Top Picks for You" in page.text
+    assert "Edit For You" in page.text
+    assert "AI Picks" in page.text
+    assert "Find anime" not in page.text
     assert "Ask for a menu" not in page.text
     assert 'data-hub-rows="anime"' in page.text
     assert 'id="run-form"' not in page.text
@@ -362,7 +365,7 @@ def test_for_you_rows_apply_account_feedback_and_render_one_recommendation_shelf
     assert response.status_code == 200
     assert response.headers["cache-control"] == "private, no-store"
     assert response.text.count('<section class="hub-shelf"') == 1
-    assert "Anime for You" in response.text
+    assert "Top Picks for You" in response.text
     assert "Current show" in response.text and "Animated film" in response.text
     assert "Dismissed title" not in response.text
     assert "Add to library" not in response.text
@@ -418,13 +421,16 @@ def test_anime_recommendations_mix_distinct_titles_in_one_ranked_shelf(client):
     ]
     with _connect_client_db(client) as db:
         shelves = hub.anime_shelves(db, _user_id(client), catalog, anchors)
-    assert len(shelves) == 1
-    assert shelves[0]["title"] == "Anime for You"
+    assert len(shelves) >= 3
+    assert shelves[0]["key"] == "top"
+    assert shelves[0]["title"] == "Top Picks for You"
     cards = shelves[0]["cards"]
     assert len(cards) == 30 and len({card["id"] for card in cards}) == 30
     assert any(card["airing"] for card in cards[:5])
     assert any(card["format"] == "Anime film" for card in cards[:8])
     assert "Action" in cards[0]["genres"]
+    keys = {shelf["key"] for shelf in shelves}
+    assert {"top", "airing", "films"} <= keys
 
 
 def test_for_you_tabs_render_and_fetch_only_the_selected_media_type(client):

@@ -68,6 +68,7 @@ def plus_content_security_policy(form_sources: str = "'self'") -> str:
     return (
         "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; "
         "font-src 'self'; img-src 'self' data:; connect-src 'self'; "
-        "media-src 'self' blob: data:; worker-src 'self' blob:; object-src 'none'; "
+        "media-src 'self' blob: data:; worker-src 'self' blob:; "
+        "frame-src https://www.youtube-nocookie.com; object-src 'none'; "
         f"base-uri 'self'; form-action {form_sources}; frame-ancestors 'none'"
     )

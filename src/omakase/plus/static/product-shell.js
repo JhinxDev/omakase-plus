@@ -293,10 +293,66 @@
     }, { passive: true, capture: true });
   }
 
+  function wireTrailerModal() {
+    var modal = document.querySelector('[data-trailer-modal]');
+    if (!modal) return;
+    var heading = modal.querySelector('[data-trailer-heading]');
+    var external = modal.querySelector('[data-trailer-external]');
+    var frame = modal.querySelector('[data-trailer-frame]');
+    var closeBtn = modal.querySelector('[data-trailer-close]');
+    var lastTrigger = null;
+
+    function closeModal() {
+      if (frame) frame.innerHTML = '';
+      if (typeof modal.close === 'function' && modal.open) modal.close();
+      else modal.removeAttribute('open');
+      if (lastTrigger && typeof lastTrigger.focus === 'function') {
+        lastTrigger.focus({ preventScroll: true });
+      }
+      lastTrigger = null;
+    }
+
+    function openTrailer(videoId, title, trigger) {
+      if (!/^[A-Za-z0-9_-]{11}$/.test(videoId || '')) return;
+      lastTrigger = trigger || null;
+      var label = title ? title + ' Trailer' : 'Trailer';
+      if (heading) heading.textContent = label;
+      if (external) external.href = 'https://www.youtube.com/watch?v=' + encodeURIComponent(videoId);
+      if (frame) {
+        var iframe = document.createElement('iframe');
+        iframe.src = 'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(videoId) + '?autoplay=1&rel=0';
+        iframe.title = label;
+        iframe.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen');
+        iframe.setAttribute('allowfullscreen', '');
+        iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+        frame.replaceChildren(iframe);
+      }
+      if (typeof modal.showModal === 'function') modal.showModal();
+      else modal.setAttribute('open', '');
+      if (closeBtn) closeBtn.focus({ preventScroll: true });
+    }
+
+    document.addEventListener('click', function (event) {
+      var trigger = event.target.closest ? event.target.closest('[data-trailer-open]') : null;
+      if (!trigger) return;
+      event.preventDefault();
+      openTrailer(trigger.dataset.trailerId, trigger.dataset.trailerTitle, trigger);
+    });
+    if (closeBtn) closeBtn.addEventListener('click', closeModal);
+    modal.addEventListener('cancel', function (event) {
+      event.preventDefault();
+      closeModal();
+    });
+    modal.addEventListener('click', function (event) {
+      if (event.target === modal) closeModal();
+    });
+  }
+
   function start() {
     var dialog = document.querySelector('[data-edit-home]');
     if (dialog) wireEditHome(dialog);
     wireOpeners();
+    wireTrailerModal();
     wireArtwork();
     wireArtworkPreference();
     wireMobilePanels();

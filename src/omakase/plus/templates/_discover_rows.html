@@ -1,6 +1,6 @@
 {% from "_request_timeline.html" import request_timeline %}
 {% from "_watched_feedback.html" import watched_feedback %}
-{% macro shelf(row) -%}
+{% macro shelf(row, active_kind) -%}
 <section class="hub-shelf" aria-labelledby="hub-{{ row.key }}">
   <div class="hub-shelf-heading">
     <h2 id="hub-{{ row.key }}">{{ row.title }}</h2>
@@ -8,33 +8,39 @@
   </div>
   <div id="hub-rail-{{ row.key }}" class="media-rail hub-rail" role="group" aria-label="{{ row.title }}">
     {% for card in row.cards %}
-    <div{% if card.kind == "anime" and row.key != "continue" %} data-hub-anime="{{ card.id }}"{% endif %}>
+    {% set fb_source = 'anilist' if card.kind == 'anime' else card.kind %}
+    {% set fb_id = card.tmdb_id if card.tmdb_id is defined and card.tmdb_id else card.id %}
+    {% set card_href = (card.href ~ ('&' if '?' in card.href else '?') ~ 'from=discover') if card.href else '' %}
+    <div data-hub-item="{{ fb_id }}" data-hub-source="{{ fb_source }}"{% if card.kind == "anime" and row.key != "continue" %} data-hub-anime="{{ card.id }}"{% endif %}>
       <article class="hub-card">
-        <a class="hub-card-link" href="{{ card.href }}">
+        <a class="hub-card-link" href="{{ card_href }}">
           <div class="hub-poster poster-frame">
             {% if card.poster %}<img src="{{ card.poster }}" width="342" height="513" alt="" data-poster loading="{{ 'eager' if row.key == 'top' and loop.index <= 3 else 'lazy' }}" decoding="async">{% endif %}
             {% if card.badge %}<span class="hub-badge">{{ card.badge }}</span>{% endif %}
           </div>
           <h3>{{ card.title }}</h3>
         </a>
-        <p class="hub-meta hub-card-meta"><span>{{ card.format }}</span>{% if card.episodes and card.episodes > 1 %}<span class="hub-episode-count">{{ card.episodes }} episodes</span>{% endif %}{% if card.airing %}<span class="hub-airing">Airing</span>{% endif %}{% if card.score %}<span class="hub-score">{{ card.score }}% AniList</span>{% endif %}</p>
+        <p class="hub-meta hub-card-meta"><span>{{ card.format }}</span>{% if card.year %}<span>{{ card.year }}</span>{% endif %}{% if card.episodes and card.episodes > 1 %}<span class="hub-episode-count">{{ card.episodes }} episodes</span>{% endif %}{% if card.airing %}<span class="hub-airing">Airing</span>{% endif %}{% if card.score %}<span class="hub-score">{{ card.score }}% {{ card.score_label or 'Score' }}</span>{% endif %}</p>
         {% if personal_requests and card.request %}
         <p class="hub-request-label">{{ card.request.label }}</p>
         {% endif %}
         {% if row.key != "continue" %}
         <details class="hub-options" name="recommendation-options">
           <summary aria-label="Options for {{ card.title }}">Options <span aria-hidden="true">···</span></summary>
-          <div class="feedback-actions" {% if card.kind == "anime" %}data-title="{{ card.title }}" data-source="anilist" data-media-id="{{ card.id }}"{% endif %}>
+          <div class="feedback-actions" data-title="{{ card.title }}" data-source="{{ fb_source }}" data-media-id="{{ fb_id }}">
             {% if personal_requests and card.can_request %}{{ request_form(card, "text-action") }}{% endif %}
+            {% if card.trailer %}
+            <button type="button" class="text-action" data-trailer-open data-trailer-id="{{ card.trailer.id }}" data-trailer-title="{{ card.title }}">Watch trailer</button>
+            {% endif %}
             {% if card.kind == "anime" %}
               {% if not card.owned and not card.saved %}<button type="button" class="text-action btn-plan" data-media-id="{{ card.id }}" data-title="{{ card.title }}">Save to watchlist</button>{% endif %}
-              {{ watched_feedback() }}
-              <button type="button" class="text-action btn-feedback" data-feedback="not_for_me">Not for me</button>
             {% elif card.kind == "movie" %}
-              <a class="text-action" href="{{ card.href }}#movie-rating">Watch status &amp; rating</a>
+              <a class="text-action" href="{{ card_href }}#movie-rating">Watch status &amp; rating</a>
             {% elif card.kind == "tv" %}
-              <a class="text-action" href="{{ card.href }}#tv-history">Watch status &amp; rating</a>
+              <a class="text-action" href="{{ card_href }}#tv-history">Watch status &amp; rating</a>
             {% endif %}
+            {{ watched_feedback() }}
+            <button type="button" class="text-action btn-feedback" data-feedback="not_for_me">Not for me</button>
           </div>
         </details>
         {% endif %}
@@ -52,7 +58,7 @@
   <button class="{{ button_class }}" type="submit" aria-label="Request {{ card.title }}" data-busy-label="Requesting…">Request title</button>
 </form>
 {%- endmacro %}
-{% for row in rows %}{{ shelf(row) }}{% else %}
+{% for row in rows %}{{ shelf(row, kind) }}{% else %}
 <section class="hub-shelf hub-unavailable">
   {% if history_unavailable %}
   <h2>Your AniList history is temporarily unavailable</h2>

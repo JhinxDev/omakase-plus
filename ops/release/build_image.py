@@ -396,9 +396,54 @@ def remote_image_details(host: str, reference: str) -> dict[str, object]:
     return details[0]
 
 
+def preserve_prior_image_command(tag: str) -> str:
+    """Build a shell guard that retains an extra tag on a running container's image."""
+    quoted = shlex.quote(tag)
+    return (
+        f"prior=$(docker ps -q --filter ancestor={quoted} | head -n1); "
+        f'if [ -n "$prior" ]; then '
+        f'img=$(docker inspect "$prior" --format "{{{{.Image}}}}" 2>/dev/null || true); '
+        f'short=$(printf "%s" "$img" | sed "s/^sha256://;s/\\(.\\{{12\\}}\\).*/\\1/"); '
+        f'if [ -n "$short" ]; then docker tag "$img" "omakase-plus:prior-$short" 2>/dev/null || true; fi; '
+        f"fi"
+    )
+
+
+def _preserve_local_prior_image(tag: str) -> None:
+    try:
+        ps = subprocess.run(
+            ["docker", "ps", "-q", "--filter", f"ancestor={tag}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        container_id = next((line.strip() for line in ps.stdout.splitlines() if line.strip()), "")
+        if not container_id:
+            return
+        inspect = subprocess.run(
+            ["docker", "inspect", container_id, "--format", "{{.Image}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        image_id = inspect.stdout.strip()
+        short = image_id.removeprefix("sha256:")[:12]
+        if short:
+            subprocess.run(
+                ["docker", "tag", image_id, f"{IMAGE_REPOSITORY}:prior-{short}"],
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+    except OSError:
+        return
+
+
 def remote_build_image(host: str, context: bytes, revision: str, tag: str, timeout: int) -> None:
     """Build the exact commit context on the Docker host over ssh."""
-    command = shlex.join(
+    build_cmd = shlex.join(
         [
             "docker",
             "build",
@@ -413,7 +458,9 @@ def remote_build_image(host: str, context: bytes, revision: str, tag: str, timeo
             "-",
         ]
     )
-    _ssh(host, command, stdin=context, timeout=timeout)
+    _ssh(
+        host, f"{preserve_prior_image_command(tag)} && {build_cmd}", stdin=context, timeout=timeout
+    )
 
 
 def remote_verify_image(
@@ -465,6 +512,7 @@ def remote_tool_readback(host: str, reference: str) -> dict[str, object]:
 def build_image(repo: Path, commit: str, revision: str, tag: str, timeout: int) -> str:
     """Build the commit archive with the repository Dockerfile and return the image id."""
     context = commit_archive(repo, commit)
+    _preserve_local_prior_image(tag)
     _docker(
         "build",
         "--network",

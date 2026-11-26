@@ -8,6 +8,26 @@ identifier; it does not replace the public release version.
 
 ## Unreleased
 
+## 0.6.0 - 2026-11-26
+
+### Added
+
+- Upgraded **For You** with multi-shelf personalized rails across Anime, Movies, and TV Shows (`Top Picks for You`, `Because You Liked ...` collaborative recommendations, `Hidden Gems` / `Critically Acclaimed`, `Airing This Season` / `New Releases`, and `AI Tasting Menu`) plus multi-signal affinity scoring across genres, studios, non-spoiler tags, ratings, and collaborative picks.
+- Added per-category **Edit For You** shelf customization (`viewer_discover_layout`, `POST /plus/discover/layout`) mirroring **Edit Home**, allowing every profile to reorder or hide shelves independently on Anime, Movies, and TV Shows.
+- Added optional automatic AI recommendation refresh scheduling (`discover_refresh_settings`, `POST /plus/discover/refresh-settings`) supporting `Manual only`, `When new watches or ratings arrive`, and `Weekly background check`, with signal-change tracking across all media domains.
+- Integrated official YouTube trailers (`trailers.py`) across Anime (AniList), Movies, and TV Shows (Seerr/TMDB) with an inline dark `youtube-nocookie.com` **Watch trailer** modal (`#trailer-modal`), strict YouTube ID validation, `frame-src` CSP scoping, and direct **Open on YouTube** fallback.
+- Database migration `069-for-you-layout-and-refresh.sql`.
+
+### Changed
+
+- Unified the **For You** page header actions (`Edit For You` and context-aware `AI Picks`), removed the Anime-only `Find anime` header override and Movies-only inline filter link, and standardized card metadata (`format`, `year`, `episodes`, `score%`), card **Options** (`Watch trailer`, `Already watched`, `Not for me`), and live card removal across all three media tabs.
+- Rebuilt `catalog_anime.html` onto the shared compact backdrop title detail hero (`_title_detail.html` and `series-detail.css`) and wired `?from=discover` back navigation across Anime, Movies, and TV detail views.
+
+### Fixed
+
+- Fixed `/plus/api/feedback` so marking a For You movie or TV card as `Already watched` records cleanly locally without triggering AniList/MAL tracker queue errors.
+- Guarded `ops/release/build_image.py` to preserve an extra tag (`omakase-plus:prior-<id>`) on any running container's image before rebuilding over an identical revision tag.
+
 ## 0.5.0 - 2026-11-26
 
 ### Added

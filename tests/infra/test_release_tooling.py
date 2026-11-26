@@ -1130,3 +1130,9 @@ def test_release_workflow_uses_least_privilege_and_tag_trigger():
     assert "contents: write" in workflow
     assert "packages: write" not in workflow
     assert "ops/release/github_release_notes.py" in workflow
+
+
+def test_build_image_preserves_prior_live_container_tag_before_overwrite():
+    cmd = build_image.preserve_prior_image_command("omakase-plus:debrid-reliability-5fb56884d108")
+    assert "docker ps -q --filter ancestor=" in cmd
+    assert "omakase-plus:prior-" in cmd

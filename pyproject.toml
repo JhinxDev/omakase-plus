@@ -1,6 +1,6 @@
 [project]
 name = "omakase"
-version = "0.5.0"
+version = "0.6.0"
 description = "Self-hosted anime, movie and TV discovery, viewing progress, ratings and connected library management."
 readme = "README.md"
 requires-python = ">=3.11"

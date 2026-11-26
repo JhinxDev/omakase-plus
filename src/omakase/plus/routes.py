@@ -662,6 +662,9 @@ def _run_job(job_id: str, cfg: OmakaseConfig, profile_path: str) -> None:
                 ),
             )
             run_id = cursor.lastrowid
+            from omakase.plus.for_you_layout import mark_ai_refreshed
+
+            mark_ai_refreshed(result_db, context["user_id"])
     except Exception as error:
         # Provider HTTP errors may embed keys in query strings. The browser
         # receives a safe explanation, never a provider URL or raw exception.
@@ -1496,11 +1499,16 @@ async def title_page(
     title = title_detail(db, user_id=user.id, monitor_id=monitor_id)
     if title is None:
         raise HTTPException(status_code=404, detail="Media title not found")
+    from omakase.plus.discover_hub import cached_anime_trailer
     from omakase.plus.local_list import local_removed
 
     title["local_list_removed"] = local_removed(
         db, user_id=user.id, anilist_id=title["anilist_id"], season=title["season_number"]
     )
+    if not title.get("trailer"):
+        trailer = cached_anime_trailer(title["anilist_id"])
+        if trailer:
+            title["trailer"] = trailer
     title.update(cached_title_languages(title))
     if title["local_list_removed"]:
         title["active"] = False
@@ -1513,12 +1521,15 @@ async def title_page(
            WHERE w.monitor_id=? AND o.user_id=? ORDER BY o.id DESC LIMIT 1""",
         (monitor_id, user.id),
     ).fetchone()
+    back_from_discover = request.query_params.get("from") == "discover"
     return templates.TemplateResponse(
         request,
         "title.html",
         {
             **_product_context(request, user, active_page="library"),
             "title": title,
+            "back_href": "/plus/discover" if back_from_discover else "/plus/library",
+            "back_label": "For You" if back_from_discover else "Your anime",
             "cloud_playback": playback_providers.select(db, user.id).cloud_route,
             "message": message,
             "completed": completed,
@@ -2080,6 +2091,8 @@ async def discover_page(
 ):
     if mode not in {"browse", "recommend", "add"}:
         raise HTTPException(status_code=422, detail="Discover mode is unsupported")
+    from omakase.plus import for_you_layout
+
     if mode == "browse" and run is None:
         filtered_movies = None
         if kind == "movies" and any(
@@ -2094,12 +2107,16 @@ async def discover_page(
                 sort="personalized" if sort is None else sort,
                 include_completed=bool(include_completed),
             )
+        layout_state = for_you_layout.load_layout(db, user.id, kind)
         return templates.TemplateResponse(
             request,
             "discover_hub.html",
             {
                 **_product_context(request, user, active_page="discover"),
                 "discover_kind": kind,
+                "discover_layout_rows": for_you_layout.edit_rows(kind, layout_state["rows"]),
+                "discover_refresh_settings": for_you_layout.load_refresh_settings(db, user.id),
+                "discover_refresh_due": for_you_layout.is_ai_refresh_due(db, user.id),
                 "filtered_movies": filtered_movies,
                 "message": message,
             },
@@ -2129,6 +2146,9 @@ async def discover_page(
         {
             **_product_context(request, user, active_page="discover"),
             **recommendations,
+            "discover_kind": kind,
+            "discover_refresh_settings": for_you_layout.load_refresh_settings(db, user.id),
+            "discover_refresh_due": for_you_layout.is_ai_refresh_due(db, user.id),
             "discovery_preferences": saved_preferences(db, user.id),
             "active_job_id": active_job_id,
             "codex_worker": get_worker_status(db),
@@ -2140,6 +2160,81 @@ async def discover_page(
             "discover_mode": mode,
             "message": message,
         },
+    )
+
+
+@router.post("/discover/layout")
+async def save_discover_layout(
+    request: Request,
+    kind: Literal["anime", "movies", "tv"] = Form("anime"),
+    action: str = "",
+    target: str = "",
+    rows: str = Form(""),
+    hidden: list[str] = Form([]),
+    csrf_token: str = Form(""),
+    user=Depends(require_user),
+    db=Depends(get_db),
+):
+    """Persist one profile's For You shelf ordering per category tab."""
+    _require_csrf(request, csrf_token)
+    from omakase.plus.for_you_layout import (
+        ForYouLayoutError,
+        apply_layout_action,
+        load_layout,
+        save_layout,
+    )
+
+    try:
+        if action in {"move-up", "move-down", "add", "remove"}:
+            current = load_layout(db, user.id, kind)["rows"]
+            payload = apply_layout_action(kind, current, action, target)
+        elif action == "reset":
+            payload = apply_layout_action(kind, [], "reset", "")
+        else:
+            if len(rows) > 256 or len(hidden) > 16:
+                raise ForYouLayoutError("That For You layout is too large")
+            names = [name for name in rows.split(",") if name.strip()]
+            out = {name for name in hidden if isinstance(name, str) and len(name) <= 40}
+            payload = [{"id": name.strip(), "hidden": name.strip() in out} for name in names]
+        save_layout(db, user.id, kind, payload)
+    except ForYouLayoutError as exc:
+        return RedirectResponse(
+            f"/plus/discover?kind={kind}&message={quote(str(exc))}", status_code=303
+        )
+    return RedirectResponse(
+        f"/plus/discover?kind={kind}&message=" + quote("For You shelves saved for this profile."),
+        status_code=303,
+    )
+
+
+@router.post("/discover/refresh-settings")
+async def save_discover_refresh_settings(
+    request: Request,
+    kind: Literal["anime", "movies", "tv"] = Form("anime"),
+    cadence: str = Form("weekly"),
+    csrf_token: str = Form(""),
+    user=Depends(require_user),
+    db=Depends(get_db),
+):
+    """Save the viewer's automatic AI recommendation refresh schedule."""
+    _require_csrf(request, csrf_token)
+    from omakase.plus.for_you_layout import ForYouLayoutError, save_refresh_settings
+
+    try:
+        save_refresh_settings(
+            db,
+            user.id,
+            auto_ai_refresh=cadence != "manual",
+            cadence=cadence,
+        )
+    except ForYouLayoutError as exc:
+        return RedirectResponse(
+            f"/plus/discover?mode=recommend&kind={kind}&message={quote(str(exc))}", status_code=303
+        )
+    return RedirectResponse(
+        f"/plus/discover?mode=recommend&kind={kind}&message="
+        + quote("Recommendation refresh schedule saved."),
+        status_code=303,
     )
 
 
@@ -3478,6 +3573,13 @@ async def feedback_api(
         return {"status": "error", "detail": str(e)}
     if feedback_type != "already_watched":
         return {"status": "ok", "local_saved": True}
+    if source in {"movie", "tv"}:
+        return {
+            "status": "ok",
+            "local_saved": True,
+            "tracker_status": "local_only",
+            "detail": "Marked watched in For You. Future picks will exclude it.",
+        }
     if media_id is None:
         return {
             "status": "ok",

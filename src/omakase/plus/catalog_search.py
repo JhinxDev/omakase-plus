@@ -20,6 +20,7 @@ from cryptography.exceptions import InvalidTag
 from omakase.plus.movies_store import require_user
 from omakase.plus.outbound import OutboundError, pin_destination
 from omakase.plus.secrets import read_secret
+from omakase.plus.trailers import extract_anilist_trailer
 
 _ENDPOINT = "https://graphql.anilist.co"
 _ANIME_POSTER = re.compile(
@@ -42,7 +43,7 @@ _MESSAGES = {
 }
 _FIELDS = """id type title { english romaji native } seasonYear startDate { year }
 format episodes status(version:2) description(asHtml:false) genres coverImage { large }
-studios(isMain:true) { nodes { name } }"""
+trailer { id site } studios(isMain:true) { nodes { name } }"""
 _PRIVATE = "mediaListEntry { mediaId userId status progress score(format:POINT_10_DECIMAL) }"
 
 
@@ -268,6 +269,7 @@ class AnimeCatalogSearch:
             "genres": genres,
             "status": _plain(raw.get("status"), 40) or None,
             "studio": studio,
+            "trailer": extract_anilist_trailer(raw.get("trailer")),
             "poster_url": f"/plus/media/{media_id}/poster",
             "catalog_poster_url": poster
             if isinstance(poster, str) and _ANIME_POSTER.fullmatch(poster)

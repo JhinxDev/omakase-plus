@@ -204,6 +204,8 @@ def test_all_tables_exist(_fresh_db):
         "title_reviews",
         "completion_realdebrid_removals",
         "completion_realdebrid_preferences",
+        "viewer_discover_layout",
+        "discover_refresh_settings",
     }
     assert tables == expected, (
         f"Mismatch — missing: {expected - tables}, extra: {tables - expected}"

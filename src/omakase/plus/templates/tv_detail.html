@@ -14,7 +14,7 @@
 <div class="tv-page">
 {% if notice in ['saved','updated'] %}<p class="product-notice" role="status">{% if notice == 'saved' %}Your watch history and rating were saved.{% else %}Check finished. Review the current result below.{% endif %}</p>{% endif %}
 {% if tv_error %}<p class="product-notice notice-danger" role="status">{{ tv_error }}</p>{% endif %}
-{{ detail_back('/plus/tv', 'Your TV shows') }}
+{{ detail_back('/plus/tv', 'Your TV shows', back_href | default(none, true), back_label | default(none, true)) }}
 {% set series_art = '/plus/tv/' ~ card.tmdb_id ~ '/artwork' if card.poster_url else '' %}
 {% call(slot) detail_hero(
   'tv-detail-hero series-hero',
@@ -36,6 +36,9 @@
     {{ playback_link(featured_episode.url, action ~ ' · ' ~ episode_label, action ~ ' ' ~ card.title ~ ', season ' ~ featured_episode.season ~ ', episode ' ~ featured_episode.episode) }}
   {% elif not cloud_playback and card.plex_url %}<a class="button button-primary" href="{{ card.plex_url }}" rel="noopener noreferrer" target="_blank">Open in Plex</a>{% endif %}
   <a class="button {{ 'button-secondary' if featured_episode or (not cloud_playback and card.plex_url) else 'button-primary' }}" href="{{ '?season=' ~ featured_episode.season if featured_episode and featured_episode.season != selected_season else '' }}#tv-seasons">Explore episodes</a>
+  {% if card.trailer %}
+  <button type="button" class="button button-secondary" data-trailer-open data-trailer-id="{{ card.trailer.id }}" data-trailer-title="{{ card.title }}">Watch trailer</button>
+  {% endif %}
 </div>
 {% elif slot == 'synopsis' %}
 {% if card.overview %}<div class="tv-overview"><p>{{ card.overview | truncate(300, false, '…') }}</p>{% if card.overview | length > 300 %}<details><summary>Read full synopsis</summary><p>{{ card.overview }}</p></details>{% endif %}</div>{% else %}<p class="tv-overview tv-muted">A catalog synopsis is not available for this show yet.</p>{% endif %}

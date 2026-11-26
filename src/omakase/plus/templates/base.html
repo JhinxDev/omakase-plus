@@ -180,6 +180,21 @@
       <div class="mobile-more-panel"><strong>More</strong><a href="/plus/search" {% if active_page == 'search' %}aria-current="page"{% endif %}>{{ icon('search') }}<span>Search</span></a><a href="/plus/activity" {% if active_page == 'activity' %}aria-current="page"{% endif %}>{{ icon('history') }}<span>History</span></a></div>
     </details>
   </nav>
+  <dialog class="trailer-modal" id="trailer-modal" aria-labelledby="trailer-modal-heading" data-trailer-modal>
+    <div class="trailer-modal-shell">
+      <header class="trailer-modal-head">
+        <div>
+          <span class="page-kicker">Preview</span>
+          <h2 id="trailer-modal-heading" data-trailer-heading>Trailer</h2>
+        </div>
+        <div class="trailer-modal-actions">
+          <a class="button button-secondary" href="#" target="_blank" rel="noopener noreferrer" data-trailer-external>Open on YouTube ↗</a>
+          <button type="button" class="edit-home-close" aria-label="Close trailer" data-trailer-close><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+        </div>
+      </header>
+      <div class="trailer-frame" data-trailer-frame></div>
+    </div>
+  </dialog>
   {% block end_scripts %}{% endblock %}
 </body>
 </html>

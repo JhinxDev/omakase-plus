@@ -444,12 +444,15 @@ def create_tv_router(
                 cloud_partial = season in availability.partial_seasons
             except (DebridLibraryError, PlaybackSourceError, TimeoutError):
                 cloud_error = True
+        back_from_discover = request.query_params.get("from") == "discover"
         return templates.TemplateResponse(
             request,
             "tv_detail.html",
             {
                 **context(request, user),
                 "card": card,
+                "back_href": "/plus/discover?kind=tv" if back_from_discover else "/plus/tv",
+                "back_label": "For You" if back_from_discover else "Your TV shows",
                 "selected_season": season,
                 "completed_seasons": title_reviews.completed_seasons(card),
                 "reviews": title_reviews.read(db, user.id, "tv", tmdb_id),

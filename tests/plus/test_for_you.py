@@ -412,3 +412,208 @@ def test_verified_library_exits_queue_and_confirmed_removal_keeps_history(client
         fake.plex_guid = removed
         changed = run(for_you.recommendations(db, user_id, "movies"))
         assert changed["requests"][0]["state"] == "requested"
+
+
+def test_trailer_parser_rejects_unsafe_inputs_and_extracts_youtube():
+    from omakase.plus.trailers import (
+        extract_anilist_trailer,
+        extract_seerr_trailer,
+        youtube_trailer,
+    )
+
+    assert youtube_trailer("dQw4w9WgXcQ") == {
+        "site": "youtube",
+        "id": "dQw4w9WgXcQ",
+        "embed_url": "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?autoplay=1&rel=0",
+        "watch_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    }
+    assert youtube_trailer("bad<script>") is None
+    assert youtube_trailer("short") is None
+    assert extract_anilist_trailer({"site": "vimeo", "id": "dQw4w9WgXcQ"}) is None
+    assert extract_anilist_trailer({"site": "youtube", "id": "dQw4w9WgXcQ"})["id"] == "dQw4w9WgXcQ"
+    assert (
+        extract_seerr_trailer(
+            [
+                {"site": "YouTube", "type": "Teaser", "key": "aaaaaaaaaaa"},
+                {"site": "YouTube", "type": "Trailer", "key": "bbbbbbbbbbb"},
+            ]
+        )["id"]
+        == "bbbbbbbbbbb"
+    )
+    assert extract_seerr_trailer([{"url": "https://youtu.be/ccccccccccc"}])["id"] == "ccccccccccc"
+
+
+def test_for_you_csp_allows_nocookie_trailer_frames():
+    from omakase.plus.web_security import plus_content_security_policy
+
+    policy = plus_content_security_policy()
+    assert "frame-src https://www.youtube-nocookie.com;" in policy
+
+
+def test_for_you_header_edit_layout_and_refresh_settings(client):
+    from datetime import UTC, datetime, timedelta
+
+    from omakase.plus import for_you_layout
+
+    _signup_and_login(client)
+    user_id = _user_id(client)
+    csrf = _csrf_token(client)
+
+    for kind in ("anime", "movies", "tv"):
+        html = client.get(f"/plus/discover?kind={kind}").text
+        assert "Edit For You" in html
+        assert "AI Picks" in html
+        assert "Find anime" not in html
+        assert "Filter movies" not in html
+        assert 'action="/plus/discover/layout"' in html
+
+    res = client.post(
+        "/plus/discover/layout",
+        data={
+            "csrf_token": csrf,
+            "kind": "movies",
+            "rows": "hidden_gems,top,because_you_liked,new_releases",
+            "hidden": ["new_releases"],
+        },
+        follow_redirects=False,
+    )
+    assert res.status_code == 303
+    assert "/plus/discover?kind=movies" in res.headers["location"]
+    with _connect_client_db(client) as db:
+        saved = for_you_layout.load_layout(db, user_id, "movies")["rows"]
+        assert [row["id"] for row in saved][:2] == ["hidden_gems", "top"]
+        assert next(row for row in saved if row["id"] == "new_releases")["hidden"] is True
+
+    sched = client.post(
+        "/plus/discover/refresh-settings",
+        data={"csrf_token": csrf, "kind": "anime", "cadence": "on_new_data"},
+        follow_redirects=False,
+    )
+    assert sched.status_code == 303
+    with _connect_client_db(client) as db:
+        assert for_you_layout.is_ai_refresh_due(db, user_id) is True
+        now = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
+        for_you_layout.mark_ai_refreshed(db, user_id, now=now)
+        assert for_you_layout.is_ai_refresh_due(db, user_id, now=now) is False
+        db.execute(
+            "INSERT INTO recommendation_feedback(user_id,source,media_id,title,feedback_type) "
+            "VALUES (?,'anilist',9001,'New rating signal','not_for_me')",
+            (user_id,),
+        )
+        db.commit()
+        assert for_you_layout.is_ai_refresh_due(db, user_id, now=now) is True
+        for_you_layout.save_refresh_settings(
+            db, user_id, auto_ai_refresh=True, cadence="weekly", now=now
+        )
+        assert for_you_layout.is_ai_refresh_due(db, user_id, now=now + timedelta(days=2)) is False
+        assert for_you_layout.is_ai_refresh_due(db, user_id, now=now + timedelta(days=8)) is True
+
+
+def test_movie_and_tv_feedback_actions_save_and_exclude_locally(client, monkeypatch):
+    _signup_and_login(client)
+    user_id = _user_id(client)
+    csrf = _csrf_token(client)
+    monkeypatch.setattr(discover_hub, "_screen_rows", discover_hub._screen_rows.__class__())
+
+    res_tv = client.post(
+        "/plus/api/feedback",
+        json={
+            "feedback_type": "already_watched",
+            "source": "tv",
+            "media_id": 555,
+            "title": "Seen Show",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert res_tv.status_code == 200
+    assert res_tv.json()["status"] == "ok"
+    assert res_tv.json()["tracker_status"] == "local_only"
+
+    res_movie = client.post(
+        "/plus/api/feedback",
+        json={
+            "feedback_type": "not_for_me",
+            "source": "movie",
+            "media_id": 777,
+            "title": "Skip Movie",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert res_movie.status_code == 200 and res_movie.json()["status"] == "ok"
+    with _connect_client_db(client) as db:
+        fb_rows = db.execute(
+            "SELECT source, media_id FROM recommendation_feedback WHERE user_id=? ORDER BY id",
+            (user_id,),
+        ).fetchall()
+        assert [(r["source"], r["media_id"]) for r in fb_rows] == [("tv", 555), ("movie", 777)]
+
+    movie_card = discover_hub._project_movie_card(
+        {
+            "imdb_id": "tt0000999",
+            "tmdb_id": 999,
+            "title": "Keep Movie",
+            "year": 2025,
+            "vote_average": 8.4,
+            "trailer": {"site": "youtube", "id": "dQw4w9WgXcQ"},
+            "state": "verifying",
+        }
+    )
+    monkeypatch.setattr(
+        discover_hub,
+        "screen_shelves",
+        AsyncMock(
+            return_value=[
+                discover_hub._shelf("top", "Top Picks for You", [movie_card], kind="movie")
+            ]
+        ),
+    )
+    monkeypatch.setattr(for_you, "_movie_library", AsyncMock(return_value={}))
+    rows_html = client.get("/plus/discover/rows?kind=movies").text
+    assert "Keep Movie" in rows_html
+    assert "84% TMDB" in rows_html
+    assert 'data-trailer-id="dQw4w9WgXcQ"' in rows_html
+    assert 'data-hub-source="movie"' in rows_html
+    assert 'data-feedback="not_for_me"' in rows_html
+    assert 'data-feedback="already_watched"' in rows_html
+    assert "from=discover" in rows_html
+
+
+def test_catalog_anime_uses_unified_hero_with_trailer_and_discover_back(client, monkeypatch):
+    _signup_and_login(client)
+    monkeypatch.setenv("OMAKASE_PLUS_PRIVATE", "true")
+    detail = {
+        "id": 9101,
+        "anilist_id": 9101,
+        "title": "Unified Hero Show",
+        "year": 2025,
+        "format": "TV",
+        "episode_total": 12,
+        "status": "FINISHED",
+        "genres": ["Action", "Drama"],
+        "description": "Clean unified detail test.",
+        "studio": "Test Studio",
+        "trailer": {
+            "site": "youtube",
+            "id": "dQw4w9WgXcQ",
+            "embed_url": "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?autoplay=1&rel=0",
+            "watch_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        },
+        "poster_url": "/plus/media/9101/poster",
+        "url": "/plus/catalog/anime/9101",
+        "watch_status": "unknown",
+        "progress": None,
+        "rating": None,
+        "library_id": None,
+        "library_status": None,
+    }
+    monkeypatch.setattr(
+        search_routes.AnimeCatalogSearch,
+        "detail",
+        AsyncMock(return_value=detail),
+    )
+    html = client.get("/plus/catalog/anime/9101?from=discover").text
+    assert "series-detail.css" in html
+    assert "series-hero" in html
+    assert "For You" in html
+    assert "data-trailer-open" in html and 'data-trailer-id="dQw4w9WgXcQ"' in html
+    assert 'id="trailer-modal"' in html

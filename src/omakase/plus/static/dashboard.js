@@ -256,11 +256,19 @@
           const hub = group.closest(".discover-hub");
           if (hub) {
             const status = hub.querySelector("[data-hub-status]");
-            for (const card of hub.querySelectorAll("[data-hub-anime]")) {
-              if (card.dataset.hubAnime === group.dataset.mediaId) card.remove();
+            const targetId = String(group.dataset.mediaId || "");
+            const targetSource = String(group.dataset.source || "");
+            for (const card of hub.querySelectorAll("[data-hub-item], [data-hub-anime]")) {
+              const cardId = String(card.dataset.hubItem || card.dataset.hubAnime || "");
+              const cardSource = String(card.dataset.hubSource || "anilist");
+              if (cardId === targetId && (!targetSource || cardSource === targetSource)) {
+                card.remove();
+              }
             }
-            status.textContent = confirmation;
-            status.focus({ preventScroll: true });
+            if (status) {
+              status.textContent = confirmation;
+              status.focus({ preventScroll: true });
+            }
           } else {
             group.closest("article")?.remove();
             if (!resultArea) showActionStatus(group, confirmation, "success");
