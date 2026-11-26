@@ -42,6 +42,7 @@ struct PhoneRootView: View {
                         }
                         .tag(4)
                 }
+                .id(store.activeProfile?.id)
                 .fullScreenCover(
                     item: Binding(
                         get: { store.activePass },

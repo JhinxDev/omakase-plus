@@ -534,7 +534,7 @@ public struct LiveLibraryClient: Sendable {
     }
 
     public func requests() async throws -> LiveRequestsPage {
-        let data = try await send(scoped(Self.endpoint(origin, "requests")), maxBytes: 1_048_576,
+        let data = try await send(Self.endpoint(origin, "requests"), maxBytes: 1_048_576,
                                   timeout: 35)
         let page = try JSONDecoder().decode(LiveRequestsPage.self, from: data)
         guard page.categories.map(\.id) == ["active", "attention", "history"],
@@ -566,20 +566,32 @@ public struct LiveLibraryClient: Sendable {
     /// The poster for a request, fetched only from targets the server and this client both trust.
     public func requestArtwork(_ request: LiveTitleRequest) async throws -> Data? {
         guard let poster = request.poster else { return nil }
-        return try await homeArtwork(poster)
+        return try await homeArtwork(poster, scoped: false)
     }
 
     public func homeArtwork(_ path: String) async throws -> Data? {
-        if path.range(of: #"^artwork/[1-9][0-9]{0,17}/(banner|poster)$"#,
+        try await homeArtwork(path, scoped: true)
+    }
+
+    private func homeArtwork(_ path: String, scoped useScope: Bool) async throws -> Data? {
+        if path.range(of: #"^artwork/[1-9][0-9]{0,17}/(banner|poster)\z"#,
                       options: .regularExpression) != nil {
-            return try await send(scoped(Self.endpoint(origin, path)), maxBytes: 6 * 1024 * 1024, timeout: 12)
+            let target = Self.endpoint(origin, path)
+            return try await send(useScope ? try scoped(target) : target,
+                                  maxBytes: 6 * 1024 * 1024, timeout: 12)
         }
-        if path.range(of: #"^watchlist/[1-9][0-9]{0,9}/poster$"#, options: .regularExpression) != nil {
-            return try await send(scoped(Self.endpoint(origin, path)), maxBytes: 4 * 1024 * 1024, timeout: 12)
+        if path.range(of: #"^watchlist/[1-9][0-9]{0,9}/poster\z"#, options: .regularExpression) != nil {
+            let target = Self.endpoint(origin, path)
+            return try await send(useScope ? try scoped(target) : target,
+                                  maxBytes: 4 * 1024 * 1024, timeout: 12)
         }
         guard let url = URL(string: path), url.scheme == "https", url.host == "image.tmdb.org",
               url.port == nil, url.user == nil, url.password == nil, url.query == nil,
-              url.fragment == nil, url.path.hasPrefix("/t/p/") else { return nil }
+              url.fragment == nil, !url.pathComponents.contains(".."),
+              url.path.range(
+                  of: #"^/t/p/(?:w[0-9]{2,4}|original)/[A-Za-z0-9_-]{1,96}\.(?:jpg|png|webp)\z"#,
+                  options: .regularExpression
+              ) != nil else { return nil }
         return try await Self.load(URLRequest(url: url, timeoutInterval: 12),
                                    session: session, maxBytes: 6 * 1024 * 1024)
     }

@@ -96,21 +96,61 @@ final class LiveLibraryPhoneClientTests: XCTestCase {
 
     @MainActor
     func testRequestPostersAreFetchedOnlyFromTrustedTargets() async throws {
-        let session = StubProtocol.session(host: "art") { _ in .init(status: 200, body: "IMG") }
+        let session = StubProtocol.session(hosts: ["art", "image"]) { _ in .init(status: 200, body: "IMG") }
         let live = try client(host: "art", session: session, lifetime: 1000)
         func request(_ poster: String?) throws -> LiveTitleRequest {
-            let extra = poster.map { #","poster":"\#($0)""# } ?? ""
-            let json = #"{"kind":"anime","title_id":"1","title":"T","state":"active","label":"L","detail":""\#(extra)}"#
-            return try JSONDecoder().decode(LiveTitleRequest.self, from: Data(json.utf8))
+            let payload: [String: String?] = [
+                "kind": "anime", "title_id": "1", "title": "T",
+                "state": "active", "label": "L", "detail": "", "poster": poster,
+            ]
+            return try JSONDecoder().decode(LiveTitleRequest.self, from: JSONEncoder().encode(payload))
         }
         let trusted = try await live.requestArtwork(request("artwork/12/poster"))
         XCTAssertEqual(trusted, Data("IMG".utf8))
+        let tmdb = try await live.requestArtwork(request("https://image.tmdb.org/t/p/w342/abc_123.jpg"))
+        XCTAssertEqual(tmdb, Data("IMG".utf8))
         for hostile in [nil, "https://evil.example/p.jpg", "artwork/0/poster", "http://image.tmdb.org/t/p/w342/a.jpg",
-                        "artwork/12/poster/../x"] {
+                        "artwork/12/poster/../x", "artwork/12/poster\n",
+                        "https://image.tmdb.org/t/p/w342/../a.jpg", "https://image.tmdb.org/t/p/w342/not-an-image"] {
             let result = try await live.requestArtwork(request(hostile))
             XCTAssertNil(result, "\(hostile ?? "nil") must not be fetched")
         }
-        XCTAssertEqual(StubProtocol.requests(host: "art").map(\.url.path), [base + "artwork/12/poster"])
+        let artRequests = StubProtocol.requests(host: "art")
+        let tmdbRequests = StubProtocol.requests(host: "image")
+        XCTAssertEqual(artRequests.map(\.url.path), [base + "artwork/12/poster"])
+        XCTAssertEqual(tmdbRequests.map(\.url.path), ["/t/p/w342/abc_123.jpg"])
+        XCTAssertEqual(artRequests[0].authorization, "Bearer " + token)
+        XCTAssertNil(tmdbRequests[0].authorization)
+    }
+
+    @MainActor
+    func testPersonalRequestsAndRequestArtworkDoNotSendHouseholdScope() async throws {
+        let session = StubProtocol.session(host: "personal") { req in
+            if req.url?.path.hasSuffix("/requests") == true {
+                return .init(
+                    status: 200,
+                    body: #"{"categories":[{"key":"active","title":"Active","requests":[]},{"key":"attention","title":"Attention","requests":[]},{"key":"history","title":"History","requests":[]}]}"#
+                )
+            }
+            return .init(status: 200, body: "IMG")
+        }
+        let option = try JSONDecoder().decode(
+            LiveLibraryOption.self,
+            from: Data(#"{"id":"\#(String(repeating: "b", count: 32))","name":"Home","kind":"household"}"#.utf8)
+        )
+        let scopedClient = try client(host: "personal", session: session, lifetime: 1000).selecting(option)
+        _ = try await scopedClient.requests()
+        let req = try JSONDecoder().decode(
+            LiveTitleRequest.self,
+            from: Data(#"{"kind":"anime","title_id":"1","title":"T","state":"active","label":"L","detail":"","poster":"artwork/9/poster"}"#.utf8)
+        )
+        _ = try await scopedClient.requestArtwork(req)
+        _ = try await scopedClient.homeArtwork("artwork/9/poster")
+        let seen = StubProtocol.requests(host: "personal")
+        XCTAssertEqual(seen.count, 3)
+        XCTAssertNil(seen[0].url.query)
+        XCTAssertNil(seen[1].url.query)
+        XCTAssertEqual(seen[2].url.query, "library_id=" + option.id)
     }
 
     private func client(host: String, session: URLSession, lifetime: TimeInterval) throws -> LiveLibraryClient {
@@ -128,9 +168,15 @@ private final class StubProtocol: URLProtocol {
     private nonisolated(unsafe) static var histories: [String: [Seen]] = [:]
 
     static func session(host: String, handler: @escaping @Sendable (URLRequest) -> Reply) -> URLSession {
+        session(hosts: [host], handler: handler)
+    }
+
+    static func session(hosts: [String], handler: @escaping @Sendable (URLRequest) -> Reply) -> URLSession {
         lock.withLock {
-            handlers[host] = handler
-            histories[host] = []
+            for host in hosts {
+                handlers[host] = handler
+                histories[host] = []
+            }
         }
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubProtocol.self]

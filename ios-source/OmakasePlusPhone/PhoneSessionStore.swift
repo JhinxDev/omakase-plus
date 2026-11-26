@@ -37,6 +37,7 @@ final class PhoneSessionStore {
     private var baseClient: LiveLibraryClient?
     private var pairingTask: Task<Void, Never>?
     private var confirmingUnauthorized = false
+    private var renewing = false
     private var lastRenewal = Date.distantPast
 
     private static let audioKey = "omakase.ios.audio-language"
@@ -116,11 +117,14 @@ final class PhoneSessionStore {
     /// Any failure is ignored on purpose: an invitation link or a flaky network must never
     /// cost the user their saved connection.
     func renewIfNeeded(force: Bool = false) async {
-        guard let current = roster.selected, let base = baseClient else { return }
+        guard !renewing, let current = roster.selected, let base = baseClient else { return }
         guard force || Date().timeIntervalSince(lastRenewal) >= Self.renewalInterval else { return }
-        lastRenewal = Date()
+        renewing = true
+        defer { renewing = false }
+        let expectedToken = base.credential.token
         guard let renewed = try? await base.renewed() else { return }
-        guard roster.selected?.id == current.id, baseClient != nil else { return }
+        guard baseClient?.credential.token == expectedToken, roster.selected?.id == current.id else { return }
+        lastRenewal = Date()
         let entry = LiveSavedProfile(profile: current.profile, credential: renewed.credential)
         guard (try? roster.select(entry)) != nil else { return }
         persistRoster()
@@ -128,8 +132,10 @@ final class PhoneSessionStore {
         client = renewed.selecting(selectedLibrary)
     }
 
-    private func adoptLegacyCredential(_ client: LiveLibraryClient, credential: LiveLibraryClient.Credential) async {
-        guard let profile = try? await client.profile() else { return }
+    private func adoptLegacyCredential(_ legacyClient: LiveLibraryClient, credential: LiveLibraryClient.Credential) async {
+        let expectedToken = legacyClient.credential.token
+        guard let profile = try? await legacyClient.profile() else { return }
+        guard baseClient?.credential.token == expectedToken else { return }
         let entry = LiveSavedProfile(profile: profile, credential: credential)
         _ = try? roster.select(entry)
         persistRoster()
@@ -191,6 +197,7 @@ final class PhoneSessionStore {
         _ = try roster.select(saved)
         pairingChallenge = nil
         applyAuthenticatedClient(liveClient, savedProfile: saved)
+        lastRenewal = Date()
         persistRoster()
     }
 
@@ -278,27 +285,37 @@ final class PhoneSessionStore {
     /// The saved connection is removed only when the server also rejects the profile
     /// check itself.
     func handleUnauthorized() {
-        guard !confirmingUnauthorized, let probe = baseClient else { return }
+        guard !confirmingUnauthorized, let probe = baseClient, let targetID = roster.selected?.id else { return }
         confirmingUnauthorized = true
-        Task { await confirmUnauthorized(using: probe) }
+        let expectedToken = probe.credential.token
+        Task { await confirmUnauthorized(using: probe, expectedToken: expectedToken, targetID: targetID) }
     }
 
-    private func confirmUnauthorized(using probe: LiveLibraryClient) async {
+    private func confirmUnauthorized(
+        using probe: LiveLibraryClient,
+        expectedToken: String,
+        targetID: LiveSavedProfile.ID
+    ) async {
         defer { confirmingUnauthorized = false }
         do {
             _ = try await probe.profile()
             return
         } catch FixtureConnectionError.unauthorized {
+            guard baseClient?.credential.token == expectedToken, roster.selected?.id == targetID else { return }
             do {
                 let renewed = try await probe.renewed()
+                guard baseClient?.credential.token == expectedToken, roster.selected?.id == targetID else { return }
                 // The server still knows this device; only our copy of the expiry was stale.
                 adopt(renewed: renewed)
             } catch FixtureConnectionError.unauthorized {
-                dropActiveProfile(message: "Session expired or device was unlinked. Reconnect your server.")
+                guard baseClient?.credential.token == expectedToken else { return }
+                dropProfile(id: targetID, message: "Session expired or device was unlinked. Reconnect your server.")
             } catch {
+                guard baseClient?.credential.token == expectedToken else { return }
                 errorMessage = "Couldn't reach your server. Pull to refresh."
             }
         } catch {
+            guard baseClient?.credential.token == expectedToken else { return }
             errorMessage = "Couldn't reach your server. Pull to refresh."
         }
     }
@@ -310,13 +327,14 @@ final class PhoneSessionStore {
         persistRoster()
         baseClient = renewed
         client = renewed.selecting(selectedLibrary)
+        lastRenewal = Date()
     }
 
-    private func dropActiveProfile(message: String) {
-        if let id = roster.selected?.id {
-            roster.remove(id)
-            persistRoster()
-        }
+    private func dropProfile(id: LiveSavedProfile.ID, message: String) {
+        let wasSelected = roster.selected?.id == id
+        roster.remove(id)
+        persistRoster()
+        guard wasSelected else { return }
         clearActiveClient()
         activePass = nil
         resumeWriter = nil
@@ -342,7 +360,8 @@ final class PhoneSessionStore {
 
     func refreshLibraries() async {
         guard let baseClient else { return }
-        if let list = try? await baseClient.libraries() {
+        let expectedToken = baseClient.credential.token
+        if let list = try? await baseClient.libraries(), self.baseClient?.credential.token == expectedToken {
             libraries = list
             if let current = selectedLibrary, !list.contains(current) {
                 selectLibrary(nil)
@@ -357,7 +376,7 @@ final class PhoneSessionStore {
         selectedLibrary = nil
         client = liveClient
         errorMessage = nil
-        lastRenewal = Date()
+        lastRenewal = .distantPast
         Task { await refreshLibraries() }
     }
 

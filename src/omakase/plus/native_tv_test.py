@@ -970,7 +970,7 @@ def create_native_tv_test_router(
                 row["user_id"], row["browser_session"], row["library_id"], clock() + 1
             )
             try:
-                library_scope(db, grant)
+                library_scope(db, grant, renew=False)
             except HTTPException:
                 continue
             rows.append(
@@ -998,7 +998,7 @@ def create_native_tv_test_router(
             if grant.actor != actor:
                 continue
             try:
-                library_scope(db, grant)
+                library_scope(db, grant, renew=False)
             except HTTPException:
                 continue
             rows.append(
@@ -1050,10 +1050,10 @@ def create_native_tv_test_router(
         drop_device_passes(key)
         return True
 
-    def library_scope(db, grant):
+    def library_scope(db, grant, *, renew: bool = True):
         # A paired device in use keeps its approving browser session alive; the
         # session's own absolute lifetime still bounds it.
-        authenticated, _ = authenticate_session(db, grant.browser_session, renew=True)
+        authenticated, _ = authenticate_session(db, grant.browser_session, renew=renew)
         if authenticated != grant.actor or grant.expires <= clock():
             raise HTTPException(401, "Apple TV library link expired", headers=NO_STORE)
         try:
@@ -2030,10 +2030,10 @@ def create_native_tv_test_router(
         """Map a request's web poster link onto an artwork the paired client can fetch."""
         title_id = str(item.get("title_id") or "")
         if item.get("kind") == "anime":
-            if not (title_id.isascii() and title_id.isdigit()):
+            if not re.fullmatch(r"[1-9][0-9]{0,9}", title_id):
                 return None
             monitor = db.execute(
-                "SELECT id FROM media_monitors WHERE user_id=? AND anilist_id=?",
+                "SELECT id FROM media_monitors WHERE user_id=? AND anilist_id=? ORDER BY id LIMIT 1",
                 (scope.viewer_id, int(title_id)),
             ).fetchone()
             if monitor and anime_artwork_id(db, scope, str(monitor[0])):
@@ -3120,7 +3120,7 @@ def create_native_tv_test_router(
         intent_id = None
         try:
             with fresh_source_transaction(db):
-                library_scope(db, library)
+                library_scope(db, library, renew=False)
                 checked(db, grant)
                 saved = store.save_native_resume(
                     db,
