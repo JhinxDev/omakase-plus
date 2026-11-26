@@ -1,11 +1,15 @@
 {% extends "base.html" %}
+{% from "_home_components.html" import edit_home_dialog %}
 {% block title %}For You · Omakase{% endblock %}
 {% block eyebrow %}Discovery{% endblock %}
 {% block page_title %}For You{% endblock %}
 {% block page_intro %}<p class="page-intro">Find something to watch.</p>{% endblock %}
 {% block page_actions %}
-<a class="button button-secondary" href="/plus/discover?mode=add">Find anime</a>
-<a class="button button-secondary" href="/plus/discover?mode=recommend">AI recommendations</a>
+{% set tab_label = {'anime': 'Anime', 'movies': 'Movies', 'tv': 'TV Shows'}.get(discover_kind, 'Anime') %}
+{% if not filtered_movies %}
+<button class="button button-secondary app-edit-home" type="button" data-edit-home-open aria-label="Edit For You {{ tab_label }}" title="Edit For You" aria-haspopup="dialog" aria-controls="edit-for-you"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16z"/><path d="m14 6 4 4"/></svg><span>Edit For You</span></button>
+{% endif %}
+<a class="button button-secondary" href="/plus/discover?mode=recommend&amp;kind={{ discover_kind }}">AI Picks</a>
 {% endblock %}
 {% block extra_head %}
 <link rel="stylesheet" href="/plus/static/discover-hub.css?v={{ asset_version }}">
@@ -25,8 +29,7 @@
   {% if filtered_movies %}
     {% include "_movie_discovery_results.html" %}
   {% else %}
-  {% if kind == 'movies' %}<p><a href="/plus/discover?kind=movies&amp;sort=personalized">Filter movies</a></p>{% endif %}
-  {% set heading = {'anime':'Anime for You', 'movies':'Movies for You', 'tv':'TV Shows for You'}[kind] %}
+  {% set heading = 'Top Picks for You' %}
   <div data-hub-rows="{{ kind }}" aria-busy="true">
     <section class="hub-shelf" aria-label="{{ heading }}">
       <h2>{{ heading }}</h2>
@@ -37,6 +40,10 @@
     </section>
   </div>
   <noscript><p>Turn on JavaScript to load recommendations, or use <a href="/plus/search">Search</a>.</p></noscript>
+  {% if discover_layout_rows %}
+    {% set tab_label = {'anime': 'Anime', 'movies': 'Movies', 'tv': 'TV Shows'}.get(kind, 'Anime') %}
+    {{ edit_home_dialog(discover_layout_rows, discover_layout_rows, csrf_token, action_url='/plus/discover/layout', heading='Edit For You · ' ~ tab_label, subtitle='Reorder or hide shelves for ' ~ tab_label ~ '. Saved per profile.', dialog_id='edit-for-you', extra_fields=[('kind', kind)]) }}
+  {% endif %}
   {% endif %}
 </div>
 {% endblock %}

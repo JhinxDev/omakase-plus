@@ -28,7 +28,7 @@
 {% elif notice == 'request_unchanged' %}<p class="product-notice" role="status">No change reported. This check did not submit another request.</p>
 {% elif notice == 'request_saved' %}<p class="product-notice" role="status">Request check skipped. Review the latest available status below.</p>
 {% elif notice == 'request_failed' %}<p class="product-notice" role="status">The request check did not complete. Review the connection details below.</p>{% endif %}
-{{ detail_back('/plus/movies', 'Your movies') }}
+{{ detail_back('/plus/movies', 'Your movies', back_href | default(none, true), back_label | default(none, true)) }}
 {% call(slot) detail_hero(
   'movie-detail-hero series-hero',
   'movie-detail-heading',
@@ -56,6 +56,9 @@
       </form>
       {% elif not cloud_playback and in_library and not can_play %}
       {{ playback_check('button button-primary') }}
+      {% endif %}
+      {% if card.trailer %}
+      <button type="button" class="button button-secondary" data-trailer-open data-trailer-id="{{ card.trailer.id }}" data-trailer-title="{{ card.title }}">Watch trailer</button>
       {% endif %}
     </div>
 {% elif slot == 'synopsis' %}

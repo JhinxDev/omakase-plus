@@ -25,6 +25,7 @@ import httpx
 from omakase.plus import movies_store as store
 from omakase.plus.http_pool import client_scope
 from omakase.plus.outbound import OutboundError, Resolver, pin_destination
+from omakase.plus.trailers import extract_seerr_trailer
 
 _OPERATION_TIMEOUT = 20.0
 _MAX_METADATA = 2 * 1024 * 1024
@@ -510,6 +511,7 @@ class MovieService:
             "poster_url": _art(data.get("posterPath"), "w342"),
             "backdrop_url": _art(data.get("backdropPath"), "w1280"),
             "overview": _text(data.get("overview"), 5000),
+            "trailer": extract_seerr_trailer(data.get("relatedVideos")),
         }
         if "genres" in data:
             metadata["genres"] = _genre_rows(data["genres"])
@@ -657,6 +659,29 @@ class MovieService:
         """Read exact cached/catalog metadata without acquiring or probing media."""
         self._guard(user_id)
         return self._card(user_id, await self._identity(user_id, _imdb(imdb_id)))
+
+    async def movie_trailer(self, user_id: int, tmdb_id: int) -> dict[str, str] | None:
+        """Read cached or live Seerr YouTube trailer metadata without failing on outages."""
+        self._guard(user_id)
+        if type(tmdb_id) is not int or tmdb_id <= 0 or not self.connections.seerr_url:
+            return None
+        from omakase.plus.movie_discovery import MovieDiscoveryService
+
+        discovery = MovieDiscoveryService(self)
+        cached = discovery._row(discovery._key("detail", tmdb_id))
+        if cached is not None and cached["payload_json"]:
+            try:
+                payload = json.loads(cached["payload_json"])
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict) and isinstance(payload.get("trailer"), dict):
+                return payload["trailer"]
+        try:
+            async with asyncio.timeout(2.5):
+                data = await self._json("seerr", f"/api/v1/movie/{tmdb_id}")
+        except (MovieError, TimeoutError, ValueError, OSError):
+            return None
+        return extract_seerr_trailer(data.get("relatedVideos"))
 
     def _riven_item(self, row: Any) -> dict[str, Any]:
         if (

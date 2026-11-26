@@ -76,7 +76,7 @@
 </section>
 {% endif %}
 
-{{ detail_back('/plus/library', 'Your anime') }}
+{{ detail_back('/plus/library', 'Your anime', back_href | default(none, true), back_label | default(none, true)) }}
 {% set series_art = '/plus/media/' ~ title.anilist_id ~ '/poster' %}
 {% call(slot) detail_hero(
   'title-view-hero streaming-title-hero series-hero',
@@ -95,6 +95,9 @@
     <div class="title-primary-actions series-hero-actions">
       {% if title.play_url %}{% set play_action = 'Continue watching' if title.play_episode and (title.play_label == 'Resume' or title.progress_episodes) else title.play_label %}{{ playback_link(title.play_url, play_action ~ (' · E' ~ title.play_episode if title.play_episode else ' movie'), play_action ~ ' ' ~ title.title ~ (', episode ' ~ title.play_episode if title.play_episode else '')) }}{% endif %}
       <a class="button {{ 'button-secondary' if title.play_url else 'button-primary' }}" href="#episode-heading">{{ "View episode history" if title.state == "archived" else "View episodes" }}</a>
+      {% if title.trailer %}
+      <button type="button" class="button button-secondary" data-trailer-open data-trailer-id="{{ title.trailer.id }}" data-trailer-title="{{ title.title }}">Watch trailer</button>
+      {% endif %}
     </div>
 {% elif slot == 'synopsis' %}
     {% if title.description %}

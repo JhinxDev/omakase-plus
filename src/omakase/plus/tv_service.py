@@ -15,6 +15,7 @@ from html.parser import HTMLParser
 
 from omakase.plus.movies import MovieError, MovieService, _art, _imdb, _iso, _positive, _text
 from omakase.plus.movies_store import require_user
+from omakase.plus.trailers import extract_seerr_trailer
 
 UNSET = object()
 _EPISODE_STILL = re.compile(
@@ -345,6 +346,7 @@ class TVService(MovieService):
             "overview": plain(data.get("overview")),
             "poster_url": _art(data.get("posterPath"), "w342"),
             "backdrop_url": _art(data.get("backdropPath"), "w1280"),
+            "trailer": extract_seerr_trailer(data.get("relatedVideos")),
             "seasons": sorted(seasons, key=lambda s: s["season_number"]),
         }
 

@@ -931,3 +931,21 @@ body.product-body:is(.page-search, .page-requests, .page-activity) .stream-secti
   gap: 0.75rem;
   margin-block: 0.5rem 1rem;
 }
+
+.trailer-modal {
+  width: min(92vw, 960px);
+  max-width: min(92vw, 960px);
+  padding: 0;
+  border: 1px solid var(--om-line);
+  border-radius: var(--om-radius);
+  background: var(--om-surface-2);
+  color: var(--om-ink);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .75);
+}
+.trailer-modal::backdrop { background: rgba(4, 6, 10, .82); }
+.trailer-modal-shell { display: flex; flex-direction: column; gap: var(--om-space-4); padding: var(--om-space-5); }
+.trailer-modal-head { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: var(--om-space-3); }
+.trailer-modal-head h2 { margin: 0; font-size: var(--om-text-lg); }
+.trailer-modal-actions { display: flex; align-items: center; gap: var(--om-space-2); }
+.trailer-frame { position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: var(--om-radius-sm); overflow: hidden; background: #05070d; }
+.trailer-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }

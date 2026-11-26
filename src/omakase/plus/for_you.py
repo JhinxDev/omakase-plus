@@ -442,7 +442,7 @@ def _project_shelves(db, scope, rows, *, publication, requests=(), movie_library
     shelves = []
     for row in rows:
         cards = []
-        kind = _CATEGORIES.get(row["key"], "anime")
+        kind = row.get("kind") or _CATEGORIES.get(row["key"], "anime")
         for source in row["cards"]:
             if "id" not in source:
                 cards.append(source)
@@ -471,7 +471,7 @@ def _project_shelves(db, scope, rows, *, publication, requests=(), movie_library
                     and source.get("requestable", True),
                 }
             )
-        shelves.append({**row, "cards": cards})
+        shelves.append({**row, "kind": kind, "cards": cards})
     return shelves
 
 
@@ -482,15 +482,29 @@ async def recommendations(db, user_id, category):
     history_unavailable = False
     movie_library = None
     if category == "anime":
-        catalog, watched = await asyncio.gather(
-            hub.anime_catalog(), hub.tracker_watched_ids(db, user_id)
+        from omakase.plus.product_views import discover_view
+
+        catalog, watched, seed = await asyncio.gather(
+            hub.anime_catalog(),
+            hub.tracker_watched_ids(db, user_id),
+            hub.tracker_top_seed(db, user_id),
         )
         history_unavailable = watched is None
-        rows = (
-            []
-            if history_unavailable
-            else hub.anime_shelves(db, user_id, catalog, hub.viewer_monitors(db, user_id), watched)
-        )
+        if history_unavailable:
+            rows = []
+        else:
+            seed_cards = await hub.anime_seed_recommendations(seed["id"]) if seed else []
+            latest_ai = (discover_view(db, user_id=user_id).get("latest") or {}).get("picks", ())
+            rows = hub.anime_shelves(
+                db,
+                user_id,
+                catalog,
+                hub.viewer_monitors(db, user_id),
+                watched,
+                seed=seed,
+                seed_cards=seed_cards,
+                ai_picks=latest_ai,
+            )
     else:
         if category in {"movies", "screen"}:
             rows, movie_library = await asyncio.gather(
@@ -499,7 +513,13 @@ async def recommendations(db, user_id, category):
         else:
             rows = await hub.screen_shelves(db, user_id, kind=category)
         if category != "screen":
-            rows = [row for row in rows if row["key"] == category]
+            target_kind = _CATEGORIES[category]
+            rows = [
+                row
+                for row in rows
+                if row.get("kind") == target_kind
+                or (row.get("kind") is None and row["key"] == category)
+            ]
 
     publication = _publication_reader(db)
 

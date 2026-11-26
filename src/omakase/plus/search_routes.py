@@ -502,12 +502,15 @@ def create_search_router(
             error, _, status, retry = _failure(exc)
             if retry is not None:
                 headers["Retry-After"] = str(retry)
+        back_from_discover = request.query_params.get("from") == "discover"
         return templates.TemplateResponse(
             request,
             "catalog_anime.html",
             {
                 **context(request, user),
                 "card": card,
+                "back_href": "/plus/discover" if back_from_discover else "/plus/search?kind=anime",
+                "back_label": "For You" if back_from_discover else "Search anime",
                 "kind": "anime",
                 "query": "",
                 "search_error": error,
