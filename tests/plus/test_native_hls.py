@@ -177,6 +177,8 @@ def _run(*args):
 
 
 def _build_fixture(folder: Path) -> Path:
+    if not (FFMPEG and FFPROBE):
+        pytest.skip("ffmpeg and ffprobe are required")
     source = folder / "fixture.mkv"
     subtitles = folder / "subs.srt"
     chapters = folder / "chapters.ffmeta"
@@ -743,6 +745,8 @@ def test_ffmpeg_diagnostics_are_bounded_and_redacted():
 
 def _build_hevc_fixture(folder: Path, *, keyframe_frames: int = 144) -> Path:
     """A short open-GOP HEVC title with a repeatable keyframe interval."""
+    if not (FFMPEG and FFPROBE):
+        pytest.skip("ffmpeg and ffprobe are required")
     source = folder / "hevc.mkv"
     subtitles = folder / "hevc.srt"
     subtitles.write_text(

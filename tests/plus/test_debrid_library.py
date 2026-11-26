@@ -801,3 +801,65 @@ def test_debrid_streams_isolates_concurrent_pumps_and_cancels_evicted_warm(monke
         )
 
     asyncio.run(run())
+
+
+def test_debrid_streams_deliver_recovers_from_cancelled_or_foreign_loop_warm_task(monkeypatch):
+    source = CloudSource("Test", "identity", "version", 10, "account", ORIGIN + "/video.m3u8")
+    url0 = ORIGIN + "/00000.ts"
+    url1 = ORIGIN + "/00001.ts"
+    entry = CloudPass(
+        source,
+        1,
+        "binding",
+        "digest",
+        1000,
+        b"#EXTM3U\n#EXT-X-ENDLIST\n",
+        (url0, url1),
+    )
+
+    async def make_foreign_cancelled():
+        task = asyncio.create_task(asyncio.sleep(10))
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return task
+
+    foreign_task = asyncio.run(make_foreign_cancelled())
+
+    async def fake_read(url, **kwargs):
+        return b"synthetic segment", 200, httpx.Headers({"content-length": "17"})
+
+    async def run():
+        streams = DebridStreams()
+        monkeypatch.setattr(streams, "_read", fake_read)
+        request = Request({"type": "http", "method": "GET", "headers": []})
+
+        # 1. Foreign cancelled loop task in self.warm must never crash deliver on a new loop.
+        streams.warm[url0] = foreign_task
+        first = await streams.deliver(entry, "00000.ts", request, lambda: None)
+        assert first.status_code == 200 and first.body == b"synthetic segment"
+
+        # 2. Same-loop warm task cancelled externally mid-wait must not fail the caller.
+        warm_task = asyncio.create_task(asyncio.sleep(10))
+        streams.warm[url0] = warm_task
+        deliver_task = asyncio.create_task(
+            streams.deliver(entry, "00000.ts", request, lambda: None)
+        )
+        await asyncio.sleep(0)
+        warm_task.cancel()
+        recovered = await deliver_task
+        assert recovered.status_code == 200 and recovered.body == b"synthetic segment"
+
+        # 3. Cancelling the caller itself while awaiting _await_warm must still propagate.
+        pending_warm = asyncio.create_task(asyncio.sleep(10))
+        waiter = asyncio.create_task(streams._await_warm(pending_warm, 10))
+        await asyncio.sleep(0)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        pending_warm.cancel()
+        await asyncio.gather(pending_warm, return_exceptions=True)
+
+    asyncio.run(run())
