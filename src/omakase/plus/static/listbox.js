@@ -259,7 +259,7 @@
 
   function enhanceSelect(select) {
     if (!(select instanceof HTMLSelectElement)) return;
-    if (select.hasAttribute('data-native-select') || select.multiple || select.closest(SELECTOR)) return;
+    if (select.hasAttribute('data-native-select') || select.multiple || select.closest(SELECTOR) || select.closest('[data-library-context]')) return;
     if (select._omakaseListbox) {
       renderSelectOptions(select, select._omakaseListbox);
       return;
