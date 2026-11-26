@@ -166,7 +166,7 @@ def create_tv_router(
             }
         )
 
-    async def render(request, user, db, q="", view="all", error="", offset=0, **extra):
+    async def render(request, user, db, q="", view="all", error="", offset=0, notice="", **extra):
         if households_enabled() if callable(households_enabled) else households_enabled:
             from omakase.plus.household_views import collection
             from omakase.plus.households import selected_scope
@@ -190,7 +190,7 @@ def create_tv_router(
         cloud_playback = playback_providers.select(db, user.id).cloud_route
         cloud_ids = set()
         cloud_error = False
-        if cloud_playback and view != "completed":
+        if cloud_playback:
             try:
                 async with asyncio.timeout(8):
                     cloud_ids = await tv_ids(db, personal_scope(db, user.id), catalog_library)
@@ -267,7 +267,7 @@ def create_tv_router(
                 "query": q,
                 "view": view,
                 "tv_error": error,
-                "notice": "",
+                "notice": notice,
                 **extra,
             },
             headers={"Cache-Control": "private, no-store"},
@@ -279,6 +279,7 @@ def create_tv_router(
         q: str = "",
         view: str = "all",
         offset: int = 0,
+        notice: str = "",
         user=Depends(require_user),
         db=Depends(get_db),
     ):
@@ -288,7 +289,8 @@ def create_tv_router(
             or not 0 <= offset <= 10000
         ):
             raise HTTPException(422, "Invalid TV search")
-        return await render(request, user, db, q, view, offset=offset)
+        clean_notice = notice if notice in {"saved", "updated", "synced", "cleaned"} else ""
+        return await render(request, user, db, q, view, offset=offset, notice=clean_notice)
 
     @router.get("/tv/{tmdb_id}/artwork")
     async def artwork(
@@ -688,5 +690,78 @@ def create_tv_router(
     ):
         require_csrf(request, csrf)
         return await action(request, user, db, "check", tmdb_id=tmdb_id)
+
+    @router.post("/tv/completed/cleanup/preview", response_class=HTMLResponse)
+    async def completed_cleanup_preview(
+        request: Request,
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        from omakase.plus.media_cleanup_bulk import MediaCleanupBulkError, preview_tv_cleanup
+
+        form = await request.form()
+        require_csrf(request, str(form.get("csrf_token", "")))
+        cloud_playback = playback_providers.select(db, user.id).cloud_route
+        raw_ids = [str(value) for value in form.getlist("item_id")]
+        error_msg = ""
+        try:
+            cleanup = await preview_tv_cleanup(
+                db,
+                personal_scope(db, user.id),
+                raw_ids,
+                cloud_playback=cloud_playback,
+            )
+            status_code = 200
+        except MediaCleanupBulkError as exc:
+            error_msg = str(exc)
+            cleanup = {
+                "kind": "tv",
+                "kind_label": "TV shows",
+                "back_href": "/plus/tv?view=completed",
+                "back_label": "Back to watched TV shows",
+                "execute_action": "/plus/tv/completed/cleanup/execute",
+                "cloud_playback": cloud_playback,
+                "eligible": [],
+                "eligible_ids": [],
+                "blocked": [],
+            }
+            status_code = 422
+        return templates.TemplateResponse(
+            request,
+            "media_bulk_cleanup.html",
+            {**context(request, user), "cleanup": cleanup, "error": error_msg},
+            status_code=status_code,
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @router.post("/tv/completed/cleanup/execute")
+    async def completed_cleanup_execute(
+        request: Request,
+        user=Depends(require_user),
+        db=Depends(get_db),
+    ):
+        from omakase.plus.media_cleanup_bulk import MediaCleanupBulkError, execute_cloud_cleanup
+        from omakase.plus.movies import _iso
+
+        form = await request.form()
+        require_csrf(request, str(form.get("csrf_token", "")))
+        if not playback_providers.select(db, user.id).cloud_route:
+            raise HTTPException(409, "Real-Debrid cleanup requires cloud playback mode.")
+        raw_ids = [str(value) for value in form.getlist("item_id")]
+        try:
+            await execute_cloud_cleanup(
+                db,
+                personal_scope(db, user.id),
+                kind="tv",
+                raw_ids=raw_ids,
+                now=_iso(service(db, user)._clock()),
+            )
+        except MediaCleanupBulkError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return RedirectResponse(
+            "/plus/tv?view=completed&notice=cleaned",
+            status_code=303,
+            headers={"Cache-Control": "private, no-store"},
+        )
 
     return router

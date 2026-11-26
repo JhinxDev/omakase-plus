@@ -13,6 +13,8 @@
 .hub-poster img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .hub-poster img[hidden] { display: none; }
 .hub-card-link { display: block; text-decoration: none; color: inherit; }
+.hub-card-link:focus:not(:focus-visible) { outline: none; }
+.hub-card-link:focus-visible { outline: 2px solid #c3b1ff; outline-offset: 3px; border-radius: .65rem; }
 .hub-card-link:hover h3 { text-decoration: underline; text-underline-offset: .22em; }
 .hub-card h3 { margin: .6rem 0 .26rem; font-size: 1rem; line-height: 1.25; overflow-wrap: anywhere; }
 .hub-meta { line-height: 1.45; }

@@ -8,6 +8,27 @@ identifier; it does not replace the public release version.
 
 ## Unreleased
 
+## 0.7.0 - 2026-11-26
+
+### Added
+
+- Added direct For You status, episode progress, rating, and dismissal tracking (`#track-modal`, `catalog_anime.html`, and `POST /plus/api/discover/track`) with AniList OAuth writeback (`SaveMediaListEntry`) plus local Anime, Movie, and TV tracking without queuing downloads.
+- Added proof-backed Real-Debrid Watched bulk cleanup (`media_cleanup_bulk.py`, `media_bulk_cleanup.html`, `/plus/movies/completed/cleanup/{preview,execute}`, and `/plus/tv/completed/cleanup/{preview,execute}`) along with single-title cloud copy removal links on `movie_detail.html` and `tv_detail.html` while keeping watch history and ratings intact.
+- Added a connected AI provider strip with brand SVG logos (`DeepSeek`, `OpenAI`, `Anthropic`, `Google Gemini`, `Ollama`, and `Codex`) and connection status on AI Recommendations (`/plus/discover?mode=recommend`).
+
+### Changed
+
+- Unified Collection, Watching, and Watched tab headings, empty states, and clean in-card `.cleanup-select-pill` plus `Select all` cleanup controls across Anime, Movies, and TV Shows, replacing the poster-corner circle overlay.
+- Upgraded every `<select>` menu across Omakase Plus to the unified dark `.app-listbox` menu (`listbox.js`) and disabled browser autofill history popups (`autocomplete="off"`) on Find Anime and non-authentication search inputs.
+- Eager-loaded the top 6 For You cards per tab and added shared HTTP client pooling plus bounded missing-banner negative caching in `posters.py`.
+
+### Fixed
+
+- Fixed the TV Shows For You `500` failure by reading `title` and `name` from `tv_catalog.metadata_json` in `_seed_tv`.
+- Fixed missing posters on Movie `Because You Liked ...` shelves by persisting fetched Seerr/TMDB metadata into `movie_catalog` and parallelizing detail lookups.
+- Fixed missing wide hero banners on catalog anime detail pages (`isolation: isolate` on `.series-hero`) and eliminated stuck purple focus contours on For You cards after mouse click and Back navigation.
+- Fixed the vertical whitespace gap on AI Recommendations when expanding `Your taste notes` and aligned remaining accent styling with Omakase lavender.
+
 ## 0.6.0 - 2026-11-26
 
 ### Added

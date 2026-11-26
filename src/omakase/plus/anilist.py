@@ -338,6 +338,95 @@ def save_progress_entry(
     return entry
 
 
+def save_media_list_entry(
+    access_token: str,
+    anilist_id: int,
+    *,
+    status: str,
+    progress: int | None = None,
+    score_ten: float | None = None,
+) -> dict:
+    """Create or update an AniList MediaList entry with status, optional progress, and optional score."""
+    if isinstance(anilist_id, bool) or not isinstance(anilist_id, int) or anilist_id <= 0:
+        raise ValueError("anilist_id must be a positive integer")
+    valid_statuses = {"PLANNING", "CURRENT", "COMPLETED", "PAUSED", "DROPPED", "REPEATING"}
+    normalized_status = str(status or "").strip().upper()
+    if normalized_status not in valid_statuses:
+        raise ValueError("status must be a valid AniList media list status")
+    if progress is not None:
+        if (
+            isinstance(progress, bool)
+            or not isinstance(progress, int)
+            or not 0 <= progress <= 100000
+        ):
+            raise ValueError("progress must be an integer between 0 and 100000")
+    score_raw = None
+    if score_ten is not None:
+        if isinstance(score_ten, bool) or not isinstance(score_ten, (int, float)):
+            raise ValueError("score must be a number from 1 to 10")
+        normalized_score = float(score_ten)
+        if not 1 <= normalized_score <= 10:
+            raise ValueError("score must be a number from 1 to 10")
+        score_raw = int(round(normalized_score * 10))
+    variables: dict[str, object] = {"mediaId": anilist_id, "status": normalized_status}
+    extra_params = []
+    extra_args = []
+    if progress is not None:
+        variables["progress"] = progress
+        extra_params.append("$progress: Int")
+        extra_args.append("progress: $progress")
+    if score_raw is not None:
+        variables["scoreRaw"] = score_raw
+        extra_params.append("$scoreRaw: Int")
+        extra_args.append("scoreRaw: $scoreRaw")
+    params_sql = f", {', '.join(extra_params)}" if extra_params else ""
+    args_sql = f", {', '.join(extra_args)}" if extra_args else ""
+    mutation = f"""
+    mutation ($mediaId: Int, $status: MediaListStatus{params_sql}) {{
+      SaveMediaListEntry(mediaId: $mediaId, status: $status{args_sql}) {{
+        id
+        mediaId
+        status
+        progress
+        score
+      }}
+    }}
+    """
+    with httpx.Client() as client:
+        response = client.post(
+            API_URL,
+            json={"query": mutation, "variables": variables},
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": USER_AGENT,
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    entry = (
+        (payload.get("data") or {}).get("SaveMediaListEntry") if isinstance(payload, dict) else None
+    )
+    if errors or not isinstance(entry, dict):
+        message = "AniList refused the list update"
+        if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+            candidate = errors[0].get("message")
+            if isinstance(candidate, str) and candidate.strip():
+                message = candidate.strip()[:200]
+        raise AniListWriteError(message)
+    if (
+        isinstance(entry.get("id"), bool)
+        or not isinstance(entry.get("id"), int)
+        or entry["id"] <= 0
+        or entry.get("mediaId") != anilist_id
+        or entry.get("status") != normalized_status
+    ):
+        raise AniListWriteError("AniList returned an invalid list entry receipt")
+    return entry
+
+
 def get_authenticated_media_entry(access_token: str, anilist_id: int) -> dict | None:
     """Read one media-list row scoped to the bearer token's Viewer identity."""
     if isinstance(anilist_id, bool) or not isinstance(anilist_id, int) or anilist_id <= 0:

@@ -348,6 +348,19 @@
     });
   }
 
+  function wireCleanInputs(root) {
+    var scope = root || document;
+    if (!document.body || !document.body.classList.contains('product-body')) return;
+    Array.prototype.forEach.call(
+      scope.querySelectorAll('input[type="search"], input[type="text"]'),
+      function (input) {
+        if (input.hasAttribute('data-allow-autocomplete')) return;
+        if (!input.getAttribute('autocomplete')) input.setAttribute('autocomplete', 'off');
+        if (!input.hasAttribute('spellcheck')) input.setAttribute('spellcheck', 'false');
+      }
+    );
+  }
+
   function start() {
     var dialog = document.querySelector('[data-edit-home]');
     if (dialog) wireEditHome(dialog);
@@ -358,6 +371,7 @@
     wireMobilePanels();
     wireHomeFeature();
     wireHomeCardMenus();
+    wireCleanInputs();
   }
 
   if (document.readyState === 'loading') {
@@ -368,5 +382,8 @@
   document.addEventListener('omakase:home-ready', function () {
     var dialog = document.querySelector('[data-edit-home]');
     if (dialog) wireEditHome(dialog);
+  });
+  document.addEventListener('omakase:rows-ready', function (event) {
+    wireCleanInputs(event.detail);
   });
 })();

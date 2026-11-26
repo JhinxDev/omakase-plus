@@ -15,59 +15,100 @@
   <header class="panel-heading"><div><h2 id="add-direct-heading">Find an anime title</h2><p>Enter a title or paste an AniList link.</p></div></header>
   <form class="product-form add-intake-form" method="post" action="/plus/add/preview" data-busy-form>
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label><span>Anime title or AniList link</span><input type="search" name="query" maxlength="500" placeholder="Frieren: Beyond Journey's End" required autofocus></label>
-    <label><span>Season or arc <small>optional</small></span><input type="text" name="season" maxlength="100" placeholder="Season 2"></label>
+    <label><span>Anime title or AniList link</span><input type="search" name="query" maxlength="500" placeholder="Frieren: Beyond Journey's End" autocomplete="off" autocapitalize="none" spellcheck="false" required autofocus></label>
+    <label><span>Season or arc <small>optional</small></span><input type="text" name="season" maxlength="100" placeholder="Season 2" autocomplete="off" spellcheck="false"></label>
     <button class="button button-primary" type="submit" data-busy-label="Finding exact matches…">Find anime</button>
   </form>
 </section>
 {% else %}
 {% set prefs = discovery_preferences or {} %}
 {% set worker = codex_worker or {} %}
+{% set backend_name = (configured_backend or 'ollama') | lower %}
+{% set provider_display = {'deepseek': 'DeepSeek', 'openai': 'OpenAI', 'anthropic': 'Anthropic', 'claude': 'Anthropic', 'gemini': 'Google Gemini', 'google': 'Google Gemini', 'ollama': 'Ollama Local'}.get(backend_name, backend_name | title) %}
+<section class="ai-provider-strip" aria-label="Connected AI providers">
+  <div class="ai-provider-chips">
+    <div class="ai-provider-chip{% if ai_api_configured %} is-connected{% endif %}">
+      <span class="ai-provider-logo" aria-hidden="true">
+        {% if backend_name in ['openai'] %}
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8"/><path d="M8.5 9.5 15.5 14.5M15.5 9.5 8.5 14.5M12 6v12"/></svg>
+        {% elif backend_name in ['anthropic', 'claude'] %}
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M13.8 4h-2.5L5.8 19h2.6l1.1-3.1h5.1l1.1 3.1h2.6L13.8 4Zm-3.4 9.6L12 8.7l1.6 4.9h-3.2Z"/></svg>
+        {% elif backend_name in ['gemini', 'google'] %}
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 2c.6 5.2 4.8 9.4 10 10-5.2.6-9.4 4.8-10 10-.6-5.2-4.8-9.4-10-10 5.2-.6 9.4-4.8 10-10Z"/></svg>
+        {% elif backend_name == 'deepseek' %}
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M19.5 10.6c-.8-.1-1.5.2-2.1.7-.4-2.8-2.9-5.1-6.2-5.1-3.5 0-6.4 2.7-6.4 6.1 0 3.2 2.6 5.8 6.3 5.8 3 0 5.5-1.5 6.8-3.9.6-.2 1.2-.1 1.7.3.5-.7.7-1.6.5-2.5-.1-.7-.3-1.2-.6-1.4Zm-8.8 3.2c-.9 0-1.6-.7-1.6-1.5s.7-1.5 1.6-1.5 1.6.7 1.6 1.5-.7 1.5-1.6 1.5Z"/></svg>
+        {% else %}
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M9 9h6v6H9z"/></svg>
+        {% endif %}
+      </span>
+      <div class="ai-provider-copy">
+        <strong>{{ provider_display }}</strong>
+        <small>{{ configured_model or ('API key ready' if ai_api_configured else 'Setup required') }}</small>
+      </div>
+      <span class="ai-provider-state">{{ 'Connected' if ai_api_configured else 'Unconfigured' }}</span>
+    </div>
+    <div class="ai-provider-chip{% if worker.online %} is-connected{% endif %}">
+      <span class="ai-provider-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3 4.5 7.3v9.4L12 21l7.5-4.3V7.3L12 3Z"/><path d="m8.8 12 2.2 2.2 4.2-4.4"/></svg>
+      </span>
+      <div class="ai-provider-copy">
+        <strong>Codex</strong>
+        <small>{{ 'Worker online' if worker.online else 'Worker offline' }}</small>
+      </div>
+      <span class="ai-provider-state">{{ 'Connected' if worker.online else 'Offline' }}</span>
+    </div>
+  </div>
+  <a class="button button-secondary" href="/plus/settings/ai">AI settings</a>
+</section>
 <div class="discover-layout discovery-layout streaming-discovery{% if latest and latest.picks %} has-picks{% endif %}">
   <div class="discovery-sidebar">
-    <details id="recommendation-controls" class="recommendation-builder" {% if not latest %}open{% endif %}>
-      <summary><div><strong>A menu made for you</strong><small>Choose a mood. Let your taste lead the way.</small></div><span>Customize <span aria-hidden="true">+</span></span></summary>
-    <section class="editorial-panel discover-control" aria-labelledby="discover-control-heading">
-      <header class="panel-heading"><div><span class="section-index">Your next watch</span><h2 id="discover-control-heading">Make it personal</h2></div></header>
-      <form id="run-form" class="product-form" data-success-url="/plus/discover?mode=recommend" data-active-job="{{ active_job_id or '' }}">
-        <fieldset class="lane-selector">
-          <legend>Where should we look?</legend>
-          {% for value, title, copy in [
-            ('best_match','Best match','Start with what you love'),
-            ('hidden_gems','Hidden gems','Go beyond the usual favorites'),
-            ('new_seasons','New seasons','More from a favorite world'),
-            ('plan_list','Your watchlist','Find the one to start next')
-          ] %}
-          <label><input type="radio" name="lane" value="{{ value }}" {% if (prefs.lane or 'best_match') == value %}checked{% endif %}><span><strong>{{ title }}</strong><small>{{ copy }}</small></span></label>
-          {% endfor %}
-        </fieldset>
-        <label class="mood-field"><span>What sounds good tonight? <small>optional</small></span><textarea id="run-mood" name="mood" rows="3" maxlength="500" placeholder="A clever mystery, strong characters, no slow opening…">{{ prefs.mood or '' }}</textarea></label>
-        <div class="form-pair">
-          <label><span>Length</span><select id="run-max-episodes" name="max_episodes">{% for value, label in [(0,'Any length'),(12,'Up to 12 episodes'),(13,'Up to 13 episodes'),(26,'Up to 26 episodes'),(50,'Up to 50 episodes')] %}<option value="{{ value }}" {% if (prefs.max_episodes or 0) == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
-          <label><span>Suggestions</span><input id="run-count" type="number" name="count" value="{{ prefs.count or 8 }}" min="3" max="15" required></label>
-        </div>
-        <label class="check-preference"><input id="run-completed" type="checkbox" name="completed_only" {% if prefs.completed_only %}checked{% endif %}><span>Only finished seasons<small>A complete story I can watch at my own pace</small></span></label>
-        <div class="discovery-engine">
-          <label><span>Choose your AI</span><select id="run-provider" name="provider"><option value="configured" {% if not worker.online or prefs.provider != 'codex' %}selected{% endif %}>Configured AI{% if configured_backend %} · {{ configured_backend | title }}{% endif %}</option><option value="codex" {% if not worker.online %}disabled{% elif prefs.provider == 'codex' %}selected{% endif %}>Codex subscription{% if not worker.online %} · PC offline{% endif %}</option></select></label>
-          <div id="codex-options" {% if prefs.provider != 'codex' or not worker.online %}hidden{% endif %}>
-            <label><span>Model</span><select id="run-model" name="model"><option value="gpt-6-astra" {% if prefs.model != 'gpt-6.1-sol' %}selected{% endif %}>Astra · deepest reasoning</option><option value="gpt-6.1-sol" {% if prefs.model == 'gpt-6.1-sol' %}selected{% endif %}>Sol · balanced</option></select></label>
-            <p class="field-help">Uses your signed-in Codex allowance and available credits.</p>
+    <div class="discovery-controls-primary">
+      <details id="recommendation-controls" class="recommendation-builder" {% if not latest %}open{% endif %}>
+        <summary><div><strong>A menu made for you</strong><small>Choose a mood. Let your taste lead the way.</small></div><span>Customize <span aria-hidden="true">+</span></span></summary>
+      <section class="editorial-panel discover-control" aria-labelledby="discover-control-heading">
+        <header class="panel-heading"><div><span class="section-index">Your next watch</span><h2 id="discover-control-heading">Make it personal</h2></div></header>
+        <form id="run-form" class="product-form" data-success-url="/plus/discover?mode=recommend" data-active-job="{{ active_job_id or '' }}">
+          <fieldset class="lane-selector">
+            <legend>Where should we look?</legend>
+            {% for value, title, copy in [
+              ('best_match','Best match','Start with what you love'),
+              ('hidden_gems','Hidden gems','Go beyond the usual favorites'),
+              ('new_seasons','New seasons','More from a favorite world'),
+              ('plan_list','Your watchlist','Find the one to start next')
+            ] %}
+            <label><input type="radio" name="lane" value="{{ value }}" {% if (prefs.lane or 'best_match') == value %}checked{% endif %}><span><strong>{{ title }}</strong><small>{{ copy }}</small></span></label>
+            {% endfor %}
+          </fieldset>
+          <label class="mood-field"><span>What sounds good tonight? <small>optional</small></span><textarea id="run-mood" name="mood" rows="3" maxlength="500" placeholder="A clever mystery, strong characters, no slow opening…">{{ prefs.mood or '' }}</textarea></label>
+          <div class="form-pair">
+            <label><span>Length</span><select id="run-max-episodes" name="max_episodes">{% for value, label in [(0,'Any length'),(12,'Up to 12 episodes'),(13,'Up to 13 episodes'),(26,'Up to 26 episodes'),(50,'Up to 50 episodes')] %}<option value="{{ value }}" {% if (prefs.max_episodes or 0) == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+            <label><span>Suggestions</span><input id="run-count" type="number" name="count" value="{{ prefs.count or 8 }}" min="3" max="15" required></label>
           </div>
-          <div id="configured-options" {% if prefs.provider == 'codex' and worker.online %}hidden{% endif %}><label><span>Reasoning</span><select id="run-mode" name="mode"><option value="pro" {% if prefs.mode != 'fast' %}selected{% endif %}>Thoughtful</option><option value="fast" {% if prefs.mode == 'fast' %}selected{% endif %}>Quick</option></select></label><p class="field-help">Uses the provider in Settings. API billing is separate from your Codex subscription.</p></div>
-          <span class="worker-connection {% if worker.online %}is-online{% endif %}"><i aria-hidden="true"></i>{% if worker.online %}Codex worker connected{% else %}Codex worker offline{% endif %}</span>
-        </div>
-        <details class="discovery-advanced"><summary>List and account</summary><div class="form-pair"><label><span>Anime list</span><select id="run-source" name="source"><option value="anilist" {% if prefs.source != 'myanimelist' %}selected{% endif %}>AniList</option><option value="myanimelist" {% if prefs.source == 'myanimelist' %}selected{% endif %}>MyAnimeList</option></select></label><label><span>Username</span><input id="run-username" name="username" maxlength="100" value="{{ anilist_username }}" placeholder="Your list username"></label></div></details>
-        <input id="run-temp" type="hidden" value="0.4"><input id="run-planning" type="checkbox" hidden><input id="run-skip" type="checkbox" hidden>
-        <button id="run-btn" class="button button-primary button-wide" type="submit">Find my next anime <span aria-hidden="true">↗</span></button>
-        <p class="discovery-run-note">Recommendations only. You choose what to add.</p>
-      </form>
-      <div class="loading-state product-loading" id="loading" hidden aria-live="polite"><span class="loading-orbit" aria-hidden="true"></span><div><strong id="loading-text">Finding picks for your taste…</strong><small id="loading-elapsed">0s</small></div></div>
-      <div class="product-notice notice-danger" id="run-error" role="alert" hidden></div>
-    </section>
-    </details>
-    <details class="taste-editor editorial-panel"><summary><span><strong>Your taste notes</strong><small>{{ 'Included in your recommendations' if taste_profile else 'Tell Omakase what matters to you' }}</small></span><span aria-hidden="true">+</span></summary><form class="product-form" method="post" action="/plus/dashboard/profile" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="/plus/discover"><label><span>What you enjoy, what you avoid</span><textarea name="profile" maxlength="12000" rows="7" placeholder="Characters I care about, inventive worlds, satisfying endings. Avoid…">{{ taste_profile }}</textarea></label><button class="button button-secondary" type="submit" data-busy-label="Saving…">Save taste notes</button></form></details>
-    {% set refresh_cfg = discover_refresh_settings or {} %}
-    <details class="taste-editor editorial-panel"><summary><span><strong>Auto-refresh schedule</strong><small>{% if not refresh_cfg.auto_ai_refresh or refresh_cfg.cadence == 'manual' %}Manual runs only{% elif discover_refresh_due %}New viewing signals ready{% elif refresh_cfg.cadence == 'on_new_data' %}Runs when new ratings or watches land{% else %}Refreshes weekly{% endif %}</small></span><span aria-hidden="true">+</span></summary><form class="product-form" method="post" action="/plus/discover/refresh-settings" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="kind" value="{{ discover_kind or 'anime' }}"><label><span>Refresh cadence</span><select name="cadence"><option value="manual" {% if not refresh_cfg.auto_ai_refresh or refresh_cfg.cadence == 'manual' %}selected{% endif %}>Manual only</option><option value="on_new_data" {% if refresh_cfg.auto_ai_refresh and refresh_cfg.cadence == 'on_new_data' %}selected{% endif %}>When new watches or ratings arrive</option><option value="weekly" {% if refresh_cfg.auto_ai_refresh and refresh_cfg.cadence == 'weekly' %}selected{% endif %}>Weekly background check</option></select></label><button class="button button-secondary" type="submit" data-busy-label="Saving…">Save refresh schedule</button></form></details>
+          <label class="check-preference"><input id="run-completed" type="checkbox" name="completed_only" {% if prefs.completed_only %}checked{% endif %}><span>Only finished seasons<small>A complete story I can watch at my own pace</small></span></label>
+          <div class="discovery-engine">
+            <label><span>Choose your AI</span><select id="run-provider" name="provider"><option value="configured" {% if not worker.online or prefs.provider != 'codex' %}selected{% endif %}>Configured AI{% if configured_backend %} · {{ configured_backend | title }}{% endif %}</option><option value="codex" {% if not worker.online %}disabled{% elif prefs.provider == 'codex' %}selected{% endif %}>Codex subscription{% if not worker.online %} · PC offline{% endif %}</option></select></label>
+            <div id="codex-options" {% if prefs.provider != 'codex' or not worker.online %}hidden{% endif %}>
+              <label><span>Model</span><select id="run-model" name="model"><option value="gpt-6-astra" {% if prefs.model != 'gpt-6.1-sol' %}selected{% endif %}>Astra · deepest reasoning</option><option value="gpt-6.1-sol" {% if prefs.model == 'gpt-6.1-sol' %}selected{% endif %}>Sol · balanced</option></select></label>
+              <p class="field-help">Uses your signed-in Codex allowance and available credits.</p>
+            </div>
+            <div id="configured-options" {% if prefs.provider == 'codex' and worker.online %}hidden{% endif %}><label><span>Reasoning</span><select id="run-mode" name="mode"><option value="pro" {% if prefs.mode != 'fast' %}selected{% endif %}>Thoughtful</option><option value="fast" {% if prefs.mode == 'fast' %}selected{% endif %}>Quick</option></select></label><p class="field-help">Uses the provider in Settings. API billing is separate from your Codex subscription.</p></div>
+            <span class="worker-connection {% if worker.online %}is-online{% endif %}"><i aria-hidden="true"></i>{% if worker.online %}Codex worker connected{% else %}Codex worker offline{% endif %}</span>
+          </div>
+          <details class="discovery-advanced"><summary>List and account</summary><div class="form-pair"><label><span>Anime list</span><select id="run-source" name="source"><option value="anilist" {% if prefs.source != 'myanimelist' %}selected{% endif %}>AniList</option><option value="myanimelist" {% if prefs.source == 'myanimelist' %}selected{% endif %}>MyAnimeList</option></select></label><label><span>Username</span><input id="run-username" name="username" maxlength="100" value="{{ anilist_username }}" placeholder="Your list username" autocomplete="off" spellcheck="false"></label></div></details>
+          <input id="run-temp" type="hidden" value="0.4"><input id="run-planning" type="checkbox" hidden><input id="run-skip" type="checkbox" hidden>
+          <button id="run-btn" class="button button-primary button-wide" type="submit">Find my next anime <span aria-hidden="true">↗</span></button>
+          <p class="discovery-run-note">Recommendations only. You choose what to add.</p>
+        </form>
+        <div class="loading-state product-loading" id="loading" hidden aria-live="polite"><span class="loading-orbit" aria-hidden="true"></span><div><strong id="loading-text">Finding picks for your taste…</strong><small id="loading-elapsed">0s</small></div></div>
+        <div class="product-notice notice-danger" id="run-error" role="alert" hidden></div>
+      </section>
+      </details>
+      {% set refresh_cfg = discover_refresh_settings or {} %}
+      <details class="taste-editor editorial-panel"><summary><span><strong>Auto-refresh schedule</strong><small>{% if not refresh_cfg.auto_ai_refresh or refresh_cfg.cadence == 'manual' %}Manual runs only{% elif discover_refresh_due %}New viewing signals ready{% elif refresh_cfg.cadence == 'on_new_data' %}Runs when new ratings or watches land{% else %}Refreshes weekly{% endif %}</small></span><span aria-hidden="true">+</span></summary><form class="product-form" method="post" action="/plus/discover/refresh-settings" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="kind" value="{{ discover_kind or 'anime' }}"><label><span>Refresh cadence</span><select name="cadence"><option value="manual" {% if not refresh_cfg.auto_ai_refresh or refresh_cfg.cadence == 'manual' %}selected{% endif %}>Manual only</option><option value="on_new_data" {% if refresh_cfg.auto_ai_refresh and refresh_cfg.cadence == 'on_new_data' %}selected{% endif %}>When new watches or ratings arrive</option><option value="weekly" {% if refresh_cfg.auto_ai_refresh and refresh_cfg.cadence == 'weekly' %}selected{% endif %}>Weekly background check</option></select></label><button class="button button-secondary" type="submit" data-busy-label="Saving…">Save refresh schedule</button></form></details>
+    </div>
+    <div class="discovery-controls-aside">
+      <details class="taste-editor editorial-panel"><summary><span><strong>Your taste notes</strong><small>{{ 'Included in your recommendations' if taste_profile else 'Tell Omakase what matters to you' }}</small></span><span aria-hidden="true">+</span></summary><form class="product-form" method="post" action="/plus/dashboard/profile" data-busy-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="/plus/discover"><label><span>What you enjoy, what you avoid</span><textarea name="profile" maxlength="12000" rows="7" placeholder="Characters I care about, inventive worlds, satisfying endings. Avoid…">{{ taste_profile }}</textarea></label><button class="button button-secondary" type="submit" data-busy-label="Saving…">Save taste notes</button></form></details>
+    </div>
   </div>
   <section class="latest-tasting" aria-labelledby="latest-heading">
     <header class="recommendation-heading"><div><span class="page-kicker">Picked with you in mind</span><h2 id="latest-heading">{% if latest %}Your tasting menu{% else %}A good evening starts here.{% endif %}</h2></div>{% if latest %}<time data-local-datetime="{{ latest.created_at }}" datetime="{{ latest.created_at }}">{{ latest.created_at }} UTC</time>{% endif %}</header>

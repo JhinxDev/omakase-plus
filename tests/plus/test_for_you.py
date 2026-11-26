@@ -617,3 +617,297 @@ def test_catalog_anime_uses_unified_hero_with_trailer_and_discover_back(client, 
     assert "For You" in html
     assert "data-trailer-open" in html and 'data-trailer-id="dQw4w9WgXcQ"' in html
     assert 'id="trailer-modal"' in html
+    assert 'class="movie-poster" src="/plus/media/9101/poster"' in html
+    assert "data-catalog-track-form" in html
+    assert "data-detail-dismiss" in html
+
+
+def test_tv_discover_seed_from_tv_catalog_metadata_json(client, monkeypatch):
+    _signup_and_login(client)
+    user_id = _user_id(client)
+    with _connect_client_db(client) as db:
+        db.execute(
+            "INSERT INTO tv_catalog (user_id, tmdb_id, metadata_json, updated_at) VALUES (?, 1396, ?, '2026-11-20T00:00:00Z')",
+            (
+                user_id,
+                '{"tmdb_id":1396,"title":"Breaking Bad","year":2008,"genres":[{"id":18,"name":"Drama"}]}',
+            ),
+        )
+        db.execute(
+            "INSERT INTO tv_history (user_id, tmdb_id, status, rating, status_source, rating_source, updated_at) "
+            "VALUES (?, 1396, 'completed', 9.0, 'manual', 'manual', '2026-11-20T00:00:00Z')",
+            (user_id,),
+        )
+        db.commit()
+    discover_hub._screen_rows.clear()
+
+    async def fake_json(_self, _service, path, *, params=None):
+        del _self, _service, params
+        results = [
+            {
+                "id": 6000 + i,
+                "name": f"Similar Show {i}",
+                "posterPath": f"/show{i}.jpg",
+                "firstAirDate": "2024-01-01",
+                "voteAverage": 8.2,
+                "genreIds": [18],
+                "overview": "Critically acclaimed crime drama.",
+            }
+            for i in range(4)
+        ]
+        return {"results": results}
+
+    monkeypatch.setattr(discover_hub.MovieService, "_json", fake_json)
+    from omakase.plus.movies import MovieConnections
+
+    monkeypatch.setattr(
+        discover_hub,
+        "movie_connections",
+        lambda _db, _uid: MovieConnections(
+            enabled=True,
+            riven_url="http://riven.local",
+            riven_api_key="riven-key",
+            seerr_url="http://seerr.local",
+            seerr_api_key="seerr-key",
+            plex_url="http://plex.local",
+            plex_token="plex-token",
+        ),
+    )
+    res = client.get("/plus/discover/rows?kind=tv")
+    assert res.status_code == 200
+    assert "Because You Liked Breaking Bad" in res.text
+    assert "Similar Show 0" in res.text
+
+
+def test_movie_because_you_liked_persists_catalog_for_artwork(client, monkeypatch):
+    _signup_and_login(client)
+    user_id = _user_id(client)
+    with _connect_client_db(client) as db:
+        db.execute(
+            "INSERT INTO movie_catalog (user_id, imdb_id, tmdb_id, title, year, identity_verified, updated_at) "
+            "VALUES (?, 'tt0450385', 3021, '1408', 2007, 1, '2026-11-20T00:00:00Z')",
+            (user_id,),
+        )
+        db.execute(
+            "INSERT INTO movie_history (user_id, imdb_id, tmdb_id, status, rating, status_source, rating_source, created_at, updated_at) "
+            "VALUES (?, 'tt0450385', 3021, 'completed', 8.0, 'manual', 'manual', '2026-11-20T00:00:00Z', '2026-11-20T00:00:00Z')",
+            (user_id,),
+        )
+        db.commit()
+    discover_hub._screen_rows.clear()
+
+    async def fake_discover(_self, _uid, *, sort="personalized", limit=15):
+        del _self, _uid, sort, limit
+        return []
+
+    async def fake_json(_self, _service, path, *, params=None):
+        del _self, _service, params
+        if "/recommendations" in path:
+            return {
+                "results": [
+                    {"id": 9501 + i, "title": f"Rec Movie {i}", "voteAverage": 7.5}
+                    for i in range(4)
+                ]
+            }
+        return {"results": []}
+
+    async def fake_metadata(_self, tmdb_id, imdb_id=None):
+        del _self, imdb_id
+        return {
+            "imdb_id": f"tt9501{tmdb_id}",
+            "tmdb_id": tmdb_id,
+            "title": f"Rec Movie {tmdb_id - 9501}",
+            "original_title": None,
+            "year": 2020,
+            "poster_url": f"https://image.tmdb.org/t/p/w342/rec{tmdb_id}.jpg",
+            "backdrop_url": f"https://image.tmdb.org/t/p/w780/bg{tmdb_id}.jpg",
+            "overview": "Psychological thriller.",
+            "genres": [{"id": 27, "name": "Horror"}],
+        }
+
+    monkeypatch.setattr(discover_hub.MovieDiscoveryService, "discover", fake_discover)
+    monkeypatch.setattr(discover_hub.MovieService, "_json", fake_json)
+    monkeypatch.setattr(discover_hub.MovieService, "_metadata", fake_metadata)
+    from omakase.plus.movies import MovieConnections
+
+    monkeypatch.setattr(
+        discover_hub,
+        "movie_connections",
+        lambda _db, _uid: MovieConnections(
+            enabled=True,
+            riven_url="http://riven.local",
+            riven_api_key="riven-key",
+            seerr_url="http://seerr.local",
+            seerr_api_key="seerr-key",
+            plex_url="http://plex.local",
+            plex_token="plex-token",
+        ),
+    )
+    res = client.get("/plus/discover/rows?kind=movies")
+    assert res.status_code == 200
+    assert "Because You Liked 1408" in res.text
+    with _connect_client_db(client) as db:
+        row = db.execute(
+            "SELECT imdb_id, poster_url FROM movie_catalog WHERE user_id=? AND tmdb_id=9501",
+            (user_id,),
+        ).fetchone()
+        assert row is not None and row["poster_url"] is not None
+
+
+def test_discover_track_api_anime_movie_tv_and_dismiss_without_downloads(client, monkeypatch):
+    _signup_and_login(client)
+    user_id = _user_id(client)
+    csrf = _csrf_token(client)
+    monkeypatch.setenv("OMAKASE_PLUS_PRIVATE", "true")
+
+    from omakase.plus import routes as plus_routes
+    from omakase.plus.secrets import store_secret
+
+    with _connect_client_db(client) as db:
+        store_secret(db, user_id, "anilist_oauth_token", "tok-secret")
+        db.commit()
+
+    synced_calls = []
+
+    class DummyLease:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class DummyTokenCtx:
+        def __enter__(self):
+            return "tok-secret"
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(plus_routes, "writer_lease", lambda *_a, **_k: DummyLease())
+    monkeypatch.setattr(plus_routes, "anilist_credential_fingerprint", lambda *_a: "fp-1")
+    monkeypatch.setattr(plus_routes, "require_anilist_credential", lambda *_a: None)
+    monkeypatch.setattr(plus_routes, "require_writer_lease", lambda *_a: None)
+    monkeypatch.setattr(plus_routes, "with_valid_token", lambda *_a, **_k: DummyTokenCtx())
+
+    def fake_save_entry(token, anilist_id, *, status, progress=None, score_ten=None):
+        synced_calls.append((token, anilist_id, status, progress, score_ten))
+        return {
+            "id": 55,
+            "mediaId": anilist_id,
+            "status": status,
+            "progress": progress,
+            "score": score_ten,
+        }
+
+    monkeypatch.setattr(plus_routes, "save_media_list_entry", fake_save_entry)
+
+    anime_res = client.post(
+        "/plus/api/discover/track",
+        json={
+            "kind": "anime",
+            "media_id": 92001,
+            "title": "Tracked Discovery Anime",
+            "status": "watching",
+            "progress": 5,
+            "episode_total": 12,
+            "score": 8.5,
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert anime_res.status_code == 200
+    body = anime_res.json()
+    assert body["status"] == "ok"
+    assert body["tracker_status"] == "synced"
+    assert body["remove_from_for_you"] is True
+    assert synced_calls == [("tok-secret", 92001, "CURRENT", 5, 8.5)]
+
+    with _connect_client_db(client) as db:
+        assert (
+            db.execute(
+                "SELECT count(*) FROM media_monitors WHERE user_id=?", (user_id,)
+            ).fetchone()[0]
+            == 0
+        )
+        entry = db.execute(
+            "SELECT monitor_id, status, progress_episodes FROM watch_entries WHERE user_id=? AND anilist_id=92001",
+            (user_id,),
+        ).fetchone()
+        assert entry["monitor_id"] is None
+        assert entry["status"] == "watching"
+        assert entry["progress_episodes"] == 5
+
+    # Tracked anime must now be excluded from anime For You shelves.
+    candidate = discover_hub._anime_card(92001, "Tracked Discovery Anime") | {"genres": ("Action",)}
+    unseen = discover_hub._anime_card(92002, "Fresh Pick") | {"genres": ("Action",)}
+    monkeypatch.setattr(discover_hub, "anime_catalog", AsyncMock(return_value=(candidate, unseen)))
+    monkeypatch.setattr(discover_hub, "tracker_watched_ids", AsyncMock(return_value=frozenset()))
+    rows_html = client.get("/plus/discover/rows?kind=anime").text
+    assert "Fresh Pick" in rows_html
+    assert "Tracked Discovery Anime" not in rows_html
+
+    # Movie and TV tracking save cleanly to local history.
+    from omakase.plus.movie_history import MovieHistoryService
+    from omakase.plus.tv_service import TVService
+
+    saved_movies = []
+    saved_tv = []
+
+    async def fake_movie_save(_self, uid, *, imdb_id, tmdb_id, status, rating, comment=None):
+        del _self, comment
+        saved_movies.append((uid, imdb_id, tmdb_id, status, rating))
+        return {"status": status, "rating": rating}
+
+    async def fake_tv_save(_self, uid, tmdb_id, *, status, rating, **kwargs):
+        del _self, kwargs
+        saved_tv.append((uid, tmdb_id, status, rating))
+        return {"tmdb_id": tmdb_id, "status": status, "rating": rating}
+
+    monkeypatch.setattr(MovieHistoryService, "save", fake_movie_save)
+    monkeypatch.setattr(TVService, "save_history", fake_tv_save)
+
+    movie_res = client.post(
+        "/plus/api/discover/track",
+        json={
+            "kind": "movie",
+            "media_id": 500,
+            "imdb_id": "tt0100500",
+            "title": "Track Movie",
+            "status": "completed",
+            "score": 9,
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert movie_res.status_code == 200 and movie_res.json()["remove_from_for_you"] is True
+    assert saved_movies == [(user_id, "tt0100500", 500, "completed", 9.0)]
+
+    tv_res = client.post(
+        "/plus/api/discover/track",
+        json={
+            "kind": "tv",
+            "media_id": 600,
+            "title": "Track TV",
+            "status": "completed",
+            "score": 8.5,
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert tv_res.status_code == 200 and tv_res.json()["remove_from_for_you"] is True
+    assert saved_tv == [(user_id, 600, "completed", 8.5)]
+
+    dismiss_res = client.post(
+        "/plus/api/discover/track",
+        json={"kind": "tv", "media_id": 601, "title": "Hidden Show", "status": "not_for_me"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert dismiss_res.status_code == 200 and dismiss_res.json()["remove_from_for_you"] is True
+
+
+def test_ai_recommendations_layout_provider_logos_and_clean_autocomplete(client):
+    _signup_and_login(client)
+    rec_html = client.get("/plus/discover?mode=recommend").text
+    assert 'class="ai-provider-strip"' in rec_html
+    assert 'class="ai-provider-logo"' in rec_html
+    assert 'class="discovery-controls-primary"' in rec_html
+    assert 'class="discovery-controls-aside"' in rec_html
+    add_html = client.get("/plus/discover?mode=add").text
+    assert 'name="query"' in add_html and 'autocomplete="off"' in add_html

@@ -60,6 +60,9 @@
       {% if card.trailer %}
       <button type="button" class="button button-secondary" data-trailer-open data-trailer-id="{{ card.trailer.id }}" data-trailer-title="{{ card.title }}">Watch trailer</button>
       {% endif %}
+      {% if not in_library or back_label == 'For You' %}
+      <button type="button" class="button button-secondary" data-detail-dismiss data-kind="movie" data-media-id="{{ card.tmdb_id or '' }}" data-imdb-id="{{ card.imdb_id }}" data-title="{{ card.title }}">Not for me</button>
+      {% endif %}
     </div>
 {% elif slot == 'synopsis' %}
     {% if card.overview %}<p class="movie-overview">{{ card.overview }}</p>{% endif %}
@@ -163,6 +166,16 @@
           </form>
           <div class="movie-plex-result" aria-live="polite" data-movie-plex-result></div>
           {% endif %}
+        </section>
+        {% elif cloud_playback and history.status == 'completed' and status_known and in_library %}
+        <section class="movie-after-watch" id="movie-after-watch" aria-labelledby="movie-after-watch-heading" tabindex="-1">
+          <h3 id="movie-after-watch-heading">Library copy</h3>
+          <p>Your watch history and rating stay saved when you remove a copy from Real-Debrid.</p>
+          <form method="post" action="/plus/movies/completed/cleanup/preview" data-busy-form>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="item_id" value="{{ card.imdb_id }}">
+            <button class="button button-secondary" type="submit" data-busy-label="Checking copy…">Review copy removal</button>
+          </form>
         </section>
         {% endif %}
       </section>
