@@ -24,7 +24,7 @@ Watch the full 8-minute dev update and setup walkthrough on YouTube: [Tired of S
 
 ## Releases
 
-The quickstart uses [v0.4.12](https://github.com/JhinxDev/omakase-plus/releases/tag/v0.4.12), the latest numbered source release. The [changelog](CHANGELOG.md) tracks newer web, server, and Apple TV work under **Unreleased**. Back up your app data and encryption key before upgrading.
+The quickstart uses [v0.5.0](https://github.com/JhinxDev/omakase-plus/releases/tag/v0.5.0), the latest numbered source release, alongside prebuilt container images at `ghcr.io/jhinxdev/omakase-plus` (`:latest`, `:0.5.0`, and `:0.5`). See the [changelog](CHANGELOG.md) for full release history. Back up your app data and encryption key before upgrading.
 
 ## Interface tour
 
@@ -73,7 +73,7 @@ Want Claude Code or Codex to inspect an existing host instead? [Copy the setup p
 Prefer manual source setup? Clone the repository and configure your local environment:
 
 ```sh
-git clone --branch v0.4.12 --single-branch https://github.com/JhinxDev/omakase-plus.git
+git clone --branch v0.5.0 --single-branch https://github.com/JhinxDev/omakase-plus.git
 cd omakase-plus
 cp .env.local.example .env.local
 cp .env.local.secrets.example .env.local.secrets

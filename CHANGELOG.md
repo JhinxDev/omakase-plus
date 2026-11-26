@@ -8,45 +8,30 @@ identifier; it does not replace the public release version.
 
 ## Unreleased
 
-- Web player & Settings reliability: unbuffered VOD HLS seeks stay on the current session without reloading `index.m3u8` or triggering unnecessary far-segment CEA-608 probes; cloud subtitles load in parallel with clear menu state synchronization; playback telemetry ignores Shaka `playbackRate == 0` transitions outside `[0.25, 2]`; the `/plus/` Content-Security-Policy allows `data:` URIs in `media-src` (`omakase.plus.web_security.plus_content_security_policy`) so Shaka's placeholder WebVTT `<track>` runs without console violations; and Settings validation, Prowlarr filter normalization, and reset button controls are aligned across routes.
-- Apple TV TestFlight distribution: both `OmakasePlusTV` and `OmakaseTopShelf` declare `UIRequiredDeviceCapabilities` (`arm64`) alongside `ITSAppUsesNonExemptEncryption = false`, and `scripts/deploy-testflight-tvos.sh` + `.github/workflows/tvos-testflight.yml` (`mode=upload`) pass App Store Connect validation cleanly.
-- Public repository & showcase refresh: repaired `scripts/showcase_preview.py` for current movie and TV views, removed stale internal review captures, regenerated `v5` screenshots and the BYOM `omakase-plus-setup-v4.png` diagram, and clarified Plex-style Bring Your Own Media positioning across the README and docs.
-- Backend storage and networking now use tuned SQLite WAL/cache PRAGMAs,
-  batched library queries, a shared loop-scoped HTTP/2 connection pool across
-  playback and Real-Debrid clients, and a 20s TTL downloads cache that skips
-  redundant transcode polling when opening direct native streams.
-- Playback startup pre-warms the opening window cleanly, tracks and reaps
-  FFmpeg/pump background tasks on close, raises PGS caption extraction timeout
-  to 20s, and surfaces bounded retryable status updates in the web player.
-- Apple TV (`OmakasePlusTV`) now drops `TVVLCKit` in favor of native AVPlayer,
-  adds off-main bounded artwork caching, Audio/Subtitle language pickers in
-  Settings, a TV season selector, a 10-second Up Next countdown, and an Internal
-  TestFlight Cloud Signing release path (`scripts/deploy-testflight-tvos.sh` and
-  `.github/workflows/tvos-testflight.yml`).
-- Retired unused legacy modules (`prepared_hls.py`, `debrid_seek.py`,
-  `debrid-player.js`, `/cloud/player`, and `dashboard.html`), hardened Compose
-  chain collapse (`ops/release/collapse.py` and `promote.py --collapse-chain`),
-  and sped up CI workflows with pip and Buildx caching.
-- Home and title pages group playback actions and viewing status. Home remembers
-  the featured carousel’s pause setting. Navigation uses one loading indicator.
-- Collections show verified connected media. Viewing history keeps completed
-  titles, ratings and optional private notes for movies, anime and TV seasons.
-- Requests show the submitter, recorded activity and playable episodes by season.
-  History separates viewing, library activity and collection changes.
-- TV requests can use configured Riven intake. Real-Debrid fallback can verify
-  exact missing episodes and reuse eligible files already in the linked account.
-- Existing TV requests can show newly verified Real-Debrid episodes during a
-  Riven outage while retaining the last confirmed Riven status.
-- Recent Apple TV builds combine Continue Watching activity across anime, movies
-  and TV. Home Screen shelf tiles fit the whole image, and focused in-app controls
-  use the dark highlight. Media Info shows resolution, codecs, container and size.
-- The Apple TV Home Anime Continue Watching row uses matching episode stills
-  where available and shows the full series poster as a fallback.
-- Apple TV offers Skip Intro during verified opening markers. Native playback
-  prepares captions and the first video window together and makes fewer range
-  requests for small Matroska indexes.
-- The iPhone simulator prototype shares the Swift playback and resume contracts
-  and runs an offline catalog-to-player test in GitHub Actions.
+## 0.5.0 - 2026-11-26
+
+### Added
+
+- Native iPhone app (`ios-source/`, iOS V1) sharing `QualificationCore` with Apple TV, supporting one-time pairing codes, Keychain credential persistence, household profile switching, Home shelves, synced Edit Home, library browsing, Requests posters, native `AVPlayerViewController`, and GitHub Actions TestFlight Cloud Signing (`.github/workflows/ios-testflight.yml`).
+- Public GHCR container image publishing (`ghcr.io/jhinxdev/omakase-plus` via `.github/workflows/docker-publish.yml`), interactive Docker quick installer (`install.sh`), and automated tag-triggered GitHub Releases (`.github/workflows/release.yml` and `ops/release/github_release_notes.py`).
+- Live authenticated benchmark suite (`ops/benchmark_live.py`) and requests hit-rate overhaul: tiered release fallback, multi-attempt movie fallback with a 60-second cooldown, TV season-pack acquisition, international and original title search, automatic stale Riven escalation, and Prowlarr search metadata.
+- Apple TV (`OmakasePlusTV`) native `AVPlayer` playback (dropping `TVVLCKit`), verified Skip Intro during opening markers, 10-second Up Next auto-play countdown, Audio and Subtitle language pickers in Settings, TV season selector, Media Info inspector, and Internal TestFlight Cloud Signing (`.github/workflows/tvos-testflight.yml`).
+- Database migrations `057` through `068` covering native watch-credit intent, For You requests, synced Home layout, request candidates, TV collection additions, movie and TV fallback transfers, title reviews, Real-Debrid completion cleanup, season packs, and multi-attempt movie fallback.
+
+### Changed
+
+- Unified Anime, Movies, and TV Shows browse search/filter pop-ups and compact backdrop title detail heroes (`_title_detail.html` and `series-detail.css`), removing Anime's legacy `Overview | Episodes` bar and raw browse-card quality badges while listing exact 720p fallback episode numbers on detail pages when present.
+- Redesigned Requests with plain-English status pills, TV episode progress bars, submitter and activity records, verified Real-Debrid episode visibility during Riven outages, and collapsible diagnostics; separated History into viewing, library activity, and collection changes.
+- Tuned SQLite WAL and cache PRAGMAs, batched library queries, added a shared loop-scoped HTTP/2 connection pool and 20-second Real-Debrid downloads cache, pre-warmed playback startup, raised PGS caption extraction timeout to 20 seconds, and retired legacy HLS/dashboard paths (`prepared_hls.py`, `debrid_seek.py`, `debrid-player.js`, `/cloud/player`, and `dashboard.html`).
+- Refreshed the public README, `v6` redacted showcase captures, Bring Your Own Media documentation, Compose chain collapse (`ops/release/collapse.py` and `promote.py --collapse-chain`), CI pip/Buildx caching, and the embedded YouTube walkthrough.
+
+### Fixed
+
+- Fixed the `Dim artwork` toggle in the user account menu so clicking persists and updates the page immediately instead of navigating away.
+- Fixed Real-Debrid completion review cleanup so removing media queues provider cleanup reliably, dismisses the completed notification immediately, and replaces the ambiguous `Cancel` button with a clear `Back` action.
+- Fixed web player unbuffered VOD HLS seeking without reloading `index.m3u8`, parallel cloud subtitle state synchronization, Shaka `playbackRate == 0` telemetry filtering, `data:` URI `media-src` CSP support in `omakase.plus.web_security`, and Settings validation and reset alignment.
+- Fixed Apple TV focus rendering, Top Shelf artwork framing, duplicate Up Next overlays, and `UIRequiredDeviceCapabilities` (`arm64`) plus `ITSAppUsesNonExemptEncryption = false` for App Store Connect TestFlight uploads.
+- Fixed CI reliability by skipping `ffmpeg`-dependent media tests when `ffmpeg` is absent, guarding cancelled warm tasks, and running performance budgets sequentially after parallel `pytest-xdist`.
 
 ## 0.4.12 - 2026-11-12
 

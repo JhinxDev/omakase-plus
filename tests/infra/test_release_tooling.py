@@ -50,6 +50,7 @@ def _load(name: str):
 build_image = _load("build_image")
 check_drift = _load("check_drift")
 collapse = _load("collapse")
+github_release_notes = _load("github_release_notes")
 promote = _load("promote")
 
 
@@ -1080,3 +1081,52 @@ def test_promote_collapse_chain_option_and_guards(tmp_path, monkeypatch):
     with pytest.raises(promote.ReleaseError, match="differs from the reviewed chain"):
         promote.collapse_candidate_chain(settings, [str(base)], candidate, bindings)
     assert not (stack / ".compose-collapsed.draft.yaml").exists()
+
+
+def test_repo_release_versions_stay_synchronized():
+    versions = github_release_notes.read_repo_versions(REPO_ROOT)
+    unique = set(versions.values())
+    assert len(unique) == 1, f"Version mismatch across repo files: {versions}"
+    current_version = next(iter(unique))
+    assert github_release_notes.parse_release_tag(f"v{current_version}") == current_version
+
+    changelog_text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    section = github_release_notes.extract_changelog_section(changelog_text, current_version)
+    assert "### Added" in section or "### Changed" in section or "### Fixed" in section
+
+
+def test_github_release_notes_extracts_current_release():
+    versions = github_release_notes.read_repo_versions(REPO_ROOT)
+    current_version = versions["pyproject.toml"]
+    tag = f"v{current_version}"
+    notes = github_release_notes.build_release_notes(tag, REPO_ROOT)
+
+    assert f"ghcr.io/jhinxdev/omakase-plus:{current_version}" in notes
+    assert f"https://github.com/JhinxDev/omakase-plus/blob/{tag}/CHANGELOG.md" in notes
+    assert "https://omakase-plus.jhinx.dev/docs/quickstart" in notes
+
+    in_code_block = False
+    for line in notes.splitlines():
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if not in_code_block:
+            assert "\u2014" not in line, f"Em dash found in release notes prose: {line!r}"
+            assert " -- " not in line, f"Double hyphen found in release notes prose: {line!r}"
+
+
+def test_github_release_notes_rejects_mismatched_or_invalid_tags():
+    with pytest.raises(ValueError, match="vMAJOR.MINOR.PATCH"):
+        github_release_notes.parse_release_tag("0.5.0")
+    with pytest.raises(ValueError, match="vMAJOR.MINOR.PATCH"):
+        github_release_notes.parse_release_tag("v0.5")
+    with pytest.raises(ValueError, match="does not match repository versions"):
+        github_release_notes.verify_tag_matches_repo("v9.9.9", REPO_ROOT)
+
+
+def test_release_workflow_uses_least_privilege_and_tag_trigger():
+    workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert '"v*"' in workflow or "'v*'" in workflow or "- v*" in workflow
+    assert "contents: write" in workflow
+    assert "packages: write" not in workflow
+    assert "ops/release/github_release_notes.py" in workflow
