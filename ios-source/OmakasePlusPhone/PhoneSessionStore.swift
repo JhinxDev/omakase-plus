@@ -121,9 +121,9 @@ final class PhoneSessionStore {
         guard force || Date().timeIntervalSince(lastRenewal) >= Self.renewalInterval else { return }
         renewing = true
         defer { renewing = false }
-        let expectedToken = base.credential.token
+        let expectedCredential = base.credential
         guard let renewed = try? await base.renewed() else { return }
-        guard baseClient?.credential.token == expectedToken, roster.selected?.id == current.id else { return }
+        guard baseClient?.credential == expectedCredential, roster.selected?.id == current.id else { return }
         lastRenewal = Date()
         let entry = LiveSavedProfile(profile: current.profile, credential: renewed.credential)
         guard (try? roster.select(entry)) != nil else { return }
@@ -133,9 +133,9 @@ final class PhoneSessionStore {
     }
 
     private func adoptLegacyCredential(_ legacyClient: LiveLibraryClient, credential: LiveLibraryClient.Credential) async {
-        let expectedToken = legacyClient.credential.token
+        let expectedCredential = legacyClient.credential
         guard let profile = try? await legacyClient.profile() else { return }
-        guard baseClient?.credential.token == expectedToken else { return }
+        guard baseClient?.credential == expectedCredential else { return }
         let entry = LiveSavedProfile(profile: profile, credential: credential)
         _ = try? roster.select(entry)
         persistRoster()
@@ -287,13 +287,13 @@ final class PhoneSessionStore {
     func handleUnauthorized() {
         guard !confirmingUnauthorized, let probe = baseClient, let targetID = roster.selected?.id else { return }
         confirmingUnauthorized = true
-        let expectedToken = probe.credential.token
-        Task { await confirmUnauthorized(using: probe, expectedToken: expectedToken, targetID: targetID) }
+        let expectedCredential = probe.credential
+        Task { await confirmUnauthorized(using: probe, expectedCredential: expectedCredential, targetID: targetID) }
     }
 
     private func confirmUnauthorized(
         using probe: LiveLibraryClient,
-        expectedToken: String,
+        expectedCredential: LiveLibraryClient.Credential,
         targetID: LiveSavedProfile.ID
     ) async {
         defer { confirmingUnauthorized = false }
@@ -301,21 +301,21 @@ final class PhoneSessionStore {
             _ = try await probe.profile()
             return
         } catch FixtureConnectionError.unauthorized {
-            guard baseClient?.credential.token == expectedToken, roster.selected?.id == targetID else { return }
+            guard baseClient?.credential == expectedCredential, roster.selected?.id == targetID else { return }
             do {
                 let renewed = try await probe.renewed()
-                guard baseClient?.credential.token == expectedToken, roster.selected?.id == targetID else { return }
+                guard baseClient?.credential == expectedCredential, roster.selected?.id == targetID else { return }
                 // The server still knows this device; only our copy of the expiry was stale.
                 adopt(renewed: renewed)
             } catch FixtureConnectionError.unauthorized {
-                guard baseClient?.credential.token == expectedToken else { return }
+                guard baseClient?.credential == expectedCredential else { return }
                 dropProfile(id: targetID, message: "Session expired or device was unlinked. Reconnect your server.")
             } catch {
-                guard baseClient?.credential.token == expectedToken else { return }
+                guard baseClient?.credential == expectedCredential else { return }
                 errorMessage = "Couldn't reach your server. Pull to refresh."
             }
         } catch {
-            guard baseClient?.credential.token == expectedToken else { return }
+            guard baseClient?.credential == expectedCredential else { return }
             errorMessage = "Couldn't reach your server. Pull to refresh."
         }
     }
@@ -360,8 +360,8 @@ final class PhoneSessionStore {
 
     func refreshLibraries() async {
         guard let baseClient else { return }
-        let expectedToken = baseClient.credential.token
-        if let list = try? await baseClient.libraries(), self.baseClient?.credential.token == expectedToken {
+        let expectedCredential = baseClient.credential
+        if let list = try? await baseClient.libraries(), self.baseClient?.credential == expectedCredential {
             libraries = list
             if let current = selectedLibrary, !list.contains(current) {
                 selectLibrary(nil)

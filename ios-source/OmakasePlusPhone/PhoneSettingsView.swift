@@ -131,7 +131,7 @@ struct PhoneSettingsView: View {
             }
             .sheet(isPresented: $showAddProfile) {
                 PhoneOnboardingView(store: store)
-                    .onChange(of: store.activeProfile?.credential.token) { _, _ in
+                    .onChange(of: store.activeProfile?.credential) { _, _ in
                         showAddProfile = false
                     }
                     .onDisappear {

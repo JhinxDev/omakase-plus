@@ -292,7 +292,7 @@ public struct LiveLibraryOption: Decodable, Identifiable, Hashable, Sendable {
 }
 
 public struct LiveLibraryClient: Sendable {
-    public struct Credential: Codable, Sendable {
+    public struct Credential: Codable, Equatable, Sendable {
         let origin: String
         let token: String
         let expiresAt: Date
