@@ -5,10 +5,17 @@ import QualificationCore
 @MainActor
 @Observable
 final class PhoneSessionStore {
+    enum RestoreState: Equatable {
+        case idle
+        /// The Keychain could not be read yet, usually because the phone was locked at launch.
+        case needsRetry
+    }
+
     private(set) var roster = LiveProfileRoster()
     private(set) var client: LiveLibraryClient?
     private(set) var libraries: [LiveLibraryOption] = []
     private(set) var selectedLibrary: LiveLibraryOption?
+    private(set) var restoreState: RestoreState = .idle
 
     var pairingChallenge: LiveLibraryClient.DeviceChallenge?
     var activePass: LiveTestPass?
@@ -29,10 +36,13 @@ final class PhoneSessionStore {
 
     private var baseClient: LiveLibraryClient?
     private var pairingTask: Task<Void, Never>?
+    private var confirmingUnauthorized = false
+    private var lastRenewal = Date.distantPast
 
     private static let audioKey = "omakase.ios.audio-language"
     private static let subtitlesAlwaysKey = "omakase.ios.subtitles-always"
     private static let subtitleLanguageKey = "omakase.ios.subtitle-language"
+    private static let renewalInterval: TimeInterval = 6 * 3600
 
     var defaultServerOrigin: String {
         if let raw = Bundle.main.object(forInfoDictionaryKey: "OmakaseServerOrigin") as? String {
@@ -54,13 +64,29 @@ final class PhoneSessionStore {
         restoreFromKeychain()
     }
 
+    // MARK: Restoring and keeping the link
+
     func restoreFromKeychain() {
-        guard let stored = try? PhoneKeychain.read() else { return }
+        let stored: PhoneKeychain.Storage
+        do {
+            stored = try PhoneKeychain.read()
+        } catch PhoneKeychain.Failure.locked {
+            // Launched while the phone was locked. Do not show onboarding; retry when active.
+            restoreState = .needsRetry
+            return
+        } catch {
+            restoreState = .idle
+            return
+        }
+        restoreState = .idle
         switch stored {
         case .roster(var savedRoster):
             savedRoster.prune()
+            if savedRoster.selected == nil, let first = savedRoster.entries.first {
+                _ = try? savedRoster.select(first)
+            }
             roster = savedRoster
-            try? PhoneKeychain.save(roster)
+            persistRoster()
             if let current = roster.selected,
                let restored = try? LiveLibraryClient.restore(current.credential) {
                 applyAuthenticatedClient(restored, savedProfile: current)
@@ -74,13 +100,43 @@ final class PhoneSessionStore {
         }
     }
 
+    /// Called whenever the app becomes active. Retries a restore that was blocked by a
+    /// locked phone or a transient Keychain failure.
+    func resumeIfNeeded() {
+        guard client == nil, pairingChallenge == nil, !connecting else { return }
+        restoreFromKeychain()
+    }
+
+    /// Stop waiting for the Keychain and show the connect screen.
+    func abandonRestore() {
+        restoreState = .idle
+    }
+
+    /// Ask the server to refresh this device's expiry. A paired device in use stays paired.
+    /// Any failure is ignored on purpose: an invitation link or a flaky network must never
+    /// cost the user their saved connection.
+    func renewIfNeeded(force: Bool = false) async {
+        guard let current = roster.selected, let base = baseClient else { return }
+        guard force || Date().timeIntervalSince(lastRenewal) >= Self.renewalInterval else { return }
+        lastRenewal = Date()
+        guard let renewed = try? await base.renewed() else { return }
+        guard roster.selected?.id == current.id, baseClient != nil else { return }
+        let entry = LiveSavedProfile(profile: current.profile, credential: renewed.credential)
+        guard (try? roster.select(entry)) != nil else { return }
+        persistRoster()
+        baseClient = renewed
+        client = renewed.selecting(selectedLibrary)
+    }
+
     private func adoptLegacyCredential(_ client: LiveLibraryClient, credential: LiveLibraryClient.Credential) async {
         guard let profile = try? await client.profile() else { return }
         let entry = LiveSavedProfile(profile: profile, credential: credential)
         _ = try? roster.select(entry)
-        try? PhoneKeychain.save(roster)
+        persistRoster()
         await refreshLibraries()
     }
+
+    // MARK: Pairing
 
     func startPairing(server: String) async {
         cancelPairing()
@@ -88,7 +144,7 @@ final class PhoneSessionStore {
         connecting = true
         defer { connecting = false }
         do {
-            let challenge = try await LiveLibraryClient.startPairing(server: server)
+            let challenge = try await LiveLibraryClient.startPairing(server: server, kind: "iphone")
             pairingChallenge = challenge
             pairingTask = Task { [weak self] in
                 await self?.pollChallenge(challenge)
@@ -108,11 +164,7 @@ final class PhoneSessionStore {
         do {
             let liveClient = try await challenge.waitForApproval()
             let profile = try await liveClient.profile()
-            let saved = LiveSavedProfile(profile: profile, credential: liveClient.credential)
-            _ = try roster.select(saved)
-            try? PhoneKeychain.save(roster)
-            pairingChallenge = nil
-            applyAuthenticatedClient(liveClient, savedProfile: saved)
+            try finishLinking(liveClient, saved: LiveSavedProfile(profile: profile, credential: liveClient.credential))
         } catch is CancellationError {
             return
         } catch {
@@ -129,14 +181,20 @@ final class PhoneSessionStore {
         do {
             let liveClient = try await LiveLibraryClient.link(invitation: code)
             let profile = try await liveClient.profile()
-            let saved = LiveSavedProfile(profile: profile, credential: liveClient.credential)
-            _ = try roster.select(saved)
-            try? PhoneKeychain.save(roster)
-            applyAuthenticatedClient(liveClient, savedProfile: saved)
+            try finishLinking(liveClient, saved: LiveSavedProfile(profile: profile, credential: liveClient.credential))
         } catch {
             errorMessage = Self.describe(error, fallback: "Invalid or expired invitation link.")
         }
     }
+
+    private func finishLinking(_ liveClient: LiveLibraryClient, saved: LiveSavedProfile) throws {
+        _ = try roster.select(saved)
+        pairingChallenge = nil
+        applyAuthenticatedClient(liveClient, savedProfile: saved)
+        persistRoster()
+    }
+
+    // MARK: Profiles
 
     func switchProfile(_ entry: LiveSavedProfile) {
         guard let restored = try? LiveLibraryClient.restore(entry.credential) else {
@@ -144,7 +202,7 @@ final class PhoneSessionStore {
             return
         }
         _ = try? roster.select(entry)
-        try? PhoneKeychain.save(roster)
+        persistRoster()
         PhoneArtworkCache.shared.clear()
         applyAuthenticatedClient(restored, savedProfile: entry)
     }
@@ -165,19 +223,12 @@ final class PhoneSessionStore {
         if let activeID {
             roster.remove(activeID)
         }
-        try? PhoneKeychain.save(roster)
-        baseClient = nil
-        client = nil
-        libraries = []
-        selectedLibrary = nil
-        PhoneArtworkCache.shared.clear()
-        if let fallback = roster.entries.first,
-           let restored = try? LiveLibraryClient.restore(fallback.credential) {
-            _ = try? roster.select(fallback)
-            try? PhoneKeychain.save(roster)
-            applyAuthenticatedClient(restored, savedProfile: fallback)
-        }
+        persistRoster()
+        clearActiveClient()
+        useNextSavedProfile()
     }
+
+    // MARK: Playback
 
     func play(_ entry: LiveLibraryEntry, featured: Bool = false) async {
         guard let client, !openingPlayback else { return }
@@ -220,16 +271,73 @@ final class PhoneSessionStore {
         }
     }
 
+    // MARK: Authorization loss
+
+    /// Any screen that receives a 401 reports it here. One 401 is not proof the link is
+    /// gone: it can be a single resource, a restarting server or a stale cached client.
+    /// The saved connection is removed only when the server also rejects the profile
+    /// check itself.
     func handleUnauthorized() {
-        errorMessage = "Session expired or device was unlinked. Reconnect your server."
+        guard !confirmingUnauthorized, let probe = baseClient else { return }
+        confirmingUnauthorized = true
+        Task { await confirmUnauthorized(using: probe) }
+    }
+
+    private func confirmUnauthorized(using probe: LiveLibraryClient) async {
+        defer { confirmingUnauthorized = false }
+        do {
+            _ = try await probe.profile()
+            return
+        } catch FixtureConnectionError.unauthorized {
+            do {
+                let renewed = try await probe.renewed()
+                // The server still knows this device; only our copy of the expiry was stale.
+                adopt(renewed: renewed)
+            } catch FixtureConnectionError.unauthorized {
+                dropActiveProfile(message: "Session expired or device was unlinked. Reconnect your server.")
+            } catch {
+                errorMessage = "Couldn't reach your server. Pull to refresh."
+            }
+        } catch {
+            errorMessage = "Couldn't reach your server. Pull to refresh."
+        }
+    }
+
+    private func adopt(renewed: LiveLibraryClient) {
+        guard let current = roster.selected else { return }
+        let entry = LiveSavedProfile(profile: current.profile, credential: renewed.credential)
+        guard (try? roster.select(entry)) != nil else { return }
+        persistRoster()
+        baseClient = renewed
+        client = renewed.selecting(selectedLibrary)
+    }
+
+    private func dropActiveProfile(message: String) {
         if let id = roster.selected?.id {
             roster.remove(id)
-            try? PhoneKeychain.save(roster)
+            persistRoster()
         }
-        baseClient = nil
-        client = nil
+        clearActiveClient()
         activePass = nil
         resumeWriter = nil
+        useNextSavedProfile()
+        errorMessage = message
+    }
+
+    private func clearActiveClient() {
+        baseClient = nil
+        client = nil
+        libraries = []
+        selectedLibrary = nil
+        PhoneArtworkCache.shared.clear()
+    }
+
+    private func useNextSavedProfile() {
+        guard let fallback = roster.entries.first,
+              let restored = try? LiveLibraryClient.restore(fallback.credential) else { return }
+        _ = try? roster.select(fallback)
+        persistRoster()
+        applyAuthenticatedClient(restored, savedProfile: fallback)
     }
 
     func refreshLibraries() async {
@@ -242,12 +350,23 @@ final class PhoneSessionStore {
         }
     }
 
+    // MARK: Helpers
+
     private func applyAuthenticatedClient(_ liveClient: LiveLibraryClient, savedProfile: LiveSavedProfile) {
         baseClient = liveClient
         selectedLibrary = nil
         client = liveClient
         errorMessage = nil
+        lastRenewal = Date()
         Task { await refreshLibraries() }
+    }
+
+    private func persistRoster() {
+        do {
+            try PhoneKeychain.save(roster)
+        } catch {
+            errorMessage = "Couldn't save this connection on your iPhone. You may need to connect again later."
+        }
     }
 
     private func installPass(_ pass: LiveTestPass, using client: LiveLibraryClient) {

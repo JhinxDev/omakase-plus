@@ -16,6 +16,8 @@ struct OmakasePlusPhoneApp: App {
                 }
             }
             .preferredColorScheme(.dark)
+            // An iPhone app does not need scroll bars; hide them in every ScrollView and List.
+            .scrollIndicators(.hidden)
         }
     }
 }

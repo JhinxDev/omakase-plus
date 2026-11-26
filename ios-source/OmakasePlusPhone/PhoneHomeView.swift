@@ -80,8 +80,19 @@ struct PhoneHomeProjection: Decodable {
         }
     }
 
+    struct Layout: Decodable {
+        struct Row: Decodable, Identifiable, Equatable {
+            let id: String
+            let label: String
+            let hidden: Bool
+        }
+
+        let rows: [Row]
+    }
+
     let banner: Banner
     let rows: [PhoneHomeRow]
+    let layout: Layout?
 }
 
 struct PhoneHomeView: View {
@@ -93,6 +104,7 @@ struct PhoneHomeView: View {
     @State private var loading = false
     @State private var loadError: String?
     @State private var selectedEntry: PhoneDetailSelection?
+    @State private var showEditor = false
 
     var body: some View {
         NavigationStack {
@@ -132,6 +144,25 @@ struct PhoneHomeView: View {
             .foregroundStyle(Color.appText)
             .navigationTitle("Home")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showEditor = true
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                    }
+                    .accessibilityLabel("Edit Home")
+                    .accessibilityIdentifier("phone.home.edit")
+                    .disabled(projection?.layout == nil)
+                }
+            }
+            .sheet(isPresented: $showEditor) {
+                if let layout = projection?.layout {
+                    PhoneHomeEditor(store: store, client: client, rows: layout.rows) {
+                        await loadHome()
+                    }
+                }
+            }
             .refreshable {
                 await loadHome()
             }
@@ -231,6 +262,11 @@ struct PhoneHomeView: View {
                 .font(.title3.bold())
                 .padding(.horizontal, 16)
                 .accessibilityIdentifier("phone.home.shelf.\(row.id)")
+                .contextMenu {
+                    Button("Hide this shelf", systemImage: "eye.slash") {
+                        Task { await hideShelf(row) }
+                    }
+                }
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 14) {
                     ForEach(row.cards) { card in
@@ -278,6 +314,17 @@ struct PhoneHomeView: View {
                 }
                 .padding(.horizontal, 16)
             }
+        }
+    }
+
+    private func hideShelf(_ row: PhoneHomeRow) async {
+        do {
+            try await client.editHome(action: "remove", target: row.id)
+            await loadHome()
+        } catch FixtureConnectionError.unauthorized {
+            store.handleUnauthorized()
+        } catch {
+            store.errorMessage = "Couldn't hide this shelf. Home needs at least one visible shelf."
         }
     }
 

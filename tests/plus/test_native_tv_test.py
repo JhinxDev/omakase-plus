@@ -923,8 +923,8 @@ def test_native_for_you_and_request_share_the_paired_viewer(system, monkeypatch)
     assert response.json()["rows"][0]["cards"][0]["id"] == "42"
     assert "private.invalid" not in response.text
     # The paired viewer sees the shared request projection, which now also carries
-    # the stage timeline. An empty list is correct here: this row has no stages yet.
-    projected = saved | {"stages": []}
+    # the stage timeline and optional poster target.
+    projected = saved | {"stages": [], "poster": None}
     assert (
         native.post(LIBRARY_API + "/for-you/request", json={"kind": "tv", "title_id": "42"}).json()
         == projected

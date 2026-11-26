@@ -14,6 +14,7 @@
 		110000000000000000000104 /* PhoneSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000204; };
 		110000000000000000000105 /* PhoneOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000205; };
 		110000000000000000000106 /* PhoneHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000206; };
+		110000000000000000000110 /* PhoneHomeEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000210; };
 		110000000000000000000107 /* PhoneLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000207; };
 		110000000000000000000108 /* PhoneTitleDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000208; };
 		110000000000000000000109 /* PhoneSearchRequestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000209; };
@@ -34,6 +35,7 @@
 		110000000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSessionStore.swift; sourceTree = "<group>"; };
 		110000000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneOnboardingView.swift; sourceTree = "<group>"; };
 		110000000000000000000206 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHomeView.swift; sourceTree = "<group>"; };
+		110000000000000000000210 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneHomeEditor.swift; sourceTree = "<group>"; };
 		110000000000000000000207 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneLibraryView.swift; sourceTree = "<group>"; };
 		110000000000000000000208 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneTitleDetailView.swift; sourceTree = "<group>"; };
 		110000000000000000000209 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSearchRequestsView.swift; sourceTree = "<group>"; };
@@ -64,6 +66,7 @@
 				110000000000000000000204,
 				110000000000000000000205,
 				110000000000000000000206,
+				110000000000000000000210,
 				110000000000000000000207,
 				110000000000000000000208,
 				110000000000000000000209,
@@ -136,6 +139,7 @@
 			110000000000000000000104,
 			110000000000000000000105,
 			110000000000000000000106,
+			110000000000000000000110,
 			110000000000000000000107,
 			110000000000000000000108,
 			110000000000000000000109,
@@ -156,7 +160,7 @@
 			ALWAYS_SEARCH_USER_PATHS = NO;
 			IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 			OMAKASE_IOS_BUILD_NUMBER = 1;
-			OMAKASE_IOS_MARKETING_VERSION = 0.7.0;
+			OMAKASE_IOS_MARKETING_VERSION = 0.7.1;
 			ONLY_ACTIVE_ARCH = YES;
 			SDKROOT = iphoneos;
 			SWIFT_VERSION = 5.0;
@@ -167,7 +171,7 @@
 			ALWAYS_SEARCH_USER_PATHS = NO;
 			IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 			OMAKASE_IOS_BUILD_NUMBER = 1;
-			OMAKASE_IOS_MARKETING_VERSION = 0.7.0;
+			OMAKASE_IOS_MARKETING_VERSION = 0.7.1;
 			SDKROOT = iphoneos;
 			SWIFT_VERSION = 5.0;
 			SWIFT_COMPILATION_MODE = wholemodule;

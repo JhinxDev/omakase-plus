@@ -106,9 +106,15 @@ struct PhoneSettingsView: View {
                     }
                 }
                 .listRowBackground(Color.appSurface)
+
+                Section("About") {
+                    LabeledContent("Version", value: appVersionLabel)
+                }
+                .listRowBackground(Color.appSurface)
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
+            .scrollIndicators(.hidden)
             .background(Color.appBackground.ignoresSafeArea())
             .foregroundStyle(Color.appText)
             .navigationTitle("Settings")
@@ -130,5 +136,12 @@ struct PhoneSettingsView: View {
                     }
             }
         }
+    }
+
+    private var appVersionLabel: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "0.7.1"
+        let build = info?["CFBundleVersion"] as? String ?? "1"
+        return "\(short) (\(build))"
     }
 }

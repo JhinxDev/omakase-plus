@@ -169,7 +169,9 @@ public struct LiveTitleRequest: Decodable, Identifiable, Sendable {
     public let stages: [Stage]?
     public let fallbackSearch: FallbackSearch?
     public let fallbackTransfer: FallbackTransfer?
-
+    /// A native artwork path or TMDB image URL chosen by the server. Fetch it with
+    /// `LiveLibraryClient.requestArtwork(_:)`, never directly.
+    public let poster: String?
     public struct FallbackSearch: Decodable, Sendable {
         public let headline: String
         public let outcome: String
@@ -206,7 +208,7 @@ public struct LiveTitleRequest: Decodable, Identifiable, Sendable {
     enum CodingKeys: String, CodingKey {
         case kind, titleID = "title_id", title, state, label, detail, canCheck = "can_check"
         case lastCheckedAt = "last_checked_at", nextAction = "next_action", reasonText = "reason_text"
-        case statusLabel = "status_label", stages
+        case statusLabel = "status_label", stages, poster
         case fallbackSearch = "fallback_search", fallbackTransfer = "fallback_transfer"
     }
 }
@@ -400,13 +402,23 @@ public struct LiveLibraryClient: Sendable {
                     session: makeSession(), expiresAt: credential.expiresAt)
     }
 
-    public static func startPairing(server: String) async throws -> DeviceChallenge {
-        try await startPairing(server: server, session: makeSession())
+    public static func startPairing(server: String, kind: String = "apple-tv") async throws -> DeviceChallenge {
+        try await startPairing(server: server, kind: kind, session: makeSession())
     }
 
-    static func startPairing(server: String, session: URLSession) async throws -> DeviceChallenge {
+    static func startPairing(server: String, kind: String = "apple-tv",
+                             session: URLSession) async throws -> DeviceChallenge {
         let origin = try FixtureOrigin(server.trimmingCharacters(in: .whitespacesAndNewlines))
-        var request = URLRequest(url: endpoint(origin, "device"))
+        var pairingURL = endpoint(origin, "device")
+        if kind != "apple-tv" {
+            guard kind.range(of: "^[a-z-]{1,16}$", options: .regularExpression) != nil,
+                  var parts = URLComponents(url: pairingURL, resolvingAgainstBaseURL: false)
+            else { throw FixtureConnectionError.invalidOrigin }
+            parts.queryItems = [URLQueryItem(name: "kind", value: kind)]
+            guard let url = parts.url else { throw FixtureConnectionError.invalidOrigin }
+            pairingURL = url
+        }
+        var request = URLRequest(url: pairingURL)
         request.httpMethod = "POST"
         let data = try await load(request, session: session, maxBytes: 4096)
         let device = try JSONDecoder().decode(DeviceReply.self, from: data)
@@ -449,6 +461,24 @@ public struct LiveLibraryClient: Sendable {
     public func profile() async throws -> LiveLibraryProfile {
         let data = try await send(Self.endpoint(origin, "profile"), timeout: 8)
         return try LiveLibraryProfile.decode(data)
+    }
+
+    /// Ask the server for this device's current expiry and return a client that carries it.
+    ///
+    /// A paired device in use slides its server-side expiry forward, so a client that
+    /// stores this value keeps working. Invitation links are not device credentials and
+    /// answer 401 here; callers must treat a failure as "keep what you have", not as
+    /// proof the link is dead.
+    public func renewed() async throws -> Self {
+        let data = try await send(Self.endpoint(origin, "device"), allowExpired: true, timeout: 8)
+        let approval = try JSONDecoder().decode(DeviceApproval.self, from: data)
+        guard (1...2_592_000).contains(approval.expiresIn) else {
+            throw FixtureConnectionError.invalidResponse
+        }
+        var client = Self(origin: origin, token: token, session: session,
+                          expiresAt: Date().addingTimeInterval(TimeInterval(approval.expiresIn)))
+        client.selectedLibrary = selectedLibrary
+        return client
     }
 
     public func profileAvatar() async throws -> Data {
@@ -522,6 +552,21 @@ public struct LiveLibraryClient: Sendable {
         let body = try JSONEncoder().encode(["action": action, "target": target])
         _ = try await send(scoped(Self.endpoint(origin, "home/layout")), method: "POST", body: body,
                            maxBytes: 16_384, timeout: 12)
+    }
+
+    /// Save a complete Home layout: order is the array order, `hidden` hides a shelf.
+    public func saveHomeLayout(rows: [(id: String, hidden: Bool)]) async throws {
+        struct Row: Encodable { let id: String; let hidden: Bool }
+        struct Layout: Encodable { let rows: [Row] }
+        let body = try JSONEncoder().encode(Layout(rows: rows.map { Row(id: $0.id, hidden: $0.hidden) }))
+        _ = try await send(scoped(Self.endpoint(origin, "home/layout")), method: "POST", body: body,
+                           maxBytes: 16_384, timeout: 12)
+    }
+
+    /// The poster for a request, fetched only from targets the server and this client both trust.
+    public func requestArtwork(_ request: LiveTitleRequest) async throws -> Data? {
+        guard let poster = request.poster else { return nil }
+        return try await homeArtwork(poster)
     }
 
     public func homeArtwork(_ path: String) async throws -> Data? {

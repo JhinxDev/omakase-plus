@@ -606,7 +606,7 @@ html[data-dim-artwork] :is(
 .edit-home-head { display: flex; align-items: start; justify-content: space-between; gap: var(--om-space-4); }
 .edit-home-head h2 { margin: 0; font-size: var(--om-text-lg); }
 .edit-home-head p { margin: var(--om-space-1) 0 0; color: var(--om-muted); font-size: var(--om-text-sm); }
-.edit-home-close { display: grid; place-items: center; inline-size: 34px; block-size: 34px; border: 0; border-radius: 50%; background: var(--om-surface-2); color: var(--om-ink); cursor: pointer; }
+.edit-home-close { display: grid; place-items: center; inline-size: 44px; block-size: 44px; border: 0; border-radius: 50%; background: var(--om-surface-2); color: var(--om-ink); cursor: pointer; }
 .edit-home-rows { display: flex; flex-direction: column; gap: var(--om-space-2); margin: 0; padding: 0; list-style: none; }
 .edit-home-row {
   display: grid;
@@ -618,12 +618,14 @@ html[data-dim-artwork] :is(
   border-radius: var(--om-radius-sm);
   background: var(--om-surface-2);
 }
-.edit-home-row.is-hidden { opacity: .62; }
+.edit-home-row.is-hidden .edit-home-name,
+.edit-home-row.is-hidden .edit-home-name small { color: var(--om-muted); }
 .edit-home-name { font-size: var(--om-text-md); }
 .edit-home-name small { display: block; color: var(--om-quiet); font-size: var(--om-text-xs); }
 .edit-home-handle { color: var(--om-quiet); }
 .edit-home-row button {
-  min-block-size: 32px;
+  min-inline-size: 44px;
+  min-block-size: 44px;
   padding: 0 .6rem;
   border: 1px solid var(--om-line);
   border-radius: 6px;

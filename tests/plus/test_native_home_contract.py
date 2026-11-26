@@ -76,3 +76,32 @@ def test_edit_home_refuses_to_hide_every_row(system, monkeypatch):
     last = native.post(LIBRARY_API + "/home/layout", json={"action": "remove", "target": rows[-1]})
     assert last.status_code == 422, "a profile must keep at least one visible shelf"
     assert _home(native)["rows"], "the visible shelf survived the refusal"
+
+
+def test_edit_home_bulk_rows_round_trip(system, monkeypatch):
+    native, *_ = _anime_pass(system, monkeypatch)
+    initial = _home(native)["layout"]["rows"]
+    reordered = [{"id": row["id"], "hidden": i == 0} for i, row in enumerate(reversed(initial))]
+    saved = native.post(LIBRARY_API + "/home/layout", json={"rows": reordered})
+    assert saved.status_code == 200, saved.text
+    after = _home(native)["layout"]["rows"]
+    assert [(row["id"], row["hidden"]) for row in after[: len(reordered)]] == [
+        (entry["id"], entry["hidden"]) for entry in reordered
+    ]
+    assert after[0]["id"] not in [row["id"] for row in _home(native)["rows"]]
+    # Round-tripping the full returned layout (including catalog defaults appended as hidden)
+    # preserves exact length and order.
+    second_order = [{"id": row["id"], "hidden": row["hidden"]} for row in reversed(after)]
+    assert native.post(LIBRARY_API + "/home/layout", json={"rows": second_order}).status_code == 200
+    after_second = _home(native)["layout"]["rows"]
+    assert [(row["id"], row["hidden"]) for row in after_second] == [
+        (entry["id"], entry["hidden"]) for entry in second_order
+    ]
+    all_hidden = native.post(
+        LIBRARY_API + "/home/layout",
+        json={"rows": [{"id": row["id"], "hidden": True} for row in after]},
+    )
+    assert all_hidden.status_code == 422
+    assert [(row["id"], row["hidden"]) for row in _home(native)["layout"]["rows"]] == [
+        (entry["id"], entry["hidden"]) for entry in second_order
+    ]

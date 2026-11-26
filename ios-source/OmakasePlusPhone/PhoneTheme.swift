@@ -52,6 +52,7 @@ enum PhoneArtworkSource: Sendable {
     case entry(LiveLibraryClient, LiveLibraryEntry, Bool)
     case details(LiveLibraryClient, String)
     case recommendation(LiveLibraryClient, LiveRecommendation)
+    case request(LiveLibraryClient, LiveTitleRequest)
 
     func fetch() async throws -> Data? {
         switch self {
@@ -63,6 +64,8 @@ enum PhoneArtworkSource: Sendable {
             return try await client.detailsArtwork(path: path)
         case .recommendation(let client, let card):
             return try await client.recommendationArtwork(card)
+        case .request(let client, let request):
+            return try await client.requestArtwork(request)
         }
     }
 }
