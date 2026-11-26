@@ -240,7 +240,7 @@ PY
     -derivedDataPath "$scratch/DerivedIOS" -resultBundlePath "$scratch/iOSShowcase.xcresult" \
     -parallel-testing-enabled NO \
     -only-testing:OmakasePlusPhoneUITests/PhoneShowcaseCaptureTests \
-    CODE_SIGNING_ALLOWED=NO \
+    CODE_SIGN_IDENTITY=- OMAKASE_SERVER_ORIGIN= \
     2>&1 | tee "$output/ios-xcodebuild.log"
   xc_ios_status=${PIPESTATUS[0]}
   set -e

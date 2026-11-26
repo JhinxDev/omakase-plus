@@ -238,7 +238,7 @@ struct PhoneRequestsView: View {
         HStack(alignment: .top, spacing: 12) {
             PhoneArtworkView(
                 cacheKey: "req:\(item.id):\(item.poster ?? "")",
-                source: item.poster != nil ? .request(client, item) : nil,
+                source: (item.poster?.isEmpty == false) ? .request(client, item) : nil,
                 fallbackIcon: "tray"
             )
             .frame(width: 56, height: 84)
@@ -262,7 +262,8 @@ struct PhoneRequestsView: View {
                 }
                 if let stages = item.stages, !stages.isEmpty {
                     let doneCount = stages.filter { $0.state == "done" }.count
-                    Text("\(doneCount) of \(stages.count) stages complete")
+                    let noun = stages.count == 1 ? "stage" : "stages"
+                    Text("\(doneCount) of \(stages.count) \(noun) complete")
                         .font(.caption2)
                         .foregroundStyle(Color.appMuted)
                 }
@@ -277,6 +278,7 @@ struct PhoneRequestsView: View {
                     } label: {
                         Text(checkingID == item.id ? "Checking…" : "Check status")
                             .font(.caption.weight(.semibold))
+                            .padding(.vertical, 4)
                     }
                     .buttonStyle(.bordered)
                     .tint(Color.appAccent)

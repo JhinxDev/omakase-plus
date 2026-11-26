@@ -14,7 +14,7 @@ struct PhoneLibraryView: View {
     @State private var loading = false
     @State private var errorMessage: String?
 
-    private let columns = [GridItem(.adaptive(minimum: 148), spacing: 14)]
+    private let columns = [GridItem(.adaptive(minimum: 148), spacing: 14, alignment: .top)]
 
     var body: some View {
         NavigationStack {

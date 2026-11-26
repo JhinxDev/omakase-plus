@@ -379,19 +379,20 @@ def build_requests_payload() -> dict:
                         "label": "15 / 16 episodes ready",
                         "status_label": "15 / 16 Ready",
                         "detail": "15 of 16 episodes ready to watch · 94%",
+                        "poster": "artwork/2002/poster",
                         "can_check": True,
                         "last_checked_at": "2026-11-25T06:20:00Z",
                         "stages": [
                             {
                                 "stage": "saved",
                                 "label": "Request saved",
-                                "state": "complete",
+                                "state": "done",
                                 "occurred_at": "2026-11-25T06:00:00Z",
                             },
                             {
                                 "stage": "checked",
                                 "label": "Sources checked · 2 matches eligible",
-                                "state": "complete",
+                                "state": "done",
                                 "occurred_at": "2026-11-25T06:20:00Z",
                             },
                         ],
@@ -404,13 +405,14 @@ def build_requests_payload() -> dict:
                         "label": "19 / 26 episodes ready",
                         "status_label": "19 / 26 Ready",
                         "detail": "19 of 26 episodes ready to watch · 73%",
+                        "poster": "artwork/2005/poster",
                         "can_check": True,
                         "last_checked_at": "2026-11-25T06:19:00Z",
                         "stages": [
                             {
                                 "stage": "saved",
                                 "label": "Request saved",
-                                "state": "complete",
+                                "state": "done",
                                 "occurred_at": "2026-11-25T06:00:00Z",
                             },
                         ],
