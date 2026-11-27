@@ -8,6 +8,10 @@ identifier; it does not replace the public release version.
 
 ## Unreleased
 
+### Changed
+
+- Consolidated TestFlight shell helpers into `scripts/lib/testflight_common.sh`, added `scripts/asc_cleanup_ephemeral_dev_certs.py` so ephemeral CI runs automatically revoke any `Created via API` Development certificates they mint, and added the sequential `.github/workflows/apple-testflight.yml` dispatch workflow (`platform=all|ios|tvos`, optional `prune_stale_certs`).
+
 ## 0.8.0 - 2026-11-27
 
 ### Added
