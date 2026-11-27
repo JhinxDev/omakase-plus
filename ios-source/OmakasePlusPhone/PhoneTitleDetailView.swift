@@ -12,6 +12,11 @@ struct PhoneTitleDetailView: View {
     @State private var selectedSeason: Int?
     @State private var loading = false
     @State private var errorMessage: String?
+    @State private var showTrackSheet = false
+    @State private var trackedStatus: String?
+    @State private var trackedRating: Double?
+    @State private var trackedProgress: Int?
+    @State private var trackFeedback: String?
 
     var body: some View {
         ScrollView {
@@ -28,6 +33,26 @@ struct PhoneTitleDetailView: View {
         .foregroundStyle(Color.appText)
         .navigationTitle(entry.title)
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showTrackSheet) {
+            PhoneTrackSheet(
+                store: store,
+                client: client,
+                kind: kind.rawValue,
+                mediaID: entry.mediaIdentifier,
+                imdbID: kind == .movie ? entry.id : nil,
+                title: entry.title,
+                initialStatus: trackedStatus ?? entry.watchStatus,
+                initialProgress: trackedProgress ?? entry.progressEpisodes,
+                episodeTotal: entry.episodeTotal,
+                initialRating: trackedRating ?? entry.rating,
+                allowDismiss: false
+            ) { result in
+                trackedStatus = result.watchStatus
+                if let prog = result.progress { trackedProgress = prog }
+                if let sc = result.score { trackedRating = sc }
+                trackFeedback = result.detail
+            }
+        }
         .task {
             if kind != .movie {
                 await loadEpisodes(season: nil)
@@ -59,29 +84,45 @@ struct PhoneTitleDetailView: View {
                         .font(.subheadline)
                         .foregroundStyle(Color.appMuted)
                 }
-                if let primaryTarget = playableHeroTarget {
-                    Button {
-                        Task { await store.play(primaryTarget.entry, featured: primaryTarget.featured) }
-                    } label: {
-                        Label(
-                            entry.progress ?? 0 > 0 ? "Resume" : "Play",
-                            systemImage: "play.fill"
-                        )
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
+                HStack(spacing: 10) {
+                    if let primaryTarget = playableHeroTarget {
+                        Button {
+                            Task { await store.play(primaryTarget.entry, featured: primaryTarget.featured) }
+                        } label: {
+                            Label(
+                                entry.progress ?? 0 > 0 ? "Resume" : "Play",
+                                systemImage: "play.fill"
+                            )
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color.appAccent)
+                        .foregroundStyle(Color.appBackground)
+                        .disabled(store.openingPlayback)
+                    } else if let unavailable = entry.unavailableLabel {
+                        Text(unavailable)
+                            .font(.caption.weight(.medium))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.appSurface, in: Capsule())
+                            .foregroundStyle(Color.appMuted)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color.appAccent)
-                    .foregroundStyle(Color.appBackground)
-                    .disabled(store.openingPlayback)
-                } else if let unavailable = entry.unavailableLabel {
-                    Text(unavailable)
-                        .font(.caption.weight(.medium))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Color.appSurface, in: Capsule())
-                        .foregroundStyle(Color.appMuted)
+
+                    if kind != .cloud && store.selectedLibrary == nil && (entry.mediaIdentifier != nil || kind == .movie) {
+                        Button {
+                            showTrackSheet = true
+                        } label: {
+                            Label("Track & rate", systemImage: "checklist")
+                                .font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(Color.appAccent)
+                        .accessibilityIdentifier("phone.title.track")
+                    }
                 }
             }
             .padding(16)
@@ -109,12 +150,62 @@ struct PhoneTitleDetailView: View {
     @ViewBuilder
     private var summaryBlock: some View {
         let synopsis = episodePage?.titleSummary ?? entry.summary
-        if let synopsis, !synopsis.isEmpty {
-            Text(synopsis)
-                .font(.subheadline)
-                .foregroundStyle(Color.appMuted)
+        let meta = metadataLine
+        if let trackFeedback {
+            Text(trackFeedback)
+                .font(.footnote)
+                .foregroundStyle(Color.appAccent)
                 .padding(.horizontal, 16)
         }
+        if !meta.isEmpty || (entry.genres?.isEmpty == false) || (synopsis?.isEmpty == false) {
+            VStack(alignment: .leading, spacing: 10) {
+                if !meta.isEmpty {
+                    Text(meta.joined(separator: " · "))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.appAccent)
+                }
+                if let genres = entry.genres, !genres.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(genres, id: \.self) { genre in
+                                Text(genre)
+                                    .font(.caption2.weight(.semibold))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Color.appSurface, in: Capsule())
+                                    .overlay(Capsule().strokeBorder(Color.appKeyline, lineWidth: 1))
+                                    .foregroundStyle(Color.appMuted)
+                            }
+                        }
+                    }
+                }
+                if let synopsis, !synopsis.isEmpty {
+                    Text(synopsis)
+                        .font(.subheadline)
+                        .foregroundStyle(Color.appMuted)
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+
+    private var metadataLine: [String] {
+        var items: [String] = []
+        if let year = entry.year {
+            items.append(String(year))
+        }
+        let status = trackedStatus ?? entry.watchStatus
+        if let status, !status.isEmpty, status != "unwatched", status != "unknown" {
+            items.append(status.capitalized)
+        }
+        if let effectiveRating = trackedRating ?? entry.rating {
+            items.append(String(format: "%.1f / 10", effectiveRating))
+        }
+        if let prog = trackedProgress ?? entry.progressEpisodes,
+           let total = entry.episodeTotal, total > 0 {
+            items.append("\(prog) / \(total) ep")
+        }
+        return items
     }
 
     private var episodesBlock: some View {

@@ -84,6 +84,15 @@ from omakase.plus.connections_routes import create_connections_router
 from omakase.plus.debrid_routes import create_debrid_router
 from omakase.plus.debrid_stream import DebridStreams
 from omakase.plus.deps import get_db
+from omakase.plus.discover_tracking import (
+    coerce_optional_int as _coerce_optional_int,
+)
+from omakase.plus.discover_tracking import (
+    coerce_optional_score as _coerce_optional_score,
+)
+from omakase.plus.discover_tracking import (
+    save_discover_track,
+)
 from omakase.plus.discovery import DiscoveryRequest, save_preferences, saved_preferences
 from omakase.plus.feedback import feedback_for_prompt, save_feedback
 from omakase.plus.google_auth import create_google_router, google_enabled
@@ -957,34 +966,7 @@ async def service_identity_asset(asset_name: str, request: Request):
     return await run_in_threadpool(static_response, path, "image/png", request)
 
 
-def _coerce_optional_int(value: object, field_name: str) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        value = value.strip()
-        if not value:
-            return None
-        try:
-            return int(value)
-        except ValueError:
-            raise ValueError(f"{field_name} must be an integer") from None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{field_name} must be an integer")
-    return value
-
-
-def _coerce_optional_score(value: object) -> float | None:
-    if value is None or value == "":
-        return None
-    if isinstance(value, bool):
-        raise ValueError("score must be a number from 1 to 10")
-    try:
-        score = float(value)
-    except (TypeError, ValueError):
-        raise ValueError("score must be a number from 1 to 10") from None
-    if not math.isfinite(score) or not 1 <= score <= 10:
-        raise ValueError("score must be a number from 1 to 10")
-    return round(score, 1)
+__all_tracking_helpers = (_coerce_optional_int, _coerce_optional_score, save_media_list_entry)
 
 
 @router.get("/dashboard", include_in_schema=False)
@@ -3677,276 +3659,10 @@ async def discover_track_api(
     if not isinstance(body, dict):
         return JSONResponse({"status": "error", "detail": "Invalid JSON body"}, status_code=400)
 
-    kind = str(body.get("kind") or "").strip().lower()
-    if kind not in {"anime", "movie", "tv"}:
-        return JSONResponse(
-            {"status": "error", "detail": "Unsupported title type."}, status_code=422
-        )
-    title = str(body.get("title") or "").strip()[:300]
-    if not title:
-        return JSONResponse({"status": "error", "detail": "Title is required."}, status_code=422)
-    status = str(body.get("status") or "").strip().lower()
-    allowed_statuses = {
-        "anime": {"watching", "completed", "planned", "paused", "dropped", "not_for_me"},
-        "movie": {"watching", "completed", "dropped", "not_for_me"},
-        "tv": {"watching", "completed", "dropped", "not_for_me"},
-    }[kind]
-    if status not in allowed_statuses:
-        return JSONResponse(
-            {"status": "error", "detail": "Choose a valid watch status."}, status_code=422
-        )
-
-    try:
-        media_id = _coerce_optional_int(body.get("media_id"), "media_id")
-        progress = _coerce_optional_int(body.get("progress"), "progress")
-        episode_total = _coerce_optional_int(body.get("episode_total"), "episode_total")
-        score = _coerce_optional_score(body.get("score"))
-    except ValueError as exc:
-        return JSONResponse({"status": "error", "detail": str(exc)}, status_code=422)
-    if media_id is None or not 0 < media_id <= 2_147_483_647:
-        return JSONResponse(
-            {"status": "error", "detail": "A valid media ID is required."}, status_code=422
-        )
-    if progress is not None and not 0 <= progress <= 100000:
-        return JSONResponse(
-            {"status": "error", "detail": "Progress must be between 0 and 100000."}, status_code=422
-        )
-    if episode_total is not None and not 0 < episode_total <= 100000:
-        return JSONResponse(
-            {"status": "error", "detail": "Episode total is invalid."}, status_code=422
-        )
-    if score is not None and abs(score * 2 - round(score * 2)) > 1e-9:
-        return JSONResponse(
-            {"status": "error", "detail": "Rating must be in 0.5 increments between 1 and 10."},
-            status_code=422,
-        )
-
-    source = "anilist" if kind == "anime" else kind
-    if status == "not_for_me":
-        save_feedback(db, user.id, source, media_id, title, "not_for_me", None)
-        if kind == "anime":
-            discover_hub.invalidate_tracker_cache(user.id)
-        else:
-            discover_hub.invalidate_screen_cache(user.id)
-        return {
-            "status": "ok",
-            "local_saved": True,
-            "watch_status": "not_for_me",
-            "remove_from_for_you": True,
-            "detail": "Hidden from For You. Future picks will exclude it.",
-        }
-
-    if kind == "anime":
-        anilist_status = {
-            "watching": "CURRENT",
-            "completed": "COMPLETED",
-            "planned": "PLANNING",
-            "paused": "PAUSED",
-            "dropped": "DROPPED",
-        }[status]
-        effective_progress = (
-            episode_total
-            if (status == "completed" and progress is None and episode_total)
-            else progress
-        )
-        observed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        existing_plan = db.execute(
-            "SELECT id FROM anilist_plannings WHERE user_id = ? AND anilist_id = ? ORDER BY id DESC LIMIT 1",
-            (user.id, media_id),
-        ).fetchone()
-        if existing_plan:
-            db.execute(
-                "UPDATE anilist_plannings SET status = ?, title = ? WHERE id = ?",
-                (anilist_status, title, existing_plan["id"]),
-            )
-        else:
-            db.execute(
-                "INSERT INTO anilist_plannings (user_id, anilist_id, title, status) VALUES (?, ?, ?, ?)",
-                (user.id, media_id, title, anilist_status),
-            )
-        if (
-            status in {"watching", "completed", "paused", "dropped"}
-            or effective_progress is not None
-            or score is not None
-        ):
-            prog = effective_progress if effective_progress is not None else 0
-            entry_status = (
-                "completed"
-                if status == "completed"
-                else ("watching" if (status == "watching" or prog > 0) else "unwatched")
-            )
-            completed_at = observed_at if entry_status == "completed" else None
-            existing_entry = db.execute(
-                "SELECT id, episode_total, progress_episodes FROM watch_entries WHERE user_id = ? AND anilist_id = ? AND season_number = 0",
-                (user.id, media_id),
-            ).fetchone()
-            final_total = episode_total or (
-                existing_entry["episode_total"] if existing_entry else None
-            )
-            if final_total is not None and prog > final_total:
-                final_total = None
-            if existing_entry:
-                entry_id = existing_entry["id"]
-                db.execute(
-                    """UPDATE watch_entries
-                       SET status = ?, progress_episodes = ?, episode_total = ?,
-                           last_source = 'manual', confidence = 'manual',
-                           last_observed_at = ?, completed_at = ?, updated_at = datetime('now')
-                       WHERE id = ?""",
-                    (entry_status, prog, final_total, observed_at, completed_at, entry_id),
-                )
-            else:
-                cursor = db.execute(
-                    """INSERT INTO watch_entries
-                       (user_id, monitor_id, anilist_id, season_number, status, progress_episodes,
-                        episode_total, last_source, confidence, last_observed_at, completed_at)
-                       VALUES (?, NULL, ?, 0, ?, ?, ?, 'manual', 'manual', ?, ?)""",
-                    (user.id, media_id, entry_status, prog, final_total, observed_at, completed_at),
-                )
-                entry_id = cursor.lastrowid
-            if entry_status == "completed":
-                event_score = int(round(score)) if score is not None else None
-                db.execute(
-                    """INSERT INTO watch_events
-                       (watch_entry_id, user_id, source, event_key, kind, episode, confidence,
-                        force, disposition, reason, observed_at, score_ten)
-                       VALUES (?, ?, 'manual', ?, 'completed', ?, 'manual', 1, 'accepted',
-                               'Recorded from For You', ?, ?)""",
-                    (
-                        entry_id,
-                        user.id,
-                        f"discover:complete:{media_id}:{observed_at}:{uuid.uuid4().hex[:8]}",
-                        prog,
-                        observed_at,
-                        event_score,
-                    ),
-                )
-            elif prog > 0:
-                db.execute(
-                    """INSERT INTO watch_events
-                       (watch_entry_id, user_id, source, event_key, kind, episode, confidence,
-                        force, disposition, reason, observed_at, score_ten)
-                       VALUES (?, ?, 'manual', ?, 'progress', ?, 'manual', 1, 'accepted',
-                               'Progress recorded from For You', ?, NULL)""",
-                    (
-                        entry_id,
-                        user.id,
-                        f"discover:progress:{media_id}:{observed_at}:{uuid.uuid4().hex[:8]}",
-                        prog,
-                        observed_at,
-                    ),
-                )
-        db.commit()
-        if status == "completed":
-            save_feedback(db, user.id, "anilist", media_id, title, "already_watched", None)
-        elif status == "dropped":
-            save_feedback(db, user.id, "anilist", media_id, title, "not_for_me", None)
-
-        has_token = bool(read_secret(db, user.id, "anilist_oauth_token"))
-        tracker_status = "not_connected"
-        detail = "Saved in Omakase. Connect AniList in Settings to sync automatically."
-        if has_token:
-            client_id = os.getenv("ANILIST_CLIENT_ID", "")
-            client_secret = os.getenv("ANILIST_CLIENT_SECRET", "")
-            base_url = os.getenv("OMAKASE_PLUS_URL", "http://localhost:8765")
-            redirect_uri = f"{base_url}/plus/integrations/anilist/callback"
-            try:
-                with writer_lease(db, user.id) as lease:
-                    credential = anilist_credential_fingerprint(db, user.id)
-                    require_anilist_credential(db, user.id, credential)
-                    require_writer_lease(db, user.id, lease)
-                    with with_valid_token(
-                        db, user.id, client_id, client_secret, redirect_uri
-                    ) as token:
-                        require_writer_lease(db, user.id, lease)
-                        require_anilist_credential(db, user.id, credential)
-                        save_media_list_entry(
-                            token,
-                            media_id,
-                            status=anilist_status,
-                            progress=effective_progress,
-                            score_ten=score,
-                        )
-                tracker_status = "synced"
-                detail = f"Saved to AniList ({anilist_status.title()}) and Omakase."
-            except (BridgeError, AniListWriteError, httpx.HTTPError, ValueError):
-                tracker_status = "local_only"
-                detail = "Saved in Omakase; AniList sync did not complete yet."
-
-        discover_hub.invalidate_tracker_cache(user.id)
-        return {
-            "status": "ok",
-            "local_saved": True,
-            "tracker_status": tracker_status,
-            "watch_status": status,
-            "progress": effective_progress,
-            "score": score,
-            "remove_from_for_you": status in {"completed", "watching", "paused", "dropped"},
-            "saved_to_watchlist": status == "planned",
-            "detail": detail,
-        }
-
-    if kind == "movie":
-        imdb_id = str(body.get("imdb_id") or "").strip()
-        if not re.fullmatch(r"tt[0-9]{7,10}", imdb_id):
-            return JSONResponse(
-                {"status": "error", "detail": "A valid movie IMDb ID is required."}, status_code=422
-            )
-        from omakase.plus.connections import movie_connections
-        from omakase.plus.movie_history import UNSET as MOVIE_UNSET
-        from omakase.plus.movie_history import MovieHistoryService
-        from omakase.plus.movies import MovieError, MovieService
-
-        try:
-            await MovieHistoryService(MovieService(db, movie_connections(db, user.id))).save(
-                user.id,
-                imdb_id=imdb_id,
-                tmdb_id=media_id,
-                status=status,
-                rating=score if score is not None else MOVIE_UNSET,
-            )
-        except (MovieError, ValueError) as exc:
-            detail = exc.detail if isinstance(exc, MovieError) else str(exc)
-            return JSONResponse({"status": "error", "detail": detail}, status_code=422)
-        if status == "completed":
-            save_feedback(db, user.id, "movie", media_id, title, "already_watched", None)
-        discover_hub.invalidate_screen_cache(user.id, "movies")
-        return {
-            "status": "ok",
-            "local_saved": True,
-            "tracker_status": "local_only",
-            "watch_status": status,
-            "score": score,
-            "remove_from_for_you": True,
-            "detail": "Saved to your Movies watch history without downloading.",
-        }
-
-    from omakase.plus.connections import movie_connections
-    from omakase.plus.tv_service import UNSET as TV_UNSET
-    from omakase.plus.tv_service import TVError, TVService
-
-    try:
-        await TVService(db, movie_connections(db, user.id)).save_history(
-            user.id,
-            media_id,
-            status=status,
-            rating=score if score is not None else TV_UNSET,
-        )
-    except (TVError, ValueError) as exc:
-        detail = exc.detail if isinstance(exc, TVError) else str(exc)
-        return JSONResponse({"status": "error", "detail": detail}, status_code=422)
-    if status == "completed":
-        save_feedback(db, user.id, "tv", media_id, title, "already_watched", None)
-    discover_hub.invalidate_screen_cache(user.id, "tv")
-    return {
-        "status": "ok",
-        "local_saved": True,
-        "tracker_status": "local_only",
-        "watch_status": status,
-        "score": score,
-        "remove_from_for_you": True,
-        "detail": "Saved to your TV Shows watch history without downloading.",
-    }
+    status_code, payload = await save_discover_track(db, user.id, body)
+    if status_code != 200:
+        return JSONResponse(payload, status_code=status_code)
+    return payload
 
 
 @router.post("/api/plan")

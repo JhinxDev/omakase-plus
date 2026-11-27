@@ -8,6 +8,19 @@ identifier; it does not replace the public release version.
 
 ## Unreleased
 
+## 0.8.0 - 2026-11-27
+
+### Added
+
+- Added shared Discover and native tracking endpoint `POST /plus/api/native-tv-test/v1/library/track` backed by `omakase.plus.discover_tracking`, enabling iOS and Apple TV to save Anime, Movie, and TV watch status, episode progress, `/ 10` ratings, AniList OAuth sync, and `Not for me` dismissals without queuing downloads.
+- Added iPhone (`OmakasePlusPhone` 0.8.0) `PhoneRequestDetailView` (tappable from Requests with stage-by-stage timeline, timestamps, reason, fallback search/transfer details, TV episode progress, `Check status`, and `Open in Library`), `PhoneCatalogDetailView` (tappable from Discover & Search with full metadata, synopsis, Request actions, `Watch Trailer` in `SFSafariViewController`, `Track & rate` sheet, and `Not for me`), and `PhoneTrackSheet`.
+- Added Apple TV (`OmakasePlusTV` 0.8.0) visual stage timelines, posters, TV episode progress, and `Open in Library` in `TVRequestsScreen`, plus rich metadata badges and Siri-Remote-friendly `Mark Watched`, `Rate / 10`, and `Not for me` actions in `TVForYouScreen` and title details.
+- Added unified `Collection`, `Watching`, and `Watched` library filter views across native `/catalog?view=...` and both iPhone and Apple TV apps, preserving watched titles even after cloud copies are cleaned up.
+
+### Changed
+
+- Enriched `/plus/api/native-tv-test/v1/library/for-you`, `/catalog-search`, `/requests`, and `/catalog` payloads with backward-compatible optional metadata (`year`, `format`, `episodes`, `score`, `score_label`, `genres`, `airing`, validated `trailer_id`, `tmdb_id`, `anilist_id`, `watch_status`, `rating`, `library_id`, and `episodes_ready`/`episodes_expected`) and extended `QualificationCore` models and `LiveLibraryClient`.
+
 ## 0.7.0 - 2026-11-26
 
 ### Added

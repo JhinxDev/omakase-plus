@@ -17,6 +17,68 @@ public enum LiveLibraryKind: String, CaseIterable, Decodable, Identifiable, Send
     }
 }
 
+public enum LiveLibraryViewFilter: String, CaseIterable, Identifiable, Sendable {
+    case collection, watching, watched
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .collection: "Collection"
+        case .watching: "Watching"
+        case .watched: "Watched"
+        }
+    }
+}
+
+public enum LiveTrackStatus: String, CaseIterable, Identifiable, Sendable {
+    case watching
+    case completed
+    case planned
+    case paused
+    case dropped
+    case notForMe = "not_for_me"
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .watching: "Watching"
+        case .completed: "Completed"
+        case .planned: "Plan to watch"
+        case .paused: "Paused"
+        case .dropped: "Dropped"
+        case .notForMe: "Not for me"
+        }
+    }
+
+    public static func options(for kind: String) -> [Self] {
+        kind == "anime"
+            ? [.watching, .completed, .planned, .paused, .dropped]
+            : [.watching, .completed, .dropped]
+    }
+}
+
+public struct LiveTrackResult: Decodable, Equatable, Sendable {
+    public let status: String
+    public let localSaved: Bool?
+    public let trackerStatus: String?
+    public let watchStatus: String?
+    public let progress: Int?
+    public let score: Double?
+    public let removeFromForYou: Bool?
+    public let savedToWatchlist: Bool?
+    public let detail: String
+
+    enum CodingKeys: String, CodingKey {
+        case status, detail, progress, score
+        case localSaved = "local_saved"
+        case trackerStatus = "tracker_status"
+        case watchStatus = "watch_status"
+        case removeFromForYou = "remove_from_for_you"
+        case savedToWatchlist = "saved_to_watchlist"
+    }
+}
+
 public struct LiveLibraryEntry: Decodable, Identifiable, Sendable {
     public let id: String
     public let title: String
@@ -35,11 +97,22 @@ public struct LiveLibraryEntry: Decodable, Identifiable, Sendable {
     public let isFolder: Bool?
     public let watchlistArtwork: Bool?
     public let availability: String?
+    public let watchStatus: String?
+    public let rating: Double?
+    public let year: Int?
+    public let genres: [String]?
+    public let anilistID: Int?
+    public let tmdbID: Int?
+    public let progressEpisodes: Int?
+    public let episodeTotal: Int?
 
     public init(
         homeTitleID: String, title: String, note: String, watchPath: String?,
         artworkID: String? = nil, posterURL: URL? = nil, backdropURL: URL? = nil,
-        progress: Double? = nil
+        progress: Double? = nil, summary: String? = nil,
+        watchStatus: String? = nil, rating: Double? = nil, year: Int? = nil,
+        genres: [String]? = nil, anilistID: Int? = nil, tmdbID: Int? = nil,
+        progressEpisodes: Int? = nil, episodeTotal: Int? = nil
     ) {
         id = homeTitleID
         self.title = title
@@ -49,7 +122,7 @@ public struct LiveLibraryEntry: Decodable, Identifiable, Sendable {
         self.posterURL = posterURL
         self.backdropURL = backdropURL
         self.progress = progress
-        summary = nil
+        self.summary = summary
         featuredPath = nil
         featuredEpisode = nil
         watched = nil
@@ -58,7 +131,17 @@ public struct LiveLibraryEntry: Decodable, Identifiable, Sendable {
         isFolder = nil
         watchlistArtwork = nil
         availability = nil
+        self.watchStatus = watchStatus
+        self.rating = rating
+        self.year = year
+        self.genres = genres
+        self.anilistID = anilistID
+        self.tmdbID = tmdbID
+        self.progressEpisodes = progressEpisodes
+        self.episodeTotal = episodeTotal
     }
+
+    public var mediaIdentifier: Int? { anilistID ?? tmdbID ?? Int(id) }
 
     public var episodeDisplayTitle: String {
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -87,6 +170,9 @@ public struct LiveLibraryEntry: Decodable, Identifiable, Sendable {
         case summary, progress, featuredPath = "featured_path", featuredEpisode = "featured_episode"
         case isFolder = "is_folder", watchlistArtwork = "watchlist_artwork"
         case watched, availability, episodeArtwork = "episode_artwork", durationSeconds = "duration_seconds"
+        case watchStatus = "watch_status", rating, year, genres
+        case anilistID = "anilist_id", tmdbID = "tmdb_id"
+        case progressEpisodes = "progress_episodes", episodeTotal = "episode_total"
     }
 }
 
@@ -158,6 +244,10 @@ public struct LiveTitleRequest: Decodable, Identifiable, Sendable {
     public let canCheck: Bool?
     public let lastCheckedAt: String?
     public let nextAction: Action?
+    public let releaseYear: Int?
+    public let libraryID: String?
+    public let episodesReady: Int?
+    public let episodesExpected: Int?
 
     public struct Action: Decodable, Sendable {
         public let kind: String
@@ -192,6 +282,15 @@ public struct LiveTitleRequest: Decodable, Identifiable, Sendable {
         return label
     }
 
+    public var isReadyInLibrary: Bool {
+        ["ready", "in_library", "partial"].contains(state) && !(libraryID ?? "").isEmpty
+    }
+
+    public var episodeProgressRatio: Double? {
+        guard let episodesReady, let episodesExpected, episodesExpected > 0 else { return nil }
+        return min(1.0, max(0.0, Double(episodesReady) / Double(episodesExpected)))
+    }
+
     public struct Stage: Decodable, Identifiable, Sendable {
         public let id: String
         public let label: String
@@ -210,6 +309,8 @@ public struct LiveTitleRequest: Decodable, Identifiable, Sendable {
         case lastCheckedAt = "last_checked_at", nextAction = "next_action", reasonText = "reason_text"
         case statusLabel = "status_label", stages, poster
         case fallbackSearch = "fallback_search", fallbackTransfer = "fallback_transfer"
+        case releaseYear = "release_year", libraryID = "library_id"
+        case episodesReady = "episodes_ready", episodesExpected = "episodes_expected"
     }
 }
 
@@ -233,11 +334,65 @@ public struct LiveRecommendation: Decodable, Identifiable, Sendable {
     public let summary: String?
     public let request: LiveTitleRequest?
     public let canRequest: Bool
+    public let year: Int?
+    public let format: String?
+    public let episodes: Int?
+    public let score: Double?
+    public let scoreLabel: String?
+    public let genres: [String]?
+    public let airing: Bool?
+    public let trailerID: String?
+    public let tmdbID: Int?
+    public let owned: Bool?
+    public let saved: Bool?
+    public let watchStatus: String?
+
+    public init(
+        id: String, kind: String, title: String, posterURL: URL? = nil, summary: String? = nil,
+        request: LiveTitleRequest? = nil, canRequest: Bool = false, year: Int? = nil,
+        format: String? = nil, episodes: Int? = nil, score: Double? = nil,
+        scoreLabel: String? = nil, genres: [String]? = nil, airing: Bool? = nil,
+        trailerID: String? = nil, tmdbID: Int? = nil, owned: Bool? = nil,
+        saved: Bool? = nil, watchStatus: String? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.posterURL = posterURL
+        self.summary = summary
+        self.request = request
+        self.canRequest = canRequest
+        self.year = year
+        self.format = format
+        self.episodes = episodes
+        self.score = score
+        self.scoreLabel = scoreLabel
+        self.genres = genres
+        self.airing = airing
+        self.trailerID = trailerID
+        self.tmdbID = tmdbID
+        self.owned = owned
+        self.saved = saved
+        self.watchStatus = watchStatus
+    }
 
     public var key: String { kind + ":" + id }
 
+    public var youtubeTrailerURL: URL? {
+        guard let trailerID else { return nil }
+        let clean = trailerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard clean.range(of: #"^[A-Za-z0-9_-]{11}\z"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        return URL(string: "https://www.youtube.com/watch?v=\(clean)")
+    }
+
+    public var trackMediaID: Int? { tmdbID ?? Int(id) }
+
     enum CodingKeys: String, CodingKey {
         case id, kind, title, posterURL = "poster_url", summary, request, canRequest = "can_request"
+        case year, format, episodes, score, scoreLabel = "score_label", genres, airing
+        case trailerID = "trailer_id", tmdbID = "tmdb_id", owned, saved, watchStatus = "watch_status"
     }
 }
 
@@ -501,7 +656,7 @@ public struct LiveLibraryClient: Sendable {
         var components = URLComponents(url: Self.endpoint(origin, path), resolvingAgainstBaseURL: false)
         components?.queryItems = [query]
         guard let url = components?.url else { throw FixtureConnectionError.invalidOrigin }
-        let data = try await send(url, maxBytes: 256_000, timeout: 35)
+        let data = try await send(url, maxBytes: 524_288, timeout: 35)
         let page = try JSONDecoder().decode(LiveRecommendationsPage.self, from: data)
         guard page.category == category, page.rows.count <= 12, page.requests.count <= 100,
               (page.warnings?.count ?? 0) <= 3,
@@ -511,6 +666,46 @@ public struct LiveLibraryClient: Sendable {
                       && row.cards.allSatisfy { kinds.contains($0.kind) }
               }) else { throw FixtureConnectionError.invalidResponse }
         return page
+    }
+
+    public func trackTitle(
+        kind: String,
+        mediaID: Int?,
+        imdbID: String? = nil,
+        title: String,
+        status: String,
+        progress: Int? = nil,
+        episodeTotal: Int? = nil,
+        score: Double? = nil
+    ) async throws -> LiveTrackResult {
+        struct TrackRequest: Encodable {
+            let kind: String
+            let media_id: Int?
+            let imdb_id: String?
+            let title: String
+            let status: String
+            let progress: Int?
+            let episode_total: Int?
+            let score: Double?
+        }
+        let body = try JSONEncoder().encode(
+            TrackRequest(
+                kind: kind,
+                media_id: mediaID,
+                imdb_id: imdbID,
+                title: title,
+                status: status,
+                progress: progress,
+                episode_total: episodeTotal,
+                score: score
+            )
+        )
+        let data = try await send(
+            Self.endpoint(origin, "track"), method: "POST", body: body, maxBytes: 16_384, timeout: 20
+        )
+        let result = try JSONDecoder().decode(LiveTrackResult.self, from: data)
+        guard result.status == "ok" else { throw FixtureConnectionError.requestRejected }
+        return result
     }
 
     public func requestTitle(_ card: LiveRecommendation, check: Bool = false) async throws -> LiveTitleRequest {
@@ -633,24 +828,30 @@ public struct LiveLibraryClient: Sendable {
 
     public static func pageRequestURL(origin: FixtureOrigin, kind: LiveLibraryKind,
                                       title: LiveLibraryEntry?, offset: Int,
-                                      query search: String = "", season: Int? = nil) -> URL? {
+                                      query search: String = "", season: Int? = nil,
+                                      view: LiveLibraryViewFilter? = nil) -> URL? {
         var components = URLComponents(url: endpoint(origin, title == nil ? "catalog" : "episodes"),
                                        resolvingAgainstBaseURL: false)
         var query = [URLQueryItem(name: "kind", value: kind.rawValue),
                      URLQueryItem(name: "offset", value: String(offset))]
         if let title { query.append(URLQueryItem(name: "title_id", value: title.id)) }
         if title == nil && !search.isEmpty { query.append(URLQueryItem(name: "q", value: search)) }
+        if title == nil, let view, view != .collection {
+            query.append(URLQueryItem(name: "view", value: view.rawValue))
+        }
         if title != nil, let season { query.append(URLQueryItem(name: "season", value: String(season))) }
         components?.queryItems = query
         return components?.url
     }
 
     public func page(kind: LiveLibraryKind, title: LiveLibraryEntry?, offset: Int,
-                     query search: String = "", season: Int? = nil) async throws -> LiveLibraryPage {
+                     query search: String = "", season: Int? = nil,
+                     view: LiveLibraryViewFilter? = nil) async throws -> LiveLibraryPage {
         guard let url = Self.pageRequestURL(origin: origin, kind: kind, title: title,
-                                            offset: offset, query: search, season: season)
+                                            offset: offset, query: search, season: season,
+                                            view: view)
         else { throw FixtureConnectionError.invalidOrigin }
-        let data = try await send(scoped(url), maxBytes: 256_000)
+        let data = try await send(scoped(url), maxBytes: 524_288)
         let page = try JSONDecoder().decode(LiveLibraryPage.self, from: data)
         guard page.items.count <= 30, (page.continueWatching?.count ?? 0) <= 8,
               Set(page.items.map(\.id)).count == page.items.count,

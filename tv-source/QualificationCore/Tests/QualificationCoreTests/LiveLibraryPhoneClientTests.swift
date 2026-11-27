@@ -153,6 +153,68 @@ final class LiveLibraryPhoneClientTests: XCTestCase {
         XCTAssertEqual(seen[2].url.query, "library_id=" + option.id)
     }
 
+    @MainActor
+    func testEnrichedRecommendationRequestLibraryEntryAndTracking() async throws {
+        let recJSON = #"""
+        {
+            "id": "154587",
+            "kind": "anime",
+            "title": "Frieren",
+            "can_request": true,
+            "year": 2023,
+            "format": "Anime series",
+            "episodes": 28,
+            "score": 93.0,
+            "score_label": "AniList",
+            "genres": ["Adventure", "Fantasy"],
+            "airing": false,
+            "trailer_id": "ZEf268R5pP0",
+            "owned": false,
+            "saved": true,
+            "watch_status": "planned"
+        }
+        """#
+        let rec = try JSONDecoder().decode(LiveRecommendation.self, from: Data(recJSON.utf8))
+        XCTAssertEqual(rec.year, 2023)
+        XCTAssertEqual(rec.genres, ["Adventure", "Fantasy"])
+        XCTAssertEqual(rec.youtubeTrailerURL?.absoluteString, "https://www.youtube.com/watch?v=ZEf268R5pP0")
+        XCTAssertEqual(rec.trackMediaID, 154587)
+
+        let badRec = LiveRecommendation(id: "1", kind: "movie", title: "Bad", trailerID: "bad/../id")
+        XCTAssertNil(badRec.youtubeTrailerURL)
+
+        let reqJSON = #"""
+        {
+            "kind": "tv",
+            "title_id": "153312",
+            "title": "Tulsa King",
+            "state": "partial",
+            "label": "4 / 39 Ready",
+            "detail": "4 episodes ready",
+            "release_year": 2022,
+            "library_id": "153312",
+            "episodes_ready": 4,
+            "episodes_expected": 39
+        }
+        """#
+        let req = try JSONDecoder().decode(LiveTitleRequest.self, from: Data(reqJSON.utf8))
+        XCTAssertTrue(req.isReadyInLibrary)
+        XCTAssertEqual(req.releaseYear, 2022)
+        XCTAssertEqual(req.episodeProgressRatio ?? 0, 4.0 / 39.0, accuracy: 0.001)
+
+        let origin = try FixtureOrigin("https://track.example.invalid")
+        let url = try XCTUnwrap(LiveLibraryClient.pageRequestURL(origin: origin, kind: .movie, title: nil, offset: 0, view: .watched))
+        XCTAssertEqual(url.query, "kind=movie&offset=0&view=watched")
+
+        let session = StubProtocol.session(host: "track") { _ in
+            .init(status: 200, body: #"{"status":"ok","local_saved":true,"tracker_status":"synced","watch_status":"completed","remove_from_for_you":true,"detail":"Saved"}"#)
+        }
+        let tracked = try await client(host: "track", session: session, lifetime: 1000)
+            .trackTitle(kind: "anime", mediaID: 154587, title: "Frieren", status: "completed", progress: 28, episodeTotal: 28, score: 9.5)
+        XCTAssertEqual(tracked.trackerStatus, "synced")
+        XCTAssertEqual(tracked.removeFromForYou, true)
+    }
+
     private func client(host: String, session: URLSession, lifetime: TimeInterval) throws -> LiveLibraryClient {
         LiveLibraryClient(origin: try FixtureOrigin("https://\(host).example.invalid"), token: token,
                           session: session, expiresAt: Date().addingTimeInterval(lifetime))

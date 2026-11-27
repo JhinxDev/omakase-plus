@@ -549,6 +549,7 @@ async def _search_cards(db, scope, query, category):
     user_id = scope.viewer_id
     if category == "anime":
         records = await AnimeCatalogSearch(db, user_id).search(query)
+        format_labels = {"MOVIE": "Anime film", "TV": "Anime series", "TV_SHORT": "Short series"}
         return [
             {
                 "id": record["id"],
@@ -556,6 +557,13 @@ async def _search_cards(db, scope, query, category):
                 "poster_url": record.get("catalog_poster_url"),
                 "summary": record.get("description"),
                 "owned": bool(record.get("library_id")),
+                "year": record.get("year"),
+                "format": format_labels.get(record.get("format"), record.get("format") or "Anime"),
+                "episodes": record.get("episode_total"),
+                "genres": record.get("genres") or [],
+                "airing": record.get("status") == "RELEASING",
+                "trailer": record.get("trailer"),
+                "watch_status": record.get("watch_status"),
             }
             for record in records[:8]
         ]
@@ -566,25 +574,42 @@ async def _search_cards(db, scope, query, category):
         return [
             {
                 "id": record["imdb_id"],
+                "tmdb_id": record.get("tmdb_id"),
                 "title": record["title"],
                 "poster_url": record.get("poster_url"),
                 "summary": _plain(record.get("overview")),
+                "year": record.get("year"),
+                "format": "Movie",
+                "genres": record.get("genres") or [],
+                "trailer": record.get("trailer"),
+                "owned": bool(record.get("plex_key") or record.get("state") == "ready"),
             }
             for record in records[:8]
         ]
 
     service = TVService(db, connections)
     records = await service.search(user_id, query)
-    return [
-        {
-            "id": record["tmdb_id"],
-            "title": record["title"],
-            "poster_url": (service._raw(user_id, record["tmdb_id"]) or {}).get("poster_url"),
-            "summary": record.get("overview"),
-            "available": bool(record.get("in_plex_episodes")),
-        }
-        for record in records[:8]
-    ]
+    cards = []
+    for record in records[:8]:
+        raw = service._raw(user_id, record["tmdb_id"]) or {}
+        cards.append(
+            {
+                "id": record["tmdb_id"],
+                "tmdb_id": record["tmdb_id"],
+                "title": record["title"],
+                "poster_url": raw.get("poster_url"),
+                "summary": record.get("overview"),
+                "available": bool(record.get("in_plex_episodes")),
+                "year": record.get("year") or raw.get("year"),
+                "format": "TV show",
+                "genres": record.get("genres") or raw.get("genres") or [],
+                "trailer": record.get("trailer") or raw.get("trailer"),
+                "watch_status": record.get("status")
+                if record.get("status") not in {None, "unwatched"}
+                else None,
+            }
+        )
+    return cards
 
 
 async def search(db, user_id, query, category="all"):

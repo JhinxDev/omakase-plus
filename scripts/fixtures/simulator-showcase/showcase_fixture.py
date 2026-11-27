@@ -288,7 +288,7 @@ def build_home_payload() -> dict:
     }
 
 
-def build_catalog_payload(kind: str, search: str = "") -> dict:
+def build_catalog_payload(kind: str, search: str = "", view: str = "collection") -> dict:
     if kind == "anime":
         entries = [
             {
@@ -299,6 +299,10 @@ def build_catalog_payload(kind: str, search: str = "") -> dict:
                 "watch_path": f"/plus/watch/{art_id}/{watched + 1}",
                 "progress": watched / total,
                 "duration_seconds": 1420,
+                "anilist_id": int(art_id),
+                "watch_status": "completed" if view == "watched" else "watching",
+                "progress_episodes": total if view == "watched" else watched,
+                "episode_total": total,
             }
             for art_id, title, _q, watched, total, status in ANIME_CATALOG
         ]
@@ -312,6 +316,8 @@ def build_catalog_payload(kind: str, search: str = "") -> dict:
                 "watch_path": f"/plus/watch/title/tv/{art_id}/1/1",
                 "progress": pct / 100.0,
                 "duration_seconds": 3300,
+                "tmdb_id": int(art_id),
+                "watch_status": "completed" if view == "watched" else "watching",
             }
             for art_id, title, _q, ep, rem, pct in TV_CATALOG
         ]
@@ -325,6 +331,9 @@ def build_catalog_payload(kind: str, search: str = "") -> dict:
                 "watch_path": f"/plus/watch/title/movie/tt000{art_id}",
                 "progress": pct / 100.0,
                 "duration_seconds": 7200,
+                "tmdb_id": int(art_id),
+                "year": int(year),
+                "watch_status": "completed" if view == "watched" else "watching",
             }
             for art_id, title, year, rem, pct, _rgb in MOVIE_CATALOG
         ]
@@ -333,7 +342,7 @@ def build_catalog_payload(kind: str, search: str = "") -> dict:
     return {
         "items": entries,
         "featured": entries[0] if entries and not search else None,
-        "continue_watching": entries[:3] if not search else [],
+        "continue_watching": entries[:3] if (not search and view != "watched") else [],
     }
 
 
@@ -457,6 +466,18 @@ class ShowcaseHandler(BaseHTTPRequestHandler):
             return self.json_reply(200, {"unlinked": True})
         if route.path in (API + "for-you/request", API + "for-you/request/check"):
             return self.json_reply(200, build_requests_payload()["categories"][0]["requests"][0])
+        if route.path == API + "track":
+            return self.json_reply(
+                200,
+                {
+                    "status": "ok",
+                    "local_saved": True,
+                    "tracker_status": "local_only",
+                    "watch_status": "completed",
+                    "remove_from_for_you": True,
+                    "detail": "Saved to your watch history.",
+                },
+            )
         self.json_reply(200, {"ok": True})
 
     def do_GET(self) -> None:
@@ -478,7 +499,12 @@ class ShowcaseHandler(BaseHTTPRequestHandler):
         if route.path == API + "catalog":
             q = parse_qs(route.query)
             return self.json_reply(
-                200, build_catalog_payload(q.get("kind", ["anime"])[0], q.get("q", [""])[0])
+                200,
+                build_catalog_payload(
+                    q.get("kind", ["anime"])[0],
+                    q.get("q", [""])[0],
+                    q.get("view", ["collection"])[0],
+                ),
             )
         if route.path == API + "episodes":
             q = parse_qs(route.query)
@@ -510,6 +536,13 @@ class ShowcaseHandler(BaseHTTPRequestHandler):
                     "title": item["title"],
                     "summary": item["note"],
                     "can_request": False,
+                    "year": item.get("year") or 2024,
+                    "format": "Anime series"
+                    if kind == "anime"
+                    else ("Movie" if kind == "movie" else "TV show"),
+                    "genres": ["Drama", "Thriller"],
+                    "score": 88.0,
+                    "score_label": "AniList" if kind == "anime" else "TMDB",
                 }
                 for item in build_catalog_payload(kind)["items"][:5]
             ]

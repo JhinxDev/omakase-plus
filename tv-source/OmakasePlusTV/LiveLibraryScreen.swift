@@ -21,7 +21,11 @@ struct LiveLibraryScreen: View {
     private var showingHome: Bool { homeOpen && homeSupported && client.selectedLibrary == nil }
 
     @Binding var kind: LiveLibraryKind
+    @State private var libraryView: LiveLibraryViewFilter = .collection
     @State private var title: LiveLibraryEntry?
+    @State private var detailTrackFeedback: String?
+    @State private var detailRatingPicker = false
+    @State private var detailSaving = false
     @State private var catalog: LiveLibraryPage?
     @State private var episodes: LiveLibraryPage?
     @State private var catalogOffset = 0
@@ -135,7 +139,7 @@ struct LiveLibraryScreen: View {
                                 .accessibilityHidden(true)
                         }
                         .padding(.bottom, 60)
-                        .id(title?.id ?? "catalog-\(kind.rawValue)-\(catalogOffset)-\(query)")
+                        .id(title?.id ?? "catalog-\(kind.rawValue)-\(libraryView.rawValue)-\(catalogOffset)-\(query)")
                         .onChange(of: focus) { previous, current in
                             guard let current else { return }
                             if title != nil {
@@ -264,8 +268,13 @@ struct LiveLibraryScreen: View {
                 catalogPresentation = nil
             }
         }
-        .fullScreenCover(isPresented: $requestsOpen, onDismiss: { focus = "requests" }) {
-            TVRequestsScreen(client: client.selecting(nil)) { requestsOpen = false }
+        .fullScreenCover(isPresented: $requestsOpen, onDismiss: {
+            if title == nil { focus = "requests" }
+        }) {
+            TVRequestsScreen(client: client.selecting(nil), close: { requestsOpen = false }) { item in
+                requestsOpen = false
+                openFromRequest(item)
+            }
         }
         .sheet(isPresented: $searchOpen, onDismiss: {
             if let catalogSearchQuery {
@@ -706,7 +715,7 @@ struct LiveLibraryScreen: View {
                 .padding(.horizontal, 88)
                 .id("featured-shelf")
             }
-            if let watching = catalog?.continueWatching, !watching.isEmpty, query.isEmpty, catalogOffset == 0 {
+            if libraryView != .watched, let watching = catalog?.continueWatching, !watching.isEmpty, query.isEmpty, catalogOffset == 0 {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Continue watching").font(.title2.bold()).accessibilityAddTraits(.isHeader)
                         .padding(.horizontal, 88)
@@ -727,8 +736,30 @@ struct LiveLibraryScreen: View {
             }
             if let catalog {
                 VStack(alignment: .leading, spacing: 20) {
-                    Text(query.isEmpty ? "All \(kind.label)" : "Search results")
-                        .font(.title2.bold()).accessibilityAddTraits(.isHeader)
+                    HStack(spacing: 20) {
+                        Text(query.isEmpty ? catalogHeading : "Search results")
+                            .font(.title2.bold()).accessibilityAddTraits(.isHeader)
+                        Spacer()
+                        if kind != .cloud && query.isEmpty {
+                            HStack(spacing: 12) {
+                                ForEach(LiveLibraryViewFilter.allCases) { filter in
+                                    control(
+                                        filter.label,
+                                        key: "filter-\(filter.rawValue)",
+                                        compact: true,
+                                        selected: libraryView == filter
+                                    ) {
+                                        guard libraryView != filter, !busy else { return }
+                                        libraryView = filter
+                                        self.catalog = nil
+                                        catalogOffset = 0
+                                        Task { await load(0) }
+                                    }
+                                    .accessibilityIdentifier("library.filter.\(filter.rawValue)")
+                                }
+                            }
+                        }
+                    }
                     if !query.isEmpty {
                         Text(query).foregroundStyle(Color.tvMuted).lineLimit(2)
                     }
@@ -811,34 +842,91 @@ struct LiveLibraryScreen: View {
         .disabled(busy || (entry.isFolder != true && entry.watchPath == nil))
     }
 
+    private var catalogHeading: String {
+        switch libraryView {
+        case .collection: "All \(kind.label)"
+        case .watching: "Watching \(kind.label)"
+        case .watched: "Watched \(kind.label)"
+        }
+    }
+
     private func standardTitleDetail(_ entry: LiveLibraryEntry) -> some View {
         VStack(alignment: .leading, spacing: 30) {
             TVCinemaFeature(entry: entry, client: client, label: kind.label) {
-                HStack(spacing: 18) {
-                    if entry.featuredPath != nil || entry.watchPath != nil {
-                        control(featuredAction(entry), key: "detail-play", icon: "play.fill", accent: true) {
-                            Task {
-                                await open(entry, origin: "detail-play",
-                                           featured: entry.featuredPath != nil,
-                                           resumeImmediately: true)
+                VStack(alignment: .leading, spacing: 16) {
+                    let meta = detailMetadataLine(entry)
+                    if !meta.isEmpty {
+                        Text(meta.joined(separator: " · "))
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(Color.tvAccent)
+                    }
+                    if let detailTrackFeedback {
+                        Text(detailTrackFeedback)
+                            .font(.callout)
+                            .foregroundStyle(Color.tvAccent)
+                    }
+                    HStack(spacing: 18) {
+                        if entry.featuredPath != nil || entry.watchPath != nil {
+                            control(featuredAction(entry), key: "detail-play", icon: "play.fill", accent: true) {
+                                Task {
+                                    await open(entry, origin: "detail-play",
+                                               featured: entry.featuredPath != nil,
+                                               resumeImmediately: true)
+                                }
+                            }
+                            .disabled(busy || detailSaving)
+                        }
+                        if synopsis(for: entry) != nil {
+                            control(kind == .movie ? "Movie details" : "About this series", key: "details-secondary", icon: "text.alignleft") {
+                                synopsisOpen = true
+                            }
+                            .disabled(busy)
+                        } else {
+                            control("Back to \(kind.label)", key: "details-secondary", icon: "arrow.left", action: back)
+                                .disabled(busy)
+                        }
+                        if kind != .cloud && client.selectedLibrary == nil && (entry.mediaIdentifier != nil || kind == .movie) {
+                            control(detailSaving ? "Saving…" : "Mark Watched", key: "detail-watched", icon: "checkmark.circle") {
+                                Task { await trackLibraryEntry(entry, status: "completed", score: nil) }
+                            }
+                            .disabled(busy || detailSaving)
+                            control("Rate", key: "detail-rate", icon: "star", selected: detailRatingPicker) {
+                                detailRatingPicker.toggle()
+                            }
+                            .disabled(busy || detailSaving)
+                        }
+                    }
+                    if detailRatingPicker {
+                        HStack(spacing: 12) {
+                            ForEach([6.0, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0], id: \.self) { ratingValue in
+                                let text = ratingValue == floor(ratingValue) ? String(Int(ratingValue)) : String(format: "%.1f", ratingValue)
+                                control("\(text)/10", key: "detail-rate-\(text)", compact: true) {
+                                    Task { await trackLibraryEntry(entry, status: "completed", score: ratingValue) }
+                                }
+                                .disabled(detailSaving)
                             }
                         }
-                        .disabled(busy)
-                    }
-                    if synopsis(for: entry) != nil {
-                        control(kind == .movie ? "Movie details" : "About this series", key: "details-secondary", icon: "text.alignleft") {
-                            synopsisOpen = true
-                        }
-                        .disabled(busy)
-                    } else {
-                        control("Back to \(kind.label)", key: "details-secondary", icon: "arrow.left", action: back)
-                            .disabled(busy)
                     }
                 }
             }
             if kind != .movie, episodes != nil { episodeGrid.id("episode-grid") }
         }
         .padding(.horizontal, 88)
+    }
+
+    private func detailMetadataLine(_ entry: LiveLibraryEntry) -> [String] {
+        var parts: [String] = []
+        if let year = entry.year { parts.append(String(year)) }
+        if let status = entry.watchStatus, !status.isEmpty, status != "unwatched", status != "unknown" {
+            parts.append(status.capitalized)
+        }
+        if let rating = entry.rating {
+            parts.append(String(format: "%.1f / 10", rating))
+        }
+        if let genres = entry.genres, !genres.isEmpty {
+            parts.append(genres.prefix(3).joined(separator: ", "))
+        }
+        return parts
     }
 
     private let languages = ["auto", "en", "fr", "es", "de", "it", "pt", "ja"]
@@ -1179,6 +1267,9 @@ struct LiveLibraryScreen: View {
         returnFocus = nil
         catalogReturnFocus = nil
         title = nil
+        detailTrackFeedback = nil
+        detailRatingPicker = false
+        libraryView = .collection
         kind = tab
         search = ""
         query = ""
@@ -1234,11 +1325,73 @@ struct LiveLibraryScreen: View {
         returnFocus = nil
         catalogReturnFocus = origin
         title = entry
+        detailTrackFeedback = nil
+        detailRatingPicker = false
         episodes = nil
         episodeOffset = 0
         selectedSeason = nil
         focus = entry.featuredPath != nil || entry.watchPath != nil ? "detail-play" : "details-secondary"
         if kind != .movie && (kind != .cloud || entry.isFolder == true) { Task { await load(0) } }
+    }
+
+    private func openFromRequest(_ item: LiveTitleRequest) {
+        guard let libraryID = item.libraryID, !libraryID.isEmpty else { return }
+        let targetKind: LiveLibraryKind = switch item.kind {
+        case "anime": .anime
+        case "tv": .tv
+        default: .movie
+        }
+        homeOpen = false
+        kind = targetKind
+        libraryView = .collection
+        query = ""
+        search = ""
+        catalog = nil
+        let posterURL: URL? = if let poster = item.poster, poster.hasPrefix("https://") {
+            URL(string: poster)
+        } else {
+            nil
+        }
+        let entry = LiveLibraryEntry(
+            homeTitleID: libraryID,
+            title: item.title,
+            note: item.displayStatus,
+            watchPath: targetKind == .movie ? "/plus/watch/title/movie/\(libraryID)" : nil,
+            artworkID: targetKind == .anime ? libraryID : nil,
+            posterURL: posterURL,
+            backdropURL: nil,
+            progress: nil,
+            summary: item.detail,
+            year: item.releaseYear,
+            anilistID: targetKind == .anime ? Int(item.titleID) : nil,
+            tmdbID: targetKind == .tv ? Int(item.titleID) : nil
+        )
+        show(entry, origin: targetKind.id)
+    }
+
+    private func trackLibraryEntry(_ entry: LiveLibraryEntry, status: String, score: Double?) async {
+        guard !detailSaving else { return }
+        detailSaving = true
+        detailRatingPicker = false
+        defer { detailSaving = false }
+        do {
+            let result = try await client.trackTitle(
+                kind: kind.rawValue,
+                mediaID: entry.mediaIdentifier,
+                imdbID: kind == .movie ? entry.id : nil,
+                title: entry.title,
+                status: status,
+                progress: entry.episodeTotal ?? entry.progressEpisodes,
+                episodeTotal: entry.episodeTotal,
+                score: score
+            )
+            detailTrackFeedback = result.detail
+            focus = "details-secondary"
+        } catch FixtureConnectionError.unauthorized {
+            linkExpired()
+        } catch {
+            detailTrackFeedback = "Could not save tracking update."
+        }
     }
 
     private func back() {
@@ -1323,7 +1476,8 @@ struct LiveLibraryScreen: View {
                 title: title,
                 offset: offset,
                 query: query,
-                season: title == nil ? nil : selectedSeason
+                season: title == nil ? nil : selectedSeason,
+                view: (title == nil && kind != .cloud) ? libraryView : nil
             )
             if title == nil {
                 catalog = page
@@ -1775,8 +1929,12 @@ private struct TVForYouScreen: View {
     @State private var selected: LiveRecommendation?
     @State private var selectionFocus: String?
     @State private var resultByTitle: [String: LiveTitleRequest] = [:]
+    @State private var dismissedKeys: Set<String> = []
     @State private var loading = false
     @State private var requesting = false
+    @State private var tracking = false
+    @State private var showRatePicker = false
+    @State private var trackNotice: String?
     @State private var error: String?
     @FocusState private var focus: String?
 
@@ -1882,44 +2040,51 @@ private struct TVForYouScreen: View {
     }
 
     private func shelf(_ row: LiveRecommendationsPage.Row) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(row.title).font(.title3.bold()).accessibilityAddTraits(.isHeader)
-            ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: 26) {
-                    ForEach(row.cards) { card in
-                        let key = row.key + ":" + card.key
-                        Button {
-                            selectionFocus = key
-                            error = nil
-                            selected = card
-                        } label: {
-                            VStack(alignment: .leading, spacing: 10) {
-                                TVRecommendationPoster(card: card, client: client)
-                                    .frame(width: 196, height: 268)
-                                Text(card.title).font(.callout.weight(.semibold))
-                                    .lineLimit(2, reservesSpace: true)
-                                if let status = resultByTitle[card.key] ?? card.request {
-                                    Text(status.label).font(.caption).foregroundStyle(Color.tvAccent)
+        let cards = row.cards.filter { !dismissedKeys.contains($0.key) }
+        return Group {
+            if !cards.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(row.title).font(.title3.bold()).accessibilityAddTraits(.isHeader)
+                    ScrollView(.horizontal) {
+                        LazyHStack(alignment: .top, spacing: 26) {
+                            ForEach(cards) { card in
+                                let key = row.key + ":" + card.key
+                                Button {
+                                    selectionFocus = key
+                                    error = nil
+                                    trackNotice = nil
+                                    showRatePicker = false
+                                    selected = card
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        TVRecommendationPoster(card: card, client: client)
+                                            .frame(width: 196, height: 268)
+                                        Text(card.title).font(.callout.weight(.semibold))
+                                            .lineLimit(2, reservesSpace: true)
+                                        if let status = resultByTitle[card.key] ?? card.request {
+                                            Text(status.label).font(.caption).foregroundStyle(Color.tvAccent)
+                                        }
+                                    }
+                                    .frame(width: 196, alignment: .topLeading)
+                                    .padding(10)
+                                    .background(focus == key ? Color.tvRaised : Color.clear,
+                                                in: RoundedRectangle(cornerRadius: 12))
+                                    .overlay {
+                                        if focus == key {
+                                            RoundedRectangle(cornerRadius: 12).strokeBorder(Color.tvFocus, lineWidth: 3)
+                                        }
+                                    }
                                 }
-                            }
-                            .frame(width: 196, alignment: .topLeading)
-                            .padding(10)
-                            .background(focus == key ? Color.tvRaised : Color.clear,
-                                        in: RoundedRectangle(cornerRadius: 12))
-                            .overlay {
-                                if focus == key {
-                                    RoundedRectangle(cornerRadius: 12).strokeBorder(Color.tvFocus, lineWidth: 3)
-                                }
+                                .buttonStyle(TVBareButtonStyle())
+                                .focusEffectDisabled()
+                                .focused($focus, equals: key)
                             }
                         }
-                        .buttonStyle(TVBareButtonStyle())
-                        .focusEffectDisabled()
-                        .focused($focus, equals: key)
+                        .padding(4)
                     }
+                    .focusSection()
                 }
-                .padding(4)
             }
-            .focusSection()
         }
     }
 
@@ -1946,16 +2111,35 @@ private struct TVForYouScreen: View {
     private func titleDetails(_ card: LiveRecommendation) -> some View {
         HStack(alignment: .top, spacing: 36) {
             TVRecommendationPoster(card: card, client: client).frame(width: 288, height: 414)
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 18) {
                 Text(card.title).font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
+                let meta = recommendationMeta(card)
+                if !meta.isEmpty {
+                    Text(meta.joined(separator: " · "))
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(Color.tvAccent)
+                }
+                if let genres = card.genres, !genres.isEmpty {
+                    Text(genres.joined(separator: " · "))
+                        .font(.caption)
+                        .foregroundStyle(Color.tvMuted)
+                }
+                if card.trailerID != nil {
+                    Label("Trailer available on iPhone & Web", systemImage: "play.rectangle")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.tvMuted)
+                }
                 if let summary = card.summary, !summary.isEmpty {
-                    Text(summary).font(.body).foregroundStyle(Color.tvMuted).lineLimit(6)
+                    Text(summary).font(.body).foregroundStyle(Color.tvMuted).lineLimit(5)
                 }
                 if let status = resultByTitle[card.key] ?? card.request {
                     Text(status.label).font(.title3.bold()).foregroundStyle(Color.tvAccent)
                     if !status.detail.isEmpty {
                         Text(status.detail).font(.callout).foregroundStyle(Color.tvMuted)
                     }
+                }
+                if let trackNotice {
+                    Text(trackNotice).font(.callout.weight(.semibold)).foregroundStyle(Color.tvAccent)
                 }
                 if let error { Text(error).font(.callout).foregroundStyle(Color.tvWarning) }
                 HStack(spacing: 16) {
@@ -1965,12 +2149,37 @@ private struct TVForYouScreen: View {
                         action(requesting ? "Checking…" : "Check status", key: "check") {
                             Task { await request(card, check: true) }
                         }
-                        .disabled(requesting)
+                        .disabled(requesting || tracking)
                     } else if status == nil && card.canRequest {
                         action(requesting ? "Requesting…" : "Request", key: "request", icon: "plus") {
                             Task { await request(card, check: false) }
                         }
-                        .disabled(requesting)
+                        .disabled(requesting || tracking)
+                    }
+                    if card.trackMediaID != nil || card.kind == "movie" {
+                        action(tracking ? "Saving…" : "Mark Watched", key: "mark-watched", icon: "checkmark.circle") {
+                            Task { await track(card, status: "completed", score: nil) }
+                        }
+                        .disabled(requesting || tracking)
+                        action("Rate", key: "rate-toggle", icon: "star", selected: showRatePicker) {
+                            showRatePicker.toggle()
+                        }
+                        .disabled(requesting || tracking)
+                        action("Not for me", key: "dismiss", icon: "eye.slash") {
+                            Task { await track(card, status: "not_for_me", score: nil) }
+                        }
+                        .disabled(requesting || tracking)
+                    }
+                }
+                if showRatePicker {
+                    HStack(spacing: 12) {
+                        ForEach([6.0, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0], id: \.self) { value in
+                            let text = value == floor(value) ? String(Int(value)) : String(format: "%.1f", value)
+                            action("\(text)/10", key: "rate-\(text)") {
+                                Task { await track(card, status: "completed", score: value) }
+                            }
+                            .disabled(tracking)
+                        }
                     }
                 }
             }
@@ -1985,9 +2194,24 @@ private struct TVForYouScreen: View {
         }
     }
 
+    private func recommendationMeta(_ card: LiveRecommendation) -> [String] {
+        var parts: [String] = []
+        if let format = card.format, !format.isEmpty { parts.append(format) }
+        if let year = card.year { parts.append(String(year)) }
+        if let episodes = card.episodes, episodes > 0 { parts.append("\(episodes) ep") }
+        if let score = card.score {
+            let num = score == floor(score) ? String(Int(score)) : String(format: "%.1f", score)
+            parts.append(card.scoreLabel.map { "\(num)% \($0)" } ?? "\(num)%")
+        }
+        if card.airing == true { parts.append("Airing") }
+        return parts
+    }
+
     private func closeDetails() {
         selected = nil
         error = nil
+        trackNotice = nil
+        showRatePicker = false
         let key = selectionFocus
         Task { @MainActor in
             await Task.yield()
@@ -2000,6 +2224,8 @@ private struct TVForYouScreen: View {
         loading = true
         page = nil
         error = nil
+        trackNotice = nil
+        showRatePicker = false
         defer { if category == wanted { loading = false } }
         do {
             let fetched: LiveRecommendationsPage
@@ -2008,9 +2234,41 @@ private struct TVForYouScreen: View {
             guard !Task.isCancelled, category == wanted else { return }
             page = fetched
             resultByTitle = [:]
+            dismissedKeys = []
         } catch {
             guard !Task.isCancelled, category == wanted else { return }
             self.error = query == nil ? "Couldn’t load For You." : "Couldn’t search the catalog."
+        }
+    }
+
+    private func track(_ card: LiveRecommendation, status: String, score: Double?) async {
+        guard !tracking else { return }
+        tracking = true
+        error = nil
+        showRatePicker = false
+        defer { tracking = false }
+        do {
+            let result = try await client.trackTitle(
+                kind: card.kind,
+                mediaID: card.trackMediaID,
+                imdbID: card.kind == "movie" ? card.id : nil,
+                title: card.title,
+                status: status,
+                episodeTotal: card.episodes,
+                score: score
+            )
+            if status == "not_for_me" || result.removeFromForYou == true {
+                dismissedKeys.insert(card.key)
+                if status == "not_for_me" {
+                    closeDetails()
+                    return
+                }
+            }
+            trackNotice = result.detail
+            if selected?.key == card.key { focus = "title-back" }
+        } catch {
+            guard selected?.key == card.key else { return }
+            self.error = "Couldn’t save your rating or watch status."
         }
     }
 
