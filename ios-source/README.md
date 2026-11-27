@@ -1,6 +1,6 @@
 # Omakase Plus for iPhone
 
-Native SwiftUI iPhone companion (`iOS 17+`, bundle ID `dev.omakase.plus.ios`, marketing version `0.7.1`) built on the shared [`QualificationCore`](../tv-source/QualificationCore) Swift package alongside the Apple TV app.
+Native SwiftUI iPhone companion (`iOS 17+`, bundle ID `dev.omakase.plus.ios`, marketing version `0.8.0`) built on the shared [`QualificationCore`](../tv-source/QualificationCore) Swift package alongside the Apple TV app.
 
 ## Features
 
@@ -22,4 +22,4 @@ The [iOS simulator workflow](../.github/workflows/ios-simulator.yml) runs `Quali
 
 ## TestFlight Distribution
 
-[`.github/workflows/ios-testflight.yml`](../.github/workflows/ios-testflight.yml) archives, signs, and uploads `OmakasePlusPhone` (`dev.omakase.plus.ios`) to App Store Connect / TestFlight via `scripts/deploy-testflight-ios.sh`.
+[`.github/workflows/apple-testflight.yml`](../.github/workflows/apple-testflight.yml) (or standalone [`.github/workflows/ios-testflight.yml`](../.github/workflows/ios-testflight.yml)) archives, signs, and uploads `OmakasePlusPhone` (`dev.omakase.plus.ios`) to App Store Connect / TestFlight via `scripts/deploy-testflight-ios.sh` and automatically revokes the ephemeral `Created via API` Development certificate created during the CI run (pass `prune_stale_certs=true` to also prune older API Development certificates).

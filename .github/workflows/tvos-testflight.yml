@@ -10,6 +10,11 @@ on:
         options:
           - upload
           - export-only
+      prune_stale_certs:
+        description: Revoke older ephemeral API Development certs before/after build
+        type: boolean
+        required: false
+        default: false
       build_number:
         description: Optional CFBundleVersion override
         type: string
@@ -18,6 +23,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: tvos-testflight-signing
+  cancel-in-progress: false
 
 jobs:
   testflight-tvos:
@@ -50,11 +59,15 @@ jobs:
           ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
           OMAKASE_SERVER_ORIGIN: ${{ secrets.OMAKASE_SERVER_ORIGIN }}
           TESTFLIGHT_MODE: ${{ inputs.mode }}
+          TESTFLIGHT_PRUNE_STALE: ${{ inputs.prune_stale_certs }}
           TESTFLIGHT_BUILD_NUMBER: ${{ inputs.build_number }}
         run: |
           args=(--output "$RUNNER_TEMP/omakase-tvos-testflight")
           if [ "${TESTFLIGHT_MODE}" = "export-only" ]; then
             args+=(--export-only)
+          fi
+          if [ "${TESTFLIGHT_PRUNE_STALE}" = "true" ]; then
+            args+=(--prune-stale-api-dev-certs)
           fi
           if [ -n "${TESTFLIGHT_BUILD_NUMBER}" ]; then
             args+=(--build-number "${TESTFLIGHT_BUILD_NUMBER}")

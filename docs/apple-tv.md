@@ -103,9 +103,15 @@ To publish signed internal builds to Apple TV via TestFlight without `tvsign`:
 
 1. Set `APPLE_TEAM_ID`, `ASC_KEY_ID`, `ASC_ISSUER_ID`, and `ASC_KEY_P8_BASE64`
    as GitHub repository secrets (plus optional `OMAKASE_SERVER_ORIGIN` HTTPS URL).
-2. Trigger the manual **TestFlight tvOS build** workflow
+2. Trigger the combined sequential **TestFlight Apple builds** workflow
+   (`.github/workflows/apple-testflight.yml`, with `platform=all|tvos|ios`) or
+   the standalone **TestFlight tvOS build** workflow
    (`.github/workflows/tvos-testflight.yml`) with `mode=upload` (or
-   `mode=export-only` to download and inspect the signed IPA locally).
+   `mode=export-only` to download and inspect the signed IPA locally). Both
+   scripts automatically revoke any ephemeral `Created via API` Development
+   certificate created during the CI run; pass `prune_stale_certs=true` (or
+   `--prune-stale-api-dev-certs`) to also prune older orphaned API Development
+   certificates without touching distribution or personal development certs.
 3. On macOS directly, run:
 
 ```bash
