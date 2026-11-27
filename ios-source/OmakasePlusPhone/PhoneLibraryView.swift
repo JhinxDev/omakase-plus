@@ -6,6 +6,7 @@ struct PhoneLibraryView: View {
     let client: LiveLibraryClient
 
     @State private var selectedKind: LiveLibraryKind = .anime
+    @State private var selectedView: LiveLibraryViewFilter = .collection
     @State private var searchText = ""
     @State private var activeQuery = ""
     @State private var page: LiveLibraryPage?
@@ -26,11 +27,24 @@ struct PhoneLibraryView: View {
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+                .padding(.top, 10)
+                .padding(.bottom, 6)
+
+                Picker("Library status", selection: $selectedView) {
+                    ForEach(LiveLibraryViewFilter.allCases) { view in
+                        Text(view.label).tag(view)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
-                        if let continueList = page?.continueWatching, !continueList.isEmpty, activeQuery.isEmpty {
+                        if selectedView != .watched,
+                           let continueList = page?.continueWatching,
+                           !continueList.isEmpty,
+                           activeQuery.isEmpty {
                             continueSection(continueList)
                         }
                         if let errorMessage {
@@ -101,7 +115,7 @@ struct PhoneLibraryView: View {
                     Task { await loadPage(offset: 0, append: false) }
                 }
             }
-            .task(id: "\(selectedKind.rawValue):\(store.selectedLibrary?.id ?? "personal")") {
+            .task(id: "\(selectedKind.rawValue):\(selectedView.rawValue):\(store.selectedLibrary?.id ?? "personal")") {
                 activeQuery = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
                 await loadPage(offset: 0, append: false)
             }
@@ -161,12 +175,18 @@ struct PhoneLibraryView: View {
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(2)
                 .foregroundStyle(Color.appText)
-            if !entry.note.isEmpty {
-                Text(entry.note)
-                    .font(.caption)
-                    .foregroundStyle(Color.appMuted)
-                    .lineLimit(1)
+            HStack(spacing: 6) {
+                if !entry.note.isEmpty {
+                    Text(entry.note)
+                        .lineLimit(1)
+                }
+                if let rating = entry.rating {
+                    Label(String(format: "%.1f", rating), systemImage: "star.fill")
+                        .foregroundStyle(Color.appAccent)
+                }
             }
+            .font(.caption)
+            .foregroundStyle(Color.appMuted)
         }
     }
 
@@ -179,7 +199,8 @@ struct PhoneLibraryView: View {
                 kind: selectedKind,
                 title: nil,
                 offset: offset,
-                query: activeQuery
+                query: activeQuery,
+                view: selectedView
             )
             page = loaded
             nextOffset = loaded.nextOffset

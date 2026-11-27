@@ -50,6 +50,26 @@ def _tmdb_image(value):
     return None
 
 
+def _clean_genres(value) -> list[str] | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(value, (list, tuple)):
+        return None
+    out: list[str] = []
+    for item in value:
+        name = item.get("name") if isinstance(item, dict) else item
+        if isinstance(name, str):
+            clean = name.strip()
+            if clean and clean not in out:
+                out.append(clean[:40])
+        if len(out) >= 4:
+            break
+    return out or None
+
+
 def _anime(db, scope, *, debrid_torrents=None):
     cards = library_titles(db, user_id=scope.viewer_id, lifecycle="all", library_scope=scope)
     selection = (
@@ -109,12 +129,16 @@ def playback_monitor(db, scope, monitor_id):
     ).fetchone()
 
 
-def _shared_cards(db, scope, kind, offset, query):
+def _shared_cards(db, scope, kind, offset, query, *, view="collection"):
     page = household_views.collection(
         db, scope, domain=kind, query=query, offset=offset, limit=PAGE_SIZE
     )
     if kind == "anime":
         cards = [household_views.anime_card(card) for card in page["cards"]]
+        if view == "watching":
+            cards = [card for card in cards if card.get("lifecycle") == "in_progress"]
+        elif view == "watched":
+            cards = [card for card in cards if card.get("watch_status") == "completed"]
         attach_navigation(db, cards, user_id=scope.viewer_id, library_scope=scope)
         entries = _anime_entries(db, scope, cards)
         response = {
@@ -126,6 +150,11 @@ def _shared_cards(db, scope, kind, offset, query):
     for card in page["cards"]:
         key = card["canonical_id"]
         metadata = card["metadata"]
+        history_status = (card["history"] or {}).get("status")
+        if view == "watching" and history_status != "watching":
+            continue
+        if view == "watched" and history_status != "completed":
+            continue
         has_source = card["facts"]["label"] == "Previously indexed in Plex"
         entries.append(
             _entry(
@@ -138,14 +167,41 @@ def _shared_cards(db, scope, kind, offset, query):
                 poster_url=_tmdb_image(metadata.get("poster_url")),
                 backdrop_url=_tmdb_image(metadata.get("backdrop_url")),
                 summary=(metadata.get("overview") or "")[:650],
-                watching=(card["history"] or {}).get("status") == "watching",
+                watching=history_status == "watching",
+                watch_status=history_status or "unwatched",
+                rating=(card["history"] or {}).get("rating"),
+                year=metadata.get("year"),
+                genres=_clean_genres(metadata.get("genres")),
+                tmdb_id=metadata.get("tmdb_id"),
             )
         )
     response = {"items": entries, "next_offset": offset + PAGE_SIZE if page["has_more"] else None}
     return _feature(db, scope, response, entries, kind, offset, query)
 
 
-def _anime_entries(db, scope, cards):
+def _anime_metadata_map(db, owner_id: int) -> tuple[dict[int, float], dict[int, list[str]]]:
+    ratings: dict[int, float] = {}
+    for row in db.execute(
+        """SELECT watch_entry_id, score_ten FROM watch_events
+           WHERE user_id=? AND disposition='accepted' AND score_ten IS NOT NULL
+           ORDER BY observed_at DESC, id DESC""",
+        (owner_id,),
+    ):
+        entry_id = int(row["watch_entry_id"])
+        if entry_id not in ratings:
+            ratings[entry_id] = float(row["score_ten"])
+    genres: dict[int, list[str]] = {}
+    for row in db.execute(
+        "SELECT id, genres_json FROM media_monitors WHERE user_id=?",
+        (owner_id,),
+    ):
+        cleaned = _clean_genres(row["genres_json"])
+        if cleaned:
+            genres[int(row["id"])] = cleaned
+    return ratings, genres
+
+
+def _anime_entries(db, scope, cards, *, ratings=None, genres=None):
     entries = []
     for row in cards:
         monitor = _anime_monitor_id(db, scope, row["id"])
@@ -153,6 +209,10 @@ def _anime_entries(db, scope, cards):
         episode = featured if row["lifecycle"] == "in_progress" and featured else None
         path = urlsplit(row["play_url"]).path if row.get("play_url") else None
         season = 0 if path and path.endswith("/0") else row["season_number"] or 1
+        monitor_int = int(monitor) if monitor and str(monitor).isdigit() else None
+        watch_entry_id = row.get("watch_entry_id")
+        rating = ratings.get(int(watch_entry_id)) if (ratings and watch_entry_id) else None
+        row_genres = genres.get(monitor_int) if (genres and monitor_int) else None
         entries.append(
             _entry(
                 row["id"],
@@ -167,6 +227,12 @@ def _anime_entries(db, scope, cards):
                 episode_artwork=f"episode-artwork/anime/{monitor}/{row['season_number']}/{episode}"
                 if monitor and episode and row.get("season_number")
                 else None,
+                watch_status=row.get("watch_status"),
+                rating=rating,
+                genres=row_genres,
+                anilist_id=row.get("anilist_id"),
+                progress_episodes=row.get("progress_episodes"),
+                episode_total=row.get("episode_total"),
             )
         )
     return entries
@@ -251,24 +317,35 @@ def collection(
     debrid_torrents=None,
     verified_only=False,
     debrid_tv=(),
+    view="collection",
 ):
     owner = scope.viewer_id
     if scope.kind == "household":
-        return _shared_cards(db, scope, kind, offset, query)
+        return _shared_cards(db, scope, kind, offset, query, view=view)
     if kind == "anime":
         cards = _anime(db, scope, debrid_torrents=debrid_torrents)
-        if verified_only:
+        if view == "watching":
+            cards = [
+                card
+                for card in cards
+                if (card["lifecycle"] == "in_progress" or card["watch_status"] == "watching")
+                and (not verified_only or card["play_url"] or card["episode_play_urls"])
+            ]
+        elif view == "watched":
+            cards = [card for card in cards if card["watch_status"] == "completed"]
+        elif verified_only:
             cards = [
                 card
                 for card in cards
                 if (card["watch_status"] != "completed" or card["resurfaced"])
                 and (card["play_url"] or card["episode_play_urls"])
             ]
-        entries = _anime_entries(db, scope, cards)
+        ratings, genres = _anime_metadata_map(db, owner)
+        entries = _anime_entries(db, scope, cards, ratings=ratings, genres=genres)
     elif kind == "movie":
         rows = db.execute(
-            """SELECT c.imdb_id,c.title,c.year,c.poster_url,c.backdrop_url,c.overview,
-                      h.status AS watch_status,h.updated_at AS watch_updated_at,
+            """SELECT c.imdb_id,c.tmdb_id,c.title,c.year,c.poster_url,c.backdrop_url,c.overview,
+                      h.status AS watch_status,h.rating AS watch_rating,h.updated_at AS watch_updated_at,
                       CASE WHEN q.code='copy_removed' AND NOT EXISTS (
                         SELECT 1 FROM movie_verifications v
                         WHERE v.user_id=c.user_id AND v.imdb_id=c.imdb_id
@@ -294,6 +371,13 @@ def collection(
                ORDER BY c.title COLLATE NOCASE,c.imdb_id""",
             (owner, json.dumps(sorted(set(plex_movies) | set(debrid_movies))), scope.library_id),
         )
+        movie_genres: dict[str, list[str]] = {}
+        for g_row in db.execute(
+            "SELECT imdb_id, name FROM movie_genres WHERE user_id=? ORDER BY genre_id",
+            (owner,),
+        ):
+            movie_genres.setdefault(g_row["imdb_id"], []).append(str(g_row["name"])[:40])
+        active_set = debrid_movies if debrid_only else plex_movies
         entries = [
             _entry(
                 row["imdb_id"],
@@ -308,13 +392,26 @@ def collection(
                 watching=row["watch_status"] == "watching"
                 and not row["copy_removed"]
                 and (not debrid_only or row["imdb_id"] in debrid_movies),
+                watch_status=row["watch_status"] or "unwatched",
+                rating=row["watch_rating"],
+                year=row["year"],
+                genres=(movie_genres.get(row["imdb_id"]) or [])[:4] or None,
+                tmdb_id=row["tmdb_id"],
             )
             for row in rows
             if (
-                not verified_only
+                (view == "watched" and row["watch_status"] == "completed")
                 or (
-                    row["watch_status"] != "completed"
-                    and row["imdb_id"] in (debrid_movies if debrid_only else plex_movies)
+                    view == "watching"
+                    and row["watch_status"] == "watching"
+                    and (not verified_only or row["imdb_id"] in active_set)
+                )
+                or (
+                    view == "collection"
+                    and (
+                        not verified_only
+                        or (row["watch_status"] != "completed" and row["imdb_id"] in active_set)
+                    )
                 )
             )
             and personal_legacy_visible(db, scope, domain="movie", canonical_id=row["imdb_id"])
@@ -330,7 +427,7 @@ def collection(
             TVService(db, connection)._plex_scope() if connection and connection.enabled else ""
         )
         rows = db.execute(
-            """SELECT c.tmdb_id,c.metadata_json,h.status AS watch_status,
+            """SELECT c.tmdb_id,c.metadata_json,h.status AS watch_status,h.rating AS watch_rating,
                       h.updated_at AS watch_updated_at,
                       EXISTS (
                           SELECT 1 FROM tv_plex_snapshots s JOIN tv_episodes e USING(user_id,tmdb_id)
@@ -339,20 +436,26 @@ def collection(
                       ) AS in_plex
                FROM tv_catalog c LEFT JOIN tv_history h USING(user_id,tmdb_id)
                WHERE c.user_id=? AND (
-                   json_extract(c.metadata_json,'$.in_collection')=1 OR EXISTS (
+                   json_extract(c.metadata_json,'$.in_collection')=1
+                   OR EXISTS (
                        SELECT 1 FROM for_you_requests q WHERE q.user_id=c.user_id
                          AND q.kind='tv' AND q.title_id=c.tmdb_id
                    )
+                   OR h.status IN ('watching', 'completed')
                )
                ORDER BY json_extract(c.metadata_json,'$.title') COLLATE NOCASE,c.tmdb_id""",
             (plex_scope, owner),
         )
         entries = []
         for row in rows:
-            if verified_only and (
-                row["watch_status"] == "completed"
-                or not (row["tmdb_id"] in debrid_tv if debrid_only else row["in_plex"])
-            ):
+            tv_present = row["tmdb_id"] in debrid_tv if debrid_only else row["in_plex"]
+            if view == "watched":
+                if row["watch_status"] != "completed":
+                    continue
+            elif view == "watching":
+                if row["watch_status"] != "watching" or (verified_only and not tv_present):
+                    continue
+            elif verified_only and (row["watch_status"] == "completed" or not tv_present):
                 continue
             if personal_legacy_visible(db, scope, domain="tv", canonical_id=str(row["tmdb_id"])):
                 metadata = json.loads(row["metadata_json"])
@@ -396,6 +499,11 @@ def collection(
                     if watching and episode and episode["plex_present"]
                     else None,
                     watching=watching,
+                    watch_status=row["watch_status"] or "unwatched",
+                    rating=row["watch_rating"],
+                    year=metadata.get("year"),
+                    genres=_clean_genres(metadata.get("genres")),
+                    tmdb_id=row["tmdb_id"],
                 )
                 entry["_activity"] = row["watch_updated_at"] or ""
                 entries.append(entry)

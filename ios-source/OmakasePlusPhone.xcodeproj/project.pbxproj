@@ -21,6 +21,9 @@
 		11000000000000000000010A /* PhonePlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11000000000000000000020A; };
 		11000000000000000000010B /* PhoneSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11000000000000000000020B; };
 		11000000000000000000010C /* PhoneRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11000000000000000000020C; };
+		110000000000000000000111 /* PhoneTrackSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000211; };
+		110000000000000000000112 /* PhoneRequestDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000212; };
+		110000000000000000000113 /* PhoneCatalogDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000213; };
 		11000000000000000000010D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 11000000000000000000020D; };
 		110000000000000000000027 /* PrototypeJourneyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110000000000000000000017; };
 		110000000000000000000028 /* QualificationCore in Frameworks */ = {isa = PBXBuildFile; productRef = 110000000000000000000041; };
@@ -42,6 +45,9 @@
 		11000000000000000000020A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhonePlayerView.swift; sourceTree = "<group>"; };
 		11000000000000000000020B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSettingsView.swift; sourceTree = "<group>"; };
 		11000000000000000000020C = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneRootView.swift; sourceTree = "<group>"; };
+		110000000000000000000211 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneTrackSheet.swift; sourceTree = "<group>"; };
+		110000000000000000000212 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneRequestDetailView.swift; sourceTree = "<group>"; };
+		110000000000000000000213 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneCatalogDetailView.swift; sourceTree = "<group>"; };
 		11000000000000000000020D = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		11000000000000000000020E = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		110000000000000000000017 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmakasePlusPhoneUITests/PrototypeJourneyTests.swift; sourceTree = "<group>"; };
@@ -73,6 +79,9 @@
 				11000000000000000000020A,
 				11000000000000000000020B,
 				11000000000000000000020C,
+				110000000000000000000211,
+				110000000000000000000212,
+				110000000000000000000213,
 				110000000000000000000010,
 				11000000000000000000020D,
 				11000000000000000000020E,
@@ -146,6 +155,9 @@
 			11000000000000000000010A,
 			11000000000000000000010B,
 			11000000000000000000010C,
+			110000000000000000000111,
+			110000000000000000000112,
+			110000000000000000000113,
 			110000000000000000000020,
 		); runOnlyForDeploymentPostprocessing = 0; };
 		110000000000000000000061 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (110000000000000000000028,); runOnlyForDeploymentPostprocessing = 0; };
@@ -159,8 +171,8 @@
 		110000000000000000000051 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {
 			ALWAYS_SEARCH_USER_PATHS = NO;
 			IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-			OMAKASE_IOS_BUILD_NUMBER = 1;
-			OMAKASE_IOS_MARKETING_VERSION = 0.7.1;
+			OMAKASE_IOS_BUILD_NUMBER = 2;
+			OMAKASE_IOS_MARKETING_VERSION = 0.8.0;
 			ONLY_ACTIVE_ARCH = YES;
 			SDKROOT = iphoneos;
 			SWIFT_VERSION = 5.0;
@@ -170,8 +182,8 @@
 		110000000000000000000059 = {isa = XCBuildConfiguration; name = Release; buildSettings = {
 			ALWAYS_SEARCH_USER_PATHS = NO;
 			IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-			OMAKASE_IOS_BUILD_NUMBER = 1;
-			OMAKASE_IOS_MARKETING_VERSION = 0.7.1;
+			OMAKASE_IOS_BUILD_NUMBER = 2;
+			OMAKASE_IOS_MARKETING_VERSION = 0.8.0;
 			SDKROOT = iphoneos;
 			SWIFT_VERSION = 5.0;
 			SWIFT_COMPILATION_MODE = wholemodule;

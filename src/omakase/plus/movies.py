@@ -538,6 +538,7 @@ class MovieService:
             "poster_url": metadata.get("poster_url"),
             "backdrop_url": metadata.get("backdrop_url"),
             "overview": metadata.get("overview"),
+            "trailer": metadata.get("trailer"),
             "genres": store.list_movie_genres(self.db, user_id, metadata["imdb_id"]),
             "edition": request["requested_edition"] if request else None,
             "requested": request is not None and code != "copy_removed",

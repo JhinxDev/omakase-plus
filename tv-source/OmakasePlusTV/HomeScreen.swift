@@ -523,6 +523,7 @@ private struct NativeHomeArtwork: View {
 struct TVRequestsScreen: View {
     let client: LiveLibraryClient
     let close: () -> Void
+    var onOpenLibrary: ((LiveTitleRequest) -> Void)? = nil
 
     @State private var page: LiveRequestsPage?
     @State private var selected: LiveTitleRequest?
@@ -571,17 +572,40 @@ struct TVRequestsScreen: View {
                                     Task { @MainActor in
                                         await Task.yield()
                                         if selected?.id == current.id {
-                                            focus = current.canCheck == true ? "requests-check" : "requests-back"
+                                            if current.canCheck == true {
+                                                focus = "requests-check"
+                                            } else if current.isReadyInLibrary, onOpenLibrary != nil {
+                                                focus = "requests-open-library"
+                                            } else {
+                                                focus = "requests-back"
+                                            }
                                         }
                                     }
                                 } label: {
-                                    HStack {
-                                        Text(current.title).foregroundStyle(Color.tvText)
+                                    HStack(spacing: 20) {
+                                        TVRequestPoster(request: current, client: client)
+                                            .frame(width: 68, height: 102)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text(current.title).foregroundStyle(Color.tvText).lineLimit(1)
+                                            if !current.detail.isEmpty {
+                                                Text(current.detail)
+                                                    .font(.caption)
+                                                    .foregroundStyle(Color.tvMuted)
+                                                    .lineLimit(1)
+                                            }
+                                            if let stages = current.stages, !stages.isEmpty {
+                                                let done = stages.filter { $0.state == "done" }.count
+                                                Text("\(done) of \(stages.count) stages complete")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(Color.tvMuted)
+                                            }
+                                        }
                                         Spacer()
                                         Text(current.displayStatus).foregroundStyle(Color.tvAccent)
                                     }
                                     .font(.callout.weight(.semibold))
-                                    .padding(22)
+                                    .padding(18)
                                     .background(Color.tvSurface, in: RoundedRectangle(cornerRadius: 12))
                                     .overlay {
                                         RoundedRectangle(cornerRadius: 12)
@@ -619,26 +643,85 @@ struct TVRequestsScreen: View {
 
     private func detail(_ item: LiveTitleRequest) -> some View {
         VStack(alignment: .leading, spacing: 24) {
-            HStack(alignment: .firstTextBaseline, spacing: 28) {
-                Text(item.title).font(.title.bold()).accessibilityAddTraits(.isHeader)
-                Spacer(minLength: 24)
-                if item.canCheck == true {
-                    button(loading ? "Checking…" : "Check status", key: "requests-check") {
-                        Task { await check(item) }
+            HStack(alignment: .top, spacing: 28) {
+                TVRequestPoster(request: item, client: client)
+                    .frame(width: 140, height: 210)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12).strokeBorder(Color.tvKeyline, lineWidth: 1)
                     }
-                    .accessibilityHint(item.kind == "movie"
-                        ? "Check Riven and, if needed, the configured sources for this movie"
-                        : "Refresh this request")
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(item.title).font(.title.bold()).accessibilityAddTraits(.isHeader)
+                    HStack(spacing: 12) {
+                        Text(item.kind == "anime" ? "Anime" : item.kind == "tv" ? "TV Show" : "Movie")
+                        if let year = item.releaseYear {
+                            Text(String(year))
+                        }
+                    }
+                    .font(.callout)
+                    .foregroundStyle(Color.tvMuted)
+                    Text(item.displayStatus).font(.title3.bold()).foregroundStyle(Color.tvAccent)
+                    if !item.detail.isEmpty { Text(item.detail) }
+                    if let reason = item.reasonText, !reason.isEmpty, reason != item.detail {
+                        Text(reason).font(.callout).foregroundStyle(Color.tvWarning)
+                    }
+                    if let checked = formattedDate(item.lastCheckedAt) {
+                        Text("Status checked \(checked)").font(.callout).foregroundStyle(Color.tvMuted)
+                    }
+                }
+                Spacer(minLength: 24)
+                VStack(alignment: .trailing, spacing: 14) {
+                    if item.canCheck == true {
+                        button(loading ? "Checking…" : "Check status", key: "requests-check") {
+                            Task { await check(item) }
+                        }
+                        .accessibilityHint(item.kind == "movie"
+                            ? "Check Riven and, if needed, the configured sources for this movie"
+                            : "Refresh this request")
+                    }
+                    if item.isReadyInLibrary, let onOpenLibrary {
+                        button("Open in Library", key: "requests-open-library") {
+                            onOpenLibrary(item)
+                        }
+                    }
                 }
             }
             ScrollView {
-                VStack(alignment: .leading, spacing: 30) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(item.displayStatus).font(.title3.bold()).foregroundStyle(Color.tvAccent)
-                        if !item.detail.isEmpty { Text(item.detail) }
-                        if let checked = formattedDate(item.lastCheckedAt) {
-                            Text("Status checked \(checked)").font(.callout).foregroundStyle(Color.tvMuted)
+                VStack(alignment: .leading, spacing: 28) {
+                    if let ratio = item.episodeProgressRatio,
+                       let ready = item.episodesReady,
+                       let expected = item.episodesExpected {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("\(ready) of \(expected) episodes ready")
+                                .font(.callout.bold())
+                                .foregroundStyle(Color.tvAccent)
+                            ProgressView(value: ratio)
+                                .tint(Color.tvAccent)
                         }
+                        .padding(20)
+                        .background(Color.tvSurface, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    if let stages = item.stages, !stages.isEmpty {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("Progress stages").font(.callout.bold()).foregroundStyle(Color.tvAccent)
+                                .accessibilityAddTraits(.isHeader)
+                            ForEach(stages) { stage in
+                                HStack(spacing: 14) {
+                                    Image(systemName: stageIcon(for: stage.state))
+                                        .foregroundStyle(stageColor(for: stage.state))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(stage.label)
+                                            .foregroundStyle(stage.state == "unknown" ? Color.tvMuted : Color.tvText)
+                                        if let occurred = formattedDate(stage.occurredAt) {
+                                            Text(occurred).font(.caption).foregroundStyle(Color.tvMuted)
+                                        }
+                                    }
+                                    Spacer()
+                                }
+                            }
+                        }
+                        .padding(20)
+                        .background(Color.tvSurface, in: RoundedRectangle(cornerRadius: 12))
                     }
                     if item.fallbackSearch != nil || item.fallbackTransfer != nil {
                         VStack(alignment: .leading, spacing: 10) {
@@ -661,6 +744,24 @@ struct TVRequestsScreen: View {
                 .frame(maxWidth: 1240, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+    }
+
+    private func stageIcon(for state: String) -> String {
+        switch state {
+        case "done": "checkmark.circle.fill"
+        case "current": "clock.fill"
+        case "stopped": "exclamationmark.triangle.fill"
+        default: "circle"
+        }
+    }
+
+    private func stageColor(for state: String) -> Color {
+        switch state {
+        case "done": Color.tvAccent
+        case "current": Color.tvText
+        case "stopped": Color.tvWarning
+        default: Color.tvMuted
         }
     }
 
@@ -729,6 +830,38 @@ struct TVRequestsScreen: View {
             return
         } catch {
             self.error = "Couldn’t check this request."
+        }
+    }
+}
+
+@MainActor
+private struct TVRequestPoster: View {
+    let request: LiveTitleRequest
+    let client: LiveLibraryClient
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            Color.tvRaised
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else {
+                Image(systemName: "tray").font(.title3).foregroundStyle(Color.tvMuted)
+            }
+        }
+        .clipped()
+        .accessibilityHidden(true)
+        .task(id: "\(request.id):\(request.poster ?? "")") {
+            image = nil
+            guard let poster = request.poster, !poster.isEmpty else { return }
+            let key = "req:\(request.id):\(poster)"
+            if let cached = TVArtworkCache.shared.cached(for: key) {
+                image = cached
+                return
+            }
+            if let bytes = try? await client.requestArtwork(request), !Task.isCancelled {
+                image = await TVArtworkCache.shared.decodeAndStore(bytes, key: key, maxPixelSize: 480)
+            }
         }
     }
 }

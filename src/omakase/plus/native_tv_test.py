@@ -706,6 +706,8 @@ _NATIVE_REQUEST_FIELDS = (
     "media_kind",
     "title_id",
     "title",
+    "release_year",
+    "library_id",
     "season",
     "supported_stages",
     "stage",
@@ -730,6 +732,39 @@ _NATIVE_REQUEST_FIELDS = (
     "candidates_rejected",
 )
 
+_YOUTUBE_ID = re.compile(r"[A-Za-z0-9_-]{11}")
+
+
+def _valid_trailer_id(card):
+    if not isinstance(card, dict):
+        return None
+    raw = card.get("trailer_id")
+    if isinstance(raw, str) and _YOUTUBE_ID.fullmatch(raw.strip()):
+        return raw.strip()
+    trailer = card.get("trailer")
+    if isinstance(trailer, dict):
+        site = trailer.get("site")
+        if site is None or (isinstance(site, str) and site.strip().lower() == "youtube"):
+            tid = trailer.get("id")
+            if isinstance(tid, str) and _YOUTUBE_ID.fullmatch(tid.strip()):
+                return tid.strip()
+    return None
+
+
+def _native_genres(value):
+    if not isinstance(value, (list, tuple)):
+        return None
+    out = []
+    for entry in value:
+        name = entry.get("name") if isinstance(entry, dict) else entry
+        if isinstance(name, str):
+            clean = name.strip()
+            if clean and clean not in out:
+                out.append(clean[:40])
+        if len(out) >= 4:
+            break
+    return out or None
+
 
 # A request poster is either a native artwork path the paired client already knows
 # how to fetch with its bearer token, or a TMDB image URL. Nothing else is emitted.
@@ -750,6 +785,13 @@ def native_request_status(status):
         return None
     payload = {key: status.get(key) for key in _NATIVE_REQUEST_FIELDS if key in status}
     payload["can_check"] = bool(status.get("can_check"))
+    progress = status.get("progress")
+    if isinstance(progress, dict):
+        ready = progress.get("ready")
+        expected = progress.get("expected")
+        if type(ready) is int and type(expected) is int and expected > 0:
+            payload["episodes_ready"] = max(0, ready)
+            payload["episodes_expected"] = expected
     stages = []
     for entry in status.get("stages") or ():
         if not isinstance(entry, dict) or not entry.get("stage"):
@@ -1900,6 +1942,7 @@ def create_native_tv_test_router(
         kind: Literal["anime", "movie", "tv", "cloud"],
         offset: int = 0,
         q: str = Query("", max_length=100),
+        view: Literal["collection", "watching", "watched"] = "collection",
         db=Depends(get_db),
     ):
         key, _, scope = requested_scope(request, db)
@@ -1943,6 +1986,7 @@ def create_native_tv_test_router(
                 debrid_torrents=debrid_torrents,
                 verified_only=True,
                 debrid_tv=debrid_tv,
+                view=view,
             )
             if mode == "realdebrid":
                 featured = reply.get("featured") or {}
@@ -1956,6 +2000,46 @@ def create_native_tv_test_router(
             raise HTTPException(404, "Apple TV library unavailable", headers=NO_STORE) from None
         return JSONResponse(reply, headers=NO_STORE)
 
+    def _native_card_payload(card):
+        raw_score = card.get("score")
+        score = (
+            round(float(raw_score), 1)
+            if type(raw_score) in {int, float} and math.isfinite(float(raw_score))
+            else None
+        )
+        episodes = card.get("episodes")
+        if type(episodes) is not int:
+            episodes = card.get("episode_total") if type(card.get("episode_total")) is int else None
+        tmdb_id = card.get("tmdb_id") if type(card.get("tmdb_id")) is int else None
+        if tmdb_id is None and card["kind"] == "tv" and str(card["id"]).isdigit():
+            tmdb_id = int(card["id"])
+        watch_status = card.get("watch_status")
+        return {
+            "id": str(card["id"]),
+            "kind": card["kind"],
+            "title": card["title"],
+            "poster_url": card.get("poster_url"),
+            "summary": card.get("summary"),
+            "request": native_request_status(card.get("request")),
+            "can_request": card["can_request"],
+            "year": card.get("year") if type(card.get("year")) is int else None,
+            "format": card.get("format") if isinstance(card.get("format"), str) else None,
+            "episodes": episodes,
+            "score": score,
+            "score_label": card.get("score_label")
+            if isinstance(card.get("score_label"), str)
+            else None,
+            "genres": _native_genres(card.get("genres")),
+            "airing": bool(card["airing"]) if card.get("airing") is not None else None,
+            "trailer_id": _valid_trailer_id(card),
+            "tmdb_id": tmdb_id,
+            "owned": bool(card.get("owned") or card.get("available")),
+            "saved": bool(card.get("saved")),
+            "watch_status": watch_status
+            if isinstance(watch_status, str) and watch_status != "unknown"
+            else None,
+        }
+
     def native_catalog_page(page, category):
         # Return only the fields the paired client needs. Browser links and
         # provider-side request metadata are not part of the native contract.
@@ -1967,15 +2051,7 @@ def create_native_tv_test_router(
                         "key": row["key"],
                         "title": row["title"],
                         "cards": [
-                            {
-                                "id": str(card["id"]),
-                                "kind": card["kind"],
-                                "title": card["title"],
-                                "poster_url": card.get("poster_url"),
-                                "summary": card.get("summary"),
-                                "request": native_request_status(card.get("request")),
-                                "can_request": card["can_request"],
-                            }
+                            _native_card_payload(card)
                             for card in row["cards"]
                             if "id" in card and "kind" in card
                         ],
@@ -2004,10 +2080,15 @@ def create_native_tv_test_router(
             raise HTTPException(error.status, error.detail, headers=NO_STORE) from None
         translate = artwork_translator(db, scope)
 
-        def with_poster(item):
+        def enrich_item(item):
             if not isinstance(item, dict):
                 return item
-            return {**item, "poster": request_poster(db, scope, translate, item)}
+            library_id = request_library_id(db, scope, item)
+            return {
+                **item,
+                "poster": request_poster(db, scope, translate, item),
+                "library_id": library_id,
+            }
 
         return JSONResponse(
             {
@@ -2016,7 +2097,7 @@ def create_native_tv_test_router(
                         "key": category["key"],
                         "title": category["title"],
                         "requests": [
-                            native_request_status(with_poster(item))
+                            native_request_status(enrich_item(item))
                             for item in category["requests"]
                         ],
                     }
@@ -2025,6 +2106,32 @@ def create_native_tv_test_router(
             },
             headers=NO_STORE,
         )
+
+    def request_library_id(db, scope, item):
+        if item.get("removed"):
+            return None
+        ready_enough = bool(item.get("resolved")) or item.get("state") in {
+            "ready",
+            "in_library",
+            "partial",
+        }
+        if not ready_enough:
+            return None
+        title_id = str(item.get("title_id") or "")
+        kind = item.get("kind")
+        if kind == "anime":
+            if not re.fullmatch(r"[1-9][0-9]{0,9}", title_id):
+                return None
+            monitor = db.execute(
+                "SELECT id FROM media_monitors WHERE user_id=? AND anilist_id=? ORDER BY id LIMIT 1",
+                (scope.viewer_id, int(title_id)),
+            ).fetchone()
+            return str(monitor[0]) if monitor else None
+        if kind == "movie" and re.fullmatch(r"tt[0-9]{7,10}", title_id):
+            return title_id
+        if kind == "tv" and re.fullmatch(r"[1-9][0-9]{0,9}", title_id):
+            return title_id
+        return None
 
     def request_poster(db, scope, translate, item):
         """Map a request's web poster link onto an artwork the paired client can fetch."""
@@ -2218,6 +2325,22 @@ def create_native_tv_test_router(
         except ForYouError as error:
             raise HTTPException(error.status, error.detail, headers=NO_STORE) from None
         return JSONResponse(native_request_status(result), headers=NO_STORE)
+
+    @router.post(LIBRARY_API + "/track")
+    async def native_library_track(request: Request, db=Depends(get_db)):
+        from omakase.plus.discover_tracking import save_discover_track
+
+        _, _, scope = requested_scope(request, db)
+        if scope.kind != "personal":
+            raise HTTPException(404, "Personal tracking unavailable", headers=NO_STORE)
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(400, "Invalid JSON body", headers=NO_STORE) from None
+        if not isinstance(body, dict):
+            raise HTTPException(400, "Invalid JSON body", headers=NO_STORE)
+        status_code, payload = await save_discover_track(db, scope.viewer_id, body)
+        return JSONResponse(payload, status_code=status_code, headers=NO_STORE)
 
     @router.get(LIBRARY_API + "/watchlist")
     async def library_watchlist(request: Request, db=Depends(get_db)):
