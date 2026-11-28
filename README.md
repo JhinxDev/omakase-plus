@@ -1,16 +1,26 @@
+<div align="center">
+
+<img src="src/omakase/plus/static/omakase-icon.svg" width="96" height="96" alt="Omakase Plus icon" />
+
 # Omakase Plus
 
+**Your anime, movies, and TV, organized in one private media hub.**
+
+[![MIT License](https://img.shields.io/badge/license-MIT-FF3B5C?style=flat-square)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square)](https://www.python.org/)
+![Apple TV & iOS](https://img.shields.io/badge/Apple%20TV%20%26%20iOS-SwiftUI-7C5CFF?style=flat-square)
 [![CI](https://github.com/JhinxDev/omakase-plus/actions/workflows/ci.yml/badge.svg)](https://github.com/JhinxDev/omakase-plus/actions/workflows/ci.yml)
 [![Container Image](https://github.com/JhinxDev/omakase-plus/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/JhinxDev/omakase-plus/actions/workflows/docker-publish.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/)
 
-Your anime, movies, and TV, organized in one private media hub.
+[Video Walkthrough](https://youtu.be/_6rfTJXNMVs) · [Documentation](https://omakase-plus.jhinx.dev/docs) · [Quickstart](https://omakase-plus.jhinx.dev/docs/quickstart) · [Apple TV App](docs/apple-tv.md) · [Changelog](CHANGELOG.md) · [Security](SECURITY.md)
+
+</div>
+
+---
 
 Omakase Plus is self-hosted personal media management, discovery, tracking, and playback software for the browser, Apple TV, and iPhone. Like Plex, it operates strictly on a **Bring Your Own Media (BYOM)** model: Omakase Plus provides the software alone, includes zero bundled or pre-downloaded media, and connects only to libraries, storage, and accounts that you own or are authorized to access.
 
-**Early release · Self-hosted · MIT software.**  
-[Video Walkthrough](https://youtu.be/_6rfTJXNMVs) · [Documentation](https://omakase-plus.jhinx.dev/docs) · [Quickstart](https://omakase-plus.jhinx.dev/docs/quickstart) · [Changelog](CHANGELOG.md) · [Apple TV App](docs/apple-tv.md) · [Security](SECURITY.md)
+**Early release · Self-hosted · MIT software.**
 
 ![Omakase Plus Home showing sidebar navigation, featured banner, and Continue Watching row](docs/images/omakase-plus-home-v6.webp)
 
